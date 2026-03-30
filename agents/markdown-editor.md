@@ -80,6 +80,34 @@ Critical risks or errors.
   - Good: `![Architecture diagram showing request flow](./docs/architecture.png)`
   - Bad: `![](./docs/architecture.png)`
 
+## Diagram Rules
+
+When a document requires a flowchart, UML diagram, or any other visual diagram, prefer **Mermaid** syntax over external image files or ASCII art. Mermaid diagrams are version-control-friendly, text-based, and rendered natively by GitHub and many other platforms.
+
+Use a ` ```mermaid ` code fence to embed any Mermaid diagram:
+
+```mermaid
+flowchart TD
+    A[Start] --> B{Decision}
+    B -->|Yes| C[Action]
+    B -->|No| D[End]
+```
+
+Commonly supported Mermaid diagram types include:
+
+- **flowchart** — general-purpose flowcharts and process diagrams
+- **sequenceDiagram** — interaction flows between systems or actors
+- **classDiagram** — UML class structures and relationships
+- **stateDiagram-v2** — state machines and lifecycle diagrams
+- **erDiagram** — entity-relationship diagrams for data modeling
+- **gantt** — project timelines and task scheduling
+- **pie** — proportional data and distribution charts
+- **mindmap** — hierarchical idea or concept mapping
+- **gitGraph** — Git branch and commit history visualization
+- **C4Context** — C4 model architecture diagrams
+
+If a diagram type is not supported by Mermaid, fall back to embedding an image with proper descriptive alt text per the Image Rules section.
+
 ## Blockquote Semantics
 
 - Use `>` blockquotes only for **quoting external content** or with **GFM Alerts**.
