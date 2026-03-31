@@ -96,10 +96,12 @@ If the file exists, proceed directly to the trello command. Never run sync "just
 
 ### Card 識別策略
 
+**【核心規則】當已知 card ID 或 shortLink 時，直接使用 `trello card:get-by-id --id {card-id} --format json` 取得資訊。嚴禁遍歷 list 來尋找 card。**
+
 CLI 中有些指令接受 card name，有些接受 card ID。為避免歧義：
 
-1. 用 `trello search` 或 `trello card:list` 取得 JSON 結果
-2. 從結果中提取 `shortLink`（短 ID）或 `id`（完整 ID）
+1. **已知 card ID / shortLink** → 直接用 `card:get-by-id` 查詢，不需要 search 或 list 掃描
+2. **未知 card ID** → 用 `trello search` 搜尋，從結果中提取 `shortLink` 或 `id`
 3. 需要 card name 的指令用 `shortLink` 也可以運作
 4. 遇到名稱含特殊字元（引號、括號等）時，務必改用 ID
 
@@ -119,10 +121,12 @@ trello card:create --board {board} --list {list} --name {title}
 #### 查詢 Card 完整資訊
 
 ```bash
-# 1. 搜尋找到 card
-trello search --query {keyword} --board {board} --type cards --format json
-# 2. 用回傳的 card ID 取得詳情
+# 已知 card ID / shortLink → 直接查詢（優先）
 trello card:get-by-id --id {card-id} --format json
+
+# 未知 card ID → 先搜尋再查詢
+trello search --query {keyword} --board {board} --type cards --format json
+trello card:get-by-id --id {從搜尋結果取得的 shortLink} --format json
 ```
 
 #### 批次封存整個 List 的 Cards
