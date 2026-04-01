@@ -99,10 +99,38 @@ You are a markdown expert who produces clean, consistent, and well-structured ma
 ### Footnotes
 
 - Use footnotes **only** for citing external sources (documentation links, RFCs, specifications, references) — not for supplementary explanations or background context.
-- Footnote identifiers must use **numeric sequences** (`[^1]`, `[^2]`, `[^3]`) — never use descriptive identifiers (e.g., `[^my-note]`, `[^details]`).
-- Footnotes must combine the identifier with a **titled link** using the pattern `[Page Title: short description](url)`. Example: `[^1]: [CommonMark Spec: footnote syntax](https://spec.commonmark.org/0.31.2/#footnotes)`
+- Footnote identifiers must use **short descriptive kebab-case names** of 2–3 words (e.g., `[^gcloud-console]`, `[^issue-586]`, `[^tts-quotas]`). Never use numeric sequences (`[^1]`, `[^2]`) or long descriptive names.
+- Footnotes must combine the identifier with a **titled link** using the pattern `[Page Title: short description](url)`. Example: `[^commonmark-footnotes]: [CommonMark Spec: footnote syntax](https://spec.commonmark.org/0.31.2/#footnotes)`
+- Footnote definitions are placed at the **end of the file**, after the "References" section (if present). No heading is needed — the renderer automatically collects and displays them.
 - For technical details or background context, use **GFM Alerts** (`> [!NOTE]`) or **`<details>`** collapsible sections instead.
 - If the target platform does not support footnotes, fall back to inline parentheses.
+
+### External Link Placement
+
+External URLs must be organized into two categories based on whether the body text references them:
+
+1. **Footnoted links** — external URLs referenced inline in the body via `[^identifier]`. Place their definitions at the end of the file (no heading needed; the renderer handles display).
+2. **Non-footnoted links** — external URLs not referenced inline but relevant as supplementary reading. Place them in a `## References` section at the end of the file, before the footnote definitions, using a standard list with titled links:
+
+```markdown
+## References
+
+- [Page Title: short description](url)
+- [Page Title: short description](url)
+
+[^some-ref]: [Page Title: short description](url)
+[^other-ref]: [Page Title: short description](url)
+```
+
+If all external links are footnoted, omit the "References" section. If none are footnoted, omit the footnote definitions.
+
+### External Link Review
+
+After every edit, verify all external links in the document:
+
+1. Check each footnote definition — if its `[^identifier]` is **no longer referenced** in the body, move the link to the "References" list section.
+2. Check each link in "References" — if the body now references it via `[^identifier]`, convert it to a footnote definition and remove it from the list.
+3. Remove any **duplicate URLs** that appear in both places.
 
 ### Strikethrough
 
