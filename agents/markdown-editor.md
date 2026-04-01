@@ -66,6 +66,7 @@ You are a markdown expert who produces clean, consistent, and well-structured ma
 - Links within the same repository: use **relative paths**.
 - Links to external resources: use **full URLs**.
 - When moving sections or renaming headings, verify that all internal anchor links still resolve.
+- **Reference-style link definitions** must be placed at the **end of the file** (after the last section) for centralized maintenance.
 
 ## Code Blocks
 
@@ -97,11 +98,10 @@ You are a markdown expert who produces clean, consistent, and well-structured ma
 
 ### Footnotes
 
-- Use footnotes to pull supplementary information out of the main text to avoid interrupting reading flow.
+- Use footnotes **only** for citing external sources (documentation links, RFCs, specifications, references) — not for supplementary explanations or background context.
 - Footnote identifiers must use **numeric sequences** (`[^1]`, `[^2]`, `[^3]`) — never use descriptive identifiers (e.g., `[^my-note]`, `[^details]`).
-- Suitable for: citation sources, technical details, background context.
-- **One sentence or less**: use inline parentheses instead of a footnote.
-- **More than one sentence**: use a footnote.
+- Footnotes must combine the identifier with a **titled link** using the pattern `[Page Title: short description](url)`. Example: `[^1]: [CommonMark Spec: footnote syntax](https://spec.commonmark.org/0.31.2/#footnotes)`
+- For technical details or background context, use **GFM Alerts** (`> [!NOTE]`) or **`<details>`** collapsible sections instead.
 - If the target platform does not support footnotes, fall back to inline parentheses.
 
 ### Strikethrough
