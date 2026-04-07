@@ -145,6 +145,7 @@ trello list:move-all-cards --board {board} --list {source-list} --destination-bo
 
 - **`card:label` 有 bug**：CLI 的 `card:label` 命令會回傳 404 錯誤。請回報使用者此 CLI 已知問題，由使用者自行透過 Trello 網頁介面處理。
 - **`card:create --label` 可能無效**：建立卡片時帶 `--label` 參數不一定會套用標籤，建議建立 card 後，請使用者透過 Trello 網頁介面手動添加標籤。
+- **其餘 CLI 命令應假設可正常使用**：除上述已知問題外，請先實際嘗試執行指令，根據實際結果判斷是否成功，不要從已知問題推斷其他指令也有 bug。
 
 ---
 
