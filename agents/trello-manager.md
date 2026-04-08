@@ -104,6 +104,7 @@ CLI 中有些指令接受 card name，有些接受 card ID。為避免歧義：
 2. **未知 card ID** → 用 `trello search` 搜尋，從結果中提取 `shortLink` 或 `id`
 3. 需要 card name 的指令用 `shortLink` 也可以運作
 4. 遇到名稱含特殊字元（引號、括號等）時，務必改用 ID
+5. **後續指令需要 `--board` 和 `--list` 參數時**，從 `card:get-by-id` 回傳的 JSON 中提取 `idList` 欄位。若需將 `idList` 轉換為 list 名稱，使用 `list:list --board {board} --format json` 對照，嚴禁使用 `card:list` 遍歷 list 來尋找 card。
 
 ### Common Workflows
 
@@ -117,6 +118,23 @@ trello card:create --board {board} --list {list} --name {title}
 ```
 
 建立完成後，請使用者透過 Trello 網頁介面手動添加標籤。
+
+#### 更新已知 ID 的 Card
+
+```bash
+# 步驟一：取得 card 資訊，JSON 結果中包含 idList
+trello card:get-by-id --id {card-id} --format json
+
+# 步驟二：若需要 list 名稱，從 board 的 lists 中對照 idList
+# 使用 list:list 即可，嚴禁使用 card:list 掃描
+trello list:list --board {board} --format json
+
+# 步驟三：直接更新卡片
+trello card:update --board {board} --list {list-name} --card {card-id} [--name {new-title}] [--description {new-description}]
+```
+
+> [!WARNING]
+> 嚴禁使用 `card:list` 遍歷 list 來確認 card 所在位置。`card:get-by-id` 的結果已包含 `idList`，配合 `list:list` 即可得知 list 名稱，無需額外掃描。
 
 #### 查詢 Card 完整資訊
 
@@ -146,45 +164,3 @@ trello list:move-all-cards --board {board} --list {source-list} --destination-bo
 - **`card:label` 有 bug**：CLI 的 `card:label` 命令會回傳 404 錯誤。請回報使用者此 CLI 已知問題，由使用者自行透過 Trello 網頁介面處理。
 - **`card:create --label` 可能無效**：建立卡片時帶 `--label` 參數不一定會套用標籤，建議建立 card 後，請使用者透過 Trello 網頁介面手動添加標籤。
 - **其餘 CLI 命令應假設可正常使用**：除上述已知問題外，請先實際嘗試執行指令，根據實際結果判斷是否成功，不要從已知問題推斷其他指令也有 bug。
-
----
-
-# Persistent Agent Memory
-
-You have a persistent, file-based memory system at `/home/eddie/.claude/agent-memory/trello-manager/`.
-
-Build up this memory system over time so future conversations have context about the user's preferences and Trello workflow.
-
-## Types of memory
-
-| Type | When to save | Example |
-|------|-------------|---------|
-| **user** | 使用者的角色、偏好、常用 board | 使用者主要管理 "Product Backlog" board，偏好用 label 分類優先級 |
-| **feedback** | 使用者糾正或確認你的做法 | 使用者要求查詢結果一定要附上 card URL |
-| **project** | 專案相關的非顯而易見資訊（轉換相對日期為絕對日期） | Sprint 23 在 2026-04-10 結束，之後進入 code freeze |
-| **reference** | 外部資源位置 | Bug 追蹤在 Linear "BACKEND" project |
-
-## How to save
-
-**Step 1** — write memory file:
-
-```markdown
----
-name: {{memory name}}
-description: {{one-line description}}
-type: {{user|feedback|project|reference}}
----
-
-{{content}}
-```
-
-**Step 2** — add one-line pointer in `MEMORY.md` (index only, no content).
-
-Rules:
-- Check for existing memory before creating new ones — update instead of duplicate
-- Keep `MEMORY.md` under 200 lines
-- Remove outdated memories promptly
-
-## MEMORY.md
-
-Your MEMORY.md is currently empty. When you save new memories, they will appear here.
