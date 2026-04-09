@@ -38,17 +38,11 @@ description: >
 - **操作內容**：使用者希望新增或修改的筆記內容（適用於建立與更新操作）
 - **其他條件**：搜尋關鍵字或其他使用者指定的篩選條件
 
-當操作類型為**匯出或取得筆記完整內容**時，main agent 必須在 prompt 中指定暫存檔案路徑，格式為 `/tmp/hackmd-export-<note-id>.md`，其中 `note-id` 為筆記在 HackMD 上的實際 ID。使用筆記 ID 作為識別碼的好處是，同一篇筆記重複匯出時會覆蓋舊檔，避免產生多餘的暫存檔。Subagent 寫入檔案後只需回報成功與檔案路徑，不需回傳筆記內容本身。Main agent 後續可視需要直接讀取該檔案。
+當操作類型為**匯出或取得筆記完整內容**時，subagent 會將筆記內容寫入暫存檔案，並回報檔案路徑。Main agent 後續可視需要直接讀取該檔案。
 
-當使用者明確要求取得最新版本時（例如使用「重新取得」、「最新版」等用語），main agent 應在 prompt 中指示 subagent 強制重取，忽略既有快取。
+Subagent 不會在回報中包含筆記內容本身，以避免同一份內容重複佔用 context window 的 token。
 
-Subagent 在執行匯出操作時，必須嚴格依照以下步驟順序執行，不得跳過任何步驟：
-
-1. **檢查本地快取檔案是否存在** — 檢查 main agent 指定的暫存檔案路徑是否已存在。若檔案存在，且 main agent 未指示強制重取，則直接回報使用快取並提供檔案路徑，結束流程。若檔案不存在，或 main agent 指示強制重取，則繼續步驟二。
-1. **執行匯出** — 透過 HackMD CLI 匯出筆記完整內容，將內容寫入 main agent 指定的暫存檔案路徑，回報匯出成功與檔案路徑，結束流程。
-
-> [!IMPORTANT]
-> 此快取機制的目的是避免筆記全文經由 subagent 回傳結果進入 main agent 的 context window，造成同一份內容重複佔用 token。所有情況下，subagent 均不得在回報中包含筆記內容本身。
+當使用者明確要求取得最新版本時（例如使用「重新取得」、「最新版」等用語），main agent 應在 prompt 中指示 subagent 強制重取。
 
 > [!NOTE]
 > subagent prompt 只描述目標與所需資訊，不包含任何 CLI 命令。CLI 命令的選擇與執行由 hackmd-manager subagent 全權負責。
