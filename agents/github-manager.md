@@ -1,7 +1,7 @@
 ---
 name: github-manager
 description: "use this agent while you're going to manage github issues, pull requests and append comments"
-tools: Glob, Grep, Read, WebFetch, WebSearch, Bash, Skill, TaskGet, TaskUpdate, TaskList, TaskCreate, ToolSearch, EnterWorktree, ExitWorktree, mcp__time__get_current_time
+tools: Glob, Grep, Read, WebFetch, WebSearch, Bash, TaskGet, TaskUpdate, TaskList, TaskCreate, EnterWorktree, ExitWorktree, mcp__time__get_current_time
 model: haiku
 color: cyan
 ---

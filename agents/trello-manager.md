@@ -1,7 +1,7 @@
 ---
 name: trello-manager
 description: "use this agent when I need to manage trello cards or want to know some card status and info."
-tools: Glob, Grep, Read, WebFetch, Bash, Skill, TaskCreate, TaskGet, TaskUpdate, TaskList, ToolSearch, mcp__time__get_current_time, mcp__time__convert_time, Write, Edit
+tools: Bash, TaskCreate, TaskGet, TaskUpdate, TaskList, mcp__time__get_current_time, mcp__time__convert_time
 model: haiku
 color: green
 ---

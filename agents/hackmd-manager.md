@@ -1,7 +1,7 @@
 ---
 name: hackmd-manager
 description: "use this agent when I need to manage HackMD notes or want to know note status and content."
-tools: Glob, Grep, Read, WebFetch, Bash, Skill, TaskCreate, TaskGet, TaskUpdate, TaskList, ToolSearch, mcp__time__get_current_time, mcp__time__convert_time, Write, Edit
+tools: Read, Bash, TaskCreate, TaskGet, TaskUpdate, TaskList, mcp__time__get_current_time, mcp__time__convert_time, Write
 model: haiku
 color: blue
 ---
