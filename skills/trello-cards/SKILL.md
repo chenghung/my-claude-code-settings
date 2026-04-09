@@ -8,13 +8,12 @@ description: >
 
 - [目標](#目標)
 - [觸發情境](#觸發情境)
-- [URL 解析規則](#url-解析規則)
 - [禁止行為](#禁止行為)
 - [執行方式](#執行方式)
 
 ## 目標
 
-此 skill 負責將所有 Trello 相關操作轉交給 trello-manager subagent 處理。Main agent 本身不直接執行任何 Trello CLI 命令，只負責解析使用者意圖並將資訊傳遞給 subagent。
+此 skill 負責將所有 Trello 相關操作轉交給 trello-manager subagent 處理。Main agent 只負責觸發判斷與委派，不進行任何邏輯處理。
 
 ## 觸發情境
 
@@ -23,18 +22,6 @@ description: >
 - 使用者訊息中出現 `Trello` 或 `trello` 關鍵字
 - 使用者貼上 `trello.com` 的 URL
 - 使用者要求對 Trello cards 執行以下任一操作：查詢、建立、更新、刪除、留言、搬移
-
-## URL 解析規則
-
-當使用者提供 trello.com URL 時，main agent 需先從 URL 中提取 card short ID，再將其傳給 trello-manager subagent。
-
-Trello card URL 的格式如下：
-
-```text
-https://trello.com/c/{shortLink}/{slug}
-```
-
-其中 `shortLink` 即為 card ID，`slug` 為選擇性的 card 標題文字。例如 `https://trello.com/c/abc123/some-card-title` 中，card ID 為 `abc123`。
 
 ## 禁止行為
 
@@ -57,7 +44,7 @@ https://trello.com/c/{shortLink}/{slug}
 傳給 trello-manager subagent 的 prompt 需包含以下內容：
 
 - **操作類型**：使用者要執行的動作（查詢、建立、更新、刪除、留言、搬移等）
-- **Card ID**：若使用者提供了 URL，附上已解析的 card short ID
+- **Card URL**：若使用者提供了 trello.com URL，將原始 URL 直接傳給 subagent，由 subagent 負責解析
 - **Board 名稱**：若使用者有指定操作目標的 board
 - **操作內容**：使用者希望新增或修改的 card 內容（適用於建立與更新操作）
 
