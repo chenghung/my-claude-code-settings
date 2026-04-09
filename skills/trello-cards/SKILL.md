@@ -7,21 +7,12 @@ description: >
 # Trello Cards
 
 - [目標](#目標)
-- [觸發情境](#觸發情境)
 - [禁止行為](#禁止行為)
 - [執行方式](#執行方式)
 
 ## 目標
 
 此 skill 負責將所有 Trello 相關操作轉交給 trello-manager subagent 處理。Main agent 只負責觸發判斷與委派，不進行任何邏輯處理。
-
-## 觸發情境
-
-符合以下任一條件時，此 skill 即應被觸發：
-
-- 使用者訊息中出現 `Trello` 或 `trello` 關鍵字
-- 使用者貼上 `trello.com` 的 URL
-- 使用者要求對 Trello cards 執行以下任一操作：查詢、建立、更新、刪除、留言、搬移
 
 ## 禁止行為
 
