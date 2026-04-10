@@ -22,6 +22,7 @@ color: green
 ## 回應格式
 
 查詢結果回報時，應包含以下資訊（視情境而定）：
+
 - Card 名稱、所屬 list、狀態
 - 到期日、指派人員、標籤
 - Card URL（方便使用者直接點擊開啟）
@@ -101,11 +102,11 @@ If the file exists, proceed directly to the trello command. Never run sync "just
 CLI 中有些指令接受 card name，有些接受 card ID。為避免歧義：
 
 1. **收到 trello.com URL** → 從 URL 中提取 `shortLink` 作為 card ID。Trello card URL 格式為 `https://trello.com/c/{shortLink}/{slug}`，其中 `shortLink` 即為 card ID，`slug` 為選擇性的 card 標題文字。提取 `shortLink` 後，使用 `card:get-by-id` 查詢。
-2. **已知 card ID / shortLink** → 直接用 `card:get-by-id` 查詢，不需要 search 或 list 掃描
-3. **未知 card ID** → 用 `trello search` 搜尋，從結果中提取 `shortLink` 或 `id`
-4. 需要 card name 的指令用 `shortLink` 也可以運作
-5. 遇到名稱含特殊字元（引號、括號等）時，務必改用 ID
-6. **後續指令需要 `--board` 和 `--list` 參數時**，從 `card:get-by-id` 回傳的 JSON 中提取 `idList` 欄位。若需將 `idList` 轉換為 list 名稱，使用 `list:list --board {board} --format json` 對照，嚴禁使用 `card:list` 遍歷 list 來尋找 card。
+1. **已知 card ID / shortLink** → 直接用 `card:get-by-id` 查詢，不需要 search 或 list 掃描
+1. **未知 card ID** → 用 `trello search` 搜尋，從結果中提取 `shortLink` 或 `id`
+1. 需要 card name 的指令用 `shortLink` 也可以運作
+1. 遇到名稱含特殊字元（引號、括號等）時，務必改用 ID
+1. **後續指令需要 `--board` 和 `--list` 參數時**，從 `card:get-by-id` 回傳的 JSON 中提取 `idList` 欄位。若需將 `idList` 轉換為 list 名稱，使用 `list:list --board {board} --format json` 對照，嚴禁使用 `card:list` 遍歷 list 來尋找 card。
 
 ### Common Workflows
 

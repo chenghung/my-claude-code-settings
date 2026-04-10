@@ -61,16 +61,16 @@ Every time you receive an editing task, follow these steps in order. Use `TaskCr
 ## Formatting Rules
 
 1. Use **ATX-style headings** (`#`), not underline style.
-2. Unordered list marker: always **`-`** — never mix with `*` or `+`.
-3. Ordered list: always **`1.`** for every item (let the renderer auto-number).
-4. Emphasis: **`**bold**`** and **`*italic*`** — never use `__` or `_`.
-5. Leave **one blank line before and after** every heading.
-6. Nested lists: indent with **2 spaces** — do not mix 2/4 space indentation.
-7. Do **not hard-wrap lines** — let the editor/renderer handle soft wrap.
-8. Files must end with **exactly one trailing newline**.
-9. Horizontal rules: use `---` only for topic transitions **within** a section that do not warrant a new heading. Never use `---` as a substitute for headings.
-10. Do **not** add emoji unless the user explicitly requests it. Prefer **bold**, GFM Alerts, or `kbd` for emphasis.
-11. When markdown special characters (`*`, `_`, `|`, `` ` ``, etc.) appear as literal text, escape them with `\`.
+1. Unordered list marker: always **`-`** — never mix with `*` or `+`.
+1. Ordered list: always **`1.`** for every item (let the renderer auto-number).
+1. Emphasis: **`**bold**`** and **`*italic*`** — never use `__` or `_`.
+1. Leave **one blank line before and after** every heading.
+1. Nested lists: indent with **2 spaces** — do not mix 2/4 space indentation.
+1. Do **not hard-wrap lines** — let the editor/renderer handle soft wrap.
+1. Files must end with **exactly one trailing newline**.
+1. Horizontal rules: use `---` only for topic transitions **within** a section that do not warrant a new heading. Never use `---` as a substitute for headings.
+1. Do **not** add emoji unless the user explicitly requests it. Prefer **bold**, GFM Alerts, or `kbd` for emphasis.
+1. When markdown special characters (`*`, `_`, `|`, `` ` ``, etc.) appear as literal text, escape them with `\`.
 
 ## Links and References
 
@@ -124,7 +124,7 @@ Every time you receive an editing task, follow these steps in order. Use `TaskCr
 External URLs must be organized into two categories based on whether the body text references them:
 
 1. **Footnoted links** — external URLs referenced inline in the body via `[^identifier]`. Place their definitions at the end of the file (no heading needed; the renderer handles display).
-2. **Non-footnoted links** — external URLs not referenced inline but relevant as supplementary reading. Place them in a `## References` section at the end of the file, before the footnote definitions, using a standard list with titled links:
+1. **Non-footnoted links** — external URLs not referenced inline but relevant as supplementary reading. Place them in a `## References` section at the end of the file, before the footnote definitions, using a standard list with titled links:
 
 ```markdown
 ## References
@@ -143,8 +143,8 @@ If all external links are footnoted, omit the "References" section. If none are 
 After every edit, verify all external links in the document:
 
 1. Check each footnote definition — if its `[^identifier]` is **no longer referenced** in the body, move the link to the "References" list section.
-2. Check each link in "References" — if the body now references it via `[^identifier]`, convert it to a footnote definition and remove it from the list.
-3. Remove any **duplicate URLs** that appear in both places.
+1. Check each link in "References" — if the body now references it via `[^identifier]`, convert it to a footnote definition and remove it from the list.
+1. Remove any **duplicate URLs** that appear in both places.
 
 ### Strikethrough
 

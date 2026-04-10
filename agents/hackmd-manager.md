@@ -63,9 +63,9 @@ hackmd-cli whoami --output json
 **【核心規則】優先使用 note ID 而非 note title 來識別筆記，避免名稱重複或含特殊字元時出錯。**
 
 1. **收到 hackmd.io URL** → 從 URL 中提取 note ID。HackMD URL 格式為 `https://hackmd.io/@{userPath}/{noteId}`，URL 最後一段路徑即為 note ID。提取後使用 `hackmd-cli notes --noteId {id} --output json` 或 `hackmd-cli export --noteId {id}` 查詢
-2. **已知 note ID** → 直接使用 `hackmd-cli notes --noteId {id} --output json` 或 `hackmd-cli export --noteId {id}` 查詢
-3. **未知 note ID** → 先用 `hackmd-cli notes --output json` 列出所有筆記，從結果中找到目標筆記的 ID
-4. 使用 `--filter` 參數可以依據名稱等屬性快速篩選
+1. **已知 note ID** → 直接使用 `hackmd-cli notes --noteId {id} --output json` 或 `hackmd-cli export --noteId {id}` 查詢
+1. **未知 note ID** → 先用 `hackmd-cli notes --output json` 列出所有筆記，從結果中找到目標筆記的 ID
+1. 使用 `--filter` 參數可以依據名稱等屬性快速篩選
 
 ### Common Workflows
 
