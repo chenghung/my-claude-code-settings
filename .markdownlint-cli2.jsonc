@@ -1,0 +1,78 @@
+{
+  // markdownlint-cli2 configuration for my-claude-code-settings
+  // Mirrors the formatting rules defined in agents/markdown-editor.md
+  // Keep this file in sync whenever the subagent's formatting rules change
+
+  "config": {
+    // Start from the full default rule set, then customize below
+    "default": true,
+
+    // MD003 - Heading style must be ATX (# Heading), not Setext (underline)
+    "MD003": { "style": "atx" },
+
+    // MD004 - Unordered list marker must always be "-"
+    "MD004": { "style": "dash" },
+
+    // MD007 - Unordered list indent is 2 spaces (not 4)
+    "MD007": { "indent": 2 },
+
+    // MD013 - Disable line length check (no hard wrap enforcement)
+    "MD013": false,
+
+    // MD024 - Allow duplicate headings only if they are not siblings
+    //         (e.g., same "## Usage" appearing under different H1 sections is fine)
+    "MD024": { "siblings_only": true },
+
+    // MD029 - Ordered list items must all use "1." prefix
+    "MD029": { "style": "one" },
+
+    // MD033 - Restrict inline HTML to the semantic tags allowed by our rules
+    "MD033": {
+      "allowed_elements": [
+        "details",
+        "summary",
+        "br",
+        "sub",
+        "sup",
+        "kbd"
+      ]
+    },
+
+    // MD035 - Horizontal rule must be "---"
+    "MD035": { "style": "---" },
+
+    // MD040 - Fenced code blocks must declare a language tag
+    //         (empty tag is disallowed; use "text" for plain-text content)
+    "MD040": {},
+
+    // MD041 - Disabled: subagent files use YAML frontmatter followed by prose,
+    //         not an H1 heading. The frontmatter's "name" field acts as the title.
+    "MD041": false,
+
+    // MD046 - Code blocks must always be fenced (no indented code blocks)
+    "MD046": { "style": "fenced" },
+
+    // MD048 - Code fence style must be backticks
+    "MD048": { "style": "backtick" },
+
+    // MD049 - Italic emphasis must use "*" (not "_")
+    "MD049": { "style": "asterisk" },
+
+    // MD050 - Bold emphasis must use "**" (not "__")
+    "MD050": { "style": "asterisk" }
+  },
+
+  // Glob patterns for files to lint when running without explicit file args
+  "globs": [
+    "**/*.md"
+  ],
+
+  // Patterns to skip — never descend into these directories
+  "ignores": [
+    "node_modules/**",
+    "vendor/**",
+    ".git/**",
+    "dist/**",
+    "build/**"
+  ]
+}
