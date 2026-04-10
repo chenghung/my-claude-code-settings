@@ -62,10 +62,11 @@
     "MD050": { "style": "asterisk" }
   },
 
-  // Glob patterns for files to lint when running without explicit file args
-  "globs": [
-    "**/*.md"
-  ],
+  // Note: no "globs" field is defined on purpose.
+  // When globs is set, markdownlint-cli2 merges it with command-line arguments,
+  // causing a full-repo scan even when only a single file is passed.
+  // Omitting globs means the tool only lints the files you explicitly pass,
+  // which is what the markdown-editor subagent's per-file verification loop needs.
 
   // Patterns to skip — never descend into these directories
   "ignores": [
