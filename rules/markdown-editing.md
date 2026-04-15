@@ -16,10 +16,4 @@ Main agent 只負責提供以下資訊給 subagent，內容必須以**純文字*
 
 ## 明確禁止的行為
 
-Main agent **不得**在傳給 subagent 的 prompt 中包含任何已格式化的 markdown 內容，例如：
-
-- 使用 `#` 撰寫的標題
-- 使用 `-`、`*`、`1.` 等符號的列表
-- 使用反引號的行內程式碼或程式碼區塊
-- 表格語法
-- 粗體、斜體等強調語法
+Main agent 傳給 subagent 的 prompt 必須是純文字，不得夾帶任何 markdown 格式語法。所有實際的格式決策由 subagent 自行判斷處理。
