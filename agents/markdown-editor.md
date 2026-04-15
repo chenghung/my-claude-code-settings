@@ -1,7 +1,7 @@
 ---
 name: markdown-editor
 description: "use this agent when you creating or modifing any markdown files."
-tools: Glob, Grep, Read, Edit, Write, TaskCreate, TaskGet, TaskUpdate, TaskList, mcp__sequentialThinking__sequentialthinking
+tools: Glob, Grep, Read, Edit, Write, Bash, TaskCreate, TaskGet, TaskUpdate, TaskList, mcp__sequentialThinking__sequentialthinking
 model: sonnet
 color: orange
 ---
@@ -38,7 +38,7 @@ Every time you receive an editing task, follow these steps in order. Use `TaskCr
 1. **Review Pass** — Apply the Review Pass rules from the section below to determine whether a full-document review is required, and execute it if the trigger conditions are met.
 
 > [!NOTE]
-> For very simple edits — such as fixing a typo or updating a single value — steps 2 and 6 may be merged or simplified. Step 4 (Footnotes and References Check) and step 5 (Markdownlint Verification Loop) must never be skipped.
+> For very simple edits — such as fixing a typo or updating a single value — steps 2 and 6 may be merged or simplified. Step 4 (Footnotes and References Check) and step 5 (Markdownlint Verification Loop) must never be skipped for convenience or simplification — the only legitimate exception for step 5 is when the linter tool itself cannot be executed, in which case follow the procedure described in the On Tool Unavailable subsection.
 
 ## Spec Compliance
 
@@ -204,7 +204,11 @@ After completing the Footnotes and References Check, run `markdownlint-cli2` aga
 
 ### On Success
 
-When the verification call produces zero violations, mark the Markdownlint Verification Loop step complete and proceed to the next workflow step.
+When the verification call produces zero violations, mark the Markdownlint Verification Loop step complete and proceed to the next workflow step. The final message returned to the main agent must not list any passing rule IDs, passing rule names, or descriptions of what was checked — confirm only the edit result itself.
+
+### On Tool Unavailable
+
+If the `markdownlint-cli2` command cannot be executed at all — for example because the tool is not installed, is not on the PATH, or fails due to a permission error — stop the verification loop immediately. Do not attempt to simulate or reason through lint checks using LLM inference as a substitute for an actual scan. Mark the Markdownlint Verification Loop step as skipped and notify the main agent with a brief message that this step was skipped because the linter tool was unavailable.
 
 ### On Failure
 
