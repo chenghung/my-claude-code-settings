@@ -79,7 +79,7 @@ Every generated script must follow this structure:
 
 ```bash
 #!/usr/bin/env bash
-set -euxo pipefail
+set -euo pipefail
 
 # ============================================================
 # 腳本用途：<describe what this script does in Traditional Chinese>
