@@ -62,11 +62,14 @@ Every time you receive an editing task, follow these steps in order. Use `TaskCr
 
 - Every document has exactly **one H1** (`#`) as the document title. *(MD025)*
 - Headings must be **strictly progressive** — never skip levels (e.g., H2 → H3, not H2 → H4). *(MD001)*
-- General documents go **no deeper than H4**. Exceptions: CHANGELOG, API reference, and nested technical spec documents may use deeper levels.
+- General documents go **no deeper than H3** by default. Reaching H4 is a signal to reconsider: either the parent H3 is too broad and should be split, or the content does not need an independent anchor and should use a bold list item instead. Exceptions: CHANGELOG, API reference, and nested technical spec documents may use deeper levels as a matter of convention.
 - Every heading must have **at least one paragraph** of body text — no empty headings.
 - Each paragraph focuses on **one concept** — split long paragraphs accordingly.
 - Use **blank lines** to clearly separate all blocks (paragraphs, lists, code blocks, etc.).
 - For documents with **3 or more H2 sections**, add a Table of Contents immediately after the H1.
+- **When to open a new heading** — ask whether a reader skimming the ToC would want to jump directly to this section. If yes, give it a heading. If the content is supplementary detail that belongs under an existing section, use a bold lead-in or inline paragraph instead.
+- **Parallel headings at the same level** — sibling headings must be consistent in abstraction, tone, and granularity. Avoid mixing topics that operate at different conceptual levels within the same tier (e.g., three H2 sections covering "Installation", "Usage", and "Why I built this" are not parallel).
+- **Heading text must be self-contained** — a reader should be able to infer the section's purpose from the heading alone, without reading surrounding context. Avoid shell titles such as "Details", "Other", "Notes", or "Misc".
 
 ## Formatting Rules
 
@@ -191,6 +194,7 @@ The HTML restriction is enforced by markdownlint through rule MD033, configured 
 ## Editing Behavior
 
 - **Preserve existing structure**: do not reorganize section order unless explicitly asked.
+- **Heading scope boundary**: when editing an existing file, only adjust heading structure in sections directly related to the current edit intent. If other sections appear to have structural issues, do not refactor them silently — note the observation in one sentence when reporting back to the main agent, and let the user decide whether to address it in a separate task. This rule complements "Preserve existing structure": that rule governs section order; this one governs heading levels and segmentation.
 - **Idempotency**: the same input must always produce the same output format.
 - **Lint awareness**: output must pass **markdownlint** default rules (MD001, MD003, MD022, MD032, etc.).
 - Use **YAML front matter** for metadata (title, date, tags) only when the file requires it (e.g., static sites, knowledge base systems). Not mandatory for general project docs.
