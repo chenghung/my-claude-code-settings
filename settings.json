@@ -1,0 +1,103 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Bash(php:*)",
+      "Bash(composer:*)",
+      "Bash(./vendor/bin/phpstan:*)",
+      "Bash(./vendor/bin/pest:*)",
+      "Bash(./vendor/bin/phpunit:*)",
+      "Bash(./vendor/bin/phpcbf:*)",
+      "Bash(./vendor/bin/phpcs:*)",
+      "Bash(docker:*)",
+      "Bash(docker-compose:*)",
+      "Bash(kubectl get:*)",
+      "Bash(kubectl logs:*)",
+      "Bash(kubectl describe:*)",
+      "Bash(helm template:*)",
+      "Bash(gcloud:*)",
+      "Bash(python3:*)",
+      "Bash(curl:*)",
+      "Bash(ping:*)",
+      "Bash(ls:*)",
+      "Bash(tree:*)",
+      "Bash(test:*)",
+      "Bash(wc:*)",
+      "Bash(sort:*)",
+      "Bash(chmod:*)",
+      "Bash(cat:*)",
+      "Bash(find:*)",
+      "Bash(sed:*)",
+      "Bash(grep:*)",
+      "Bash(mkdir:*)",
+      "Bash(diff:*)",
+      "Bash(which:*)",
+      "Bash(date:*)",
+      "Bash(trello:*)",
+      "Bash(echo:*)",
+      "Bash(jq:*)",
+      "Bash(awk:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(cut:*)",
+      "Bash(tr:*)",
+      "Bash(tee:*)",
+      "Bash(xargs:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)",
+      "Bash(hackmd-cli:*)",
+      "Bash(terraform:*)",
+      "Bash(markdownlint-cli2:*)",
+      "Read(///**)",
+      "WebSearch",
+      "WebFetch(domain:*)",
+      "mcp__sequentialThinking__sequentialthinking",
+      "mcp__time__get_current_time",
+      "mcp__time__convert_time",
+      "mcp__ide__getDiagnostics",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs",
+      "Skill(planning-with-files:*)"
+    ],
+    "deny": [],
+    "defaultMode": "acceptEdits"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash -c 'COLUMNS=$(stty size </dev/tty 2>/dev/null | awk '\"'\"'{print $2}'\"'\"'); export COLUMNS=${COLUMNS:-200}; plugin_dir=$(ls -d \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"/plugins/cache/claude-hud/claude-hud/*/ 2>/dev/null | awk -F/ '\"'\"'{ print $(NF-1) \"\\t\" $(0) }'\"'\"' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | cut -f2-); exec \"/usr/bin/node\" \"${plugin_dir}dist/index.js\"'"
+  },
+  "enabledPlugins": {
+    "intelephense@claude-code-lsps": true,
+    "vtsls@claude-code-lsps": true,
+    "phpactor@claude-code-lsps": true,
+    "php-lsp@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true,
+    "github@claude-plugins-official": true,
+    "planning-with-files@planning-with-files": true,
+    "teams-channel-post-writer@daymade-skills": true,
+    "claude-hud@claude-hud": true,
+    "example-skills@anthropic-agent-skills": true,
+    "document-skills@anthropic-agent-skills": true,
+    "skill-creator@claude-plugins-official": true,
+    "warp@claude-code-warp": true
+  },
+  "extraKnownMarketplaces": {
+    "anthropic-agent-skills": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/skills"
+      }
+    },
+    "claude-code-warp": {
+      "source": {
+        "source": "github",
+        "repo": "warpdotdev/claude-code-warp"
+      }
+    }
+  },
+  "language": "Traditional Chinese",
+  "effortLevel": "medium",
+  "autoMemoryEnabled": false
+}
