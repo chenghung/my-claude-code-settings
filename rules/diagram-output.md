@@ -6,7 +6,7 @@
 - [使用 kroki.io 輸出 URL](#使用-krokiio-輸出-url)
 - [判斷流程](#判斷流程)
 
-在 CLI 終端機中，需要外部 renderer 才能顯示的圖表語法輸出到 stdout 後，使用者只會看到原始文字，無法看到圖形，純粹浪費 output token。本規則禁止此類語法直接出現在聊天訊息中，並規定應依情境改寫入 `.md` 檔案或產生 kroki.io URL 供使用者查看。
+在 CLI 終端機中，需要外部 renderer 才能顯示的圖表語法輸出到 stdout 後，使用者只會看到原始文字，無法看到圖形，純粹浪費 output token。本規則禁止此類語法直接出現在聊天訊息中，並規定應依情境改寫入 `.md` 檔案，或產生 kroki.io URL 後以 Google Chrome 直接開啟呈現給使用者。
 
 ## 適用語法
 
@@ -24,7 +24,7 @@
 禁止將上述語法直接輸出到聊天訊息（stdout）。若任務需要產生此類圖表，依使用情境選擇下列兩種方式之一：
 
 - **持久性圖表**：寫入正式 `.md` 檔案，依 `markdown-editing` rule 委派給 `markdown-editor` 或 `obsidian-md-editor` 處理；main agent 不得自行寫入。
-- **暫時性視覺化或需要在聊天中即時呈現**：產生 kroki.io 圖片 URL 提供給使用者點擊查看，不得直接將 DSL 原始碼輸出到 stdout。若同時需要保留 DSL 原始碼以供日後修改，依 `tmp-file-usage` rule 寫入工作區的 `.tmp` 目錄，並將 URL 一併回傳。
+- **暫時性視覺化或需要在聊天中即時呈現**：產生 kroki.io 圖片 URL 後，由 main agent 執行 `google-chrome-stable <URL> &` 並 disown，在背景直接開啟圖表，不得將 URL 原始字串貼到聊天訊息中。開啟後在訊息中簡短告知使用者「已用 Google Chrome 開啟圖表」即可。若同時需要保留 DSL 原始碼以供日後修改，依 `tmp-file-usage` rule 寫入工作區的 `.tmp` 目錄。若 `google-chrome-stable` 指令不可用或執行失敗，退回原本作法，將 URL 提供給使用者點擊查看。
 
 ## 允許情境
 
@@ -66,6 +66,13 @@ print(base64.urlsafe_b64encode(compressed).rstrip(b'=').decode())
 EOF
 ```
 
+產生完整 URL 後，使用以下指令在背景以 Google Chrome 開啟：
+
+```bash
+# Open the kroki.io URL in Google Chrome in the background
+google-chrome-stable "<URL>" & disown
+```
+
 ## 判斷流程
 
 收到需要產生圖表的任務時，依序判斷：
@@ -73,5 +80,5 @@ EOF
 1. 使用者明示要原始碼 → 允許直接輸出到 stdout
 1. 使用者要的是 ASCII 字元圖示 → 允許直接輸出到 stdout
 1. 需要持久保存的圖表 → 寫入 `.md` 檔案，依 `markdown-editing` rule 委派處理
-1. 僅需在聊天中即時呈現的圖表 → 產生 kroki.io URL 提供給使用者
+1. 僅需在聊天中即時呈現的圖表 → 產生 kroki.io URL 後以 `google-chrome-stable` 在背景開啟，不把 URL 貼到聊天訊息中；若指令不可用則退回提供 URL 給使用者
 1. 任何情況下都禁止把 mermaid、plantuml、d2、graphviz、tikz 等 DSL 原始碼以圖表為目的直接輸出到 stdout
