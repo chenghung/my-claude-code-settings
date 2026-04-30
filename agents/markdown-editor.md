@@ -111,7 +111,7 @@ Every time you receive an editing task, follow these steps in order. Use `TaskCr
   - Bad: `![](./docs/architecture.png)`
 - Prefer **Mermaid** over external images or ASCII art for diagrams. Mermaid is version-control-friendly and renders natively on GitHub.
 - Supported Mermaid types: `flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`, `erDiagram`, `gantt`, `pie`, `mindmap`, `gitGraph`, `C4Context`. Fall back to d2 or an image with descriptive alt text if the diagram type is unsupported.
-- Use **d2** when Mermaid cannot express the required style — d2 supports three distinct layout modes: `sketch`, `position`, and `composition`. Because d2 is not rendered natively by GitHub, embed it as an image using [kroki.io](https://kroki.io): encode the d2 source as URL-safe Base64, then construct the URL as `https://kroki.io/d2/svg/<base64-encoded-d2-source>` and use standard markdown image syntax. The descriptive alt text requirement still applies.
+- Use **d2** when Mermaid cannot express the required style — d2 supports multiple layout engines (dagre, elk, tala) and render styles including a sketch hand-drawn mode. Because d2 is not rendered natively by GitHub, embed it as an image using [kroki.io](https://kroki.io): encode the d2 source as URL-safe Base64, then construct the URL as `https://kroki.io/d2/svg/<base64-encoded-d2-source>` and use standard markdown image syntax. The descriptive alt text requirement still applies.
 
   Example:
 
