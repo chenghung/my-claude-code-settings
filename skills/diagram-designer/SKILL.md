@@ -166,15 +166,13 @@ Vega-Lite 採用 JSON declarative 語法，LLM 寫出正確 spec 的機率高，
 
 ## kroki.io 預覽 URL
 
-kroki.io 預覽 URL 是 skill 交付成果中即時呈現圖表的唯一管道。產出圖表草稿後，必須為其產生正確的 kroki.io URL；實際開啟動作由 main agent 依 `diagram-output` rule 執行，本 skill 只負責產出格式正確的 URL。此規定對五種服務皆適用，包含 Mermaid。
-
-URL 格式：
+kroki.io 是公開的圖表渲染服務，URL 格式如下：
 
 ```text
-https://kroki.io/<diagram_type>/svg/<encoded_source>
+https://kroki.io/<diagram_type>/<output_format>/<encoded_source>
 ```
 
-`diagram_type` 對應如下：
+`diagram_type` 對應表：
 
 | 服務 | diagram\_type |
 | --- | --- |
@@ -184,17 +182,37 @@ https://kroki.io/<diagram_type>/svg/<encoded_source>
 | Graphviz | `graphviz` |
 | Vega-Lite | `vegalite` |
 
-`encoded_source` 的正確編碼方式為：將原始碼先做 raw deflate 壓縮，再做 URL-safe base64 編碼。純 base64（未壓縮）對短內容偶爾可用但不可靠，必須使用 deflate + base64url。
+`output_format` 常用值為 `svg`（適合大多數場景）或 `png`（需要點陣圖時使用）。
 
-可直接套用的編碼指令：
+`encoded_source` 的編碼規範：先以 **zlib 壓縮**（deflate 加上 zlib header 與 adler32 checksum），再做 **base64 url-safe 編碼**（以 `-` 與 `_` 取代 `+` 與 `/`，去除 padding `=`）。
+
+> [!WARNING]
+> 不可使用一般的 URL percent-encoding（`%xx`）取代此流程。必須確實執行 zlib 壓縮再做 base64 url-safe 編碼，否則 kroki.io 無法正確解析內容。
+
+產生 `encoded_source` 的指令範例：
 
 ```bash
-echo -n "$SOURCE" | python3 -c "import sys,zlib,base64; print(base64.urlsafe_b64encode(zlib.compress(sys.stdin.buffer.read(),9)).decode())"
+# Use Python to zlib-compress and base64 url-safe encode the DSL source
+python3 -c "
+import sys, zlib, base64
+src = sys.stdin.read().encode('utf-8')
+compressed = zlib.compress(src)  # zlib-compress (deflate with header + adler32)
+print(base64.urlsafe_b64encode(compressed).rstrip(b'=').decode())
+" <<'EOF'
+<DSL 原始碼貼於此>
+EOF
 ```
 
-將圖表原始碼放進 `SOURCE` 環境變數或 heredoc，輸出即為可直接拼接到 URL 末端的 `encoded_source`。
+產生完整 URL 後，main agent 必須立即執行以下指令，在背景以 Google Chrome 開啟圖表：
 
-預覽 URL 不取代寫檔流程，最終仍須依 `markdown-editing` rule 將圖表寫入 `.md` 檔案。
+```bash
+# Open the kroki.io URL in Google Chrome in the background
+google-chrome-stable "<URL>" & disown
+```
+
+若 `google-chrome-stable` 不可用或執行失敗，才退回將 URL 直接提供給使用者點擊查看。任何情況下均不得僅在聊天訊息中展示原始 URL 而不嘗試開啟。
+
+預覽 URL 不取代寫檔流程，最終仍須將圖表寫入 `.md` 檔案。
 
 ## Reference 動態載入
 
