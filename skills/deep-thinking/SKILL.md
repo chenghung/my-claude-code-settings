@@ -31,7 +31,7 @@ Main agent 應依以下步驟處理：
 
 1. **初步拆解**：由 main agent 內部執行，輸出限制在 3 至 5 行條列，避免冗長自我對話。輸出必須包含：核心問題是什麼、關鍵未知清單、每個未知屬於哪一類解法（需要問使用者、需要深度分析、可以合理推斷）。
 1. **補齊 context**（條件式）：若步驟一列出的未知中有「必須問使用者才能回答」的項目，main agent 應透過 AskUserQuestion 工具一次提出 2 至 3 個最關鍵的問題，每個問題必須能實質改變分析結論，已能合理推斷的事不要問。若使用者在最初提問時已提供足夠 context，直接跳到步驟三。收到使用者回答後回到步驟一重新評估未知清單。
-1. **分流**：依據補齊後的 context 決定後續路徑。若未知已全部消解，main agent 直接回答不啟動 subagent。若仍存在需要深度分析的未知，依未知類型對照挑選 thinker subagent：根因不清或系統複雜對應 `decomposition-thinker`，假設可能錯或有盲點風險對應 `adversarial-thinker`，後果難料或取捨不明對應 `consequence-thinker`。**強制條款**：若決策屬於不可逆且代價高的類型，即使 main agent 認為已想清楚，仍必須至少啟動 `adversarial-thinker` 進行挑戰。
+1. **分流**：依據補齊後的 context 決定後續路徑。若未知已全部消解，main agent 直接回答不啟動 subagent。若仍存在需要深度分析的未知，依未知類型對照挑選 thinker subagent：根因不清或結構需拆解對應 `decomposition-thinker`，假設可能錯或有盲點風險對應 `adversarial-thinker`，後果難料或取捨不明對應 `consequence-thinker`，問題涉及元件互動、回饋迴路、累積與延遲效應，或要找最高槓桿介入點對應 `systems-thinker`。**強制條款**：若決策屬於不可逆且代價高的類型，即使 main agent 認為已想清楚，仍必須至少啟動 `adversarial-thinker` 進行挑戰。
 1. **彙整校準**：收齊所有 subagent 回報後，由 main agent 彙整並用思維模型做最終校準。
 
 ## Thinker Subagent 選用指引
@@ -41,9 +41,10 @@ Main agent 應依以下步驟處理：
 | `decomposition-thinker` | 拆解型 | 問題本質不清、需找根因、複雜系統需拆解 |
 | `adversarial-thinker` | 對抗型 | 需要找盲點、壓力測試決策、避免一廂情願、檢驗假設 |
 | `consequence-thinker` | 推演型 | 需要預測後果、評估取捨、跨領域借鑑 |
+| `systems-thinker` | 系統型 | 問題反覆發生、線性因果不足以解釋現象、需找回饋迴路與槓桿點 |
 
 > [!NOTE]
-> 不是每題都要三個全開，依問題性質挑選。例如「debug 找根因」主要用拆解型；「該不該換工作」需要拆解型加對抗型加推演型；「這個架構設計有問題嗎」用對抗型加推演型即可。
+> 不是每題都要全部開啟，依問題性質挑選。例如「debug 找根因」主要用拆解型；「該不該換工作」需要拆解型加對抗型加推演型；「這個架構設計有問題嗎」用對抗型加推演型即可；「為什麼這個 bug 修了又出現」用拆解型加系統型，因為單純拆解元件找不到反覆出現的真正結構性原因。
 
 ## 委派 Subagent 的 Prompt 要求
 
