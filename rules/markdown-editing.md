@@ -42,4 +42,4 @@ Main agent 傳給 subagent 的 prompt 必須是純文字，不得夾帶任何 ma
 
 單一編輯任務只應委派給其中一個 subagent，不得在同一次任務中交叉呼叫兩者。若任務跨越 Obsidian vault 與一般檔案（例如需要從一般 markdown 複製內容到 vault 筆記），應拆分為兩個獨立任務分別委派。
 
-**例外：在 Obsidian vault 中建立需要初始內容的新筆記。** 此場景依 `obsidian-management` rule 定義的協作流程，先由 `obsidian-md-editor` 將內容寫入工作區暫存檔，再由 `obsidian-manager` 讀取暫存檔並在 vault 內建立筆記。兩者分工明確——前者只負責寫暫存檔，後者只負責建立 vault 檔案——不違反互斥原則的精神。
+**例外：在 Obsidian vault 中建立需要初始內容的新筆記。** 此場景屬於互斥原則的例外，完整協作流程由 `obsidian-notes` skill 定義，main agent 觸發該 skill 後依其指引處理，本 rule 不重複描述細節。
