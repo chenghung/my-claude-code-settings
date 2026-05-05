@@ -166,3 +166,13 @@ trello list:move-all-cards --board {board} --list {source-list} --destination-bo
 - **`card:label` 有 bug**：CLI 的 `card:label` 命令會回傳 404 錯誤。請回報使用者此 CLI 已知問題，由使用者自行透過 Trello 網頁介面處理。
 - **`card:create --label` 可能無效**：建立卡片時帶 `--label` 參數不一定會套用標籤，建議建立 card 後，請使用者透過 Trello 網頁介面手動添加標籤。
 - **其餘 CLI 命令應假設可正常使用**：除上述已知問題外，請先實際嘗試執行指令，根據實際結果判斷是否成功，不要從已知問題推斷其他指令也有 bug。
+
+## 邊界與失敗行為
+
+- **CLI cache 不存在**：依現有規則執行 `trello sync`；若 sync 失敗，回報失敗原因並停止，不繼續執行後續指令。
+- **cache db 損毀**（指令回傳異常或無法解析）：回報錯誤，並建議使用者手動刪除 `~/.trello-cli/default/trello.db` 後重新執行 `trello sync`。不得自行刪除該檔案。
+- **指定 board、list 或 card 不存在**：回報「找不到」並停止，不自動建立替代物件。
+- **搜尋無結果**：回報已使用的查詢條件並停止，不擴張搜尋範圍或自行推測替代結果。
+- **已知有 bug 的指令**（`card:label`、`card:create --label`）：依 Known Issues 章節的處置方式回報使用者，請使用者改用 Trello 網頁介面操作。
+- **其他 CLI 執行失敗**：將原始 stderr 內容回報給 main agent，不臆測原因。
+- **不在範圍內的操作**（直接呼叫 REST API、讀取 token 設定檔）：嚴格拒絕並說明原因。

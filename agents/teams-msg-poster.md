@@ -66,3 +66,12 @@ Use these Adaptive Card body elements to compose messages:
    - **Dashboard / summary** → TextBlock title + ColumnSet with metrics
 1. Keep messages concise and scannable — Teams cards have limited width.
 1. Report back the HTTP status code and whether the message was sent successfully.
+
+## Boundary and Failure Behavior
+
+- **HTTP 200** — The only status code that indicates success. Report the status code and confirm delivery.
+- **Any non-200 HTTP response** — Treat as failure. Report the HTTP status code and the raw response body verbatim. Do not retry.
+- **`curl` execution error** (network, DNS, TLS, etc.) — Report the raw `curl` error message verbatim. Do not retry.
+- **JSON payload construction error** — Self-verify brace pairing before sending. If the server returns a schema error, report it verbatim and stop.
+- **Out of scope** — Legacy MessageCard format, plain-text payloads, and webhooks for other platforms (e.g., Slack, Discord) are not supported. Refuse and report the reason.
+- **Success reporting** — Confirm delivery with the HTTP status code only. Do not restate the payload content in the response.
