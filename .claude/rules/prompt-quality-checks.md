@@ -77,7 +77,7 @@ main agent 委派給 subagent 時，只描述目標與預期產出，不指定 s
 
 ### Subagent 交叉引用檢查
 
-確認 `agents/` 目錄下任何 subagent 定義檔案的內文中，沒有出現其他 subagent 的名稱或對其他 subagent 的引用。職責邊界的描述必須以問題類型表達，而非以其他 subagent 名稱表達。發現此類引用必須立即移除或改寫。
+確認 `agents/` 目錄下任何 subagent 定義檔案的內文中，沒有出現其他 subagent 的名稱或對其他 subagent 的引用。職責邊界的描述必須以問題類型表達，而非以其他 subagent 名稱表達。發現此類引用必須立即移除或改寫。對 `agents/` 目錄下的 subagent 定義檔執行合規檢查時，必須先觸發 `subagent-architect` skill 載入最新的 frontmatter 規格、mandatory/optional sections、命名規範、forbidden patterns 等判準，依該 skill 內容進行驗證；本 rule 不重複格式細節。
 
 ### 幻覺風險檢查
 
