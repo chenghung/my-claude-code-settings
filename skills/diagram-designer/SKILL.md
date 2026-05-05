@@ -184,24 +184,14 @@ https://kroki.io/<diagram_type>/<output_format>/<encoded_source>
 
 `output_format` 常用值為 `svg`（適合大多數場景）或 `png`（需要點陣圖時使用）。
 
-`encoded_source` 的編碼規範：先以 **zlib 壓縮**（deflate 加上 zlib header 與 adler32 checksum），再做 **base64 url-safe 編碼**（以 `-` 與 `_` 取代 `+` 與 `/`，去除 padding `=`）。
-
-> [!WARNING]
-> 不可使用一般的 URL percent-encoding（`%xx`）取代此流程。必須確實執行 zlib 壓縮再做 base64 url-safe 編碼，否則 kroki.io 無法正確解析內容。
-
-產生 `encoded_source` 的指令範例：
+`encoded_source` 必須透過本 skill 提供的 `scripts/kroki-encode.py` 產生，**禁止 LLM 自行手算或用其他方式編碼**（例如 URL percent-encoding 不可代用）。腳本以 stdin 接收 DSL 原始碼，stdout 輸出可直接拼進 URL 的字串：
 
 ```bash
-# Use Python to zlib-compress and base64 url-safe encode the DSL source
-python3 -c "
-import sys, zlib, base64
-src = sys.stdin.read().encode('utf-8')
-compressed = zlib.compress(src)  # zlib-compress (deflate with header + adler32)
-print(base64.urlsafe_b64encode(compressed).rstrip(b'=').decode())
-" <<'EOF'
-<DSL 原始碼貼於此>
-EOF
+# Pipe the DSL source into the encoder; capture stdout as encoded_source
+cat <DSL 檔案路徑> | python3 ~/.claude/skills/diagram-designer/scripts/kroki-encode.py
 ```
+
+腳本內部執行 zlib 壓縮 + base64 url-safe（去除 `=` padding），這是 kroki.io 唯一接受的編碼方式。腳本失敗（例如 Python 不可用）時，回報錯誤並停止，不嘗試替代編碼。
 
 產生完整 URL 後，main agent 必須立即執行以下指令，在背景以 Google Chrome 開啟圖表：
 
