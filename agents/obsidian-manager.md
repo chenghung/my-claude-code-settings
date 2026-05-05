@@ -67,50 +67,32 @@ Always parse the stdout content itself to determine whether an operation succeed
 
 ## Command Categories
 
+本表只列出最常用的核心指令。需要其他指令時，先執行 `obsidian --help` 取得指令清單，或執行 `obsidian <subcommand> --help` 查詢特定指令的參數。**不要憑記憶猜測未列在本表中的指令參數**。
+
 ### Lifecycle
 
-| Command | Purpose |
-| --- | --- |
-| `create` | Create a new note |
-| `rename` | Rename a note (available from v1.12.2) |
-| `move` | Move a note to a different folder |
-| `delete` | Delete a note (add `permanent` to bypass the trash; default sends to trash) |
+- `create` — 建立新筆記。常用參數：`name=<title>`、`path=<relative-path>`、`content=<text>`、`template=<name>`、`overwrite`。
+- `rename` — 重新命名筆記（v1.12.2 起可用）。用 `file=` 或 `path=` 指定來源，用 `name=` 指定新名稱。
+- `move` — 移動筆記到其他資料夾。用 `file=` 或 `path=` 指定來源，用 `to=` 指定目標路徑。
+- `delete` — 刪除筆記，預設移至垃圾桶；加上 `permanent` flag 則直接永久刪除，不可恢復。
 
 #### CLI Examples
 
 ```bash
-# Minimal create — note title only
-obsidian create name="My New Note"
+# Create with inline content
+obsidian create name="Meeting" content="# Agenda\n\n- Item 1"
 
-# Create at a specific vault-relative path
-obsidian create path="Projects/2026/Kickoff.md"
-
-# Create with inline initial content
-obsidian create name="Meeting" content="# Agenda\n\n- Item 1\n- Item 2"
-
-# Create with content read from a temp file
+# Create with content from a temp file
 obsidian create name="Topic" content="$(cat .tmp/topic.md)"
 
-# Create from a template
-obsidian create name="Daily Log" template="daily-template"
-
-# Create and overwrite if the note already exists
+# Create from a template and overwrite if exists
 obsidian create name="Daily Log" template="daily-template" overwrite
 
-# Rename by note name
+# Rename a note
 obsidian rename file="Old Title" name="New Title"
 
-# Rename by vault-relative path
-obsidian rename path="Projects/old.md" name="new"
-
-# Move to a folder
-obsidian move file="My Note" to="Archive"
-
-# Move and place at a new path (effectively move + rename)
+# Move a note
 obsidian move path="Inbox/note.md" to="Projects/2026/note.md"
-
-# Delete — sends to trash by default
-obsidian delete file="Old Note"
 
 # Delete permanently, bypassing trash
 obsidian delete path="Archive/obsolete.md" permanent
@@ -118,72 +100,62 @@ obsidian delete path="Archive/obsolete.md" permanent
 
 ### Daily Notes
 
-| Command | Purpose |
-| --- | --- |
-| `daily` | Open or create today's daily note |
-| `daily:path` | Retrieve the vault-relative path of a daily note |
-| `daily:read` | Read the contents of a daily note |
-| `daily:append` | Append content to a daily note |
-| `daily:prepend` | Prepend content to a daily note |
+- `daily` — 開啟或建立今日的 daily note。
+- `daily:append` — 在指定日期的 daily note 末尾追加內容；用 `content=<text>` 指定內容，省略日期則預設為今天。
+
+其他變體（`daily:read`、`daily:prepend`、`daily:path`）需要時用 `obsidian daily --help` 查詢。
 
 ### Full-text Search
 
-| Command | Purpose |
-| --- | --- |
-| `search` | Search note contents by query string |
-| `search:context` | Search with surrounding context lines |
+- `search` — 全文搜尋。參數：
+  - `query=<text>`（必要）
+  - `path=<folder>`（限定搜尋資料夾）
+  - `limit=<n>`（限制回傳結果數）
+  - `total`（只回傳命中總數，不列出個別結果）
+  - `case`（區分大小寫）
+  - `format=text|json`
+
+- `search:context` — 同 `search`，但每個命中行額外附帶前後 context 行；參數同 `search`（不含 `total`）。
+
+- `search:open` — 在 Obsidian app 中開啟搜尋面板；參數 `query=<text>`。
+
+```bash
+# Count matches first before deciding on limit
+obsidian search query="API design" total
+
+# Search within a folder, return JSON for jq processing
+obsidian search query="TODO" path="Projects" format=json
+
+# Search with surrounding context, case-sensitive
+obsidian search:context query="deprecated" case format=json | jq '.results'
+
+# Open Obsidian search panel
+obsidian search:open query="meeting notes"
+```
+
+> [!TIP]
+> 查詢類操作預設加 `format=json`，配合 `jq` 解析。不確定結果規模時先加 `total` 取得命中數，再決定是否加 `limit`。
 
 ### Metadata
 
-| Command | Purpose |
-| --- | --- |
-| `tags` | List all tags across the vault |
-| `tag` | List tags on a specific note |
-| `tags:rename` | Rename a tag vault-wide |
-| `properties` | List all property keys across the vault |
-| `property:set` | Set a frontmatter property on a note |
-| `property:remove` | Remove a frontmatter property from a note |
-| `property:read` | Read a specific frontmatter property value |
-| `aliases` | List or manage note aliases |
+- `property:set` — 設定筆記的 frontmatter 屬性。
+- `property:read` — 讀取筆記的特定 frontmatter 屬性值。
+- `tags` — 列出整個 vault 的所有 tag。
+
+其他指令（`tags:rename`、`property:remove`、`properties`、`aliases`）需要時用 `obsidian property --help` 或 `obsidian tags --help` 查詢。
 
 ### Link Queries
 
-| Command | Purpose |
-| --- | --- |
-| `backlinks` | List notes that link to a given note |
-| `links` | List outgoing links from a note |
-| `unresolved` | List unresolved wikilinks in the vault |
-| `orphans` | List notes with no incoming or outgoing links |
-| `deadends` | List links that point to non-existent notes |
+- `backlinks` — 列出連結到指定筆記的所有反向連結。
+
+其他（`links`、`unresolved`、`orphans`、`deadends`）需要時用 `obsidian --help | grep -i link` 查詢。
 
 ### Structural
 
-| Command | Purpose |
-| --- | --- |
-| `outline` | Retrieve the heading structure of a note |
-| `files` | List files in the vault or a folder |
-| `folders` | List all folders in the vault |
-| `folder` | Inspect or operate on a specific folder |
-| `file` | Inspect metadata for a specific file |
+- `files` — 列出 vault 或指定資料夾內的檔案。
+- `folder` — 檢視指定資料夾的內容與資訊。
 
-### Task Queries
-
-| Command | Purpose |
-| --- | --- |
-| `tasks` | List all checkbox-style todos across the vault |
-| `task` | List todos within a specific note |
-
-### Templates
-
-| Command | Purpose |
-| --- | --- |
-| `templates` | List available templates |
-| `template:read` | Read the contents of a template |
-| `template:insert` | Insert a template into a note |
-
-### Supplementary Commands
-
-Use `bookmarks`, `workspaces`, and `tabs` only when the main agent explicitly requests them.
+其他（`folders`、`file`、`outline`）需要時用 `obsidian --help` 查詢。
 
 ## File Identification
 
