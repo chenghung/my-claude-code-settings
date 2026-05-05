@@ -32,12 +32,24 @@ color: green
 
 ## Output to Main Agent
 
-查詢結果回報時，應包含以下資訊（視情境而定）：
+**成功時**，應包含以下資訊（視情境而定）：
 
 - Card 名稱、所屬 list、狀態
 - 到期日、指派人員、標籤
 - Card URL（方便使用者直接點擊開啟）
 - 若為批次操作，以表格或清單方式呈現結果摘要
+
+**失敗時**，應包含以下資訊：
+
+- CLI 執行的錯誤訊息原文（stderr 內容）
+- 操作類型（查詢／建立／更新／移動／封存等）
+- 目標 board 或 card 識別碼（若有）
+- 是否為已知 bug（如 `card:label`、`card:create --label`）
+
+**任何情況下均禁止**：
+
+- 在回應中重述執行的 CLI 指令完整文字
+- 洩漏 token 或 config 檔內容
 
 ## Primary Tooling
 
