@@ -46,6 +46,8 @@ Main agent 應依以下步驟處理：
 | `adversarial-thinker` | 對抗型 | 需要找盲點、壓力測試決策、避免一廂情願、檢驗假設 |
 | `consequence-thinker` | 推演型 | 需要預測後果、評估取捨、跨領域借鑑 |
 | `systems-thinker` | 系統型 | 問題反覆發生、線性因果不足以解釋現象、需找回饋迴路與槓桿點 |
+| `first-principles-thinker` | 重建型 | 需要質疑普遍但未驗證的前提、打破慣性沿襲、跳脫類比重新定義問題、計算物理下限與現狀差額 |
+| `perspective-thinker` | 視角型 | 決策涉及多方角色、需從使用者或維護者或攻擊者視角檢視、跨團隊變革、避免忽略人因素 |
 
 ### 常見組合範式
 
@@ -53,12 +55,17 @@ Main agent 應依以下步驟處理：
 - **問題排查**（如「為什麼這個 bug 反覆出現」）：decomposition → systems。單純拆解元件找不到反覆出現的真正結構性原因，需要系統型補足回饋迴路的分析。
 - **方案壓測**（如「這個架構設計有問題嗎」）：adversarial → consequence。問題框架已清楚，重點在找盲點與評估決策後果。
 - **單純根因分析**（如「debug 找原因」）：decomposition 為主，確認問題涉及元件互動或延遲效應時加 systems。
+- **產品或介面決策**（如「這個 API 設計合適嗎」「這個變更會不會嚇到使用者」）：perspective → adversarial → consequence。適用於同時需要從多角色視角檢視、再壓測風險、最後評估後果的情境。
+- **打破慣性的技術選型**（如「我們真的需要這個框架嗎」「為什麼大家都這樣做」）：first-principles → consequence。適用於懷疑既有方案是慣性沿襲、需要先重建問題定義再評估後果的場合。
+- **跨團隊或組織變革**（如「該不該推這個流程改變」）：perspective → consequence → adversarial。適用於影響多個團隊、需先盤點誰受影響、再評估長期後果、最後壓測抵抗風險。
 
 ### 自由組合
 
 若問題不符合上述任何範式，main agent 應依「各 thinker 適用情境」表自行判斷需要哪些 thinker、以什麼順序執行。不要為了套用範式而硬湊不需要的 thinker。
 
 **強制條款**：若決策屬於不可逆且代價高的類型，即使 main agent 認為已想清楚，仍必須至少啟動 `adversarial-thinker` 進行挑戰。
+
+**強制條款**：若決策影響多方角色、跨團隊、或涉及最終使用者體驗，即使 main agent 認為已從各角度想過，仍必須至少啟動 `perspective-thinker` 進行視角分析。
 
 ## 委派 Subagent 的 Prompt 要求
 
