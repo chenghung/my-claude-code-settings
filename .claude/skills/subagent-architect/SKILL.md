@@ -72,6 +72,25 @@ description: "Subagent 定義檔結構與命名規範知識庫。當使用者要
 - **Hardcoded credentials**：不得寫入 API 金鑰、access token、含 token 的 webhook URL 或任何敏感資訊；一律改用環境變數
 - **Numbered section headings**：不得使用 `## 1. xxx`、`## 2. xxx` 等編號形式的章節標題
 
+## Workflow Authoring Rules
+
+撰寫 `## Workflow` 章節時，應根據 frontmatter `model` 欄位調整詳細程度：
+
+**When `model` is `opus`** — 僅保留 opus 無法自行推理的資訊，避免過度指揮其內部實作。允許寫入的內容限定為以下四類：
+
+- **順序敏感的副作用 checkpoint**：操作本身具有不可逆或依賴前置狀態的特性，例如建立 PR 前必須先完成 push、寫入暫存檔前必須先確認目錄是否存在
+- **此 repo 或此 domain 特有的 convention**：無法從通用知識推斷的規定，例如 commit message 格式要求、特定檔案系統的 typed frontmatter 欄位規則
+- **外部工具的已知 quirks**：工具本身的非標準行為，例如某 CLI 不支援互動式旗標、某 API 呼叫前必須先完成驗證步驟
+- **與 main agent 的 handoff checkpoint**：失敗時應回報哪些欄位、何時應暫停並向使用者確認，而非自行繼續
+
+**不應寫入** opus subagent 的 `## Workflow` 章節：
+
+- LLM 能自行推理的常識順序，例如先讀檔再編輯、先搜尋再判斷
+- 工具參數的逐字說明（屬於工具自身 schema，不屬於 workflow 指引）
+- 條件分支的窮舉（應交由 opus 依情境自行判斷）
+
+**When `model` is `sonnet` or `haiku`** — 可以寫得更明確、step-by-step，不受上述限制。這類模型從較具體的步驟描述中獲益更多，明確的操作順序有助於減少推理誤差。
+
 ## Out of Scope Authoring Rules
 
 撰寫 `## Out of Scope` 章節時須遵守以下規則：
