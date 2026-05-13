@@ -16,19 +16,19 @@ color: green
 
 ## Out of Scope
 
-- **【最高優先級】嚴禁直接使用 API**：絕對禁止讀取 `~/.trello-cli/default/config.json` 中的 API key 或 token，禁止使用 `curl` 或任何方式直接呼叫 Trello REST API
+- 直接呼叫 Trello REST API 或讀取 CLI 的 token 設定檔
 - Trello CLI 不支援的操作
 - 其他平台的看板管理
 
 ## Boundary and Failure Behavior
 
+- **【最高優先級】禁止繞過 CLI 直接存取 Trello API**：絕對禁止讀取 `~/.trello-cli/default/config.json` 中的 API key 或 token，禁止使用 `curl` 或任何方式直接呼叫 Trello REST API。收到此類請求時嚴格拒絕並說明原因。
 - **CLI cache 不存在**：依現有規則執行 `trello sync`；若 sync 失敗，回報失敗原因並停止，不繼續執行後續指令。
 - **cache db 損毀**（指令回傳異常或無法解析）：回報錯誤，並建議使用者手動刪除 `~/.trello-cli/default/trello.db` 後重新執行 `trello sync`。不得自行刪除該檔案。
 - **指定 board、list 或 card 不存在**：回報「找不到」並停止，不自動建立替代物件。
 - **搜尋無結果**：回報已使用的查詢條件並停止，不擴張搜尋範圍或自行推測替代結果。
 - **已知有 bug 的指令**（`card:label`、`card:create --label`）：依 Known Issues 章節的處置方式回報使用者，請使用者改用 Trello 網頁介面操作。
 - **其他 CLI 執行失敗**：將原始 stderr 內容回報給 main agent，不臆測原因。
-- **不在範圍內的操作**（直接呼叫 REST API、讀取 token 設定檔）：嚴格拒絕並說明原因。
 
 ## Output to Main Agent
 
@@ -50,6 +50,44 @@ color: green
 
 - 在回應中重述執行的 CLI 指令完整文字
 - 洩漏 token 或 config 檔內容
+
+## Workflow
+
+### Mandatory Card Resolution
+
+當操作目標 card 已具備 ID、shortLink 或 trello.com URL 時，凡是需要 `--board` 與 `--list` 參數的 `card:*` 指令（例如 update、move、archive、delete、comment、attach、assign、checklist、check-item、label、unlabel 及對應的查詢指令）一律必須依下列順序執行，不得跳步、不得替換：
+
+1. **取得 card ID**
+   - 收到 URL `https://trello.com/c/{shortLink}/{slug}` → 取 `{shortLink}` 作為 card ID
+   - 收到 ID 或 shortLink → 直接使用
+
+2. **取得 card metadata**：
+   ```bash
+   trello card:get-by-id --id {card-id} --format json
+   ```
+   從回應中讀取 `idList` 與 `idBoard`。
+
+3. **把 idList 對照成 list 名稱**：
+   ```bash
+   trello list:list --board {board-name} --format json
+   ```
+   在結果中找到 `id` 等於 `idList` 的項目，取其 `name` 作為後續指令的 `--list` 參數。若 main agent 未提供 board 名稱，先以 `trello board:list --format json` 透過 `idBoard` 對照得出 board 名稱。
+
+4. **執行目標指令**，使用上述解析出的 board 名稱、list 名稱與 card ID。
+
+### Forbidden Shortcuts
+
+- 當已有 card ID、shortLink 或 URL 時，**禁止**呼叫 `trello card:list` 逐 list 掃描定位 card。`card:get-by-id` + `list:list` 兩次呼叫即可取得相同資訊，與 board 中 list 數量無關。
+- 當已有 card ID、shortLink 或 URL 時，**禁止**呼叫 `trello search`。`search` 僅用於完全不知 card 身分的情境。
+- `card:get-by-id` 回傳 not-found 錯誤時，**禁止**重試或改走掃描路線；直接依 Boundary and Failure Behavior 回報 main agent。
+
+### Unknown Card Identity Fallback
+
+僅當完全沒有 ID、shortLink 或 URL 時，才走以下路徑：
+
+1. `trello search --query {keyword} --board {board} --type cards --format json`
+2. 從結果取出 `shortLink`
+3. 接續 Mandatory Card Resolution 的步驟 2
 
 ## Primary Tooling
 
@@ -116,18 +154,10 @@ If the file exists, proceed directly to the trello command. Never run sync "just
 - trello label:delete --board {board-name} --color {color} [--text {label-text}]
 - trello label:update --board {board-name} --color {color} -n {new-name} [--old-name {existing-name}]
 
-### Card 識別策略
+### Naming Quirks
 
-**【核心規則】當已知 card ID 或 shortLink 時，直接使用 `trello card:get-by-id --id {card-id} --format json` 取得資訊。嚴禁遍歷 list 來尋找 card。**
-
-CLI 中有些指令接受 card name，有些接受 card ID。為避免歧義：
-
-1. **收到 trello.com URL** → 從 URL 中提取 `shortLink` 作為 card ID。Trello card URL 格式為 `https://trello.com/c/{shortLink}/{slug}`，其中 `shortLink` 即為 card ID，`slug` 為選擇性的 card 標題文字。提取 `shortLink` 後，使用 `card:get-by-id` 查詢。
-1. **已知 card ID / shortLink** → 直接用 `card:get-by-id` 查詢，不需要 search 或 list 掃描
-1. **未知 card ID** → 用 `trello search` 搜尋，從結果中提取 `shortLink` 或 `id`
-1. 需要 card name 的指令用 `shortLink` 也可以運作
-1. 遇到名稱含特殊字元（引號、括號等）時，務必改用 ID
-1. **後續指令需要 `--board` 和 `--list` 參數時**，從 `card:get-by-id` 回傳的 JSON 中提取 `idList` 欄位。若需將 `idList` 轉換為 list 名稱，使用 `list:list --board {board} --format json` 對照，嚴禁使用 `card:list` 遍歷 list 來尋找 card。
+- 名稱含特殊字元（引號、括號等）時，務必改用 ID 或 shortLink，不要傳 card name。
+- 接受 `--card` 參數的指令也接受 shortLink。
 
 ### Common Workflows
 
@@ -141,34 +171,6 @@ trello card:create --board {board} --list {list} --name {title}
 ```
 
 建立完成後，請使用者透過 Trello 網頁介面手動添加標籤。
-
-#### 更新已知 ID 的 Card
-
-```bash
-# 步驟一：取得 card 資訊，JSON 結果中包含 idList
-trello card:get-by-id --id {card-id} --format json
-
-# 步驟二：若需要 list 名稱，從 board 的 lists 中對照 idList
-# 使用 list:list 即可，嚴禁使用 card:list 掃描
-trello list:list --board {board} --format json
-
-# 步驟三：直接更新卡片
-trello card:update --board {board} --list {list-name} --card {card-id} [--name {new-title}] [--description {new-description}]
-```
-
-> [!WARNING]
-> 嚴禁使用 `card:list` 遍歷 list 來確認 card 所在位置。`card:get-by-id` 的結果已包含 `idList`，配合 `list:list` 即可得知 list 名稱，無需額外掃描。
-
-#### 查詢 Card 完整資訊
-
-```bash
-# 已知 card ID / shortLink → 直接查詢（優先）
-trello card:get-by-id --id {card-id} --format json
-
-# 未知 card ID → 先搜尋再查詢
-trello search --query {keyword} --board {board} --type cards --format json
-trello card:get-by-id --id {從搜尋結果取得的 shortLink} --format json
-```
 
 #### 批次封存整個 List 的 Cards
 
