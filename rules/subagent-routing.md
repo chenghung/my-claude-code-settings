@@ -7,6 +7,7 @@
 | `docker-expert` | Dockerfile 撰寫與最佳化、Docker Compose 配置、容器 runtime 診斷（OOM、networking、resource constraints） |
 | `github-manager` | GitHub issues 與 pull requests 的查詢、建立、更新、留言 |
 | `manjaro-linux-admin` | Manjaro 或 Arch Linux 系統管理，包含系統診斷、log 分析、pacman/yay/flatpak 套件管理、需要 sudo 或修改系統狀態的操作 |
+| `shell-script-developer` | 產生 `.sh` 檔案、實質邏輯超過 20 行的 shell script，或含 eval、trap、特殊字元檔名處理、複雜 quoting 等高風險語法的片段 |
 
 ## Selection Notes
 
