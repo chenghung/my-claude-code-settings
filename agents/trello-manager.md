@@ -61,19 +61,23 @@ color: green
    - 收到 URL `https://trello.com/c/{shortLink}/{slug}` → 取 `{shortLink}` 作為 card ID
    - 收到 ID 或 shortLink → 直接使用
 
-2. **取得 card metadata**：
+1. **取得 card metadata**：
+
    ```bash
    trello card:get-by-id --id {card-id} --format json
    ```
+
    從回應中讀取 `idList` 與 `idBoard`。
 
-3. **把 idList 對照成 list 名稱**：
+1. **把 idList 對照成 list 名稱**：
+
    ```bash
    trello list:list --board {board-name} --format json
    ```
+
    在結果中找到 `id` 等於 `idList` 的項目，取其 `name` 作為後續指令的 `--list` 參數。若 main agent 未提供 board 名稱，先以 `trello board:list --format json` 透過 `idBoard` 對照得出 board 名稱。
 
-4. **執行目標指令**，使用上述解析出的 board 名稱、list 名稱與 card ID。
+1. **執行目標指令**，使用上述解析出的 board 名稱、list 名稱與 card ID。
 
 ### Forbidden Shortcuts
 
@@ -86,8 +90,8 @@ color: green
 僅當完全沒有 ID、shortLink 或 URL 時，才走以下路徑：
 
 1. `trello search --query {keyword} --board {board} --type cards --format json`
-2. 從結果取出 `shortLink`
-3. 接續 Mandatory Card Resolution 的步驟 2
+1. 從結果取出 `shortLink`
+1. 接續 Mandatory Card Resolution 的步驟 2
 
 ## Primary Tooling
 
@@ -103,86 +107,10 @@ test -f ~/.trello-cli/default/trello.db && echo "cache exists, skip sync" || tre
 
 If the file exists, proceed directly to the trello command. Never run sync "just in case".
 
-### Available CLI commands
-
-#### Trello Board
-
-- trello board:list [--filter open|closed|all]
-- trello board:show --board {board-name}
-- trello board:members --board {board-name} --format json
-
-#### Trello List
-
-- trello list:list --board "Trello Board Name" [--filter all|closed|none|open]
-- trello list:create -n {list-name} --board {board-name} [--position top|bottom]
-- trello list:rename --board {board-name} --list {list-name} -n {new-name}
-- trello list:archive --id {list-id}
-- trello list:archive-cards --board {board-name} --list {list-name}
-- trello list:move-all-cards --board {board-name} --list {list-name} --destination-board {dest-board-name} --destination-list {dest-list-name}
-
-#### Trello Card
-
-- trello card:list --board {board-name} --list {list-name} --format json
-- trello card:get-by-id --id {card-id} --format json
-- trello card:show --board {board-name} --list {list-name} --card {card-name} --format json
-- trello card:create --board {board-name} --list {list-name} --name {card-title} [--description {description}] [--label {label-name}] [--due {due-date}] [--position top|bottom]
-- trello card:update --board {board-name} --list {list-name} --card {card-id} [--name {new-title}] [--description {new-description}] [--due {due-date}] [--clear-due]
-- trello card:move --board {board-name} --list {from-list-name} --card {card-id} --to {to-list-name}
-- trello card:archive --board {board-name} --list {list-name} --card {card-id}
-- trello card:delete --board {board-name} --list {list-name} --card {card-name}
-- trello card:comment --board {board-name} --list {list-name} --card {card-name} --text {comment}
-- trello card:comments --board {board-name} --list {list-name} --card {card-id} --format json
-- trello card:assign --board {board-name} --list {list-name} --card {card-name} --user {username} --format json
-- trello card:unassign --board {board-name} --list {list-name} --card {card-name} --user {username} --format json
-- trello card:assigned-to [--user {username}] --format json
-- trello card:attach --board {board-name} --list {list-name} --card {card-id} --url {attach-the-url} --name {attachment-name}
-- trello card:attachments --board {board-name} --list {list-name} --card {card-name} --format json
-- trello card:label --board {board-name} --list {list-name} --card {card-name} --label {label-name} --format json
-- trello card:unlabel --board {board-name} --list {list-name} --card {card-name} --label {label-name} --format json
-- trello card:checklists --board {board-name} --list {list-name} --card {card-name} --format json
-- trello card:checklist --board {board-name} --list {list-name} --card {card-name} -n {checklist-name}
-- trello card:check-item --board {board-name} --list {list-name} --card {card-name} --item {item-name} --state complete|incomplete [--checklist {checklist-name}]
-
-#### Trello Search
-
-- trello search --query {your-search-terms} --board {board-name} --type cards|boards|organizations --format json
-
-#### Trello Label
-
-- trello label:list --board "Trello Board Name" --format json
-- trello label:create --board {board-name} --name {label-name} --color green|yellow|orange|red|purple|blue|sky|lime|pink|black
-- trello label:delete --board {board-name} --color {color} [--text {label-text}]
-- trello label:update --board {board-name} --color {color} -n {new-name} [--old-name {existing-name}]
-
 ### Naming Quirks
 
 - 名稱含特殊字元（引號、括號等）時，務必改用 ID 或 shortLink，不要傳 card name。
 - 接受 `--card` 參數的指令也接受 shortLink。
-
-### Common Workflows
-
-#### 建立帶標籤的 Card
-
-`card:create --label` 參數不穩定，建議分兩步：
-
-```bash
-# 1. 建立 card
-trello card:create --board {board} --list {list} --name {title}
-```
-
-建立完成後，請使用者透過 Trello 網頁介面手動添加標籤。
-
-#### 批次封存整個 List 的 Cards
-
-```bash
-trello list:archive-cards --board {board} --list {list}
-```
-
-#### 跨 List 批次移動 Cards
-
-```bash
-trello list:move-all-cards --board {board} --list {source-list} --destination-board {dest-board} --destination-list {dest-list}
-```
 
 ## Known Issues
 
