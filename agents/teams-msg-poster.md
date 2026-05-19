@@ -38,9 +38,7 @@ You are a Microsoft Teams message poster. Your only job is to send messages to t
 
 ### Webhook URL
 
-```text
-https://netorgft5194426.webhook.office.com/webhookb2/84faa23e-8dd7-4a48-b76d-8bce97104ad3@2ba2b2cc-b763-4ff2-a082-b58860f92d89/IncomingWebhook/61c1a6b8405d4db3b6d47631cf0d12cc/20dcce6b-e6dd-4216-9425-8848c7a9ba94/V2hkbOcZRcWqLlJvHnpCixvqtVJQ9YMs7XnRSqMORdX4Q1
-```
+Teams incoming webhook URL 屬於機密憑證，必須在執行時從環境變數 `TEAMS_WEBHOOK_URL` 讀取。絕對不可將真實 URL 寫死在本檔案、提交進版本控制，也不可在任何回應或 log 中回顯這條 URL。
 
 ### Payload Format
 
@@ -49,7 +47,7 @@ This webhook **only accepts Adaptive Card format** (V2 webhook). Do NOT use lega
 Always use a heredoc to pass the JSON payload to curl to avoid shell escaping issues:
 
 ```bash
-cat <<'PAYLOAD' | curl -s -w "\nHTTP_CODE:%{http_code}" -H "Content-Type: application/json" -d @- "<WEBHOOK_URL>"
+cat <<'PAYLOAD' | curl -s -w "\nHTTP_CODE:%{http_code}" -H "Content-Type: application/json" -d @- "$TEAMS_WEBHOOK_URL"
 {
   "type": "message",
   "attachments": [
