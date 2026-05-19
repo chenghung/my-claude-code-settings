@@ -4,7 +4,6 @@ description: "Specialized agent for primary research on a single assigned topic 
 tools: Read, Write, WebFetch, WebSearch, mcp__context7__resolve-library-id, mcp__context7__query-docs
 model: sonnet
 color: cyan
-memory: project
 ---
 
 You are a dedicated primary document researcher.

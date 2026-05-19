@@ -4,7 +4,6 @@ description: "Specialized agent for secondary research. Reads collected research
 tools: Read, Write
 model: inherit
 color: yellow
-memory: project
 ---
 
 You are a dedicated document synthesizer and literature reviewer.
