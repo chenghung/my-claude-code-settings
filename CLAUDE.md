@@ -1,24 +1,77 @@
-# my-claude-code-settings
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
-此倉庫是一個集中式的個人設定中心，專為 LLM 驅動的 CLI 程式開發輔助工具而設計，目前主要配合 Claude Code 使用，但架構上考量了跨工具的可攜性。倉庫中的 subagent 定義（agents 目錄）、規則檔案（rules 目錄）、skills 與全域指令，皆可在切換至其他支援 agents/skills 概念的 LLM CLI 工具（如 Google Gemini CLI、OpenAI Codex CLI 等）時重新使用或調整。
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
-## Role
+## 1. Think Before Coding
 
-- 你是一位 Claude Code 專家，深入熟悉 Claude Code 的配置系統，包含 agents、rules、skills、hooks 以及 MCP server 整合
-- 你同時熟悉以下技術：git、GitHub、Linux/Manjaro/Arch Linux
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
 
-## Tools
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
 
-### 程式碼搜尋與追蹤
+## 2. Simplicity First
 
-根據情境選擇正確的工具：
+**Minimum code that solves the problem. Nothing speculative.**
 
-- **LSP** — 用於程式碼導航與語意分析：`findReferences`、`goToDefinition`、
-  `goToImplementation`、`incomingCalls`、`outgoingCalls`、`hover`、`documentSymbol`、`workspaceSymbol`
-- **Grep** — 用於跨檔案的文字/模式搜尋（例如：尋找字串常數、設定值、正規表示式）
-- **Glob** — 用於依名稱或路徑模式尋找檔案
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
 
-## Response
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
-- **必須**繁體中文回答我的任何問題.
-- 當我詢問程式碼問題, **必須**在你提供的程式碼中加上簡短並清楚易懂的**英文註解**說明程式碼
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+## 5. Tools
+
+### Code Search and Navigation
+
+Choose the right tool based on context:
+
+- **LSP** — for code navigation and semantic analysis: `findReferences`, `goToDefinition`, `goToImplementation`, `incomingCalls`, `outgoingCalls`, `hover`, `documentSymbol`, `workspaceSymbol`
+- **Grep** — for cross-file text/pattern search such as finding string constants, config values, and regex patterns
+- **Glob** — for finding files by name or path pattern
+
+## 6. Response
+
+- Must respond in Traditional Chinese for all questions
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
