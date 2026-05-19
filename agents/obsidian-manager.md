@@ -65,113 +65,20 @@ The following practices are therefore prohibited:
 
 Always parse the stdout content itself to determine whether an operation succeeded. Error messages are emitted to stdout, not stderr.
 
-## Command Categories
+## Command Reference
 
-本表只列出最常用的核心指令。需要其他指令時，先執行 `obsidian --help` 取得指令清單，或執行 `obsidian <subcommand> --help` 查詢特定指令的參數。**不要憑記憶猜測未列在本表中的指令參數**。
+**不要憑記憶猜測未列出的指令或參數**。需要其他指令時，先執行 `obsidian --help` 取得指令清單，或執行 `obsidian <subcommand> --help` 查詢特定指令的參數。
 
-### Lifecycle
-
-- `create` — 建立新筆記。常用參數：`name=<title>`、`path=<relative-path>`、`content=<text>`、`template=<name>`、`overwrite`。
-- `rename` — 重新命名筆記（v1.12.2 起可用）。用 `file=` 或 `path=` 指定來源，用 `name=` 指定新名稱。
-- `move` — 移動筆記到其他資料夾。用 `file=` 或 `path=` 指定來源，用 `to=` 指定目標路徑。
-- `delete` — 刪除筆記，預設移至垃圾桶；加上 `permanent` flag 則直接永久刪除，不可恢復。
-
-#### CLI Examples
-
-```bash
-# Create with inline content
-obsidian create name="Meeting" content="# Agenda\n\n- Item 1"
-
-# Create with content from a temp file
-obsidian create name="Topic" content="$(cat .tmp/topic.md)"
-
-# Create from a template and overwrite if exists
-obsidian create name="Daily Log" template="daily-template" overwrite
-
-# Rename a note
-obsidian rename file="Old Title" name="New Title"
-
-# Move a note
-obsidian move path="Inbox/note.md" to="Projects/2026/note.md"
-
-# Delete permanently, bypassing trash
-obsidian delete path="Archive/obsolete.md" permanent
-```
-
-### Daily Notes
-
-- `daily` — 開啟或建立今日的 daily note。
-- `daily:append` — 在指定日期的 daily note 末尾追加內容；用 `content=<text>` 指定內容，省略日期則預設為今天。
-
-其他變體（`daily:read`、`daily:prepend`、`daily:path`）需要時用 `obsidian daily --help` 查詢。
-
-### Full-text Search
-
-- `search` — 全文搜尋。參數：
-  - `query=<text>`（必要）
-  - `path=<folder>`（限定搜尋資料夾）
-  - `limit=<n>`（限制回傳結果數）
-  - `total`（只回傳命中總數，不列出個別結果）
-  - `case`（區分大小寫）
-  - `format=text|json`
-
-- `search:context` — 同 `search`，但每個命中行額外附帶前後 context 行；參數同 `search`（不含 `total`）。
-
-- `search:open` — 在 Obsidian app 中開啟搜尋面板；參數 `query=<text>`。
-
-```bash
-# Count matches first before deciding on limit
-obsidian search query="API design" total
-
-# Search within a folder, return JSON for jq processing
-obsidian search query="TODO" path="Projects" format=json
-
-# Search with surrounding context, case-sensitive
-obsidian search:context query="deprecated" case format=json | jq '.results'
-
-# Open Obsidian search panel
-obsidian search:open query="meeting notes"
-```
-
-> [!TIP]
-> 查詢類操作預設加 `format=json`，配合 `jq` 解析。不確定結果規模時先加 `total` 取得命中數，再決定是否加 `limit`。
-
-### Metadata
-
-- `property:set` — 設定筆記的 frontmatter 屬性。
-- `property:read` — 讀取筆記的特定 frontmatter 屬性值。
-- `tags` — 列出整個 vault 的所有 tag。
-
-其他指令（`tags:rename`、`property:remove`、`properties`、`aliases`）需要時用 `obsidian property --help` 或 `obsidian tags --help` 查詢。
-
-### Link Queries
-
-- `backlinks` — 列出連結到指定筆記的所有反向連結。
-
-其他（`links`、`unresolved`、`orphans`、`deadends`）需要時用 `obsidian --help | grep -i link` 查詢。
-
-### Structural
-
-- `files` — 列出 vault 或指定資料夾內的檔案。
-- `folder` — 檢視指定資料夾的內容與資訊。
-
-其他（`folders`、`file`、`outline`）需要時用 `obsidian --help` 查詢。
+核心指令速查：`create`、`rename`、`move`、`delete`、`daily`、`daily:append`、`search`、`search:context`、`property:set`、`property:read`、`tags`、`backlinks`、`files`、`folder`。查詢類操作預設加 `format=json` 配合 `jq` 解析；不確定結果規模時先加 `total` 取得命中數，再決定是否加 `limit`。`delete` 預設移至垃圾桶，加 `permanent` flag 則直接永久刪除且不可恢復。
 
 ## File Identification
 
-Parameter names vary by command — do not assume every command accepts `file=` or `path=`. Always consult the parameter table for the specific subcommand being used.
+Parameter names vary by command — do not assume every command accepts `file=` or `path=`.
 
-For most existing-file operations (`rename`, `move`, `delete`, `append`, `prepend`, `backlinks`, `links`, `property:set`, `property:remove`, `property:read`, `tag`, `outline`, `task`, and similar), the target note is identified by one of:
+Most existing-file operations accept `file=<name>` (wikilink-style, omit `.md`) or `path=<relative-path>` (vault-root-relative, include `.md`). Two non-obvious exceptions:
 
-- `file=<name>` — wikilink-style lookup; omit the `.md` extension.
-- `path=<relative-path>` — resolved from the vault root; include the `.md` extension.
-
-The `create` command is an exception: it does not accept `file=`. Use either:
-
-- `name=<title>` — the new note's title, without the `.md` extension.
-- `path=<relative-path>` — the full vault-relative path including the `.md` extension.
-
-The `rename` command uses both styles simultaneously: `file=` or `path=` to identify the source note, and `name=` to specify the new filename. These two uses of `name=` carry different meanings — do not conflate them.
+- `create` does not accept `file=`. Use `name=<title>` (no `.md`) or `path=<relative-path>` (with `.md`).
+- `rename` uses both styles simultaneously: `file=` or `path=` to identify the source, and `name=` to specify the new filename. These two uses of `name=` carry different meanings — do not conflate them.
 
 When the main agent supplies a concrete path, prefer `path=` over `file=` or `name=`.
 
@@ -180,18 +87,16 @@ When the main agent supplies a concrete path, prefer `path=` over `file=` or `na
 Use `TaskCreate` to record each step and `TaskUpdate` to mark it complete.
 
 1. If the target vault is ambiguous, default to the focused vault or ask the main agent to clarify before proceeding.
-1. If a create operation targets a specific folder, confirm the folder exists first using `folders` or `folder`.
+1. If a create operation targets a specific folder, confirm the folder exists first using `folder` or `folders`.
 1. Execute the CLI command. For query operations, append `format=json` unless plain text is clearly sufficient.
 1. Parse the stdout content to confirm the operation result — do not rely on the exit code.
 1. Return a structured result to the main agent as described in the Output to Main Agent section.
 
 ### Creating a Note from a Temp File
 
-When the main agent delivers a temp file path as the source of a new note's initial content, follow these steps:
-
-1. Confirm the temp file exists and is readable before proceeding. If it cannot be read, report the problem to the main agent immediately and stop.
-1. Embed the file content using shell command substitution in the `content=` parameter, for example: `obsidian create name="Topic" content="$(cat .tmp/topic.md)"`.
-1. After a successful create, report the vault-relative path of the new note to the main agent. Do not include the temp file path in your response.
+1. Confirm the temp file exists and is readable before proceeding. If it cannot be read, report the problem immediately and stop.
+1. Embed the content via shell substitution: `obsidian create name="Topic" content="$(cat .tmp/topic.md)"`.
+1. Report the vault-relative path of the new note. Do not include the temp file path in your response.
 1. Temp file cleanup is the main agent's responsibility — do not delete the temp file yourself.
 
 ## Response Style
