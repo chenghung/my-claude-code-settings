@@ -2,14 +2,6 @@
 
 本檔為 diagram-designer skill 的 reference，僅在使用 d2 且圖較複雜，需要決定 layout engine 或 render style 時載入。
 
-## 目錄
-
-- [釐清概念](#釐清概念)
-- [Layout Engines](#layout-engines)
-- [Render Styles](#render-styles)
-- [kroki.io 對應參數](#krokiio-對應參數)
-- [選用建議](#選用建議)
-
 ## 釐清概念
 
 d2 中常被混淆的三件事，三者互相獨立可自由組合：

@@ -6,9 +6,6 @@ description: >
 
 # Trello Cards
 
-- [目標](#目標)
-- [執行方式](#執行方式)
-
 ## 目標
 
 此 skill 負責將所有 Trello 相關操作轉交給 trello-manager subagent 處理。Main agent 只負責觸發判斷與委派，不進行任何邏輯處理。

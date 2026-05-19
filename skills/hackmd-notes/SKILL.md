@@ -6,9 +6,6 @@ description: >
 
 # HackMD Notes
 
-- [目標](#目標)
-- [執行方式](#執行方式)
-
 ## 目標
 
 此 skill 負責將所有 HackMD 相關操作轉交給 hackmd-manager subagent 處理。Main agent 只負責判斷觸發時機並委派任務，不進行任何資料解析或邏輯處理，所有實際操作均由 subagent 全權負責。

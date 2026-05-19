@@ -2,15 +2,6 @@
 
 本檔為 diagram-designer skill 的 reference 索引檔，僅在使用 d2 並需要 terrastruct icons 時載入。實際 icon 清單分散在 `d2-terrastruct-icons/` 子目錄下，依需要再載入對應 provider 的子檔。
 
-## 目錄
-
-- [URL Pattern](#url-pattern)
-- [d2 使用語法](#d2-使用語法)
-- [Provider 一覽與載入指引](#provider-一覽與載入指引)
-- [未涵蓋的 Provider](#未涵蓋的-provider)
-- [Kubernetes Icons 特別提醒](#kubernetes-icons-特別提醒)
-- [找不到 Icon 時的處理流程](#找不到-icon-時的處理流程)
-
 ## URL Pattern
 
 完整 URL 格式：

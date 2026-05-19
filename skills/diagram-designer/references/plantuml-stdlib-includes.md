@@ -2,15 +2,6 @@
 
 本檔為 diagram-designer skill 的 reference，僅在使用 PlantUML 並需要 C4 model、AWS / Azure / GCP / Kubernetes 圖示庫時載入。
 
-## 目錄
-
-- [C4-PlantUML](#c4-plantuml)
-- [AWS Icons for PlantUML](#aws-icons-for-plantuml)
-- [Azure-PlantUML](#azure-plantuml)
-- [GCP-PlantUML](#gcp-plantuml)
-- [Kubernetes-PlantUML](#kubernetes-plantuml)
-- [注意事項](#注意事項)
-
 ## C4-PlantUML
 
 Repo：<https://github.com/plantuml-stdlib/C4-PlantUML>
