@@ -81,7 +81,7 @@ hackmd-cli whoami --output json
 
 當 main agent 要求匯出或取得筆記完整內容時，必須遵循以下快取流程。目的是避免筆記全文經由 subagent 回傳結果進入 main agent 的 context window，造成同一份內容重複佔用 token。
 
-暫存檔案路徑格式為 `/tmp/hackmd-export-{note-id}.md`，其中 `{note-id}` 為筆記在 HackMD 上的實際 ID。使用筆記 ID 作為識別碼，同一篇筆記重複匯出時會覆蓋舊檔，避免產生多餘的暫存檔。
+暫存檔案存放於依 tmp-file-usage rule 規定的工作區暫存目錄，檔名格式為 `hackmd-export-{note-id}.md`，其中 `{note-id}` 為筆記在 HackMD 上的實際 ID。使用筆記 ID 作為識別碼，同一篇筆記重複匯出時會覆蓋舊檔，避免產生多餘的暫存檔。
 
 執行步驟必須嚴格依序執行，不得跳過：
 
@@ -89,7 +89,7 @@ hackmd-cli whoami --output json
 1. **檢查快取是否過期** — 取得本地快取檔案的修改時間（mtime），若距離目前時間超過 20 分鐘，視為快取已過期，繼續步驟三。若未超過 20 分鐘，表示快取有效，直接回報使用快取並提供檔案路徑，結束流程。
 1. **執行匯出** — 透過 `hackmd-cli export --noteId {id}` 匯出筆記完整內容，將內容寫入暫存檔案路徑，回報匯出成功與檔案路徑，結束流程。
 
-當執行筆記的更新（update）或刪除（delete）操作時，若該筆記的暫存快取檔案 `/tmp/hackmd-export-{note-id}.md` 存在，必須立即刪除該快取檔案，確保下次取得內容時不會讀到過時的快取。
+當執行筆記的更新（update）或刪除（delete）操作時，若該筆記在工作區暫存目錄下的快取檔案 `hackmd-export-{note-id}.md` 存在，必須立即刪除該快取檔案，確保下次取得內容時不會讀到過時的快取。
 
 ## Known Issues
 
