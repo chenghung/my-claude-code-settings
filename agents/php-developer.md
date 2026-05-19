@@ -1,6 +1,7 @@
 ---
 name: php-developer
 description: "use this agent while you are going to write code, implement feature, or refactoring legacy code."
+tools: Bash, Read, Edit, Write, Glob, Grep
 model: sonnet
 color: blue
 ---
