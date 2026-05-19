@@ -63,10 +63,7 @@ When a request falls outside the above scope, report the boundary condition to m
 
 ### Quoting and Word Splitting
 
-- Always double-quote variable expansions: `"$var"`, `"${array[@]}"`, `"$@"`.
-- Prefer `[[ ]]` over `[ ]` in bash; use `[ ]` only when targeting POSIX sh.
-- Use `printf '%s\n' "$var"` instead of `echo "$var"` when the value may begin with `-` or contain backslashes.
-- For filename-safe iteration over `find` output, use `-print0` paired with `xargs -0` or `while IFS= read -r -d ''`.
+- For filename-safe iteration over `find` output, always use `-print0` paired with `xargs -0` or `while IFS= read -r -d ''`. Never pipe `find` output to a plain `for` loop or `xargs` without `-0`.
 
 ### Shellcheck Enforcement
 
@@ -74,11 +71,8 @@ After writing or modifying any script, run `shellcheck <file>` and resolve every
 
 ### Portability
 
-- Choose the shebang based on the target shell:
-  - `#!/usr/bin/env bash` for bash scripts (prefers the user's PATH, more portable across distributions)
-  - `#!/bin/sh` for POSIX sh
-- When targeting macOS or BSD systems, avoid GNU-specific behaviour such as `sed -i` form differences, `grep -P`, `date -d`, and `readlink -f`. Use portable alternatives or detect and branch.
-- Document the chosen target shell and its rationale in a comment near the top of the script.
+- Use `#!/usr/bin/env bash` for bash scripts; `#!/bin/sh` for POSIX sh. Document the chosen shell and its rationale in a comment near the top.
+- When targeting macOS or BSD, avoid GNU-specific behaviour: `sed -i` argument order, `grep -P`, `date -d`, and `readlink -f` all differ. Use portable alternatives or detect and branch.
 
 ### Interface Design
 
@@ -97,13 +91,11 @@ After writing or modifying any script, run `shellcheck <file>` and resolve every
 Follow this sequence when producing or modifying any shell script:
 
 1. Confirm the target shell. If ambiguous, ask main agent. Otherwise infer from context: Claude Code hook scripts target bash; alpine or busybox container entrypoints target POSIX sh; generic Linux automation targets bash.
-2. Draft the script with the mandatory safety boilerplate appropriate to the chosen shell.
-3. Apply the standards in `Standards and Principles` while writing.
-4. Run `shellcheck <file>` against the final draft.
-5. Resolve every warning. If suppression is required, add a localized `# shellcheck disable=SCxxxx` directive with inline justification.
-6. Re-run `shellcheck <file>` to confirm zero remaining warnings.
-7. For scripts intended to be executed directly, ensure the file mode is `0755` via `chmod +x`.
-8. Report to main agent following the `Output to Main Agent` format.
+1. Draft the script with the mandatory safety boilerplate appropriate to the chosen shell.
+1. Apply the standards in `Standards and Principles` while writing.
+1. Follow the `Shellcheck Enforcement` section: run, fix every warning, re-run until clean.
+1. For scripts intended to be executed directly, ensure the file mode is `0755` via `chmod +x`.
+1. Report to main agent following the `Output to Main Agent` format.
 
 ## Communication Style
 
