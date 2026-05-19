@@ -64,21 +64,7 @@ hackmd-cli whoami --output json
 
 如果成功回傳使用者資訊則已登入，若失敗則提示使用者先執行 `hackmd-cli login` 進行登入。
 
-### Available CLI commands
-
-#### Notes — 個人筆記
-
-- `hackmd-cli notes` — 列出所有個人筆記。支援 `--noteId` 查詢單一筆記、`--output json/csv/yaml`、`--sort`、`--filter`、`--columns`、`-x`（extended）、`--no-header`、`--no-truncate` 等 flags
-- `hackmd-cli notes create` — 建立新筆記。支援 `--title`、`--content`、`--readPermission`（`owner/signed_in/guest`）、`--writePermission`（`owner/signed_in/guest`）、`--commentPermission`（`disabled/forbidden/owners/signed_in_users/everyone`）、`-e`（用 `$EDITOR` 編輯）、`--output` 等 flags。也支援 Unix pipeline 輸入內容
-- `hackmd-cli notes update` — 更新筆記內容。支援 `--noteId`（必要）、`--content` 等 flags
-- `hackmd-cli notes delete` — 刪除筆記。支援 `--noteId`（必要）
-- `hackmd-cli export` — 匯出筆記內容。支援 `--noteId`（必要）
-
-#### 其他指令
-
-- `hackmd-cli whoami` — 顯示目前登入的使用者資訊
-- `hackmd-cli history` — 列出瀏覽歷史
-- `hackmd-cli version` — 顯示 CLI 版本
+未列出的指令與參數請先用 `hackmd-cli --help` 探索，不要憑記憶猜測。
 
 ### Note 識別策略
 
@@ -90,36 +76,6 @@ hackmd-cli whoami --output json
 1. 使用 `--filter` 參數可以依據名稱等屬性快速篩選
 
 ### Common Workflows
-
-#### 建立個人筆記
-
-```bash
-# 步驟一：建立筆記
-hackmd-cli notes create --title {title} --content {content} --readPermission owner --writePermission owner --output json
-```
-
-確認建立成功後，回報 note ID 和 URL 給使用者。
-
-#### 更新已知 ID 的筆記
-
-```bash
-# 步驟一：查詢筆記目前內容
-hackmd-cli export --noteId {id}
-
-# 步驟二：更新筆記
-hackmd-cli notes update --noteId {id} --content {new-content}
-```
-
-> [!WARNING]
-> `hackmd-cli notes update` 只能更新整份筆記內容，無法局部更新。必須先用 `export` 取得完整內容，修改後再用 `update` 覆寫。
-
-#### 匯出筆記內容
-
-```bash
-hackmd-cli export --noteId {id}
-```
-
-回傳的是 markdown 原始內容。
 
 #### 匯出快取機制
 
@@ -134,16 +90,6 @@ hackmd-cli export --noteId {id}
 1. **執行匯出** — 透過 `hackmd-cli export --noteId {id}` 匯出筆記完整內容，將內容寫入暫存檔案路徑，回報匯出成功與檔案路徑，結束流程。
 
 當執行筆記的更新（update）或刪除（delete）操作時，若該筆記的暫存快取檔案 `/tmp/hackmd-export-{note-id}.md` 存在，必須立即刪除該快取檔案，確保下次取得內容時不會讀到過時的快取。
-
-#### 查詢筆記完整資訊
-
-```bash
-# 已知 note ID → 直接查詢（優先）
-hackmd-cli notes --noteId {id} --output json
-
-# 未知 note ID → 先列出所有筆記再篩選
-hackmd-cli notes --output json
-```
 
 ## Known Issues
 
