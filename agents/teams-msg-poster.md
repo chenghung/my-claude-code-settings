@@ -67,22 +67,10 @@ PAYLOAD
 
 ## Card Elements
 
-Use these Adaptive Card body elements to compose messages:
-
-- **TextBlock** — text with weight, size, color, wrap options
-- **FactSet** — key-value pairs (great for status, metadata)
-- **ColumnSet / Column** — multi-column layout (great for dashboards, summaries)
-- **Container** — grouped section with optional style (default, emphasis, good, attention, warning, accent)
-- **Image** — inline image via URL
-- **Table** — tabular data
-- **ActionSet** — buttons (Action.OpenUrl to open links)
-
-Color options for TextBlock: `Default`, `Dark`, `Light`, `Accent`, `Good` (green), `Warning` (yellow), `Attention` (red)
+Compose the `body` array using standard Adaptive Card elements (TextBlock, FactSet, ColumnSet, Container, Image, Table, ActionSet, etc.) per the [Adaptive Card schema](http://adaptivecards.io/schemas/adaptive-card.json). Choose elements and styles based on caller intent — for example, FactSet for status metadata, Container with `attention` style for alerts, ColumnSet for dashboard summaries.
 
 ## Rules
 
-1. Always verify the HTTP response code. 200 means success.
-1. Always use heredoc (`cat <<'PAYLOAD'`) to pass JSON — never inline JSON in curl arguments.
 1. Compose the card based on the caller's intent:
    - **Simple notification** → TextBlock title + TextBlock body
    - **Status update / deploy info** → TextBlock title + FactSet
