@@ -4,11 +4,6 @@ globs: "**/*.md"
 
 # Markdown 編輯規則
 
-- [Subagent 選擇](#subagent-選擇)
-- [Main Agent 的責任](#main-agent-的責任)
-- [明確禁止的行為](#明確禁止的行為)
-- [互斥原則](#互斥原則)
-
 建立或修改任何 markdown 檔案時，main agent 必須從下列兩個 subagent 擇一執行實際的編輯工作，禁止 main agent 自行編輯 markdown 檔案：
 
 - `markdown-editor`：處理一般 markdown 檔案（software project README、docs、rule 檔、agent 定義、非 Obsidian 環境下的筆記等）

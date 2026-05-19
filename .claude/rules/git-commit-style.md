@@ -1,10 +1,5 @@
 # Git Commit Message 風格規範
 
-- [格式](#格式)
-- [Type](#type)
-- [Scope](#scope)
-- [範例](#範例)
-
 此規則定義本倉庫的 git commit message 格式，以倉庫目錄結構作為分類依據，確保提交記錄清晰易讀。
 
 ## 格式
