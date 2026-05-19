@@ -74,22 +74,28 @@ description: "Subagent 定義檔結構與命名規範知識庫。當使用者要
 
 ## Workflow Authoring Rules
 
-撰寫 `## Workflow` 章節時，應根據 frontmatter `model` 欄位調整詳細程度：
+撰寫 Workflow 章節時，內容類型限制對所有 model 等級一律適用，只有執行具體度隨模型能力調整。這兩條軸對應 prompt-quality-checks 第 4 條「只寫模型推不出的內容」的兩軸；本節規定其在 Workflow 章節的落實。
 
-**When `model` is `opus`** — 僅保留 opus 無法自行推理的資訊，避免過度指揮其內部實作。允許寫入的內容限定為以下四類：
+**內容類型限制（所有 model 一律適用）**：只允許以下四類，不因模型較小放寬：
 
-- **順序敏感的副作用 checkpoint**：操作本身具有不可逆或依賴前置狀態的特性，例如建立 PR 前必須先完成 push、寫入暫存檔前必須先確認目錄是否存在
-- **此 repo 或此 domain 特有的 convention**：無法從通用知識推斷的規定，例如 commit message 格式要求、特定檔案系統的 typed frontmatter 欄位規則
-- **外部工具的已知 quirks**：工具本身的非標準行為，例如某 CLI 不支援互動式旗標、某 API 呼叫前必須先完成驗證步驟
-- **與 main agent 的 handoff checkpoint**：失敗時應回報哪些欄位、何時應暫停並向使用者確認，而非自行繼續
+- 順序敏感的副作用 checkpoint（例：建立 PR 前必須先完成 push、寫入暫存檔前必須先確認目錄是否存在）
+- 此 repo 或此 domain 特有、無法從通用知識推斷的 convention
+- 外部工具的已知 quirks
+- 與 main agent 的 handoff checkpoint（失敗時回報哪些欄位、何時應暫停並向使用者確認）
 
-**不應寫入** opus subagent 的 `## Workflow` 章節：
+以下內容對任何模型都不得寫入 Workflow 章節：
 
-- LLM 能自行推理的常識順序，例如先讀檔再編輯、先搜尋再判斷
-- 工具參數的逐字說明（屬於工具自身 schema，不屬於 workflow 指引）
-- 條件分支的窮舉（應交由 opus 依情境自行判斷）
+- LLM 能自行推理的常識順序（例：先讀檔再編輯、先搜尋再判斷）
+- 標準語法或語言特性教學、通用框架用法
+- 透過 help 指令或工具 schema 即可取得的 CLI flag 逐項清單（型錄式窮舉）
+- 條件分支的窮舉
 
-**When `model` is `sonnet` or `haiku`** — 可以寫得更明確、step-by-step，不受上述限制。這類模型從較具體的步驟描述中獲益更多，明確的操作順序有助於減少推理誤差。
+**執行具體度（依模型能力調整，僅在上述允許四類內生效）：**
+
+- **model 為 opus 或 sonnet**：以意圖與約束陳述，信任模型自行推導執行細節，不逐步指揮
+- **model 為 haiku**：對上述允許四類中的步驟與必要指令，寫得更逐步、更具體、更釘死，以減少小模型的推理誤差。具體化只能發生在已允許的內容範圍內，不得作為跨入禁止內容的理由
+
+關於 CLI canonical 範例的可寫入界線，依 prompt-quality-checks 第 4 條「CLI 範例的界線」判斷，本節不重複該判準。
 
 ## Out of Scope Authoring Rules
 

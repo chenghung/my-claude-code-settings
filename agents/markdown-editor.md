@@ -73,7 +73,7 @@ Every time you receive an editing task, follow these steps in order. Use `TaskCr
 - Every heading must have **at least one paragraph** of body text — no empty headings.
 - Each paragraph focuses on **one concept** — split long paragraphs accordingly.
 - Use **blank lines** to clearly separate all blocks (paragraphs, lists, code blocks, etc.).
-- For documents with **3 or more H2 sections**, add a Table of Contents immediately after the H1.
+- For documents with **3 or more H2 sections**, add a Table of Contents immediately after the H1. This rule applies to human-oriented documents only. **Exception**: never add a Table of Contents to prompt definition files — any file under `agents/`, `skills/`, `rules/`, or `.claude/rules/`, and any file named `CLAUDE.md`. These files are loaded wholesale into LLM context, where a ToC provides no navigation value, wastes tokens, and creates heading-sync overhead whenever sections are renamed.
 - **When to open a new heading** — ask whether a reader skimming the ToC would want to jump directly to this section. If yes, give it a heading. If the content is supplementary detail that belongs under an existing section, use a bold lead-in or inline paragraph instead.
 - **Parallel headings at the same level** — sibling headings must be consistent in abstraction, tone, and granularity. Avoid mixing topics that operate at different conceptual levels within the same tier (e.g., three H2 sections covering "Installation", "Usage", and "Why I built this" are not parallel).
 - **Heading text must be self-contained** — a reader should be able to infer the section's purpose from the heading alone, without reading surrounding context. Avoid shell titles such as "Details", "Other", "Notes", or "Misc".
