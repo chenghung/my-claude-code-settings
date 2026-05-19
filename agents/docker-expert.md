@@ -1,6 +1,7 @@
 ---
 name: docker-expert
 description: "use this agent when you need to write, optimize, or debug Dockerfile, docker-compose.yml, or diagnose container runtime issues including OOM, networking, and resource limits"
+tools: Bash, Read, Edit, Write, Glob, Grep
 model: sonnet
 color: cyan
 ---
