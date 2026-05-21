@@ -25,6 +25,11 @@ Skill 本身只負責情境判斷與委派，實際操作由對應的 subagent �
 
 ### 建立需要初始內容的新筆記
 
+> [!NOTE]
+> 若使用者未完整指定 tag（完全未指定或只給了部分 tag），必須先執行下列前置步驟，再進入步驟一。
+
+**前置步驟（tag 未完整指定時）**：Main agent 讀取本 skill 目錄下的 `references/tag-handling.md`，依其協定決定 tag。已決定的 tag 由 `obsidian-md-editor` 寫入暫存檔的 frontmatter，後續由 `obsidian-manager` 連同內容一併建立筆記。
+
 1. Main agent 委派 `obsidian-md-editor`，將筆記內容寫入工作區 `.tmp` 目錄下的暫存檔（存放位置依 `tmp-file-usage` rule 規定）。
 1. Main agent 委派 `obsidian-manager`，傳入暫存檔路徑，由其讀取內容並在 vault 內建立筆記。
 1. 確認筆記建立成功後，main agent 清除暫存檔。
@@ -36,6 +41,8 @@ Skill 本身只負責情境判斷與委派，實際操作由對應的 subagent �
 ### 編輯既有筆記的內容
 
 直接委派 `obsidian-md-editor`，操作 vault 內的目標檔案。無需動用 `obsidian-manager`，也不需要暫存檔交接。
+
+**後置步驟（主題擴展時）**：若本次編輯涉及主題擴展（新增段落、引入新概念、新增章節），在編輯完成後，main agent 讀取本 skill 目錄下的 `references/tag-handling.md`，依其協定評估是否需要調整 tag。純錯字修正、潤飾、格式調整不觸發此步驟。需要調整 tag 時透過 `obsidian-manager` 寫入 frontmatter。
 
 ### 結構性操作
 
