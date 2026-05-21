@@ -44,6 +44,13 @@ Skill 本身只負責情境判斷與委派，實際操作由對應的 subagent �
 
 **後置步驟（主題擴展時）**：若本次編輯涉及主題擴展（新增段落、引入新概念、新增章節），在編輯完成後，main agent 讀取本 skill 目錄下的 `references/tag-handling.md`，依其協定評估是否需要調整 tag。純錯字修正、潤飾、格式調整不觸發此步驟。需要調整 tag 時透過 `obsidian-manager` 寫入 frontmatter。
 
+### 搜尋筆記
+
+當使用者意圖是搜尋筆記時——無論搜尋方式是 keyword 全文搜尋、tag 查詢、frontmatter 條件查詢，或模糊問句（例如「我有寫過 X 嗎？」）——main agent 必須讀取本 skill 目錄下的 `references/search-handling.md`，依其協定執行搜尋回報與 unresolved link 後續處理。實際的搜尋與 link 資料取得委派 `obsidian-manager`。
+
+> [!NOTE]
+> 使用者明確指定 wiki-link（例如 `[[note 名稱]]`）並要求開啟或讀取該 note 的場合，屬於直接取用而非搜尋，不觸發此流程。
+
 ### 結構性操作
 
 改名、移動、刪除筆記、修改 frontmatter property、查詢 backlink 與連結關係等，一律委派 `obsidian-manager`。
