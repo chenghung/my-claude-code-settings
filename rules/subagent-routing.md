@@ -14,3 +14,12 @@
 - Trigger Scope 與各 subagent 自身的 In Scope 一致，本表只是 routing 速查。
 - 詳細邊界條件請見對應 agent 定義檔。
 - 跨範圍任務（例如同時涉及 GitHub PR 與 Linux 系統設定）時，main agent 應拆解後分別委派。
+
+## Delegation Contract
+
+此契約對 Routing Table 中所有 subagent 適用，規範 main agent 在執行委派時的行為邊界。
+
+- 委派任務時，main agent 只描述任務目標、意圖或預期產出，不指定 subagent 內部應使用哪些 CLI 指令、子命令、工具呼叫或執行步驟。
+- 具體實作細節由 subagent 自行決定。Subagent 是該領域的專家，main agent 不應越過抽象層級指揮 subagent 的內部流程。
+- 任務所需的具體事實（例如目標檔案路徑、套件名稱、issue 編號、card ID 等）仍應由 main agent 提供；此類資訊屬於「事實或約束」，不屬於「指令」，與本契約不衝突。
+- 當不確定 subagent 是否能達成某項目標時，正確做法是描述目標並讓 subagent 回報可行性，而不是預先決定要用哪些指令來達成。
