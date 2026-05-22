@@ -7,7 +7,7 @@ description: 圖表設計選型知識庫。當使用者要求繪製、設計或�
 
 ## 目標
 
-此 skill 提供圖表語法選型知識與設計指引，協助 main agent 在設計階段從五種圖表服務（Mermaid、d2、PlantUML、Graphviz、Vega-Lite）中做出正確的選擇，並確保產出的圖表草稿可直接交由後續寫檔流程使用。Skill 本身不負責將圖表寫入任何檔案。
+此 skill 提供圖表語法選型知識與設計指引，協助 main agent 在設計階段從六種圖表服務（Mermaid、d2、PlantUML、Graphviz、Structurizr、Vega-Lite）中做出正確的選擇，並確保產出的圖表草稿可直接交由後續寫檔流程使用。Skill 本身不負責將圖表寫入任何檔案。
 
 ## 觸發時機
 
@@ -41,6 +41,7 @@ description: 圖表設計選型知識庫。當使用者要求繪製、設計或�
 
    - **優先選 Mermaid**：HackMD 與 GitHub markdown 均原生渲染 Mermaid，不需要透過 kroki.io 等第三方服務，是最輕量的選擇。
    - **只有在 Mermaid 不支援該圖表類型，或 Mermaid 的表達能力明顯不足時**，才考慮 d2、PlantUML、Graphviz。
+   - **當任務本質是「長期維護的多視角系統架構文件」而非單張圖時**，跳出單張圖的選型思維，改選 Structurizr。Structurizr 的核心抽象是「一份 model 加上多個 view」，能從同一份 DSL 自動產出 context、container、component、dynamic、deployment 等多張視圖，元件改名或重構時所有視圖同步更新。判斷訊號：預期圖數量達五張以上、跨團隊或跨季度維護、需要嚴格遵循 C4 model 階層。若只是單張一次性架構圖，仍應選 Mermaid 或 d2，不應為了單張圖引入 Structurizr。
 
 ## 概念對應到圖表
 
@@ -61,7 +62,8 @@ description: 圖表設計選型知識庫。當使用者要求繪製、設計或�
 | 專案時程 / 甘特圖 | Mermaid `gantt` | 原生 render |
 | Git 分支策略 | Mermaid `gitGraph` | 原生 render |
 | 組織圖 / 階層結構（小型） | Mermaid `flowchart TB` | 原生 render |
-| C4 模型 context level | Mermaid `C4Context` | 原生 render |
+| 大型系統架構文件（長期維護、跨團隊閱讀、需在多個視角之間同步） | Structurizr DSL | 單一 model 可自動產出 context、container、component、dynamic、deployment 多張視圖；元件改名一處同步全圖；天生為跨季度維護的架構文件設計 |
+| 單張、小型、一次性的 C4 context 圖 | Mermaid `C4Context` | 原生 render；當系統夠單純、單張 context 圖就能說明完整時，不必引入 Structurizr 的多視角模型，Mermaid C4Context 較輕量 |
 | 資料圖表（趨勢、分布、比較、效能 metric） | **Vega-Lite** | 唯一原生處理數值視覺化的服務，其他服務不擅長 |
 
 表格僅作為快速參考；當使用者需求不在表中或跨多個概念時，仍應依「選型策略」章節的三步驟流程判斷。
@@ -106,6 +108,25 @@ d2 的 layout 引擎包含 dagre（預設）、elk、tala；render style 分為�
 - Use case diagram（使用案例圖）
 - 其他 Mermaid 不支援或語法限制較多的 UML 類型
 
+### Structurizr
+
+專為大型、長期維護的 C4 架構文件設計，透過 kroki.io 嵌入 markdown。與其他結構圖服務最根本的差異在於核心抽象不同：其他服務是「一張圖一份原始碼」，Structurizr 是「一份 model 加上多個 view」。這個差異決定了它所有的優勢與限制。
+
+適用情境：
+
+- 系統元件數量多（例如十個以上），且需要同時在 context、container、component、dynamic、deployment 等多個層級呈現
+- 文件預期維護一年以上、由多人或多團隊共同編輯
+- 元件命名與關係需要作為 single source of truth——改一處要同步反映在所有視圖
+- 需要嚴格遵循 C4 model 階層，避免抽象層級在不同人筆下混亂
+- 需要 filtered view（例如針對某個 team 或某個 bounded context 自動篩選出對應的圖）
+
+取捨：
+
+- Layout 仰賴 Graphviz 預設演算法，遇到複雜圖經常需要在 Structurizr Lite UI 手動拖拉調整；手動座標儲存在另一份 JSON，不會回寫 DSL，與 git workflow 整合度有限
+- DSL 學習曲線高於 Mermaid 與 d2，使用者需先理解 C4 model 的抽象階層才能寫好 DSL
+
+不適用情境：單張一次性架構圖、ad-hoc 設計討論、非系統架構主題的流程或關係圖——這些情境引入 Structurizr 屬於過度工程，請仍選 Mermaid 或 d2。
+
 ### Graphviz
 
 以 dot 語法撰寫，適合需要自動 layout 演算法的大型圖，透過 kroki.io 嵌入。適用情境：
@@ -116,7 +137,7 @@ d2 的 layout 引擎包含 dagre（預設）、elk、tala；render style 分為�
 
 ### Vega-Lite
 
-五種服務中唯一處理「資料 → 圖表」的服務；Mermaid、d2、PlantUML、Graphviz 皆為結構圖工具，不適合用來做數值視覺化。
+六種服務中唯一處理「資料 → 圖表」的服務；Mermaid、d2、PlantUML、Graphviz、Structurizr 皆為結構圖工具，不適合用來做數值視覺化。
 
 適用情境：
 
@@ -129,7 +150,7 @@ d2 的 layout 引擎包含 dagre（預設）、elk、tala；render style 分為�
 
 Vega-Lite 採用 JSON declarative 語法，LLM 寫出正確 spec 的機率高，且官方 example gallery 已涵蓋絕大多數常見圖表類型。透過 kroki.io 以圖片方式嵌入 markdown。
 
-不適用情境：流程、架構、關係圖等結構性表達——這些請使用其餘四種服務。
+不適用情境：流程、架構、關係圖等結構性表達——這些請使用其餘五種服務。
 
 ## 設計原則
 
@@ -165,6 +186,7 @@ https://kroki.io/<diagram_type>/<output_format>/<encoded_source>
 | Mermaid | `mermaid` |
 | d2 | `d2` |
 | PlantUML | `plantuml` |
+| Structurizr | `structurizr` |
 | Graphviz | `graphviz` |
 | Vega-Lite | `vegalite` |
 
@@ -211,7 +233,7 @@ Main agent 回應使用者時應包含以下三個部分：
 1. **預覽呈現**：說明已產生 kroki.io 預覽 URL，並告知使用者圖表即將或已在瀏覽器開啟；URL 本身不貼到聊天回應，實際開啟流程依 `diagram-output` rule 執行
 1. **後續寫入說明**：若使用者要將圖表寫進 `.md` 檔，依 `markdown-editing` rule 委派處理；DSL 原始碼透過該委派流程交付，不經聊天回應中轉
 
-圖表 DSL 原始碼（mermaid、d2、plantuml、graphviz、vega-lite 等）禁止以 fenced code block 或任何其他形式直接貼入聊天回應。此規定對所有支援的服務皆適用，包含 Mermaid，不因 Mermaid 在部分 markdown 環境可原生渲染而例外。
+圖表 DSL 原始碼（mermaid、d2、plantuml、graphviz、structurizr、vega-lite 等）禁止以 fenced code block 或任何其他形式直接貼入聊天回應。此規定對所有支援的服務皆適用，包含 Mermaid，不因 Mermaid 在部分 markdown 環境可原生渲染而例外。
 
 ## 與其他元件的協作
 
@@ -222,4 +244,4 @@ Main agent 回應使用者時應包含以下三個部分：
 - 依 `rules/diagram-output.md` 的規定，圖表必須寫入 `.md` 檔案，不得直接輸出到聊天訊息
 - 依 `rules/markdown-editing.md` 的規定，實際寫入由 `markdown-editor` 或 `obsidian-md-editor` 執行
 - Main agent 不得自行寫入任何 markdown 檔案
-- 五種服務的圖表草稿確認後，均透過上述委派流程寫入，不因服務不同而有差異
+- 六種服務的圖表草稿確認後，均透過上述委派流程寫入，不因服務不同而有差異
