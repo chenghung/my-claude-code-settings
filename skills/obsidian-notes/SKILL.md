@@ -21,6 +21,18 @@ Skill 本身只負責情境判斷與委派，實際操作由對應的 subagent �
 
 **obsidian-md-editor** 負責所有涉及 vault 內既有筆記 body 內容的問題，特別是需要套用 Obsidian 專屬語法（wiki-link、embed、block reference、Obsidian callout、typed property 等）的撰寫與編輯場合。
 
+## 新建筆記的必要 Frontmatter 欄位
+
+下列四個欄位在任何新建筆記時都是必填的，兩種建立流程（有初始內容、空筆記）均適用。
+
+- **title**：必須與筆記正文的 H1 標題完全一致。檔名是獨立決策，採 kebab-case，不要求與 title 相符。
+- **description**：筆記的簡短摘要。上限為 120 個英文單字。若內容以中文或其他非以空格分詞的語言書寫，以相當於 120 個英文單字的閱讀量為準（以句子數量為參考基準，而非 120 個字元）。
+- **tags**：依本 skill 目錄下 `references/tag-handling.md` 所定義的協定決定，此處不重複 tag 決策邏輯。
+- **created**：筆記建立當下的 ISO 8601 日期。一經寫入，後續任何編輯都不得修改此欄位。
+
+> [!NOTE]
+> 對於不需要初始內容的空筆記，`description` 欄位初始時可留空，但欄位本身必須存在於 frontmatter 中。
+
 ## 情境分流
 
 ### 目錄 index note 的偵測與雙向連結維護
@@ -53,7 +65,7 @@ Skill 本身只負責情境判斷與委派，實際操作由對應的 subagent �
 
 **前置步驟（tag 未完整指定時）**：Main agent 讀取本 skill 目錄下的 `references/tag-handling.md`，依其協定決定 tag。已決定的 tag 由 `obsidian-md-editor` 寫入暫存檔的 frontmatter，後續由 `obsidian-manager` 連同內容一併建立筆記。
 
-1. Main agent 委派 `obsidian-md-editor`，將筆記內容寫入工作區 `.tmp` 目錄下的暫存檔（存放位置依 `tmp-file-usage` rule 規定）。
+1. Main agent 委派 `obsidian-md-editor`，將筆記內容寫入工作區 `.tmp` 目錄下的暫存檔（存放位置依 `tmp-file-usage` rule 規定）。暫存檔的 frontmatter 必須包含「新建筆記的必要 Frontmatter 欄位」一節所定義的全部必填欄位。
 1. Main agent 委派 `obsidian-manager`，傳入暫存檔路徑，由其讀取內容並在 vault 內建立筆記。
 1. 確認筆記建立成功後，main agent 清除暫存檔。
 
@@ -62,7 +74,7 @@ Skill 本身只負責情境判斷與委派，實際操作由對應的 subagent �
 > [!NOTE]
 > 建立新筆記前，須先執行上方「目錄 index note 的偵測與雙向連結維護」的前置步驟；建立完成後，須執行其後置步驟。當本筆記本身即為 index note 時跳過該流程。
 
-直接委派 `obsidian-manager`，由其在 vault 內建立空筆記。無需動用 `obsidian-md-editor`，也不需要暫存檔交接。
+直接委派 `obsidian-manager`，由其在 vault 內建立空筆記。無需動用 `obsidian-md-editor`，也不需要暫存檔交接。建立時仍須傳入「新建筆記的必要 Frontmatter 欄位」一節所定義的全部必填欄位（`description` 可留空，但欄位本身必須存在）。
 
 ### 編輯既有筆記的內容
 
