@@ -41,11 +41,12 @@ Every time you receive an editing task, follow these steps in order. Use `TaskCr
 1. **Plan Changes** — Plan which sections to modify and how, confirming the approach will not break the existing structure.
 1. **Apply Edits** — Execute the actual content changes using the `Edit` or `Write` tool.
 1. **Footnotes and References Check** — Verify every footnote identifier has a corresponding inline reference in the body, every reference-style link definition is still in use, footnote definitions and the References section are positioned correctly, and no URL appears in both places simultaneously.
+1. **Frontmatter Consistency Check** — Run the consistency check defined in the Frontmatter Consistency Check section. Report proposed changes to the main agent; do not write them into the file.
 1. **Markdownlint Verification Loop** — Run `markdownlint-cli2` against the edited file. Detailed procedure in the Markdownlint Verification Loop section.
 1. **Review Pass** — Apply Review Pass rules to determine whether a full-document review is required.
 
 > [!NOTE]
-> For very simple edits — such as fixing a typo or updating a single value — steps 2 and 6 may be merged or simplified. Steps 4 and 5 must never be skipped — the only legitimate exception for step 5 is when the linter tool itself cannot be executed.
+> For very simple edits — such as fixing a typo or updating a single value — steps 2 and 7 may be merged or simplified. Steps 4, 5, and 6 must never be skipped — the only legitimate exception for step 6 is when the linter tool itself cannot be executed.
 
 ## File Naming
 
@@ -74,6 +75,22 @@ Use kebab-case for all filenames: all lowercase, words separated by hyphens.
 - **Preserve existing structure**: do not reorganize section order unless explicitly asked.
 - **Heading scope boundary**: only adjust heading structure in sections directly related to the current edit intent. If other sections appear to have structural issues, note the observation in one sentence and let the user decide.
 - **Idempotency**: the same input must always produce the same output format.
+- **Frontmatter — do not add**: if the file does not have an existing frontmatter block, do not add one. The only exception is when the editing task itself explicitly requests adding a frontmatter block.
+- **Frontmatter — preserve structure**: if the file has an existing frontmatter block, preserve it structurally. Do not reorder fields, do not auto-update timestamp fields, and do not add or remove fields, unless the task itself explicitly targets the frontmatter.
+
+## Frontmatter Consistency Check
+
+**Trigger conditions** — run this check only if at least one of the following is true: the edit touches three or more paragraphs in the body; the edit adds, removes, or restructures one or more H2 sections; the main agent explicitly requests the check. Pure typo fixes, single-value updates, formatting tweaks, and small localized edits never trigger this check.
+
+**Scope** — run this check only if the existing frontmatter already contains at least one of the following fields: `title`, `description`, `tags`. Evaluate only those three fields; all other frontmatter fields are out of scope. If the file has no frontmatter block at all, skip this check entirely.
+
+**Per-field evaluation**:
+
+- **title**: if the H1 of the document was changed during this edit, propose a new `title` value that matches the new H1.
+- **description**: if the document's primary topic shifted noticeably after the edit, propose a new `description` value capped at 120 English words. For Chinese content, treat the cap as a comparable reading length.
+- **tags**: if the body content's topics no longer align with the existing tags list, propose specific tags to add and specific tags to remove. Do not propose unrelated wholesale replacements.
+
+**Reporting** — include the proposed new frontmatter values in the report to the main agent. Do not write these changes into the file; the main agent decides what to do with the proposals.
 
 ## Markdownlint Verification Loop
 
