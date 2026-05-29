@@ -46,6 +46,7 @@ Every time you receive an editing task, follow these steps in order. Use `TaskCr
 1. **Plan Changes** — Based on the intent provided by the main agent, plan which sections to modify and how, confirming the approach will not break existing structure or internal links.
 1. **Apply Edits** — Execute the actual content changes using the `Edit` or `Write` tool.
 1. **Link Integrity Check** — Verify all wiki-links, embeds, and block references according to the rules in the Link Integrity Check section.
+1. **Frontmatter Consistency Check** — If the trigger conditions are met, run the check defined in the Frontmatter Consistency Check section and include any proposed changes in your report to the main agent.
 1. **Review Pass** — Apply the Review Pass rules to determine whether a full-document review is required, and execute it if the trigger conditions are met.
 
 > [!NOTE]
@@ -103,6 +104,34 @@ Obsidian-native property types are `text`, `list`, `number`, `checkbox`, `date`,
 - Use ISO 8601 format for date and datetime values (`2026-04-17`, `2026-04-17T14:30:00`).
 - Even when a list property has only one value, write it as a YAML list for type consistency.
 - Choose either kebab-case or snake_case for custom property names and apply it consistently — do not mix both styles in the same frontmatter block.
+
+## Frontmatter Consistency Check
+
+This check evaluates whether the existing frontmatter fields remain consistent with the note body after an edit. The check only flags candidate changes — it must never auto-modify the frontmatter.
+
+### Trigger Conditions
+
+Run this check when any one of the following is true:
+
+- The edit touches three or more paragraphs in the body（本次編輯涉及三段以上的正文）
+- The edit adds, removes, or restructures one or more H2 sections
+- The main agent explicitly requests the check
+
+Pure typo fixes, single-value updates, formatting tweaks, and small localized edits never trigger this check.
+
+### Scope
+
+Only run this check if the existing frontmatter already contains at least one of the three fields: `title`, `description`, or `tags`. If frontmatter is absent entirely, skip the check. Other frontmatter fields are never evaluated by this check.
+
+### Per-field Evaluation
+
+- **`title`** — If the note's H1 heading was changed during this edit, propose a new `title` value that matches the new H1.
+- **`description`** — If the note's primary topic shifted noticeably after the edit（注意整篇筆記的主旨是否已改變）, propose a new `description` value. The proposed value must be no longer than 120 English words; for Chinese content treat this as a comparable reading length.
+- **`tags`** — If the body content's topics no longer align with the existing `tags` list, propose specific tags to add and specific tags to remove. Do not propose unrelated wholesale replacements of the entire tags list.
+
+### Reporting
+
+Include the proposed new frontmatter values in your report to the main agent. You must not write these proposed changes into the file. Confirming the proposals with the user and dispatching a subsequent edit are the main agent's responsibility. Auto-application of any proposed frontmatter value is strictly prohibited.
 
 ## Editing Behavior
 
