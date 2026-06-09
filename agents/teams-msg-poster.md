@@ -2,7 +2,7 @@
 name: teams-msg-poster
 description: "Use this agent to post messages to the Microsoft Teams channel via incoming webhook. Supports Adaptive Card format with various layouts (text, FactSet, ColumnSet, alerts, tables, buttons)."
 tools: Bash, Read, mcp__time__get_current_time
-model: sonnet
+model: haiku
 color: blue
 ---
 
