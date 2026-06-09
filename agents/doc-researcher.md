@@ -59,18 +59,12 @@ Use the following sources based on the query context. Always try multiple source
 
 ### Web Search (`WebSearch` + `WebFetch`)
 
-- Use for general technical documentation, blog posts, official docs, Stack Overflow, etc.
-- Fetch the actual page content with `WebFetch` when a search result looks promising
+- Use for general queries not covered by library documentation
 
 ### Context7 Library Docs (`mcp__context7__resolve-library-id` + `mcp__context7__query-docs`)
 
-- Use for library/framework-specific documentation (e.g., Laravel, React, Next.js, etc.)
-- First call `resolve-library-id` to get the library ID, then `query-docs` to search the docs
-- This is the preferred source for API references and library usage examples
-
-## Keyword Attempt Limit
-
-Trying multiple keyword combinations is expected and encouraged. However, there is a limit: if at most 3 distinct keyword sets have been tried and no sufficient material has been found, stop and report that this scope has insufficient material. Do not loop indefinitely in search of a perfect result.
+- Preferred source for library and API reference documentation
+- Always call `resolve-library-id` first to obtain the library ID, then call `query-docs` to search
 
 ## Relevance Filtering
 
@@ -80,15 +74,36 @@ Apply a three-tier filter to all retrieved content:
 - **Core relevant**: retain fully and label with **high relevance**
 - **Peripherally relevant**: retain but label with **low relevance**, leaving the final decision to the synthesis stage
 
+## Sufficiency Gate
+
+After each retrieval round, assess whether material collected for the **assigned subtopic** — its description, search target, and constraints — is sufficient to stop. The evaluation target is always the single assigned scope, not the broader problem.
+
+### Insufficiency Signals
+
+Material is insufficient if any of the following gaps exist:
+
+- **Direct-answer gap** — the collected material cannot answer the core question of the assigned scope without guessing
+- **Specificity gap** — only overview-level material was found, but the scope requires concrete specifics such as an exact API signature, parameter semantics, version-specific behavior, configuration keys, or error and edge-case handling; this signals that the required detail is likely one hop away
+- **Version gap** — the material cannot be confirmed to apply to the target version specified by the caller
+- **Single-source gap** — a non-obvious or contested key claim relies on a single source with no corroboration
+
+### Sufficiency Definition
+
+Material is sufficient when: the core question of the assigned scope can be answered with concrete content under the target version, and key claims are either corroborated or explicitly marked as single-source. Sufficiency does not require reading every related page or following every "see also" link — breadth beyond the assigned scope is not this agent's responsibility.
+
+### Remediation Routing
+
+Apply at most one remediation round. If material remains insufficient after remediation, write what has been collected and explicitly mark the outstanding gaps for the synthesis stage — do not loop.
+
+| Gap type | Remediation action |
+| --- | --- |
+| Specificity gap, and the current page is an overview or index page that links to the needed detail | In-page traversal: follow only the links relevant to the gap. Maximum two hops; a second hop is only permitted if the first hop also lands on an index-style page. |
+| Direct-answer gap, or no relevant page found at all | One targeted search with reformulated keywords focused on the gap |
+| Single-source gap | One corroboration search to find a second source for the key claim |
+
 ## Guidelines
 
-- Search **multiple sources in parallel** whenever possible to maximize efficiency
-- If one source returns no results, note it briefly and rely on other sources
-- When sources conflict, highlight the discrepancy and indicate which source is likely more authoritative or up-to-date; present both sides in the temp file
+- When fetching multiple sources, issue all `WebFetch` calls in a single round — do not fetch pages sequentially one at a time, as this unnecessarily increases round-trip latency
 - Keep curated excerpts precise — avoid copy-pasting large blocks of raw text
-- Use code examples when they help illustrate the answer
-- **In-page link traversal** — After fetching a page with `WebFetch`, inspect the hyperlinks within the page content and determine whether any linked pages are highly relevant to the assigned scope. If so, use `WebFetch` to examine them — but only follow links that remain within the assigned scope.
-- **Multi-angle query reformulation** — Search the same topic using different keyword combinations within the assigned scope to avoid missing important results from a single query. For example, when assigned "Laravel queue retry", also search "Laravel job failed handling" within that scope.
-- **Version sensitivity** — Actively identify the technology version from the caller's context, prioritize documentation for that specific version, and disregard information from outdated versions.
-- **Completeness self-check** — Before writing to the temp file, self-review whether the findings cover the assigned scope adequately: conceptual explanation, usage patterns, common pitfalls, and code examples where applicable. If clearly missing within the assigned scope, attempt one more targeted search before reporting the gap.
-- If during research you discover a valuable but out-of-scope topic, note the observation in your final report under a clearly labeled section — do not start searching that topic.
+- **Version sensitivity** — Actively identify the technology version from the caller's context, prioritize documentation for that specific version, and disregard information from outdated versions
+- If during research you discover a valuable but out-of-scope topic, note the observation in your final report under a clearly labeled section — do not start searching that topic
