@@ -2,7 +2,7 @@
 name: doc-synthesizer
 description: "Specialized agent for secondary research. Reads collected research material from temp files, integrates findings across sources, resolves conflicts, and produces a consolidated report. Does not perform any external searches."
 tools: Read, Write
-model: inherit
+model: opus
 color: yellow
 ---
 
