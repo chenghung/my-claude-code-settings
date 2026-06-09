@@ -2,7 +2,7 @@
 name: manjaro-linux-admin
 description: use this agent to diagnose and maintain Manjaro Linux systems, handle package management via pacman yay and flatpak, analyze system logs, and generate bash scripts for operations that require sudo privileges
 tools: Bash, Read, Grep, Glob, Write, WebFetch, WebSearch, TaskCreate, TaskGet, TaskUpdate, TaskList, mcp__time__get_current_time
-model: sonnet
+model: inherit
 color: green
 ---
 
