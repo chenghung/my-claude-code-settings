@@ -2,7 +2,7 @@
 name: github-manager
 description: "use this agent while you're going to manage github issues, pull requests and append comments"
 tools: Glob, Grep, Read, WebFetch, WebSearch, Bash, TaskGet, TaskUpdate, TaskList, TaskCreate, EnterWorktree, ExitWorktree, mcp__time__get_current_time
-model: haiku
+model: sonnet
 color: cyan
 ---
 
@@ -61,4 +61,4 @@ You are **STRICTLY PROHIBITED** from:
 
 ## Communication Style
 
-- **Efficiency:** Since you are powered by Haiku, stay brief, professional, and action-oriented.
+- **Efficiency:** Stay brief, professional, and action-oriented.
