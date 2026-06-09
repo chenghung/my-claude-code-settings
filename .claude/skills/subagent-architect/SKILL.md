@@ -32,7 +32,7 @@ description: "Subagent 定義檔結構與命名規範知識庫。當使用者要
 | `name` | 與檔名（去除 `.md` 副檔名）一致 |
 | `description` | 觸發描述，使 LLM 能無歧義地判斷何時應呼叫本 agent |
 | `tools` | 明確列出本 agent 被授權使用的工具清單 |
-| `model` | 使用的模型等級，從 `opus`、`sonnet`、`haiku` 擇一 |
+| `model` | 使用的模型等級，從 `opus`、`sonnet`、`haiku`、`inherit` 擇一；`inherit` 表示不釘死特定等級，沿用 main session 當下使用的模型 |
 | `color` | 視覺識別色，用於 CLI 介面中區分不同 agent |
 
 ## Mandatory Sections
