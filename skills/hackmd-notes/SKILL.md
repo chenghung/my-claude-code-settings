@@ -8,7 +8,7 @@ description: >
 
 ## 目標
 
-此 skill 負責將所有 HackMD 相關操作轉交給 hackmd-manager subagent 處理。Main agent 只負責判斷觸發時機並委派任務，不進行任何資料解析或邏輯處理，所有實際操作均由 subagent 全權負責。
+此 skill 負責將所有 HackMD 相關操作轉交給 hackmd-manager subagent 處理。Main agent 負責判斷觸發時機、判讀使用者意圖並構造委派任務，不進行 HackMD 資料的 CLI 操作與內容解析；所有實際的 CLI 執行與資料解析均由 subagent 全權負責。
 
 ## 執行方式
 

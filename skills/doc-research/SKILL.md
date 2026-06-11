@@ -53,7 +53,7 @@ Fan-out 模式拆分子面向時，必須遵守以下規範：
 ## 整合判定
 
 - **多個 subagent**：一律啟動二手整合 subagent 做跨來源彙整。Fan-out 數量提高時，synthesizer 仍是單一實例，因此一手研究 subagent 必須嚴格 curate，精簡節錄關鍵內容，不要整段傾倒原始文字，以控制 synthesizer 的輸入量。
-- **單一 subagent 且材料量小**：粗略估計 1000 token 以內，由 main agent 直接讀取暫存檔，不啟動整合 subagent。
+- **單一 subagent 且材料量小**：一手研究 subagent 完成並將結果寫入暫存檔後，以暫存檔的實際內容大小作為判定依據；若實際內容在 1000 token 以內，由 main agent 直接讀取暫存檔，不啟動整合 subagent。
 - **單一 subagent 但材料量大或內容雜亂**：仍啟動二手整合 subagent 做精煉，避免 main agent 直接處理大量原始材料。
 
 ## 委派 Prompt 要求
