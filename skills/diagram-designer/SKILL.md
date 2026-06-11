@@ -190,7 +190,7 @@ https://kroki.io/<diagram_type>/<output_format>/<encoded_source>
 | Graphviz | `graphviz` |
 | Vega-Lite | `vegalite` |
 
-`output_format` 常用值為 `svg`（適合大多數場景）或 `png`（需要點陣圖時使用）。
+`output_format` 放 kroki 接受的格式，例如 `svg`、`png`。
 
 `encoded_source` 必須透過本 skill 提供的 `scripts/kroki-encode.py` 產生，**禁止 LLM 自行手算或用其他方式編碼**（例如 URL percent-encoding 不可代用）。腳本以 stdin 接收 DSL 原始碼，stdout 輸出可直接拼進 URL 的字串：
 
@@ -233,7 +233,7 @@ Main agent 回應使用者時應包含以下三個部分：
 1. **預覽呈現**：說明已產生 kroki.io 預覽 URL，並告知使用者圖表即將或已在瀏覽器開啟；URL 本身不貼到聊天回應，實際開啟流程依 `diagram-output` rule 執行
 1. **後續寫入說明**：若使用者要將圖表寫進 `.md` 檔，依 `markdown-editing` rule 委派處理；DSL 原始碼透過該委派流程交付，不經聊天回應中轉
 
-圖表 DSL 原始碼（mermaid、d2、plantuml、graphviz、structurizr、vega-lite 等）禁止以 fenced code block 或任何其他形式直接貼入聊天回應。此規定對所有支援的服務皆適用，包含 Mermaid，不因 Mermaid 在部分 markdown 環境可原生渲染而例外。
+圖表 DSL 原始碼（mermaid、d2、plantuml、graphviz、structurizr、vega-lite 等）禁止以 fenced code block 或任何其他形式直接貼入聊天回應。此規定對所有支援的服務皆適用，包含 Mermaid，不因 Mermaid 在部分 markdown 環境可原生渲染而例外。此禁令的適用範圍僅限於本 skill 被觸發後的設計產出流程；`diagram-output.md` 已劃出「使用者明示要原始碼」與「只需要 ASCII 字元圖示」這兩條例外路徑，在那兩種情境下本 skill 根本不應被觸發，故此禁令不覆蓋那兩條路徑。
 
 ## 與其他元件的協作
 
