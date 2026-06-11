@@ -1,126 +1,129 @@
 #!/usr/bin/env bash
-# notify-cc.sh — Claude Code hook: send desktop notification via notify-send.
-# Called by Claude Code hook system; receives JSON on stdin, mode string as $1.
-# Target shell: bash (Claude Code hooks run under bash).
-#
-# Usage: echo '<json>' | notify-cc.sh <done|notify>
-#
-# IMPORTANT: This script must never exit non-zero; a failing hook would stall
-# Claude Code. All error paths end with "exit 0".
+# notify-cc.sh — Claude Code hook: desktop notification via notify-send.
+# Receives JSON on stdin, mode string ($1: done|notify).
+# Must never exit non-zero (a failing hook would stall Claude Code).
+# Target shell: bash 4.4+ (uses arrays under set -u and ${var: -N}).
 
-set -euo pipefail
+# Tunable constants
+APP_NAME="Claude Code"
+AUTH_SECS=30
+INPUT_SECS=20
+DONE_SECS=8
+AUTH_PATTERN='permission'
 
-# ---------------------------------------------------------------------------
-# Dependency check — silently exit if jq or notify-send are unavailable.
-# ---------------------------------------------------------------------------
-if ! command -v jq > /dev/null 2>&1 || ! command -v notify-send > /dev/null 2>&1; then
-    exit 0
-fi
-
-# ---------------------------------------------------------------------------
-# Read full stdin into a variable before any processing.
-# ---------------------------------------------------------------------------
-json_input="$(cat)"
-
-# ---------------------------------------------------------------------------
-# Extract cwd for use in git-branch and folder-name fallbacks.
-# ---------------------------------------------------------------------------
-cwd="$(printf '%s' "$json_input" | jq -r '.cwd // empty' 2>/dev/null || true)"
-
-# ---------------------------------------------------------------------------
-# Determine label via three-tier priority:
-#   1. /rename session name  (looked up from ~/.claude/sessions/*.json)
-#   2. git branch of cwd
-#   3. basename of cwd  (final fallback → "unknown")
-# ---------------------------------------------------------------------------
-
-# --- Priority 1: session rename name ---
-label=""
-
-# Obtain the session UUID: prefer session_id field, fall back to transcript_path basename.
-session_uuid="$(printf '%s' "$json_input" | jq -r '.session_id // empty' 2>/dev/null || true)"
-if [ -z "$session_uuid" ]; then
-    transcript_path="$(printf '%s' "$json_input" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
-    if [ -n "$transcript_path" ]; then
-        # Strip directory and .jsonl suffix to recover the UUID.
-        session_uuid="$(basename "$transcript_path" .jsonl)"
-    fi
-fi
-
-sessions_dir="${HOME}/.claude/sessions"
-
-if [ -n "$session_uuid" ] && [ -d "$sessions_dir" ]; then
-    # Scan every *.json in the sessions directory with a single jq invocation.
-    # For each file whose .sessionId matches the target UUID, emit .name (skip nulls).
-    # The glob may produce no matches; use nullglob-safe approach: iterate and check.
-    rename_name=""
-    for f in "$sessions_dir"/*.json; do
-        # If glob finds nothing, the literal pattern string is passed — skip it.
-        [ -f "$f" ] || continue
-        # jq: select the file whose sessionId matches, then emit .name only if non-null.
-        candidate="$(jq -r --arg uuid "$session_uuid" \
-            'select(.sessionId == $uuid) | .name // empty' \
-            "$f" 2>/dev/null || true)"
-        if [ -n "$candidate" ]; then
-            rename_name="$candidate"
-            break
-        fi
-    done
-    label="$rename_name"
-fi
-
-# --- Priority 2: git branch ---
-if [ -z "$label" ] && [ -n "$cwd" ]; then
-    branch="$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    # Detached HEAD yields "HEAD" — treat that as no result.
-    if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then
-        label="$branch"
-    fi
-fi
-
-# --- Priority 3: cwd basename (final fallback) ---
-if [ -z "$label" ]; then
-    if [ -n "$cwd" ]; then
-        label="$(basename "$cwd")"
-        # basename on an empty or root-like string may return "." — guard that.
-        if [ "$label" = "." ] || [ -z "$label" ]; then
-            label="unknown"
-        fi
-    else
-        label="unknown"
-    fi
-fi
-
-# ---------------------------------------------------------------------------
-# Resolve mode; default to "notify" for any unrecognised value.
-# ---------------------------------------------------------------------------
-mode="${1:-notify}"
-
-case "$mode" in
+classify() {
+  local mode="$1" message="$2"
+  case "$mode" in
     done)
-        title="✅ 執行完畢：${label}"
-        body="Claude Code 已完成並等待你的下一步"
-        ;;
+      printf '%s\t%s\t%s' '✅' '完成待命' "$DONE_SECS" ;;
     notify)
-        raw_message="$(printf '%s' "$json_input" | jq -r '.message // empty' 2>/dev/null || true)"
-        body="${raw_message:-需要你的注意}"
-        title="🔔 ${label}"
-        ;;
+      if printf '%s' "$message" | grep -qi "$AUTH_PATTERN"; then
+        printf '%s\t%s\t%s' '🔒' '等待授權' "$AUTH_SECS"
+      else
+        printf '%s\t%s\t%s' '⌨️' '需要你' "$INPUT_SECS"
+      fi ;;
     *)
-        # Unknown mode: treat as notify with a generic body.
-        raw_message="$(printf '%s' "$json_input" | jq -r '.message // empty' 2>/dev/null || true)"
-        body="${raw_message:-需要你的注意}"
-        title="🔔 ${label}"
-        ;;
-esac
+      printf '%s\t%s\t%s' '⌨️' '需要你' "$INPUT_SECS" ;;
+  esac
+}
 
-# ---------------------------------------------------------------------------
-# Send the notification; suppress any error so the hook never blocks CC.
-# ---------------------------------------------------------------------------
-notify-send \
-    --app-name "Claude Code" \
-    --urgency normal \
-    --expire-time 5000 \
-    -- "$title" "$body" 2>/dev/null || true
+format_label() {
+  local name="$1" pid="$2" uuid="$3" project="$4" id_part
+  if [ -n "$name" ]; then
+    printf '%s — %s' "$name" "$project"
+  else
+    if [ -n "$pid" ]; then id_part="${pid: -4}"
+    elif [ -n "$uuid" ]; then id_part="${uuid: -4}"
+    else id_part="????"
+    fi
+    printf 'unnamed-%s — %s' "$id_part" "$project"
+  fi
+}
 
-exit 0
+resolve_uuid() {
+  local json="$1" uuid tp
+  uuid="$(printf '%s' "$json" | jq -r '.session_id // empty' 2>/dev/null || true)"
+  if [ -z "$uuid" ]; then
+    tp="$(printf '%s' "$json" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
+    [ -n "$tp" ] && uuid="$(basename "$tp" .jsonl)"
+  fi
+  printf '%s' "$uuid"
+}
+
+session_name_and_pid() {
+  local uuid="$1" sessions_dir="${HOME}/.claude/sessions" f out
+  if [ -z "$uuid" ] || [ ! -d "$sessions_dir" ]; then printf '\t'; return; fi
+  for f in "$sessions_dir"/*.json; do
+    [ -f "$f" ] || continue
+    out="$(jq -r --arg uuid "$uuid" 'select(.sessionId == $uuid) | "\(.name // "")\t\(.pid // "")"' "$f" 2>/dev/null || true)"
+    if [ -n "$out" ]; then printf '%s' "$out"; return; fi
+  done
+  printf '\t'
+}
+
+project_name() {
+  local cwd="$1" branch="" base
+  if [ -n "$cwd" ]; then
+    branch="$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  fi
+  if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then printf '%s' "$branch"; return; fi
+  if [ -n "$cwd" ]; then
+    base="$(basename "$cwd")"
+    if [ -n "$base" ] && [ "$base" != "." ]; then printf '%s' "$base"; return; fi
+  fi
+  printf 'unknown'
+}
+
+send_and_schedule() {
+  local title="$1" body="$2" uuid="$3" delay="$4"
+  local state_dir="${XDG_RUNTIME_DIR:-/tmp}/claude-notify" state_file="" old_id="" new_id
+  if [ -n "$uuid" ]; then
+    state_file="${state_dir}/${uuid}.id"
+    [ -f "$state_file" ] && old_id="$(cat "$state_file" 2>/dev/null || true)"
+  fi
+  local -a replace_args=()
+  [ -n "$old_id" ] && replace_args=(--replace-id "$old_id")
+  new_id="$(notify-send -p --app-name "$APP_NAME" --urgency normal "${replace_args[@]}" -- "$title" "$body" 2>/dev/null || true)"
+  if [ -n "$state_file" ] && [ -n "$new_id" ]; then
+    mkdir -p "$state_dir" 2>/dev/null || true
+    printf '%s' "$new_id" > "$state_file" 2>/dev/null || true
+  fi
+  if [ -n "$new_id" ] && [[ "$new_id" =~ ^[0-9]+$ ]] && command -v gdbus >/dev/null 2>&1; then
+    setsid bash -c "sleep ${delay}; gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.CloseNotification ${new_id}" </dev/null >/dev/null 2>&1 &
+  fi
+}
+
+main() {
+  set -euo pipefail
+  local mode="${1:-notify}"
+  command -v jq >/dev/null 2>&1 && command -v notify-send >/dev/null 2>&1 || exit 0
+  local json_input cwd uuid np name pid project label message c icon word delay title body
+  json_input="$(cat)"
+  cwd="$(printf '%s' "$json_input" | jq -r '.cwd // empty' 2>/dev/null || true)"
+  uuid="$(resolve_uuid "$json_input")"
+  np="$(session_name_and_pid "$uuid")"
+  name="${np%%$'\t'*}"
+  pid="${np#*$'\t'}"
+  project="$(project_name "$cwd")"
+  label="$(format_label "$name" "$pid" "$uuid" "$project")"
+  message=""
+  if [ "$mode" != "done" ]; then
+    message="$(printf '%s' "$json_input" | jq -r '.message // empty' 2>/dev/null || true)"
+  fi
+  c="$(classify "$mode" "$message")"
+  icon="$(printf '%s' "$c" | cut -f1)"
+  word="$(printf '%s' "$c" | cut -f2)"
+  delay="$(printf '%s' "$c" | cut -f3)"
+  title="${icon} ${word}：${label}"
+  if [ "$mode" = "done" ]; then
+    body="Claude Code 已完成並等待你的下一步"
+  else
+    body="${message:-需要你的注意}"
+  fi
+  send_and_schedule "$title" "$body" "$uuid" "$delay"
+  exit 0
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
