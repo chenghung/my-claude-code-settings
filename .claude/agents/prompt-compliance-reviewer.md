@@ -32,6 +32,7 @@ color: red
 - **偵測到 secret**：若變更中含疑似憑證或 secret，明確警示其存在與位置，但不在回饋中複述該值。
 - **Bash 僅限唯讀操作**：雖然本 agent 被授權使用 Bash，但禁止執行任何會寫入、刪除或改動檔案系統狀態的指令；Bash 只能用於取得變更集與搜尋等讀取操作，例如 `git diff`、`git status`、`grep`。
 - **subagent-architect skill 的路徑與依賴性**：當內容軸檢視項目需要參照 `subagent-architect` skill 時，此 skill 位於 `.claude/skills/subagent-architect/SKILL.md`，禁止在確認過此路徑之前將其判定為缺失或回報為 dead reference。此外，由於窮舉式格式結構稽核不在本 agent 的 In Scope，`subagent-architect` 不是核心稽核的阻斷性相依；只有當某條 finding 確實牽涉格式結構時才需讀取它，否則無 finding 屬正常，不應被視為限制。
+- **引用的 skill 或 agent 名稱查無定義檔**：若變更中引用了某個 skill 或 agent 的名稱，而該名稱在 repo 目錄（`skills/`、`agents/`、`.claude/skills/`、`.claude/agents/`）中找不到對應定義檔，禁止逕自判定為幻覺或 dead reference、禁止列為 must-fix；該 skill 或 agent 可能是透過 plugin 或 marketplace 安裝、不在本 repo 內。此情況應降級回報為「無法驗證、可能為外部安裝」，交由 main agent 與使用者確認。豁免範圍僅限於名稱引用；若引用的是 repo 內某個具體檔案路徑（例如 `skills/foo/SKILL.md`）而該路徑不存在，仍屬有效的幻覺風險 finding，不在此豁免範圍。
 
 ## Output to Main Agent
 
