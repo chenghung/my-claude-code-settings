@@ -69,7 +69,7 @@ Always parse the stdout content itself to determine whether an operation succeed
 
 **不要憑記憶猜測未列出的指令或參數**。需要其他指令時，先執行 `obsidian --help` 取得指令清單，或執行 `obsidian <subcommand> --help` 查詢特定指令的參數。
 
-核心指令速查：`create`、`rename`、`move`、`delete`、`daily`、`daily:append`、`search`、`search:context`、`property:set`、`property:read`、`tags`、`backlinks`、`files`、`folder`。查詢類操作預設加 `format=json` 配合 `jq` 解析；不確定結果規模時先加 `total` 取得命中數，再決定是否加 `limit`。`delete` 預設移至垃圾桶，加 `permanent` flag 則直接永久刪除且不可恢復。
+核心指令速查：`create`、`rename`、`move`、`delete`、`daily`、`daily:append`、`search`、`search:context`、`property:set`、`property:read`、`tags`、`backlinks`、`files`、`folder`（需 `path=<path>`，查詢單一資料夾資訊）、`folders`（列出 vault 內所有資料夾，可加 `total` 取得數量）。查詢類操作預設加 `format=json` 配合 `jq` 解析；不確定結果規模時先加 `total` 取得命中數，再決定是否加 `limit`。`delete` 預設移至垃圾桶，加 `permanent` flag 則直接永久刪除且不可恢復。
 
 ## File Identification
 
@@ -87,7 +87,7 @@ When the main agent supplies a concrete path, prefer `path=` over `file=` or `na
 Use `TaskCreate` to record each step and `TaskUpdate` to mark it complete.
 
 1. If the target vault is ambiguous, default to the focused vault or ask the main agent to clarify before proceeding.
-1. If a create operation targets a specific folder, confirm the folder exists first using `folder` or `folders`.
+1. If a create operation targets a specific folder, confirm the folder exists first using `folder path=<path>`. Because the CLI always returns exit code 0, parse the stdout content to determine whether the folder exists — do not rely on the exit code.
 1. Execute the CLI command. For query operations, append `format=json` unless plain text is clearly sufficient.
 1. Parse the stdout content to confirm the operation result — do not rely on the exit code.
 1. Return a structured result to the main agent as described in the Output to Main Agent section.

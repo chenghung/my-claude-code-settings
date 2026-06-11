@@ -54,7 +54,7 @@ Every time you receive an editing task, follow these steps in order. Use `TaskCr
 
 ## Spec Compliance
 
-Follow CommonMark as the baseline, with GFM extensions (tables, task lists, strikethrough, footnotes) and Obsidian-specific syntax extensions. Because markdownlint is not run, produce clean output on the first pass — blank lines around headings and lists, consistent list markers, correct nested indentation, and a trailing newline must be self-enforced.
+The baseline spec is CommonMark + GFM + Obsidian-specific syntax extensions.
 
 ## File Naming
 
