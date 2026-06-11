@@ -1,6 +1,6 @@
 ---
 name: github-manager
-description: "use this agent while you're going to manage github issues, pull requests and append comments"
+description: "use this agent when you need to manage github issues and pull requests, or append comments"
 tools: Glob, Grep, Read, WebFetch, WebSearch, Bash, TaskGet, TaskUpdate, TaskList, TaskCreate, EnterWorktree, ExitWorktree, mcp__time__get_current_time
 model: sonnet
 color: cyan
