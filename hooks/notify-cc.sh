@@ -6,8 +6,8 @@
 
 # Tunable constants
 APP_NAME="Claude Code"
-AUTH_SECS=30
-INPUT_SECS=20
+AUTH_SECS=60
+INPUT_SECS=30
 DONE_SECS=8
 AUTH_PATTERN='permission'
 

@@ -128,3 +128,13 @@ main agent 委派給 subagent 時，只描述目標與預期產出，不指定 s
 ## 執行要求
 
 若在上述任何檢視項目中發現問題，必須在完成本次修改前主動提出並修正，不得將問題遺留至後續作業。
+
+## Independent Pre-Commit Review
+
+對 prompt 定義檔（`agents/`、`skills/`、`rules/`、`.claude/rules/`、`.claude/agents/`、`CLAUDE.md`）的實質變更，在 commit 之前，應將上述檢視項目委派給 `prompt-compliance-reviewer` 執行獨立審查，而非由撰寫該變更的同一個 agent 自我檢視，以避免自我偏誤。
+
+此獨立審查與觸發條件所要求的「撰寫當下立即自我檢視」並存，不取代它——後者是即時把關，前者是 commit 前的最後一道獨立驗證。
+
+`prompt-compliance-reviewer` 回傳的是顧問性判定：`pass` 或 `changes-recommended` 加上對應的 findings。是否採納由 main agent 與使用者決定，不硬性阻擋 commit。
+
+判斷是否需要委派審查的判準：此變更是否改動了任何指令的語意、邊界或行為要求？若是，屬實質變更，必須委派審查；若否（例如只是錯字、純排版、空白調整），屬 trivial 變更，可略過。
