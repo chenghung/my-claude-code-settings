@@ -66,6 +66,9 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ## Response
 
 - Must respond in Traditional Chinese for all questions
+- Lead with the conclusion (BLUF) and go top-down: state the answer, recommendation, or verdict first, then the detail that backs it up.
+- This is presentation order, not thinking order: reason first, then present conclusion-first. Surfacing tradeoffs and alternatives (per "Think Before Coding") follows the conclusion, it does not replace it.
+- Exception: when a turn is purely a clarifying question with no answer yet, ask directly — there is no conclusion to lead with.
 
 ---
 
