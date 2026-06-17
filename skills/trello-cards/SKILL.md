@@ -1,7 +1,7 @@
 ---
 name: trello-cards
 description: >
-  Handle all Trello card operations by delegating to the trello-manager subagent. Triggers when the user mentions Trello, pastes a trello.com URL, or requests query, create, update, delete, comment, or move operations on Trello cards. Trigger keywords: trello, Trello, trello.com
+  Handle all Trello card and notification operations by delegating to the trello-manager subagent. Triggers when the user mentions Trello, pastes a trello.com URL, or requests query, create, update, delete, comment, or move operations on Trello cards, or requests to view notifications or mark notifications as read or unread. Trigger keywords: trello, Trello, trello.com
 ---
 
 # Trello Cards
@@ -16,10 +16,11 @@ description: >
 
 傳給 trello-manager subagent 的 prompt 需包含以下內容：
 
-- **操作類型**：使用者要執行的動作（查詢、建立、更新、刪除、留言、搬移等）
+- **操作類型**：使用者要執行的動作（查詢、建立、更新、刪除、留言、搬移、查看通知、標示通知已讀或未讀等）
 - **Card URL**：若使用者提供了 trello.com URL，將原始 URL 直接傳給 subagent，由 subagent 負責解析
 - **Board 名稱**：若使用者有指定操作目標的 board
 - **操作內容**：使用者希望新增或修改的 card 內容（適用於建立與更新操作）
+- **通知識別資訊**：若使用者指定了某一則特定通知，將該通知的識別資訊一併傳給 subagent
 
 > [!NOTE]
 > subagent prompt 只描述目標與所需資訊，不包含任何 CLI 命令。CLI 命令的選擇與執行由 trello-manager subagent 全權負責。
