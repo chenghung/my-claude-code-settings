@@ -63,16 +63,6 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
-## Tools
-
-### Code Search and Navigation
-
-Choose the right tool based on context:
-
-- **LSP** — for code navigation and semantic analysis: `findReferences`, `goToDefinition`, `goToImplementation`, `incomingCalls`, `outgoingCalls`, `hover`, `documentSymbol`, `workspaceSymbol`
-- **Grep** — for cross-file text/pattern search such as finding string constants, config values, and regex patterns
-- **Glob** — for finding files by name or path pattern
-
 ## Response
 
 - Must respond in Traditional Chinese for all questions
