@@ -9,7 +9,17 @@ set -euo pipefail
 #   - 透過 pacman 安裝官方 repo 套件：jq、bat、glow、eza、csvlens、openai-codex
 #   - 透過 yay（AUR helper）安裝 AUR 套件：rtk、claude-code
 #   - 不再使用 npm 全域安裝任何工具（claude code / codex 已改走 repo 或 AUR）
-#   - 於 ~/.zshrc 內以 sentinel 標記包夾的方式新增 alias 區塊
+#   - 於 ~/.zshrc 內以 sentinel 標記包夾的方式維護（重生）alias 區塊
+# 冪等與衝突防護（重點）：
+#   - 每個工具改以「指令是否已存在」作為冪等判斷，而非僅靠 pacman/yay 的
+#     --needed。--needed 只在「同名套件」已安裝時才略過；當該工具是由
+#     「不同名的提供者套件」滿足時（例如 codex 由 AUR 的 openai-codex-bin
+#     提供，而非官方 repo 的 openai-codex），--needed 不會略過，pacman 仍會
+#     嘗試安裝同名官方套件，並因檔案（/usr/bin/<cmd>）衝突而整個 transaction
+#     失敗中止。
+#   - 因此本腳本對每個工具先檢查對應指令是否已存在：已存在即視為「已有可用
+#     版本」，安全略過，絕不強制改裝官方版而造成衝突或把較新版本降版；
+#     只有在指令完全不存在時，才依來源優先序安裝指定套件。
 # 執行前提：
 #   - 系統已安裝 yay（AUR helper）
 #   - pacman 與 yay 步驟會在執行期間透過 sudo 互動式輸入密碼
@@ -27,51 +37,111 @@ END_MARK="# <<< cli-tools aliases (managed) <<<"
 echo "==> 開始安裝 CLI 工具（此腳本可安全重複執行）"
 
 # ------------------------------------------------------------
+# 工具安裝守門函式
+#   參數：
+#     $1 = 對應的可執行指令名稱（用來判斷工具是否已存在）
+#     $2 = 要安裝的套件名稱
+#     $3.. = 安裝指令（例如 sudo pacman -S --needed --noconfirm）
+#   行為：
+#     - 若指令 $1 已存在（不論由哪個套件提供），印出既有提供者後略過，
+#       不再呼叫套件管理員，藉此避免不同名提供者套件造成的檔案衝突，
+#       同時保留使用者既有（可能較新）的版本。
+#     - 若指令不存在，才以指定的安裝指令安裝套件 $2。
+# ------------------------------------------------------------
+ensure_tool() {
+  local cmd="$1"
+  local pkg="$2"
+  shift 2
+  if command -v "$cmd" >/dev/null 2>&1; then
+    local owner
+    owner="$(pacman -Qoq "$(command -v "$cmd")" 2>/dev/null | head -n1 || true)"
+    if [ -n "$owner" ]; then
+      echo "    [略過] '${cmd}' 已存在，由套件 '${owner}' 提供，不重裝 '${pkg}'。"
+    else
+      echo "    [略過] '${cmd}' 已存在（非 pacman 套件管理，可能為手動安裝），不重裝 '${pkg}'。"
+    fi
+    return 0
+  fi
+  echo "    [安裝] 未偵測到 '${cmd}'，安裝套件 '${pkg}' ..."
+  "$@" "$pkg"
+}
+
+# ------------------------------------------------------------
 # 1) 官方 repo 套件（pacman）：jq bat glow eza csvlens openai-codex
 #    來源依據：以上六者官方 repo 皆有，且版本不過舊（優先序第 1 級）。
 #      - openai-codex 即 OpenAI Codex CLI 官方套件
-#        （github.com/openai/codex，提供 /usr/bin/codex），
-#        repo 版本與 npm 上游屬同一 0.x versioning，差距小、不過舊，
-#        故由官方 repo 安裝，取代原本的 npm 全域安裝。
-#    冪等機制：pacman --needed 會自動略過已安裝且為最新版的套件。
+#        （github.com/openai/codex，提供 /usr/bin/codex）。
+#    衝突防護：codex 可能已由 AUR 的 openai-codex-bin 等不同名套件提供；
+#      此時 /usr/bin/codex 已被佔用，直接 pacman -S openai-codex 會檔案衝突。
+#      故改用 ensure_tool 以「codex 指令是否存在」為準，已存在即略過。
+#    對應：套件名 -> 指令名
+#      jq->jq  bat->bat  glow->glow  eza->eza  csvlens->csvlens
+#      openai-codex->codex
 # ------------------------------------------------------------
-PACMAN_PKGS=(jq bat glow eza csvlens openai-codex)
-echo "==> [1/2] 透過 pacman 安裝官方 repo 套件：${PACMAN_PKGS[*]}"
-echo "    （--needed 會自動略過已安裝的套件，因此重複執行不會出錯）"
-sudo pacman -S --needed --noconfirm "${PACMAN_PKGS[@]}"
+echo "==> [1/2] 透過 pacman 安裝官方 repo 套件（已存在的工具會自動略過）"
+PACMAN_INSTALL=(sudo pacman -S --needed --noconfirm)
+ensure_tool jq           jq           "${PACMAN_INSTALL[@]}"
+ensure_tool bat          bat          "${PACMAN_INSTALL[@]}"
+ensure_tool glow         glow         "${PACMAN_INSTALL[@]}"
+ensure_tool eza          eza          "${PACMAN_INSTALL[@]}"
+ensure_tool csvlens      csvlens      "${PACMAN_INSTALL[@]}"
+ensure_tool codex        openai-codex "${PACMAN_INSTALL[@]}"
 
 # ------------------------------------------------------------
 # 2) AUR 套件（yay）：rtk claude-code
 #    來源依據：兩者官方 repo 皆無，但 AUR 有且版本不過舊（優先序第 2 級）。
 #      - rtk：官方安裝管道為 Homebrew / install.sh / cargo / 預建二進位，
 #        官方 repo 無；AUR 套件與 pacman 整合、可追蹤、易更新移除，最穩定。
-#      - claude-code：官方 repo 無；AUR 套件版本與 npm 官方上游一致且近期更新，
-#        故改由 AUR 安裝，取代原本的 npm 全域安裝。
-#    冪等機制：yay --needed 會略過已安裝且為最新版的套件。
+#      - claude-code：官方 repo 無；AUR 套件版本與 npm 官方上游一致且近期更新。
+#    衝突防護：同上，claude-code 可能由 claude-code-bin 等不同名套件提供，
+#      rtk 亦可能由其他變體提供；故同樣以「指令是否存在」為準。
+#    對應：套件名 -> 指令名
+#      rtk->rtk  claude-code->claude
 # ------------------------------------------------------------
-AUR_PKGS=(rtk claude-code)
-echo "==> [2/2] 透過 yay 安裝 AUR 套件：${AUR_PKGS[*]}"
+echo "==> [2/2] 透過 yay 安裝 AUR 套件（已存在的工具會自動略過）"
 if ! command -v yay >/dev/null 2>&1; then
   echo "    [錯誤] 找不到 yay，請先安裝 AUR helper 後再執行此腳本。" >&2
   exit 1
 fi
-yay -S --needed --noconfirm "${AUR_PKGS[@]}"
+YAY_INSTALL=(yay -S --needed --noconfirm)
+ensure_tool rtk    rtk         "${YAY_INSTALL[@]}"
+ensure_tool claude claude-code "${YAY_INSTALL[@]}"
 
 # ------------------------------------------------------------
-# 3) 寫入 alias 到 ~/.zshrc
-#    防重複機制：以 BEGIN/END sentinel 標記包夾整段 alias。
-#    若 ~/.zshrc 內已存在 BEGIN sentinel，代表已寫入過，直接略過，
-#    確保重複執行不會把 alias 區塊重覆附加到檔案。
+# 3) 同步 alias 到 ~/.zshrc（重生整個託管區塊）
+#    防重複與同步機制：以 BEGIN/END sentinel 標記包夾整段 alias，視為
+#    「託管區塊」。每次執行都用腳本當下定義的內容「重生」此區塊：
+#      - 完整區塊（BEGIN 與 END 皆在）：以 awk 只替換 BEGIN 與 END
+#        sentinel 之間（含兩行 sentinel）的範圍，sentinel 以外的內容
+#        一律原封不動。如此新增／修改／刪除腳本內的 alias，重跑後都會
+#        完整反映到託管區塊；alias 內容沒變時則產生與前次相同的結果，
+#        維持冪等、不重複附加。
+#      - 無區塊（首次執行，BEGIN 與 END 皆不在）：在檔案結尾以一行空行
+#        為分隔，新增整個區塊。
+#      - 殘缺狀態（只有 BEGIN 沒有 END，或只有 END 沒有 BEGIN）：無法
+#        安全判定託管範圍——若貿然附加新區塊，下次重跑時 awk 會把孤兒
+#        sentinel 與新區塊之間的使用者內容一併吞掉而造成資料遺失。故
+#        此處「停止並回報」，請使用者先手動修正成對 sentinel 後再執行，
+#        本腳本絕不自動改動既有殘缺標記。
+#    冪等關鍵：託管區塊本身（NEW_BLOCK）只含 BEGIN..END，不含前置空行；
+#      前置空行只屬於「附加」路徑、且永遠落在區塊之外。重生路徑替換的
+#      範圍恰為 BEGIN..END，因此區塊外既有的分隔空行不會被動到，也不會
+#      每次重跑就多長一行。
+#    literal 保留：clw / clre 等含 $() 的行以 quoted heredoc 產生，
+#      寫入後字面與來源完全一致，不會被 shell 展開。
 # ------------------------------------------------------------
-echo "==> 設定 alias 至 ${ZSHRC}"
+echo "==> 同步 alias 至 ${ZSHRC}"
 touch "$ZSHRC"
-if grep -qF "$BEGIN_MARK" "$ZSHRC"; then
-  echo "    偵測到既有的 alias 區塊（sentinel 已存在），略過寫入。"
-else
-  echo "    寫入 alias 區塊 ..."
-  cat >> "$ZSHRC" <<EOF
 
-${BEGIN_MARK}
+# 產生託管區塊內容（僅 BEGIN..END，不含前置空行）到暫存檔。
+# 區塊主體以 quoted heredoc（<<'EOF'）輸出：$()、引號皆原樣保留，
+# 不需逐字 escape，也不會被 shell 展開。
+NEW_BLOCK="$(mktemp)"
+MERGED=""
+trap 'rm -f "$NEW_BLOCK" "$MERGED"' EXIT
+{
+  echo "$BEGIN_MARK"
+  cat <<'EOF'
 # Aliases
 alias cat="bat"
 alias ls="eza"
@@ -85,10 +155,55 @@ alias cl="claude"
 alias cla='claude --permission-mode auto'
 alias clc="claude --permission-mode auto --continue"
 alias clr="claude --permission-mode auto --resume"
-alias clw='claude --permission-mode auto --worktree "\$(basename \$(git rev-parse --show-toplevel))/wt/\$(date +%Y%m%d-%H%M%S)"'
-alias clre="claude --permission-mode auto --remote-control --name remote-control-onr-notebook-\$(date +%Y%m%d-%H%M%S)"
-${END_MARK}
+alias clw='claude --permission-mode auto --worktree "$(basename $(git rev-parse --show-toplevel))/wt/$(date +%Y%m%d-%H%M%S)"'
+alias clre="claude --permission-mode auto --remote-control --name remote-control-onr-notebook-$(date +%Y%m%d-%H%M%S)"
+## aliases for npx skills
+alias skills="npx skills@latest"
+alias sk="npx skills@latest"
 EOF
+  echo "$END_MARK"
+} >"$NEW_BLOCK"
+
+has_begin=0
+has_end=0
+grep -qF "$BEGIN_MARK" "$ZSHRC" && has_begin=1
+grep -qF "$END_MARK"   "$ZSHRC" && has_end=1
+
+if [ "$has_begin" -eq 1 ] && [ "$has_end" -eq 1 ]; then
+  echo "    偵測到既有託管區塊，重生 sentinel 之間的內容（其餘原封不動）..."
+  MERGED="$(mktemp)"
+  # awk 流程：逐行讀 ~/.zshrc。
+  #   - 未進入區塊前：原樣輸出每一行。
+  #   - 遇到第一個 BEGIN sentinel：原地插入整份新區塊（NEW_BLOCK 已含
+  #     BEGIN/END 兩行），並進入 skip 狀態，丟棄舊區塊內所有行直到 END。
+  #   - 遇到 END sentinel：結束 skip，且該行本身一併丟棄（新區塊已含 END）。
+  #   以 -v 傳入 sentinel 字串並用 index() 做字面比對，避免 regex 轉義問題。
+  #   done 旗標確保只處理第一個託管區塊；其後重複出現的 sentinel 視為
+  #   一般內容原樣保留，不再觸發替換。
+  awk -v b="$BEGIN_MARK" -v e="$END_MARK" -v nb="$NEW_BLOCK" '
+    !done && !inblk && index($0, b) {
+      while ((getline line < nb) > 0) print line
+      close(nb)
+      inblk = 1
+      next
+    }
+    inblk && index($0, e) { inblk = 0; done = 1; next }
+    inblk { next }
+    { print }
+  ' "$ZSHRC" >"$MERGED"
+  cat "$MERGED" >"$ZSHRC"
+  echo "    託管區塊已重生完成。"
+elif [ "$has_begin" -eq 1 ] || [ "$has_end" -eq 1 ]; then
+  echo "    [錯誤] ${ZSHRC} 內偵測到殘缺的託管 sentinel（BEGIN/END 不成對）。" >&2
+  echo "           為避免重跑時誤刪 sentinel 之間的使用者內容，腳本停止，不做任何寫入。" >&2
+  echo "           請手動修正成對的 sentinel 標記後再重新執行：" >&2
+  echo "             BEGIN: ${BEGIN_MARK}" >&2
+  echo "             END:   ${END_MARK}" >&2
+  exit 1
+else
+  echo "    未偵測到託管區塊，於檔尾新增 ..."
+  # 附加路徑：先輸出一行空行作為與既有內容的分隔，再接整個區塊。
+  { echo ""; cat "$NEW_BLOCK"; } >>"$ZSHRC"
   echo "    alias 區塊已寫入完成。"
 fi
 
