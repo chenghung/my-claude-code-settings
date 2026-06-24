@@ -11,8 +11,6 @@
 
 ## Selection Notes
 
-- Trigger Scope 與各 subagent 自身的 In Scope 一致，本表只是 routing 速查。
-- 詳細邊界條件請見對應 agent 定義檔。
 - 跨範圍任務（例如同時涉及 GitHub PR 與 Linux 系統設定）時，main agent 應拆解後分別委派。
 
 ## Delegation Contract
