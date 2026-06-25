@@ -36,3 +36,7 @@ Main agent 只負責提供以下資訊給 subagent：
 單一編輯任務只應委派給其中一個 subagent，不得在同一次任務中交叉呼叫兩者。若任務跨越 Obsidian vault 與一般檔案（例如需要從一般 markdown 複製內容到 vault 筆記），應拆分為兩個獨立任務分別委派。
 
 **例外：在 Obsidian vault 中建立需要初始內容的新筆記。** 此場景屬於互斥原則的例外，完整協作流程由 `obsidian-notes` skill 定義，main agent 觸發該 skill 後依其指引處理，本 rule 不重複描述細節。
+
+## 範圍排除
+
+GitHub issue 與 PR 的標題及內文雖然以 markdown 格式撰寫，但不屬於本 rule 所規範的 markdown 檔案範圍，不應觸發 `markdown-editor` 或 `obsidian-md-editor`。此類內容的撰寫由 `github-issue-pr-authoring` skill 統籌處理。

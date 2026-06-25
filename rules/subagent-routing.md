@@ -5,13 +5,14 @@
 | Subagent | Trigger Scope |
 | --- | --- |
 | `docker-expert` | Dockerfile 撰寫與最佳化、Docker Compose 配置、容器 runtime 診斷（OOM、networking、resource constraints） |
-| `github-manager` | GitHub issues 與 pull requests 的查詢、建立、更新、留言 |
+| `github-manager` | 透過 gh 執行 GitHub issue 與 PR 的實際操作，涵蓋查詢、列表、檢視等唯讀操作，以及接收已組好的內容去建立或更新 issue 與 PR；不負責內文的結構化組裝 |
 | `manjaro-linux-admin` | Manjaro 或 Arch Linux 系統管理，包含系統診斷、log 分析、pacman/yay/flatpak 套件管理、需要 sudo 或修改系統狀態的操作 |
 | `shell-script-developer` | 產生 `.sh` 檔案、實質邏輯超過 20 行的 shell script，或含 eval、trap、特殊字元檔名處理、複雜 quoting 等高風險語法的片段 |
 
 ## Selection Notes
 
 - 跨範圍任務（例如同時涉及 GitHub PR 與 Linux 系統設定）時，main agent 應拆解後分別委派。
+- 當任務涉及建立或修改 issue 或 PR 的標題或內文時，應先觸發 `github-issue-pr-authoring` skill 進行內容組裝，再委派 `github-manager` 執行。
 
 ## Delegation Contract
 
