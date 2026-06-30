@@ -10,7 +10,7 @@ description: >
 
 本 skill 在主對話層（main agent）完成 issue 或 PR 的內容組裝，再把組裝好的標題、內文與 comment 清單交給 github-manager 執行實際的 gh 指令；main agent 本身不執行 gh。
 
-採這種分層是因為內容組裝需要 plan file 與整段對話脈絡，而解法圖示的類型選型也必須在 main agent 層先完成——這些都是執行型 subagent 拿不到或做不好的工作，因此讓內容在主層組裝、執行交給 github-manager。
+採這種分層是因為內容組裝需要 plan file 與整段對話脈絡，而解法圖示的類型選型也必須在 main agent 層先完成——這些都是執行型 subagent 拿不到或做不好的工作，因此讓內容在主層組裝、執行交給 github-manager。大綱骨架的產生可安全委派，因為 main agent 在派工前已從對話脈絡與 plan file 萃取出關鍵事實並提供給大綱產生環節；把大綱展開成完整內容的組裝工作與圖表類型選型，則仍留在 main agent 層。
 
 核心目標是讓產出的 issue 與 PR 內文由淺入深、由全局概觀逐步帶入細節，降低讀者的認知負載。具體做法由以下三條核心原則統攝。
 
@@ -38,6 +38,34 @@ comment 序列依照「從為什麼到怎麼做」的方向、由粗到細排列
 - 能用圖表達就用圖，圖為主、文字為輔。
 - 需要用文字解釋一件事情或一張圖時，優先用表格或清單逐步拆解，而非長段落。
 - 圖能降低理解成本才畫，圖無助理解時退回結構化的表格或清單文字。
+
+## 撰寫管線
+
+撰寫或修改 issue 或 PR 的標題或內文時，main agent 在主對話層統籌一條分階段且帶審查的撰寫管線；管線的繁簡依變更的重要性決定。
+
+**分層判準**：先判斷變更的重要性。屬於 major feature 走完整管線；
+屬於明確既非核心又低風險的 minor 變更（例如修改 validation rule、
+調整 style、增加 log），走輕量路徑。重要性不確定時，預設走完整管線，
+避免品質被默默打折。
+
+**完整管線**共六步：
+
+1. 派工 issue-pr-outline-drafter 產生分層大綱：提供 plan file 路徑與
+   關鍵事實給它，因為它沒有對話脈絡，請它逐段標明描述重點與圖表溝通意圖，
+   不需要圖的段落附理由；把它回傳的大綱寫入暫存檔，暫存檔依 tmp-file-usage rule 處理。
+1. 大綱審查迴圈：把暫存檔的大綱交給 issue-pr-content-reviewer 審查，
+   依其 findings 請 issue-pr-outline-drafter 修訂後再審，依內容複雜度
+   重複一到五回，審查者回報通過即提早結束。
+1. 大綱通過後，main agent 把大綱展開成完整內容，依圖示策略章節為每個圖表意圖完成選型並產生 DSL，再把 description、comment 序列與圖表 DSL 依既有 Issue 或 PR 撰寫規範組裝到暫存檔。
+1. 發佈前最終審查：把組裝好的完整內容交給 issue-pr-content-reviewer 審查，取得整體判定與帶有強度的 findings。
+1. main agent 依 findings 的強度決定是否在發佈前微調內容。
+1. 把完成的內容交給 github-manager 發佈，沿用既有的委派與更新冪等性規則。
+
+**輕量路徑**：省略多輪迴圈與最終審查，派工 issue-pr-outline-drafter
+產生大綱，由 issue-pr-content-reviewer 審查大綱一次，接著展開成完整
+內容並直接交給 github-manager 發佈，不做發佈前最終審查。
+
+issue-pr-outline-drafter 與 issue-pr-content-reviewer 是本 skill 內部管線的環節，由本 skill 統籌呼叫，不經由路由表觸發。
 
 ## 觸發與不觸發
 
@@ -104,7 +132,11 @@ comment 序列依照「從為什麼到怎麼做」的方向、由粗到細排列
 
 所有圖在產生之前，都必須先完成圖表類型的選型，以符合此 repo 既有的圖表輸出規範。
 
-預設使用 GitHub 原生可算繪的圖（包含 mermaid）。當原生圖無法表達所需圖形、改用 kroki 這類外部 renderer 把圖算繪成圖片嵌入時，必須注意：圖表原始碼會被送往外部服務，產生的圖片也由外部主機託管。含有敏感或內部資訊的圖不得送往外部 renderer，應改用原生可算繪的圖，或退回結構化的表格與清單文字。
+對本 repo 的 issue 與 PR 而言，外部 renderer 可接受；當 d2、PlantUML
+等需經外部 renderer 的圖在表達力上更適合時，可直接選用，不必為了原生
+算繪而退回表達力較弱的圖。安全邊界不變：含有敏感或內部資訊的圖不得送往
+kroki 這類外部 renderer，遇此情況應改用原生可算繪的圖，或退回結構化的
+表格與清單文字。
 
 ## 建立與修改一致性
 
