@@ -5,8 +5,11 @@
 # Target shell: bash — requires arrays, process substitution, and bash-specific
 #               string ops that are not available in POSIX sh.
 #
-# DESTRUCTIVE OPERATIONS: none. The script never deletes or overwrites any
-# existing file, directory, or symlink. Conflicts are reported and skipped.
+# DESTRUCTIVE OPERATIONS: one exception. The script never deletes or overwrites
+# any existing file, directory, or symlink outright — conflicts are reported
+# and skipped. The sole exception is backup_migrate_link, which renames a
+# pre-existing real file to a "<path>.pre-symlink.bak" path before replacing
+# it with a symlink, as a one-time migration.
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -16,6 +19,8 @@ IFS=$'\n\t'
 # ---------------------------------------------------------------------------
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
+AGENTS_HOME="${AGENTS_HOME:-${HOME}/.agents}"
 
 # ---------------------------------------------------------------------------
 # Counters
@@ -23,9 +28,6 @@ CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
 count_created=0
 count_ok=0
 count_skipped=0
-
-# settings.json merge outcome (populated later)
-settings_result="not attempted"
 
 # ---------------------------------------------------------------------------
 # Helper: create one symlink, enforcing idempotency and non-destructiveness.
@@ -111,127 +113,211 @@ link_items() {
   done < <(find "$repo_cat_dir" -maxdepth 1 -mindepth 1 -print0 | sort -z)
 }
 
+# Per-item symlink from an arbitrary source dir into an arbitrary dest dir.
+link_items_into() {
+  local src_dir="$1" dest_dir="$2"
+  [ -d "$src_dir" ] || return 0
+  mkdir -p "$dest_dir"
+  while IFS= read -r -d '' item_path; do
+    local name
+    name="$(basename "$item_path")"
+    link_one "${dest_dir}/${name}" "$item_path"
+  done < <(find "$src_dir" -maxdepth 1 -mindepth 1 -print0 | sort -z)
+}
+
+# Symlink every *.md under a commands dir into a flat prompts dir, flattening
+# nested paths with a hyphenated prefix:
+#   commands/vf/trello-board-sprint-review.md -> vf-trello-board-sprint-review.md
+link_commands_flat() {
+  local src_dir="$1" dest_dir="$2"
+  [ -d "$src_dir" ] || return 0
+  mkdir -p "$dest_dir"
+  while IFS= read -r -d '' md_path; do
+    local rel flat
+    rel="${md_path#"$src_dir"/}"
+    flat="${rel//\//-}"
+    link_one "${dest_dir}/${flat}" "$md_path"
+  done < <(find "$src_dir" -type f -name '*.md' -print0 | sort -z)
+}
+
 # ---------------------------------------------------------------------------
-# settings.json — merge notification hooks incrementally
+# Whole-file symlink with one-time backup migration.
+#   $1 = link path (where the symlink should live)
+#   $2 = repo source the link points to
+# If the link path is already the correct symlink, defer to link_one. If it is
+# a real (non-symlink) file, back it up to <path>.pre-symlink.bak first, then
+# replace it with the symlink and tell the user it is now symlink-managed.
 # ---------------------------------------------------------------------------
-merge_settings() {
-  local settings_file="${CLAUDE_CONFIG_DIR}/settings.json"
+backup_migrate_link() {
+  local link_path="$1"
+  local target_path="$2"
 
-  # Require jq; warn and skip gracefully if absent
-  if ! command -v jq > /dev/null 2>&1; then
-    printf '\nWARNING: jq not found — skipping settings.json hook merge.\n'
-    settings_result="skipped (jq not available)"
+  if [ -L "$link_path" ]; then
+    link_one "$link_path" "$target_path"
     return
   fi
 
-  # Bootstrap an empty JSON object when the file does not exist yet
-  if [ ! -f "$settings_file" ]; then
-    printf '{}' > "$settings_file"
-    printf '  CREATED  %s (empty JSON object)\n' "$settings_file"
-  fi
-
-  # Validate the file is parseable JSON before touching it
-  if ! jq empty "$settings_file" 2>/dev/null; then
-    printf '\nWARNING: %s is not valid JSON — skipping hook merge.\n' "$settings_file"
-    settings_result="skipped (invalid JSON)"
+  if [ -e "$link_path" ]; then
+    local backup="${link_path}.pre-symlink.bak"
+    [ -e "$backup" ] && backup="${backup}.$(date +%s)"
+    mv "$link_path" "$backup"
+    ln -s "$target_path" "$link_path"
+    printf '  MIGRATED %s\n           backed up existing file to: %s\n           this file is now symlink-managed by install.sh\n' \
+      "$link_path" "$backup"
+    count_created=$(( count_created + 1 ))
     return
   fi
 
-  # shellcheck disable=SC2016  # intentional literal string: $HOME must NOT expand here;
-  #   Claude Code expands it at hook-execution time, not at install time.
-  local stop_cmd='$HOME/.claude/hooks/notify-cc.sh done'
-  # shellcheck disable=SC2016  # same rationale as above
-  local notif_cmd='$HOME/.claude/hooks/notify-cc.sh notify'
+  ln -s "$target_path" "$link_path"
+  printf '  CREATED  %s -> %s\n' "$link_path" "$target_path"
+  count_created=$(( count_created + 1 ))
+}
 
-  # Check whether each hook is already present
-  local has_stop has_notif
-  # jq exits 0 even when the path is null, so test the actual string value
-  has_stop="$(jq --arg cmd "$stop_cmd" \
-    '[.hooks.Stop[]?.hooks[]? | select(.type=="command" and .command==$cmd)] | length' \
-    "$settings_file" 2>/dev/null || printf '0')"
-  has_notif="$(jq --arg cmd "$notif_cmd" \
-    '[.hooks.Notification[]?.hooks[]? | select(.type=="command" and .command==$cmd)] | length' \
-    "$settings_file" 2>/dev/null || printf '0')"
+deploy_claude() {
+  printf 'Deploying to Claude Code\n  target: %s\n\n' "$CLAUDE_CONFIG_DIR"
+  [ -d "$CLAUDE_CONFIG_DIR" ] || mkdir -p "$CLAUDE_CONFIG_DIR"
 
-  local stop_status notif_status
-  stop_status="already present"
-  notif_status="already present"
+  for category in agents rules hooks; do
+    link_directory "$category"
+  done
 
-  # Build the jq filter incrementally — only append missing hooks
-  local jq_filter='.'
+  for category in skills commands; do
+    link_items "$category"
+  done
 
-  if [ "$has_stop" -eq 0 ]; then
-    # Append a new Stop hook entry; preserve any existing Stop entries
-    jq_filter="${jq_filter}"' | .hooks.Stop = ((.hooks.Stop // []) + [{"hooks":[{"type":"command","command":"'"$stop_cmd"'"}]}])'
-    stop_status="added"
+  link_one "${CLAUDE_CONFIG_DIR}/CLAUDE.md" "${REPO_DIR}/CLAUDE.md"
+  backup_migrate_link "${CLAUDE_CONFIG_DIR}/settings.json" "${REPO_DIR}/platforms/claude/settings.json"
+}
+
+GEN_BANNER_MD='<!-- GENERATED by install.sh - do not edit. Source: CLAUDE.md + rules/*.md -->'
+
+# Concatenate CLAUDE.md then rules/*.md (alphabetical) into ~/.codex/AGENTS.md.
+generate_codex_agents_md() {
+  local out="${CODEX_HOME}/AGENTS.md"
+  [ -L "$out" ] && rm -f "$out"
+
+  {
+    printf '%s\n\n' "$GEN_BANNER_MD"
+    cat "${REPO_DIR}/CLAUDE.md"
+    while IFS= read -r -d '' rule; do
+      printf '\n\n---\n\n'
+      cat "$rule"
+    done < <(find "${REPO_DIR}/rules" -maxdepth 1 -type f -name '*.md' -print0 | sort -z)
+    printf '\n'
+  } > "$out"
+
+  printf '  GENERATED %s\n' "$out"
+
+  local size
+  size="$(wc -c < "$out")"
+  if [ "$size" -gt 32768 ]; then
+    printf '  WARNING  %s is %d bytes (> 32 KiB project_doc_max_bytes); Codex will truncate.\n' "$out" "$size"
   fi
+}
 
-  if [ "$has_notif" -eq 0 ]; then
-    jq_filter="${jq_filter}"' | .hooks.Notification = ((.hooks.Notification // []) + [{"hooks":[{"type":"command","command":"'"$notif_cmd"'"}]}])'
-    notif_status="added"
-  fi
-
-  # If nothing needs to change, skip the write entirely
-  if [ "$has_stop" -gt 0 ] && [ "$has_notif" -gt 0 ]; then
-    settings_result="Stop hook: already present | Notification hook: already present"
+# Generate one TOML per agents/*.md into ~/.codex/agents, then prune orphaned
+# generated TOMLs (only files that carry our generated banner are removed).
+generate_codex_subagents() {
+  if ! command -v python3 > /dev/null 2>&1; then
+    printf '  WARNING  python3 not found - skipping Codex subagent generation.\n'
     return
   fi
 
-  # Write atomically: jq to a temp file, then mv (same filesystem — atomic rename)
-  local tmp_file
-  tmp_file="$(mktemp "${settings_file}.tmp.XXXXXX")"
-  # shellcheck disable=SC2064  # we want $tmp_file expanded now, not at trap time
-  trap "rm -f '$tmp_file'" EXIT INT TERM
+  local agents_src="${REPO_DIR}/agents"
+  local agents_dst="${CODEX_HOME}/agents"
+  local converter="${REPO_DIR}/scripts/md-agent-to-toml.py"
+  mkdir -p "$agents_dst"
 
-  if jq "$jq_filter" "$settings_file" > "$tmp_file" 2>/dev/null; then
-    mv "$tmp_file" "$settings_file"
-    settings_result="Stop hook: ${stop_status} | Notification hook: ${notif_status}"
-  else
-    rm -f "$tmp_file"
-    printf '\nWARNING: jq transformation failed — settings.json was not modified.\n'
-    settings_result="skipped (jq transform error)"
+  local -A wanted=()
+  while IFS= read -r -d '' md_path; do
+    local base
+    base="$(basename "$md_path" .md)"
+    wanted["$base"]=1
+    local toml_path="${agents_dst}/${base}.toml"
+    if python3 "$converter" "$md_path" > "${toml_path}.tmp" 2>/dev/null; then
+      if [ -e "$toml_path" ] && ! head -1 "$toml_path" | grep -q 'GENERATED by install.sh'; then
+        rm -f "${toml_path}.tmp"
+        printf '  WARNING  %s already exists and is hand-authored (no GENERATED banner) - skipping to avoid destroying it.\n' "$toml_path"
+      else
+        mv "${toml_path}.tmp" "$toml_path"
+        printf '  GENERATED %s\n' "$toml_path"
+      fi
+    else
+      rm -f "${toml_path}.tmp"
+      printf '  WARNING  failed to convert %s - skipping.\n' "$md_path"
+    fi
+  done < <(find "$agents_src" -maxdepth 1 -type f -name '*.md' -print0 | sort -z)
+
+  while IFS= read -r -d '' toml_path; do
+    local base
+    base="$(basename "$toml_path" .toml)"
+    if [ -z "${wanted[$base]:-}" ] && head -1 "$toml_path" | grep -q 'GENERATED by install.sh'; then
+      rm -f "$toml_path"
+      printf '  PRUNED   %s (no repo source)\n' "$toml_path"
+    fi
+  done < <(find "$agents_dst" -maxdepth 1 -type f -name '*.toml' -print0 | sort -z)
+}
+
+deploy_codex() {
+  printf 'Deploying to Codex\n  target: %s\n\n' "$CODEX_HOME"
+  mkdir -p "$CODEX_HOME" "${CODEX_HOME}/agents" "${CODEX_HOME}/prompts" "${AGENTS_HOME}/skills"
+
+  link_items_into "${REPO_DIR}/skills" "${AGENTS_HOME}/skills"
+  link_commands_flat "${REPO_DIR}/commands" "${CODEX_HOME}/prompts"
+  backup_migrate_link "${CODEX_HOME}/config.toml" "${REPO_DIR}/platforms/codex/config.toml"
+
+  generate_codex_agents_md
+  generate_codex_subagents
+
+  if [ -L "${CODEX_HOME}/agents.md" ]; then
+    rm -f "${CODEX_HOME}/agents.md"
+    printf '  REMOVED  %s (legacy lowercase symlink)\n' "${CODEX_HOME}/agents.md"
   fi
 }
 
 # ---------------------------------------------------------------------------
-# Main
+# Platform selection: flags win; otherwise ask interactively (reads /dev/tty
+# so it still works when stdin is piped).
 # ---------------------------------------------------------------------------
-printf 'Deploying Claude Code customisations\n'
-printf '  repo:   %s\n' "$REPO_DIR"
-printf '  target: %s\n\n' "$CLAUDE_CONFIG_DIR"
+want_claude=""
+want_codex=""
 
-# Ensure the Claude config directory exists
-if [ ! -d "$CLAUDE_CONFIG_DIR" ]; then
-  mkdir -p "$CLAUDE_CONFIG_DIR"
-  printf 'MKDIR %s\n\n' "$CLAUDE_CONFIG_DIR"
+for arg in "$@"; do
+  case "$arg" in
+    --claude) want_claude=1 ;;
+    --codex)  want_codex=1 ;;
+    --all)    want_claude=1; want_codex=1 ;;
+    -h|--help) printf 'Usage: install.sh [--claude] [--codex] [--all]\n'; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$arg" >&2; exit 2 ;;
+  esac
+done
+
+if [ -z "$want_claude" ] && [ -z "$want_codex" ]; then
+  if ! { : > /dev/tty; } 2>/dev/null; then
+    printf 'Error: no controlling terminal available for interactive prompts.\n' >&2
+    printf 'Re-run with an explicit platform flag: --claude, --codex, or --all.\n' >&2
+    exit 2
+  fi
+
+  ask_yn() {
+    local reply
+    printf '%s [Y/n] ' "$1" > /dev/tty
+    read -r reply < /dev/tty || reply=""
+    case "$reply" in [nN]*) return 1 ;; *) return 0 ;; esac
+  }
+  ask_yn "Install for Claude Code?" && want_claude=1
+  ask_yn "Install for Codex?" && want_codex=1
 fi
 
-# --- Mode A: whole-directory symlinks ---
-printf '[Mode A] Directory-level symlinks\n'
-for category in agents rules hooks; do
-  printf ' %s:\n' "$category"
-  link_directory "$category"
-done
+if [ -z "$want_claude" ] && [ -z "$want_codex" ]; then
+  printf 'No platform selected - nothing to do.\n'
+  exit 0
+fi
 
-printf '\n'
+[ -n "$want_claude" ] && deploy_claude
+[ -n "$want_codex" ] && deploy_codex
 
-# --- Mode B: per-item symlinks ---
-printf '[Mode B] Per-item symlinks\n'
-for category in skills commands; do
-  printf ' %s:\n' "$category"
-  link_items "$category"
-done
-
-printf '\n'
-
-# --- settings.json hook merge ---
-printf '[settings.json] Notification hook merge\n'
-merge_settings
-printf '  result: %s\n\n' "$settings_result"
-
-# --- Summary ---
-printf '=== Summary ===\n'
+printf '\n=== Summary ===\n'
 printf '  created:  %d\n' "$count_created"
 printf '  ok:       %d\n' "$count_ok"
 printf '  skipped:  %d\n' "$count_skipped"
-printf '  settings: %s\n' "$settings_result"
