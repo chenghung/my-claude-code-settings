@@ -16,6 +16,8 @@ IFS=$'\n\t'
 # ---------------------------------------------------------------------------
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
+AGENTS_HOME="${AGENTS_HOME:-${HOME}/.agents}"
 
 # ---------------------------------------------------------------------------
 # Counters
@@ -23,9 +25,6 @@ CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
 count_created=0
 count_ok=0
 count_skipped=0
-
-# settings.json merge outcome (populated later)
-settings_result="not attempted"
 
 # ---------------------------------------------------------------------------
 # Helper: create one symlink, enforcing idempotency and non-destructiveness.
@@ -112,85 +111,36 @@ link_items() {
 }
 
 # ---------------------------------------------------------------------------
-# settings.json — merge notification hooks incrementally
+# Whole-file symlink with one-time backup migration.
+#   $1 = link path (where the symlink should live)
+#   $2 = repo source the link points to
+# If the link path is already the correct symlink, defer to link_one. If it is
+# a real (non-symlink) file, back it up to <path>.pre-symlink.bak first, then
+# replace it with the symlink and tell the user it is now symlink-managed.
 # ---------------------------------------------------------------------------
-merge_settings() {
-  local settings_file="${CLAUDE_CONFIG_DIR}/settings.json"
+backup_migrate_link() {
+  local link_path="$1"
+  local target_path="$2"
 
-  # Require jq; warn and skip gracefully if absent
-  if ! command -v jq > /dev/null 2>&1; then
-    printf '\nWARNING: jq not found — skipping settings.json hook merge.\n'
-    settings_result="skipped (jq not available)"
+  if [ -L "$link_path" ]; then
+    link_one "$link_path" "$target_path"
     return
   fi
 
-  # Bootstrap an empty JSON object when the file does not exist yet
-  if [ ! -f "$settings_file" ]; then
-    printf '{}' > "$settings_file"
-    printf '  CREATED  %s (empty JSON object)\n' "$settings_file"
-  fi
-
-  # Validate the file is parseable JSON before touching it
-  if ! jq empty "$settings_file" 2>/dev/null; then
-    printf '\nWARNING: %s is not valid JSON — skipping hook merge.\n' "$settings_file"
-    settings_result="skipped (invalid JSON)"
+  if [ -e "$link_path" ]; then
+    local backup="${link_path}.pre-symlink.bak"
+    [ -e "$backup" ] && backup="${backup}.$(date +%s)"
+    mv "$link_path" "$backup"
+    ln -s "$target_path" "$link_path"
+    printf '  MIGRATED %s\n           backed up existing file to: %s\n           this file is now symlink-managed by install.sh\n' \
+      "$link_path" "$backup"
+    count_created=$(( count_created + 1 ))
     return
   fi
 
-  # shellcheck disable=SC2016  # intentional literal string: $HOME must NOT expand here;
-  #   Claude Code expands it at hook-execution time, not at install time.
-  local stop_cmd='$HOME/.claude/hooks/notify-cc.sh done'
-  # shellcheck disable=SC2016  # same rationale as above
-  local notif_cmd='$HOME/.claude/hooks/notify-cc.sh notify'
-
-  # Check whether each hook is already present
-  local has_stop has_notif
-  # jq exits 0 even when the path is null, so test the actual string value
-  has_stop="$(jq --arg cmd "$stop_cmd" \
-    '[.hooks.Stop[]?.hooks[]? | select(.type=="command" and .command==$cmd)] | length' \
-    "$settings_file" 2>/dev/null || printf '0')"
-  has_notif="$(jq --arg cmd "$notif_cmd" \
-    '[.hooks.Notification[]?.hooks[]? | select(.type=="command" and .command==$cmd)] | length' \
-    "$settings_file" 2>/dev/null || printf '0')"
-
-  local stop_status notif_status
-  stop_status="already present"
-  notif_status="already present"
-
-  # Build the jq filter incrementally — only append missing hooks
-  local jq_filter='.'
-
-  if [ "$has_stop" -eq 0 ]; then
-    # Append a new Stop hook entry; preserve any existing Stop entries
-    jq_filter="${jq_filter}"' | .hooks.Stop = ((.hooks.Stop // []) + [{"hooks":[{"type":"command","command":"'"$stop_cmd"'"}]}])'
-    stop_status="added"
-  fi
-
-  if [ "$has_notif" -eq 0 ]; then
-    jq_filter="${jq_filter}"' | .hooks.Notification = ((.hooks.Notification // []) + [{"hooks":[{"type":"command","command":"'"$notif_cmd"'"}]}])'
-    notif_status="added"
-  fi
-
-  # If nothing needs to change, skip the write entirely
-  if [ "$has_stop" -gt 0 ] && [ "$has_notif" -gt 0 ]; then
-    settings_result="Stop hook: already present | Notification hook: already present"
-    return
-  fi
-
-  # Write atomically: jq to a temp file, then mv (same filesystem — atomic rename)
-  local tmp_file
-  tmp_file="$(mktemp "${settings_file}.tmp.XXXXXX")"
-  # shellcheck disable=SC2064  # we want $tmp_file expanded now, not at trap time
-  trap "rm -f '$tmp_file'" EXIT INT TERM
-
-  if jq "$jq_filter" "$settings_file" > "$tmp_file" 2>/dev/null; then
-    mv "$tmp_file" "$settings_file"
-    settings_result="Stop hook: ${stop_status} | Notification hook: ${notif_status}"
-  else
-    rm -f "$tmp_file"
-    printf '\nWARNING: jq transformation failed — settings.json was not modified.\n'
-    settings_result="skipped (jq transform error)"
-  fi
+  ln -s "$target_path" "$link_path"
+  printf '  CREATED  %s -> %s\n' "$link_path" "$target_path"
+  count_created=$(( count_created + 1 ))
 }
 
 # ---------------------------------------------------------------------------
@@ -224,14 +174,15 @@ done
 
 printf '\n'
 
-# --- settings.json hook merge ---
-printf '[settings.json] Notification hook merge\n'
-merge_settings
-printf '  result: %s\n\n' "$settings_result"
+# --- Claude config: CLAUDE.md and settings.json ---
+printf '[Claude config] CLAUDE.md and settings.json\n'
+link_one "${CLAUDE_CONFIG_DIR}/CLAUDE.md" "${REPO_DIR}/CLAUDE.md"
+backup_migrate_link "${CLAUDE_CONFIG_DIR}/settings.json" "${REPO_DIR}/platforms/claude/settings.json"
+
+printf '\n'
 
 # --- Summary ---
 printf '=== Summary ===\n'
 printf '  created:  %d\n' "$count_created"
 printf '  ok:       %d\n' "$count_ok"
 printf '  skipped:  %d\n' "$count_skipped"
-printf '  settings: %s\n' "$settings_result"
