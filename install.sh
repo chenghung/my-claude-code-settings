@@ -143,46 +143,58 @@ backup_migrate_link() {
   count_created=$(( count_created + 1 ))
 }
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-printf 'Deploying Claude Code customisations\n'
-printf '  repo:   %s\n' "$REPO_DIR"
-printf '  target: %s\n\n' "$CLAUDE_CONFIG_DIR"
+deploy_claude() {
+  printf 'Deploying to Claude Code\n  target: %s\n\n' "$CLAUDE_CONFIG_DIR"
+  [ -d "$CLAUDE_CONFIG_DIR" ] || mkdir -p "$CLAUDE_CONFIG_DIR"
 
-# Ensure the Claude config directory exists
-if [ ! -d "$CLAUDE_CONFIG_DIR" ]; then
-  mkdir -p "$CLAUDE_CONFIG_DIR"
-  printf 'MKDIR %s\n\n' "$CLAUDE_CONFIG_DIR"
+  for category in agents rules hooks; do
+    link_directory "$category"
+  done
+
+  for category in skills commands; do
+    link_items "$category"
+  done
+
+  link_one "${CLAUDE_CONFIG_DIR}/CLAUDE.md" "${REPO_DIR}/CLAUDE.md"
+  backup_migrate_link "${CLAUDE_CONFIG_DIR}/settings.json" "${REPO_DIR}/platforms/claude/settings.json"
+}
+
+# ---------------------------------------------------------------------------
+# Platform selection: flags win; otherwise ask interactively (reads /dev/tty
+# so it still works when stdin is piped).
+# ---------------------------------------------------------------------------
+want_claude=""
+want_codex=""
+
+for arg in "$@"; do
+  case "$arg" in
+    --claude) want_claude=1 ;;
+    --codex)  want_codex=1 ;;
+    --all)    want_claude=1; want_codex=1 ;;
+    -h|--help) printf 'Usage: install.sh [--claude] [--codex] [--all]\n'; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$arg" >&2; exit 2 ;;
+  esac
+done
+
+if [ -z "$want_claude" ] && [ -z "$want_codex" ]; then
+  ask_yn() {
+    local reply
+    printf '%s [Y/n] ' "$1" > /dev/tty
+    read -r reply < /dev/tty || reply=""
+    case "$reply" in [nN]*) return 1 ;; *) return 0 ;; esac
+  }
+  ask_yn "Install for Claude Code?" && want_claude=1
+  ask_yn "Install for Codex?" && want_codex=1
 fi
 
-# --- Mode A: whole-directory symlinks ---
-printf '[Mode A] Directory-level symlinks\n'
-for category in agents rules hooks; do
-  printf ' %s:\n' "$category"
-  link_directory "$category"
-done
+if [ -z "$want_claude" ] && [ -z "$want_codex" ]; then
+  printf 'No platform selected - nothing to do.\n'
+  exit 0
+fi
 
-printf '\n'
+[ -n "$want_claude" ] && deploy_claude
 
-# --- Mode B: per-item symlinks ---
-printf '[Mode B] Per-item symlinks\n'
-for category in skills commands; do
-  printf ' %s:\n' "$category"
-  link_items "$category"
-done
-
-printf '\n'
-
-# --- Claude config: CLAUDE.md and settings.json ---
-printf '[Claude config] CLAUDE.md and settings.json\n'
-link_one "${CLAUDE_CONFIG_DIR}/CLAUDE.md" "${REPO_DIR}/CLAUDE.md"
-backup_migrate_link "${CLAUDE_CONFIG_DIR}/settings.json" "${REPO_DIR}/platforms/claude/settings.json"
-
-printf '\n'
-
-# --- Summary ---
-printf '=== Summary ===\n'
+printf '\n=== Summary ===\n'
 printf '  created:  %d\n' "$count_created"
 printf '  ok:       %d\n' "$count_ok"
 printf '  skipped:  %d\n' "$count_skipped"
