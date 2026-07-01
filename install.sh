@@ -177,6 +177,12 @@ for arg in "$@"; do
 done
 
 if [ -z "$want_claude" ] && [ -z "$want_codex" ]; then
+  if ! { : > /dev/tty; } 2>/dev/null; then
+    printf 'Error: no controlling terminal available for interactive prompts.\n' >&2
+    printf 'Re-run with an explicit platform flag: --claude, --codex, or --all.\n' >&2
+    exit 2
+  fi
+
   ask_yn() {
     local reply
     printf '%s [Y/n] ' "$1" > /dev/tty
