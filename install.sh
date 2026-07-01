@@ -110,6 +110,33 @@ link_items() {
   done < <(find "$repo_cat_dir" -maxdepth 1 -mindepth 1 -print0 | sort -z)
 }
 
+# Per-item symlink from an arbitrary source dir into an arbitrary dest dir.
+link_items_into() {
+  local src_dir="$1" dest_dir="$2"
+  [ -d "$src_dir" ] || return 0
+  mkdir -p "$dest_dir"
+  while IFS= read -r -d '' item_path; do
+    local name
+    name="$(basename "$item_path")"
+    link_one "${dest_dir}/${name}" "$item_path"
+  done < <(find "$src_dir" -maxdepth 1 -mindepth 1 -print0 | sort -z)
+}
+
+# Symlink every *.md under a commands dir into a flat prompts dir, flattening
+# nested paths with a hyphenated prefix:
+#   commands/vf/trello-board-sprint-review.md -> vf-trello-board-sprint-review.md
+link_commands_flat() {
+  local src_dir="$1" dest_dir="$2"
+  [ -d "$src_dir" ] || return 0
+  mkdir -p "$dest_dir"
+  while IFS= read -r -d '' md_path; do
+    local rel flat
+    rel="${md_path#"$src_dir"/}"
+    flat="${rel//\//-}"
+    link_one "${dest_dir}/${flat}" "$md_path"
+  done < <(find "$src_dir" -type f -name '*.md' -print0 | sort -z)
+}
+
 # ---------------------------------------------------------------------------
 # Whole-file symlink with one-time backup migration.
 #   $1 = link path (where the symlink should live)
@@ -159,6 +186,15 @@ deploy_claude() {
   backup_migrate_link "${CLAUDE_CONFIG_DIR}/settings.json" "${REPO_DIR}/platforms/claude/settings.json"
 }
 
+deploy_codex() {
+  printf 'Deploying to Codex\n  target: %s\n\n' "$CODEX_HOME"
+  mkdir -p "$CODEX_HOME" "${CODEX_HOME}/agents" "${CODEX_HOME}/prompts" "${AGENTS_HOME}/skills"
+
+  link_items_into "${REPO_DIR}/skills" "${AGENTS_HOME}/skills"
+  link_commands_flat "${REPO_DIR}/commands" "${CODEX_HOME}/prompts"
+  backup_migrate_link "${CODEX_HOME}/config.toml" "${REPO_DIR}/platforms/codex/config.toml"
+}
+
 # ---------------------------------------------------------------------------
 # Platform selection: flags win; otherwise ask interactively (reads /dev/tty
 # so it still works when stdin is piped).
@@ -199,6 +235,7 @@ if [ -z "$want_claude" ] && [ -z "$want_codex" ]; then
 fi
 
 [ -n "$want_claude" ] && deploy_claude
+[ -n "$want_codex" ] && deploy_codex
 
 printf '\n=== Summary ===\n'
 printf '  created:  %d\n' "$count_created"
