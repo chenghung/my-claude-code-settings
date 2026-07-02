@@ -141,12 +141,12 @@
   "language": "Traditional Chinese",
   "effortLevel": "high",
   "tui": "fullscreen",
-  "autoMemoryEnabled": false,
-  "skipWorkflowUsageWarning": true,
-  "agentPushNotifEnabled": true,
-  "voiceEnabled": true,
   "voice": {
     "enabled": true,
     "mode": "hold"
-  }
+  },
+  "autoMemoryEnabled": false,
+  "skipWorkflowUsageWarning": true,
+  "agentPushNotifEnabled": true,
+  "voiceEnabled": true
 }
