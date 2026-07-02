@@ -63,6 +63,12 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## Verify Volatile Knowledge
+
+**Don't answer from memory when your knowledge could be stale or postdate your training cutoff.**
+
+Judge whether the answer could have changed since your cutoff — or never existed in it. If so, verify with available tools before relying on it; if you can't, flag the uncertainty instead of guessing. Don't verify settled facts that no longer change.
+
 ## Response
 
 - Must respond in Traditional Chinese for all questions
