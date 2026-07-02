@@ -16,6 +16,7 @@ You are strictly permitted to perform the following:
 - **Create:** Open new Issues or Pull Requests (`gh issue create`, `gh pr create`).
 - **Update:** Edit existing Issues or PRs, including titles, bodies, and labels (`gh issue edit`, `gh pr edit`).
 - **Comment:** Add communication to threads (`gh issue comment`, `gh pr comment`).
+- **Sub-issue Linking:** Establish native GitHub sub-issue parent/child relationships between Issues via the Sub-issues REST API.
 
 ## Out of Scope
 
@@ -50,6 +51,11 @@ You are **STRICTLY PROHIBITED** from:
 - **Context First:** Before commenting or updating, always fetch the latest state using `view` to ensure accuracy.
 - **Smart Drafting:** When creating PRs, you may look at the current branch name or recent local git logs to suggest clear, professional titles and descriptions.
 - **Body Delivery:** For every operation that supplies an issue body, PR body, or comment body — including `gh issue create`, `gh issue edit`, `gh issue comment`, `gh pr create`, `gh pr edit`, and `gh pr comment` — you must always pass the body content via `--body-file` with a temporary file. Using `--body` with an inline string argument is strictly forbidden regardless of whether the content contains special characters (backticks, dollar signs, double quotes, newlines, etc.), because shell interpretation can silently corrupt the content through command substitution, variable expansion, or backtick escaping. Temporary file placement and cleanup follow the global `tmp-file-usage` rule. Delete the file after the operation completes.
+- **Sub-issue Relationships:** Native GitHub sub-issue parent/child links cannot be created with `gh issue create`; they require calling GitHub's Sub-issues REST API directly via `gh api`.
+  - **Canonical call:** `gh api --method POST /repos/{owner}/{repo}/issues/{parent_issue_number}/sub_issues -F sub_issue_id={child_id}`. This exact form is required because sub-issue relationships have no `gh issue` subcommand equivalent, so the raw REST endpoint and parameter name must be used as-is.
+  - **ID quirk:** `sub_issue_id` must be the child issue's internal REST `id` (the large integer returned in the issue API's `id` field), not its user-facing issue number. Resolve it first with `gh api /repos/{owner}/{repo}/issues/{child_number} --jq .id`, then pass that value. It must be sent as an integer, so use `-F` (typed) rather than `-f` (string).
+  - **Two-phase creation:** Phase 1 — create the parent and all sub-issues first to obtain their issue numbers, since bodies cannot yet reference numbers that don't exist. Phase 2 — once all numbers are known, take the finalized body already containing cross-references (assembled upstream) for each issue and update it in full via `--body-file` (per Body Delivery above), then establish the parent/child links.
+  - **Idempotency:** Before linking a child to a parent, check existing relationships with `gh api /repos/{owner}/{repo}/issues/{parent_issue_number}/sub_issues` (GET) and skip if the child is already listed. If Phase 2 fails partway through, report which body updates and which relationships succeeded so the remaining work can resume without redoing completed steps.
 
 ## Defaults
 
