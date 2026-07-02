@@ -1,7 +1,7 @@
 ---
 name: github-issue-pr-authoring
 description: >
-  當使用者想建立或修改 GitHub issue 或 PR 的標題或內文時觸發。在主對話層完成分層內容組裝，再將組裝好的標題、內文與 comment 清單交給 github-manager 執行實際的 gh 指令。純查詢、列表、檢視等唯讀操作不觸發本 skill，直接交給 github-manager 處理即可。觸發關鍵字：github issue、github pr、pull request、開 issue、建立 issue、修改 issue、開 PR、issue description、PR description。
+  當使用者想建立或修改 GitHub issue 或 PR 的標題或內文時觸發。在主對話層完成分層內容組裝，再將組裝好的標題、內文與 comment 清單交給 github-manager 執行實際的 gh 指令。純查詢、列表、檢視等唯讀操作不觸發本 skill，直接交給 github-manager 處理即可。觸發關鍵字：github issue、github pr、pull request、開 issue、建立 issue、修改 issue、開 PR、issue description、PR description、sub-issue、子議題、拆解 issue、parent issue、多個 issue。
 ---
 
 # GitHub Issue / PR Authoring
@@ -48,6 +48,8 @@ comment 序列依照「從為什麼到怎麼做」的方向、由粗到細排列
 調整 style、增加 log），走輕量路徑。重要性不確定時，預設走完整管線，
 避免品質被默默打折。
 
+**Multi-issue 前置步驟**：當任務要拆成一個 parent 加多個 sub-issue 時，不論走完整管線或輕量路徑，都在派工大綱產生環節之前，先由 main agent 依 Multi-Issue 撰寫規範完成拆解規劃、產出拆解地圖，再把拆解地圖連同來源材料一起提供給 issue-pr-outline-drafter，讓它在同一次派工中為 parent 與每個 sub-issue 各自產出分層大綱。
+
 **完整管線**共六步：
 
 1. 派工 issue-pr-outline-drafter 產生分層大綱：提供 plan file 路徑與
@@ -57,7 +59,7 @@ comment 序列依照「從為什麼到怎麼做」的方向、由粗到細排列
    依其 findings 請 issue-pr-outline-drafter 修訂後再審，依內容複雜度
    重複一到五回，審查者回報通過即提早結束。
 1. 大綱通過後，main agent 把大綱展開成完整內容，依圖示策略章節為每個圖表意圖完成選型並產生 DSL，再把 description、comment 序列與圖表 DSL 依既有 Issue 或 PR 撰寫規範組裝到暫存檔。
-1. 發佈前最終審查：把組裝好的完整內容交給 issue-pr-content-reviewer 審查，取得整體判定與帶有強度的 findings。
+1. 發佈前最終審查：把組裝好的完整內容交給 issue-pr-content-reviewer 審查，取得整體判定與帶有強度的 findings；multi-issue 情境下，把組裝好的整組 parent 加 sub-issue 內容一起交給它審查，啟用跨 issue 連貫性與連結完整性檢查。
 1. main agent 依 findings 的強度決定是否在發佈前微調內容。
 1. 把完成的內容交給 github-manager 發佈，沿用既有的委派與更新冪等性規則。
 
@@ -96,6 +98,8 @@ issue-pr-outline-drafter 與 issue-pr-content-reviewer 是本 skill 內部管線
 1. **References** — 參考來源。
 1. **Signposting 導讀** — 末尾一行說明，明示更深入的解法探索、決策推導、實作規劃見下方留言，建議依序閱讀。
 
+**Multi-issue 情境下的 parent description**：在採用解法概觀之後、關鍵決策之前，插入「拆解總覽」一段；內容規範見 Multi-Issue 撰寫規範。
+
 **Comment 序列**（順序原則，非固定段數）：
 
 以下是相對順序，某一類若沒有內容，就不張貼該則 comment：
@@ -120,6 +124,30 @@ issue-pr-outline-drafter 與 issue-pr-content-reviewer 是本 skill 內部管線
 以最終 code change 為主角，禁止用逐一說明每個 commit 的方式來描述。
 
 **邊界情況：PR 無關聯 issue** — 並非每個 PR 都連到 issue。當 PR 沒有關聯的 issue 時，Issue 連結段省略，整份 PR description（含 TL;DR）改寫成自包含、能獨立讀懂，禁止留下指向不存在 issue 的死連結。
+
+## Multi-Issue 撰寫規範（Parent 與 Sub-Issue）
+
+當一個複雜任務要拆成一個 parent issue 加多個 GitHub 原生 sub-issue 時適用本節；本節疊加在既有 Issue 撰寫規範之上，不取代它。
+
+**拆解規劃階段**：管線最前面（派工大綱產生環節之前），先由 main agent 產出一份「拆解地圖」，內容包含 parent 的整體目標、sub-issue 清單（每個附一句話範圍），以及 sub-issue 之間的順序與依賴關係（誰阻擋誰、誰解鎖誰）。拆解規劃留在 main agent 層、不委派，理由與內容組裝留在主層一致——拆解需要完整的 plan file 與對話脈絡。拆解地圖產出後，用來驅動後續大綱產生環節。
+
+**Sub-issue 專屬輕量骨架**：sub-issue 不照抄 parent 的完整 description 骨架，也不開分層 comment 序列，改用以下四段，繁體中文依序排列：
+
+1. **定位** — 這個 sub-issue 屬於哪個 parent、是整體計畫的第幾步（共幾步）、依賴哪些 sub-issue、完成後解鎖哪些；並重述最小必要背景，讓這個 sub-issue 能獨立讀懂。
+1. **Spec** — 具體要做什麼，實作範圍與規格。
+1. **完成後的系統行為變化** — 這個 sub-issue 被 merge 後可觀察的前後對照。
+1. **Acceptance Criteria** — 這個 sub-issue 的驗收條件。
+
+圖優先原則、以及來源不足即省略、不捏造內容的原則，同樣適用於 sub-issue。
+
+**雙向連結**：sub-issue 端由定位段承載回連 parent 與依賴標註。parent 端則在其 description 新增「拆解總覽」一段，列出所有 sub-issue 與其順序、依賴關係，優先用一張依賴圖表達，依圖示策略章節完成選型；parent 末尾的 Signposting 導讀也要擴充，指向各 sub-issue。自包含帶來的最小背景重述是刻意的取捨，換來 reviewer 逐一查看 sub-issue 時零跳躍。
+
+**兩階段建立與冪等性**：parent 的拆解總覽要引用 sub-issue 編號、sub-issue 的定位段要引用 parent 與手足的編號——這些交叉引用編號在 issue 建立前都還不存在，形成循環，因此建立分兩階段進行：
+
+1. **階段一** — 建立 parent 與所有 sub-issue，取得各自編號；此時內文尚無法填入還不存在的交叉引用編號。
+1. **階段二** — 所有編號到手後，main agent 產出含完整交叉引用的最終內文，交由 github-manager 就地更新各 issue 內文，並建立原生父子關聯。
+
+冪等性上與更新冪等性章節一致：內文更新是整體替換，沒有重複風險；委派建立原生父子關聯同樣是冪等的，重複委派不會產生重複關聯，由 github-manager 自行保證。
 
 ## 更新冪等性
 
@@ -159,5 +187,7 @@ kroki 這類外部 renderer，遇此情況應改用原生可算繪的圖，或�
 > 這是若干則獨立的 comment，請依此次序張貼。
 
 更新既有 issue 時，comment 清單中每一則須明確標示性質：就地更新既有 comment 者附上對應既有 comment 的識別，新增 comment 者標示為新增；github-manager 依此無歧義地分別處理，若任何操作的可行性有疑慮，由它回報。
+
+Multi-issue 情境下，交付內容除了標題、內文與 comment 清單，還要以意圖層級要求 github-manager 建立 parent 與這些 sub-issue 的原生父子關聯，並提供相關的 issue number 等事實；具體如何建立原生父子關聯由 github-manager 自行負責，本 skill 不指定實作步驟。
 
 整合細節：github-manager 在處理連結 issue 的 PR 時，會自動在 PR 標題結尾補上 issue 參照、並在內文開頭補上 issue 連結，且此行為無法關閉。因此本 skill 在組裝 PR 內容時，不自行添加這兩項；只需把對應的 issue number 提供給 github-manager，由它自動補上，這樣才不會重複。
