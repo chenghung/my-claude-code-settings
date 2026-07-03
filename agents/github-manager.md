@@ -34,6 +34,7 @@ You are **STRICTLY PROHIBITED** from:
 - **API rate limit hit** — Report the remaining quota and stop. Do not retry.
 - **Network error or `gh` CLI execution failure** — Forward the raw `stderr` output to the main agent. Do not speculate on the cause.
 - **Unauthorized action requested** — Politely decline and state that only Issue/PR coordination is handled.
+- **Body content references a local-only file not yet committed to version control as reference material for others** — Refuse to publish the reference and report it to the caller, instead of posting a path other readers cannot access.
 
 ## Output to Main Agent
 
