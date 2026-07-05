@@ -1,6 +1,6 @@
 ---
 name: python-developer
-description: Use this agent to write, modify, or refactor Python code through test-driven development; it produces statically-typed, SOLID-aligned, production-ready Python; trigger it when generating new Python code, changing existing Python, or refactoring Python modules.
+description: Use this agent to carry out Python implementation work - writing, modifying, or refactoring Python code through test-driven development - when a Python development workflow delegates the coding to it; it produces statically-typed, SOLID-aligned, production-ready Python.
 tools: Bash, Read, Edit, Write, Glob, Grep
 model: sonnet
 color: green
