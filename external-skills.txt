@@ -1,0 +1,18 @@
+# external-skills.txt — manifest of public skills to install via
+# `npx skills add`, from the open agent skills ecosystem (skills.sh).
+#
+# Format: one entry per line, in the form owner/repo@skill
+#   e.g. vercel-labs/agent-skills@vercel-optimize
+#
+# Rules:
+#   - Blank lines are ignored.
+#   - Lines starting with # are treated as comments and ignored.
+#   - Everything else is passed as-is to `npx skills add <entry> ...`.
+#
+# The entries below are commented out by default so a fresh install does
+# not pull in any external skill until you opt in. Uncomment the ones you
+# want, or add your own line in the same owner/repo@skill format.
+
+# juliusbrussee/caveman@caveman-help
+# get-convex/agent-skills@convex-migration-helper
+# dietrichgebert/ponytail@ponytail-help
