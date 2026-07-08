@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # ============================================================
-# 腳本用途：在 Manjaro Linux 上安裝 15 個 CLI 工具，並將指定的
+# 腳本用途：在 Manjaro Linux 上安裝 16 個 CLI 工具，並將指定的
 #           alias 區塊冪等地寫入 ~/.zshrc。
 # 來源優先序（硬性）：官方 repo > AUR > pipx，且版本不可過舊。
 # 預期影響：
 #   - 透過 pacman 安裝官方 repo 套件：jq、bat、glow、eza、csvlens、
 #     openai-codex、abduco、lf、markdownlint-cli、tflint、python-pipx、shellcheck
-#   - 透過 yay（AUR helper）安裝 AUR 套件：rtk、claude-code
+#   - 透過 yay（AUR helper）安裝 AUR 套件：rtk、claude-code、opencode
 #   - 透過 pipx 安裝官方 repo 與 AUR 皆無的 python 套件：markitdown[all]
 #   - 不再使用 npm 全域安裝任何工具（claude code / codex 已改走 repo 或 AUR）
 #   - 於 ~/.zshrc 內以 sentinel 標記包夾的方式維護（重生）alias 區塊
@@ -105,15 +105,17 @@ ensure_tool pipx         python-pipx      "${PACMAN_INSTALL[@]}"
 ensure_tool shellcheck   shellcheck       "${PACMAN_INSTALL[@]}"
 
 # ------------------------------------------------------------
-# 2) AUR 套件（yay）：rtk claude-code
-#    來源依據：兩者官方 repo 皆無，但 AUR 有且版本不過舊（優先序第 2 級）。
+# 2) AUR 套件（yay）：rtk claude-code opencode-bin
+#    來源依據：三者官方 repo 皆無，但 AUR 有且版本不過舊（優先序第 2 級）。
 #      - rtk：官方安裝管道為 Homebrew / install.sh / cargo / 預建二進位，
 #        官方 repo 無；AUR 套件與 pacman 整合、可追蹤、易更新移除，最穩定。
 #      - claude-code：官方 repo 無；AUR 套件版本與 npm 官方上游一致且近期更新。
+#      - opencode-bin：對應 opencode 指令；Arch 與 Manjaro 皆無官方 repo，
+#        與 claude-code、rtk 同走 AUR 模式。
 #    衝突防護：同上，claude-code 可能由 claude-code-bin 等不同名套件提供，
 #      rtk 亦可能由其他變體提供；故同樣以「指令是否存在」為準。
 #    對應：套件名 -> 指令名
-#      rtk->rtk  claude-code->claude
+#      rtk->rtk  claude-code->claude  opencode-bin->opencode
 # ------------------------------------------------------------
 echo "==> [2/3] 透過 yay 安裝 AUR 套件（已存在的工具會自動略過）"
 if ! command -v yay >/dev/null 2>&1; then
@@ -123,6 +125,7 @@ fi
 YAY_INSTALL=(yay -S --needed --noconfirm)
 ensure_tool rtk    rtk         "${YAY_INSTALL[@]}"
 ensure_tool claude claude-code "${YAY_INSTALL[@]}"
+ensure_tool opencode opencode-bin "${YAY_INSTALL[@]}"
 
 # ------------------------------------------------------------
 # 3) pipx 套件：markitdown（帶 all extras，取得完整格式支援）
