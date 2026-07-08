@@ -7,6 +7,8 @@ fail=0
 pass() { printf 'PASS %s\n' "$1"; }
 bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 
+grep -qE '^ensure_tool opencode opencode-bin ' "$INSTALL_SH" && pass opencode-install-line || bad opencode-install-line
+
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 
