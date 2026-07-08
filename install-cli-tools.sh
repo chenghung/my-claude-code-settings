@@ -2,12 +2,12 @@
 set -euo pipefail
 
 # ============================================================
-# 腳本用途：在 Manjaro Linux 上安裝 14 個 CLI 工具，並將指定的
+# 腳本用途：在 Manjaro Linux 上安裝 15 個 CLI 工具，並將指定的
 #           alias 區塊冪等地寫入 ~/.zshrc。
 # 來源優先序（硬性）：官方 repo > AUR > pipx，且版本不可過舊。
 # 預期影響：
 #   - 透過 pacman 安裝官方 repo 套件：jq、bat、glow、eza、csvlens、
-#     openai-codex、abduco、lf、markdownlint-cli、tflint、python-pipx
+#     openai-codex、abduco、lf、markdownlint-cli、tflint、python-pipx、shellcheck
 #   - 透過 yay（AUR helper）安裝 AUR 套件：rtk、claude-code
 #   - 透過 pipx 安裝官方 repo 與 AUR 皆無的 python 套件：markitdown[all]
 #   - 不再使用 npm 全域安裝任何工具（claude code / codex 已改走 repo 或 AUR）
@@ -71,7 +71,7 @@ ensure_tool() {
 # ------------------------------------------------------------
 # 1) 官方 repo 套件（pacman）：
 #    jq bat glow eza csvlens openai-codex abduco lf markdownlint-cli
-#    tflint python-pipx
+#    tflint python-pipx shellcheck
 #    來源依據：以上皆有官方 repo 版本，且版本不過舊（優先序第 1 級）。
 #      - openai-codex 即 OpenAI Codex CLI 官方套件
 #        （github.com/openai/codex，提供 /usr/bin/codex）。
@@ -86,7 +86,8 @@ ensure_tool() {
 #    對應：套件名 -> 指令名
 #      jq->jq  bat->bat  glow->glow  eza->eza  csvlens->csvlens
 #      openai-codex->codex  abduco->abduco  lf->lf
-#      markdownlint-cli->markdownlint  tflint->tflint  python-pipx->pipx
+#      markdownlint-cli->markdownlint  tflint->tflint
+#      python-pipx->pipx  shellcheck->shellcheck
 # ------------------------------------------------------------
 echo "==> [1/3] 透過 pacman 安裝官方 repo 套件（已存在的工具會自動略過）"
 PACMAN_INSTALL=(sudo pacman -S --needed --noconfirm)
@@ -101,6 +102,7 @@ ensure_tool lf           lf               "${PACMAN_INSTALL[@]}"
 ensure_tool markdownlint markdownlint-cli "${PACMAN_INSTALL[@]}"
 ensure_tool tflint       tflint           "${PACMAN_INSTALL[@]}"
 ensure_tool pipx         python-pipx      "${PACMAN_INSTALL[@]}"
+ensure_tool shellcheck   shellcheck       "${PACMAN_INSTALL[@]}"
 
 # ------------------------------------------------------------
 # 2) AUR 套件（yay）：rtk claude-code
