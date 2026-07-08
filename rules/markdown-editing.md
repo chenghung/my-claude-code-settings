@@ -6,7 +6,7 @@ globs: "**/*.md"
 
 建立或修改任何 markdown 檔案時，main agent 必須從下列兩個 subagent 擇一執行實際的編輯工作，禁止 main agent 自行編輯 markdown 檔案：
 
-- `markdown-editor`：處理一般 markdown 檔案（software project README、docs、rule 檔、agent 定義、非 Obsidian 環境下的筆記等）
+- `markdown-editor`：處理一般 markdown 檔案（software project README、docs、非 Obsidian 環境下的筆記等）
 - `obsidian-md-editor`：處理 Obsidian vault 內的筆記，需套用 Obsidian 專屬語法（wiki-link、embed、block reference、Obsidian callout、typed property 等）
 
 ## Subagent 選擇
@@ -40,3 +40,7 @@ Main agent 只負責提供以下資訊給 subagent：
 ## 範圍排除
 
 GitHub issue 與 PR 的標題及內文雖然以 markdown 格式撰寫，但不屬於本 rule 所規範的 markdown 檔案範圍，不應觸發 `markdown-editor` 或 `obsidian-md-editor`。此類內容的撰寫由 `github-issue-pr-authoring` skill 統籌處理。
+
+領域驅動設計（DDD）建模流程產出的戰略與戰術模型檔，由該流程中負責建模的 subagent 於任務執行時直接寫入，屬領域專家的結構化產出，同樣排除於本 rule 所規範的 markdown 檔案範圍之外，不應改由 `markdown-editor` 或 `obsidian-md-editor` 代寫。此類產物的撰寫由 `ddd-modeling` skill 統籌處理。
+
+`agents/`、`skills/`、`rules/`、`.claude/rules/` 目錄下的定義檔，以及各層的 `CLAUDE.md`，屬於受 `subagent-architect`、`new-subagent-creation` 與 `prompt-quality-checks` 治理的 prompt 定義檔，由該治理管線於撰寫時直接產出並接受獨立合規審查，不屬於本 rule 所規範的一般 markdown 檔案範圍，不經 `markdown-editor` 或 `obsidian-md-editor` 路由。
