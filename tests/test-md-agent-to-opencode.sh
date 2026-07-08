@@ -28,7 +28,7 @@ printf '%s\n' "$out" | grep -qx '  edit: false' && pass ro-edit || bad ro-edit
 printf '%s\n' "$out" | grep -qx '  bash: false' && pass ro-bash || bad ro-bash
 printf '%s\n' "$out" | grep -q 'You are a read-only agent.' && pass body || bad body
 printf '%s\n' "$out" | grep -q '^name:' && bad no-name || pass no-name
-printf '%s\n' "$out" | grep -q '^model:' && bad no-model || pass no-model
+printf '%s\n' "$out" | grep -qx 'model: opencode-go/deepseek-v4-pro' && pass model-sonnet || bad model-sonnet
 
 # Case 2: writeable agent (tools include Write) -> no tools block
 cat > "$TMP/rw.md" <<'MD'
@@ -87,5 +87,32 @@ if python3 "$CONVERT" "$TMP/nofm.md" >/dev/null 2>&1; then bad missing-fm; else 
 # Case 7: missing description -> exit 1
 printf -- '---\nname: only-name\n---\nbody\n' > "$TMP/nodesc.md"
 if python3 "$CONVERT" "$TMP/nodesc.md" >/dev/null 2>&1; then bad missing-desc; else pass missing-desc; fi
+
+# Case 8: model inherit -> no model line
+cat > "$TMP/inh.md" <<'MD'
+---
+name: inh-agent
+description: inherits default
+tools: Read
+model: inherit
+---
+Body.
+MD
+out="$(python3 "$CONVERT" "$TMP/inh.md")"
+printf '%s\n' "$out" | grep -q '^model:' && bad inherit-omit || pass inherit-omit
+
+# Case 9: unknown model -> no model line + stderr warning
+cat > "$TMP/unk.md" <<'MD'
+---
+name: unk-agent
+description: has a literal model id
+tools: Read
+model: gpt-4
+---
+Body.
+MD
+out="$(python3 "$CONVERT" "$TMP/unk.md" 2>"$TMP/err")"
+printf '%s\n' "$out" | grep -q '^model:' && bad unknown-omit || pass unknown-omit
+[ -s "$TMP/err" ] && pass unknown-warn || bad unknown-warn
 
 exit $fail
