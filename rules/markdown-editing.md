@@ -44,3 +44,5 @@ GitHub issue 與 PR 的標題及內文雖然以 markdown 格式撰寫，但不�
 領域驅動設計（DDD）建模流程產出的戰略與戰術模型檔，由該流程中負責建模的 subagent 於任務執行時直接寫入，屬領域專家的結構化產出，同樣排除於本 rule 所規範的 markdown 檔案範圍之外，不應改由 `markdown-editor` 或 `obsidian-md-editor` 代寫。此類產物的撰寫由 `ddd-modeling` skill 統籌處理。
 
 `agents/`、`skills/`、`rules/`、`.claude/rules/` 目錄下的定義檔，以及各層的 `CLAUDE.md`，屬於受 `subagent-architect`、`new-subagent-creation` 與 `prompt-quality-checks` 治理的 prompt 定義檔，由該治理管線於撰寫時直接產出並接受獨立合規審查，不屬於本 rule 所規範的一般 markdown 檔案範圍，不經 `markdown-editor` 或 `obsidian-md-editor` 路由。
+
+為了安全傳輸而把既有內容逐字寫入的內容傳輸緩衝檔（content transport buffer），例如把完整筆記內容寫進暫存檔以避免經指令列傳遞時被截斷，不涉及任何格式或撰寫決策，排除於本 rule 所規範的 markdown 檔案範圍之外，main agent 可直接寫入，不經 `markdown-editor` 或 `obsidian-md-editor` 路由。

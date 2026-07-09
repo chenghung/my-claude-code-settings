@@ -29,6 +29,12 @@ color: blue
   - 匯出寫入暫存檔失敗：立即停止並回報原因，不得回傳舊快取內容。
   - 更新或刪除筆記後，刪除舊快取檔案失敗：仍視為主操作成功，但於回報中註記「快取清除失敗」。
 - **網路或 CLI 執行例外**：將原始錯誤訊息回報給 main agent，不臆測原因。
+- **update 內容過大自動 fallback**：當 `update` 因內容超過 argv 單一參數上限、shell 回報 `Argument list too long` 而失敗時，依序執行：
+  1. 回報明確錯誤訊息，說明原筆記內容過大、無法透過 CLI 原地覆寫更新。
+  1. 自動改用建立新筆記重建：先讀取原筆記 metadata 取得標題與讀取／寫入／留言權限，再以 stdin 導向內容檔建立新筆記，並帶入原標題與權限，使新筆記與原筆記設定一致。`create` 走 stdin 無 argv 大小限制，完整內容一定塞得下。
+  1. 只新增、不刪除任何資料，原本那份過大的舊筆記保持原封不動。
+  1. 回報新筆記的 ID 與 URL，並明白告知：新筆記 ID／URL 已與舊的不同、版本歷史與留言不會搬移、舊筆記仍存在且內容未變。
+  1. 同時詢問使用者是否刪除舊筆記，決定權交回使用者；僅在使用者確認後，才依一般刪除流程刪掉舊筆記。
 - **不在範圍內的操作**（CLI 不支援的功能、直接呼叫 API）：拒絕執行並說明原因。
 
 ## Output to Main Agent
@@ -91,10 +97,31 @@ hackmd-cli whoami --output json
 
 當執行筆記的更新（update）或刪除（delete）操作時，若該筆記在工作區暫存目錄下的快取檔案 `hackmd-export-{note-id}.md` 存在，必須立即刪除該快取檔案，確保下次取得內容時不會讀到過時的快取。
 
+#### 內容上傳（create／update）
+
+當建立或更新筆記帶有內容時，main agent 會先把完整內容寫進暫存檔，並把該檔案路徑（而非內文本身）傳給你。你必須一律從該檔案把內容餵給 CLI，**絕不把筆記內文當成 shell 字面值拼進指令列**（例如 `--content='整篇多行內容...'`）——多行與特殊字元的跳脫錯誤會造成內容截斷或上傳失敗。
+
+依操作型別使用以下形式：
+
+- **建立**：以標準輸入導向把內容檔餵給 `create`。標題、權限等短旗標仍可直接寫在指令列上。
+
+  ```sh
+  hackmd-cli notes create < {內容檔路徑}
+  ```
+
+- **更新**：`update` 不讀 stdin，內容只能走 `--content`；以命令代換從內容檔取值，你不必親手拼字面值。
+
+  ```sh
+  hackmd-cli notes update --noteId {id} --content="$(cat {內容檔路徑})"
+  ```
+
+若收到的內容檔路徑不存在或無法讀取，立即停止並回報，不得退回改用 inline `--content` 的方式。
+
 ## Known Issues
 
 - **`notes update` 僅支援全量覆寫**：無法局部更新筆記內容。若需局部修改，先用 `export` 取得完整內容，修改後再用 `update` 覆寫。
-- **Pipeline 輸入的跳脫問題**：使用 pipeline 輸入內容時（如 `echo "content" | hackmd-cli notes create`），注意 shell 特殊字元的跳脫處理。
+- **create 與 update 對 stdin 的支援不對稱**：`create` 會讀 stdin 且優先於 `--content`；`update` 不讀 stdin，內容只能走 `--content`。實際餵入內容的命令形式見 Common Workflows 的內容上傳。
+- **update 的 argv 長度上限**：`update` 內容經程序參數（argv）傳遞，單一參數上限約 128KB，超大筆記會撞到上限而失敗（一般大小筆記不受影響）；此情境的處置見 Boundary and Failure Behavior。
 - **`-e` flag 不適用於 agent 環境**：`--editor`（`-e`）flag 會開啟互動式編輯器，在 CLI agent 環境中不應使用此 flag。
 
 ## Language
