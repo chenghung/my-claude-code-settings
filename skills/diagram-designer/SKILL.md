@@ -42,6 +42,7 @@ description: 圖表設計選型知識庫。當使用者要求繪製、設計或�
    - **優先選 Mermaid**：HackMD 與 GitHub markdown 均原生渲染 Mermaid，不需要透過 kroki.io 等第三方服務，是最輕量的選擇。
    - **只有在 Mermaid 不支援該圖表類型，或 Mermaid 的表達能力明顯不足時**，才考慮 d2、PlantUML、Graphviz。
    - **當任務本質是「長期維護的多視角系統架構文件」而非單張圖時**，跳出單張圖的選型思維，改選 Structurizr。Structurizr 的核心抽象是「一份 model 加上多個 view」，能從同一份 DSL 自動產出 context、container、component、dynamic、deployment 等多張視圖，元件改名或重構時所有視圖同步更新。判斷訊號：預期圖數量達五張以上、跨團隊或跨季度維護、需要嚴格遵循 C4 model 階層。若只是單張一次性架構圖，仍應選 Mermaid 或 d2，不應為了單張圖引入 Structurizr。
+   - **當意圖是「呈現介面長什麼樣、控制項怎麼排」而非「元件關係」時**，選 PlantUML salt。salt 歸於結構圖分支下，但獨立指名判斷，不與其餘結構圖服務混在一起選擇。
 
 ## 概念對應到圖表
 
@@ -57,6 +58,7 @@ description: 圖表設計選型知識庫。當使用者要求繪製、設計或�
 | OOP 類別繼承關係 | Mermaid `classDiagram` | 原生 render |
 | UML component / deployment / use case | PlantUML | Mermaid 不支援或語法受限 |
 | UML activity（含複雜分支與並行） | PlantUML | Mermaid `flowchart` 表達力不足 |
+| UI/UX 介面草圖、wireframe、mockup（登入頁、表單、清單、對話框佈局） | PlantUML salt | 現有其他服務皆不擅長介面佈局；salt 是純文字 DSL，AI 可讀可改 |
 | 網路拓樸或大型有向圖（節點 > 10） | Graphviz (dot) | 自動 layout 演算法處理大量節點 |
 | 心智圖 / 概念發散 | Mermaid `mindmap` | 原生 render |
 | 專案時程 / 甘特圖 | Mermaid `gantt` | 原生 render |
@@ -106,6 +108,7 @@ d2 的 layout 引擎包含 dagre（預設）、elk、tala；render style 分為�
 - Deployment diagram（部署圖）
 - Activity diagram（活動圖，含進階分支與並行語法）
 - Use case diagram（使用案例圖）
+- Wireframe / UI mockup（salt 語法，`@startsalt` 包住；diagram type 仍為 `plantuml`）
 - 其他 Mermaid 不支援或語法限制較多的 UML 類型
 
 ### Structurizr
@@ -215,6 +218,7 @@ google-chrome-stable "$target" & disown
 | `references/d2-terrastruct-icons.md`（索引檔） | 使用 d2 並需要 terrastruct icons 時，**第一階段**先載入此索引檔，確認 provider 結構與 URL pattern |
 | `references/d2-terrastruct-icons/<provider>.md`（子檔） | **第二階段**依使用者需求載入對應 provider 子檔（例如畫 AWS 架構圖 → 載入 `aws.md`）；不要一次載入全部子檔，只載入當下需要的 provider |
 | `references/plantuml-stdlib-includes.md` | 使用 PlantUML 並需要 C4 model、AWS / Azure / GCP / Kubernetes 圖示庫時 |
+| `references/plantuml-salt.md` | 使用 PlantUML salt 畫 wireframe / UI mockup 時載入 |
 | `references/d2-layout-engines.md` | 使用 d2 且圖較複雜，需要決定 layout engine 或 render style 時 |
 
 Vega-Lite 不需動態載入 reference，因官方 example gallery 已在 LLM 訓練資料中，且 spec 結構穩定。
