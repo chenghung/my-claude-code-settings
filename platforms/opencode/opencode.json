@@ -3,7 +3,8 @@
   "model": "opencode-go/glm-5.2",
   "plugin": [
     "@warp-dot-dev/opencode-warp@0.1.5",
-    "@slkiser/opencode-quota"
+    "@slkiser/opencode-quota",
+    "superpowers@git+https://github.com/obra/superpowers.git"
   ],
   "permission": "allow"
 }

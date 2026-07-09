@@ -347,7 +347,6 @@ deploy_opencode() {
   generate_opencode_subagents
 
   install_external_skills "opencode"
-  install_superpowers "opencode"
 }
 
 # ---------------------------------------------------------------------------
@@ -401,24 +400,21 @@ install_external_skills() {
 # ---------------------------------------------------------------------------
 # OpenSpec CLI (Fission-AI) — a plain npm-global tool, not part of the skills
 # ecosystem, so it is installed with `npm install -g` rather than `skills`.
-# Idempotent: skipped entirely if the `openspec` binary is already on PATH.
+# Platform-independent: all three platforms share the same global install, so
+# this runs once regardless of which platforms were selected.
+# Re-run every time to install or update to latest: `npm install -g <pkg>@latest`
+# is idempotent and refreshes an existing global install in place.
 # ---------------------------------------------------------------------------
 install_openspec() {
   [ -n "$skip_external" ] && return
-
-  if command -v openspec > /dev/null 2>&1; then
-    printf '  OK       openspec already installed — skipping\n'
-    count_ok=$(( count_ok + 1 ))
-    return
-  fi
 
   if ! command -v npm > /dev/null 2>&1; then
     printf '  WARNING  npm not found - skipping openspec install.\n'
     return
   fi
 
-  if npm install --global @fission-ai/openspec; then
-    printf '  INSTALLED @fission-ai/openspec (openspec)\n'
+  if npm install --global @fission-ai/openspec@latest; then
+    printf '  INSTALLED @fission-ai/openspec@latest (openspec)\n'
     count_created=$(( count_created + 1 ))
   else
     printf '  WARNING  failed to install @fission-ai/openspec - skipping.\n'
@@ -427,11 +423,18 @@ install_openspec() {
 }
 
 # ---------------------------------------------------------------------------
-# Superpowers plugin — installed via each platform's native plugin manager.
-# For Claude Code, installed from claude-plugins-official marketplace.
-# For Codex, installed from openai-curated marketplace.
-# For opencode, installed via npm into node_modules + auto-discovered wrapper plugin.
-# Idempotent: prints "already installed" when already present.
+# Superpowers plugin — installed/updated via each platform's native plugin
+# manager. Re-run every time so the plugin tracks the latest version:
+#   - Claude Code: `claude plugin list` tells install from update apart, since
+#     `claude plugin install` errors on an already-installed plugin and
+#     `claude plugin update` errors on one that isn't installed yet.
+#   - Codex: has no per-plugin update subcommand. The documented update path
+#     is `codex plugin marketplace upgrade` (refresh the Git marketplace
+#     snapshot) followed by `codex plugin add` again, so that sequence is run
+#     unconditionally every time (upgrade failure is non-fatal — e.g. first
+#     run with no snapshot yet — and the add is still attempted).
+# opencode is intentionally not handled here; its superpowers install is
+# managed declaratively elsewhere.
 # ---------------------------------------------------------------------------
 install_superpowers() {
   local platform="$1"
@@ -444,12 +447,22 @@ install_superpowers() {
         printf '  WARNING  claude CLI not found - skipping superpowers plugin install.\n'
         return
       fi
-      if claude plugin install superpowers@claude-plugins-official; then
-        printf '  INSTALLED superpowers plugin (claude)\n'
-        count_created=$(( count_created + 1 ))
+      if claude plugin list 2>/dev/null | grep -q 'superpowers'; then
+        if claude plugin update superpowers; then
+          printf '  UPDATED  superpowers plugin (claude)\n'
+          count_ok=$(( count_ok + 1 ))
+        else
+          printf '  WARNING  failed to update superpowers plugin for claude - skipping.\n'
+          count_skipped=$(( count_skipped + 1 ))
+        fi
       else
-        printf '  WARNING  failed to install superpowers plugin for claude - skipping.\n'
-        count_skipped=$(( count_skipped + 1 ))
+        if claude plugin install superpowers@claude-plugins-official; then
+          printf '  INSTALLED superpowers plugin (claude)\n'
+          count_created=$(( count_created + 1 ))
+        else
+          printf '  WARNING  failed to install superpowers plugin for claude - skipping.\n'
+          count_skipped=$(( count_skipped + 1 ))
+        fi
       fi
       ;;
     codex)
@@ -457,35 +470,20 @@ install_superpowers() {
         printf '  WARNING  codex CLI not found - skipping superpowers plugin install.\n'
         return
       fi
+      # Refresh the marketplace snapshot first so the subsequent add pulls
+      # the latest version; a failure here is non-fatal (e.g. the
+      # marketplace has never been synced yet) so the add is still tried.
+      if ! codex plugin marketplace upgrade; then
+        printf '  WARNING  failed to refresh codex plugin marketplace snapshot - continuing.\n'
+      fi
+      # `plugin add` is codex's only install/update entry point (no separate
+      # update subcommand), so any exit-0 run is counted as handled — we
+      # cannot cheaply tell "new" apart from "updated" here.
       if codex plugin add superpowers@openai-curated; then
         printf '  INSTALLED superpowers plugin (codex)\n'
         count_created=$(( count_created + 1 ))
       else
         printf '  WARNING  failed to install superpowers plugin for codex - skipping.\n'
-        count_skipped=$(( count_skipped + 1 ))
-      fi
-      ;;
-    opencode)
-      if ! command -v npm > /dev/null 2>&1; then
-        printf '  WARNING  npm not found - skipping superpowers plugin install.\n'
-        return
-      fi
-      if npm install superpowers@git+https://github.com/obra/superpowers.git --prefix "$OPENCODE_CONFIG_DIR"; then
-        mkdir -p "$OPENCODE_CONFIG_DIR/plugins"
-        cat > "$OPENCODE_CONFIG_DIR/plugins/superpowers.js" << 'WRAPPER'
-// GENERATED by install.sh — do not edit.
-const mod = await import("superpowers");
-const fn = mod.SuperpowersPlugin || mod.default;
-
-export default async (ctx) => {
-  if (typeof fn !== "function") return {};
-  return fn(ctx);
-};
-WRAPPER
-        printf '  INSTALLED superpowers plugin (opencode)\n'
-        count_created=$(( count_created + 1 ))
-      else
-        printf '  WARNING  failed to install superpowers plugin for opencode - skipping.\n'
         count_skipped=$(( count_skipped + 1 ))
       fi
       ;;
