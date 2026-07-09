@@ -4,6 +4,6 @@
   "plugin": [
     "@warp-dot-dev/opencode-warp@0.1.5",
     "@slkiser/opencode-quota"
-  ]
-
+  ],
+  "permission": "allow"
 }
