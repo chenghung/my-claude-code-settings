@@ -171,15 +171,11 @@ Vega-Lite 採用 JSON declarative 語法，LLM 寫出正確 spec 的機率高，
 
 確認需求後再選型，避免草稿完成後需要大幅重畫。
 
-## kroki.io 預覽 URL
+## 圖表預覽
 
-kroki.io 是公開的圖表渲染服務，URL 格式如下：
+預覽一律透過 `skills/diagram-designer/scripts/render.sh <diagram_type>` 產生，圖表 DSL 原始碼由 stdin 餵入，不透過命令列參數傳遞。main agent 呼叫前須先把環境變數 `DIAGRAM_TMP_DIR` 設為工作區 `.tmp`（依 `tmp-file-usage` rule 解析出的實際路徑）。
 
-```text
-https://kroki.io/<diagram_type>/<output_format>/<encoded_source>
-```
-
-`diagram_type` 對應表：
+`diagram_type` 對應表（即 render.sh 的第一個參數）：
 
 | 服務 | diagram\_type |
 | --- | --- |
@@ -190,27 +186,25 @@ https://kroki.io/<diagram_type>/<output_format>/<encoded_source>
 | Graphviz | `graphviz` |
 | Vega-Lite | `vegalite` |
 
-`output_format` 放 kroki 接受的格式，例如 `svg`、`png`。
+render.sh 依序嘗試三層渲染，任一層成功即在 stdout 印出單一行「可開啟目標」並結束，stderr 說明是哪一層產生的結果：
 
-`encoded_source` 必須透過本 skill 提供的 `scripts/kroki-encode.py` 產生，**禁止 LLM 自行手算或用其他方式編碼**（例如 URL percent-encoding 不可代用）。腳本以 stdin 接收 DSL 原始碼，stdout 輸出可直接拼進 URL 的字串：
+1. 本機原生 CLI（Mermaid 對應 mmdc、d2 對應 d2、Graphviz 對應 dot）
+1. 本地 docker kroki——僅在加上 `--docker` flag 且容器可連通時才會嘗試；容器需自行手動啟動，render.sh 不會代為啟動
+1. 遠端 kroki.io——前兩層皆不可用時的最終回退
 
-```bash
-# Pipe the DSL source into the encoder; capture stdout as encoded_source
-cat <DSL 檔案路徑> | python3 ~/.claude/skills/diagram-designer/scripts/kroki-encode.py
-```
-
-腳本內部執行 zlib 壓縮 + base64 url-safe（去除 `=` padding），這是 kroki.io 唯一接受的編碼方式。腳本失敗（例如 Python 不可用）時，回報錯誤並停止，不嘗試替代編碼。
-
-產生完整 URL 後，main agent 必須立即執行以下指令，在背景以 Google Chrome 開啟圖表：
+stdout 印出的單行，本地渲染成功時是暫存 SVG 的絕對路徑，回退遠端時是 `https://kroki.io/<diagram_type>/svg/<encoded>`。main agent 取得這一行後，不論是本地路徑或遠端 URL，一律以同一種方式在背景開啟：
 
 ```bash
-# Open the kroki.io URL in Google Chrome in the background
-google-chrome-stable "<URL>" & disown
+# DIAGRAM_TMP_DIR 由 main agent 設為工作區 .tmp；開啟 render.sh 印出的單行目標
+target="$(printf '%s' "$DSL" | DIAGRAM_TMP_DIR=<workspace>/.tmp skills/diagram-designer/scripts/render.sh <diagram_type>)"
+google-chrome-stable "$target" & disown
 ```
 
-若 `google-chrome-stable` 不可用或執行失敗，才退回將 URL 直接提供給使用者點擊查看。任何情況下均不得僅在聊天訊息中展示原始 URL 而不嘗試開啟。
+若 `google-chrome-stable` 不可用或執行失敗，才退回將該行內容直接提供給使用者查看。任何情況下均不得僅在聊天訊息中展示原始路徑或 URL 而不嘗試開啟。
 
-預覽 URL 不取代寫檔流程，最終仍須將圖表寫入 `.md` 檔案。
+遠端層所需的 zlib 壓縮 + base64 url-safe 編碼，由 render.sh 內部呼叫 `scripts/kroki-encode.py` 完成，LLM 不自行編碼、也不自行拼組 kroki URL。
+
+預覽不取代寫檔流程，最終仍須將圖表寫入 `.md` 檔案。
 
 ## Reference 動態載入
 
@@ -230,7 +224,7 @@ Vega-Lite 不需動態載入 reference，因官方 example gallery 已在 LLM �
 Main agent 回應使用者時應包含以下三個部分：
 
 1. **選型說明**：選用哪種服務與哪種圖表類型，以及理由（一至兩句純文字）
-1. **預覽呈現**：說明已產生 kroki.io 預覽 URL，並告知使用者圖表即將或已在瀏覽器開啟；URL 本身不貼到聊天回應，實際開啟流程依 `diagram-output` rule 執行
+1. **預覽呈現**：說明已呼叫 render.sh 取得預覽目標並在瀏覽器開啟；目標路徑或 URL 本身不貼到聊天回應，實際開啟流程依 `diagram-output` rule 執行
 1. **後續寫入說明**：若使用者要將圖表寫進 `.md` 檔，依 `markdown-editing` rule 委派處理；DSL 原始碼透過該委派流程交付，不經聊天回應中轉
 
 圖表 DSL 原始碼（mermaid、d2、plantuml、graphviz、structurizr、vega-lite 等）禁止以 fenced code block 或任何其他形式直接貼入聊天回應。此規定對所有支援的服務皆適用，包含 Mermaid，不因 Mermaid 在部分 markdown 環境可原生渲染而例外。此禁令的適用範圍僅限於本 skill 被觸發後的設計產出流程；`diagram-output.md` 已劃出「使用者明示要原始碼」與「只需要 ASCII 字元圖示」這兩條例外路徑，在那兩種情境下本 skill 根本不應被觸發，故此禁令不覆蓋那兩條路徑。
