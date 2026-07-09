@@ -150,10 +150,32 @@ d2 的 layout 引擎包含 dagre（預設）、elk、tala；render style 分為�
 - heatmap 與 box plot
 - histogram
 - pie chart 等統計圖表
+- 迴歸線 / 趨勢擬合（`regression`、`loess` transform）
+- 分布圖：density、violin（以 `layer` 疊）
+- faceting 小多圖（`facet` / `row` / `column`）
+- 多視圖組合：`layer` 疊圖、`hconcat` / `vconcat` 儀表板式排版
+- 互動圖表：`params` selection（縮放、篩選、聯動）
 
 Vega-Lite 採用 JSON declarative 語法，LLM 寫出正確 spec 的機率高，且官方 example gallery 已涵蓋絕大多數常見圖表類型。透過 kroki.io 以圖片方式嵌入 markdown。
 
+#### 資料形狀 → 圖型
+
+面對數值資料時，應依資料形狀判斷圖型，而非直接套用使用者口中提到的圖表名稱：
+
+- 兩個連續變數想看相關性 → scatter + 迴歸線
+- 時間序列且需比較多組 → 多線圖；組數過多、線條互相遮蔽時改用 faceting 小多圖
+- 需要比較分布差異 → violin 或 box
+- 表達佔比 → 類別數少用 pie，類別數一多改用 bar（pie 類別一多，角度差異難以判讀）
+
+資料圖表另需注意以下設計原則（延伸「設計原則」章節，僅適用於資料視覺化）：
+
+- **顏色語意跨圖一致**：同一資料維度在同一份文件中應維持相同的顏色對應，避免同一類別在不同圖表換色，讀者才能靠顏色比對資料
+- **軸是否含 0 基準視圖表類型而定**：以長度表達數值的圖型（如長條圖）必須從 0 開始，避免視覺上誇大差異；以趨勢為重的圖型（如折線圖）可視需要局部放大
+- **圖例可讀性**：類別數量一多，圖例應緊鄰對應圖形或直接標籤在資料點旁，避免讀者反覆對照圖例與圖形
+
 不適用情境：流程、架構、關係圖等結構性表達——這些請使用其餘五種服務。
+
+進階 spec（`regression`、`facet`、`layer`、`selection` 等）的 JSON 結構已在模型訓練資料中，依 `prompt-quality-checks` 「只寫模型推不出的內容」原則，本節不為此另建 reference 檔；強化重點聚焦於選型與設計判斷，而非語法教學。
 
 ## 設計原則
 
