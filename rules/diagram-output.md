@@ -1,6 +1,6 @@
 # 圖表輸出規則
 
-在 CLI 中，需外部 renderer 顯示的圖表 DSL 直接輸出到 stdout 沒意義，本規則規定改寫入 `.md` 檔或以 kroki.io 預覽。
+在 CLI 中，需外部 renderer 顯示的圖表 DSL 直接輸出到 stdout 沒意義，本規則規定改寫入 `.md` 檔，或透過本地／遠端 renderer 預覽。
 
 ## 適用語法
 
