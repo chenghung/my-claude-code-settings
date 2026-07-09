@@ -1,6 +1,6 @@
 ---
 name: diagram-designer
-description: 圖表設計選型知識庫。當使用者要求繪製、設計或產生圖表（流程圖、架構圖、時序圖、ER 圖、心智圖、UML 元件圖、網路拓樸等），或詢問該用哪種圖表語法，或提供需求想把概念或實際數值資料視覺化時觸發。不應觸發：使用者只要 ASCII 示意圖、只是修正既有圖表的小錯字、已明確指定語法且只要原始碼。觸發關鍵字：畫圖、流程圖、架構圖、時序圖、ER 圖、心智圖、網路拓樸、UML、diagram、mermaid、d2、plantuml、graphviz、vega、vega-lite、vegalite、資料圖表、bar chart、line chart、scatter plot、效能圖表、趨勢圖、圖表選型
+description: 圖表設計選型知識庫。當使用者要求繪製、設計或產生圖表（流程圖、架構圖、時序圖、ER 圖、心智圖、UML 元件圖、網路拓樸、介面草圖 wireframe / UI mockup 等），或詢問該用哪種圖表語法，或提供需求想把概念或實際數值資料視覺化時觸發。不應觸發：使用者只要 ASCII 示意圖、只是修正既有圖表的小錯字、已明確指定語法且只要原始碼。觸發關鍵字：畫圖、流程圖、架構圖、時序圖、ER 圖、心智圖、網路拓樸、UML、diagram、mermaid、d2、plantuml、graphviz、salt、wireframe、UI mockup、mockup、介面草圖、vega、vega-lite、vegalite、資料圖表、bar chart、line chart、scatter plot、效能圖表、趨勢圖、dashboard、儀表板、圖表選型
 ---
 
 # Diagram Designer Skill
@@ -151,7 +151,7 @@ d2 的 layout 引擎包含 dagre（預設）、elk、tala；render style 分為�
 - histogram
 - pie chart 等統計圖表
 - 迴歸線 / 趨勢擬合（`regression`、`loess` transform）
-- 分布圖：density、violin（以 `layer` 疊）
+- 分布圖：density、violin（皆以 `density` transform 計算）
 - faceting 小多圖（`facet` / `row` / `column`）
 - 多視圖組合：`layer` 疊圖、`hconcat` / `vconcat` 儀表板式排版
 - 互動圖表：`params` selection（縮放、篩選、聯動）
@@ -174,8 +174,6 @@ Vega-Lite 採用 JSON declarative 語法，LLM 寫出正確 spec 的機率高，
 - **圖例可讀性**：類別數量一多，圖例應緊鄰對應圖形或直接標籤在資料點旁，避免讀者反覆對照圖例與圖形
 
 不適用情境：流程、架構、關係圖等結構性表達——這些請使用其餘五種服務。
-
-進階 spec（`regression`、`facet`、`layer`、`selection` 等）的 JSON 結構已在模型訓練資料中，依 `prompt-quality-checks` 「只寫模型推不出的內容」原則，本節不為此另建 reference 檔；強化重點聚焦於選型與設計判斷，而非語法教學。
 
 ## 設計原則
 
@@ -214,7 +212,7 @@ Vega-Lite 採用 JSON declarative 語法，LLM 寫出正確 spec 的機率高，
 render.sh 依序嘗試三層渲染，任一層成功即在 stdout 印出單一行「可開啟目標」並結束，stderr 說明是哪一層產生的結果：
 
 1. 本機原生 CLI（Mermaid 對應 mmdc、d2 對應 d2、Graphviz 對應 dot）
-1. 本地 docker kroki——僅在加上 `--docker` flag 且容器可連通時才會嘗試；容器需自行手動啟動，render.sh 不會代為啟動
+1. 本地 docker kroki——僅在加上 `--docker` flag 且容器可連通時才會嘗試；容器需自行手動啟動，render.sh 不會代為啟動。預設不加 `--docker`，僅在使用者明確要求本地或離線預覽、或遠端 kroki.io 不可用時才加
 1. 遠端 kroki.io——前兩層皆不可用時的最終回退
 
 stdout 印出的單行，本地渲染成功時是暫存 SVG 的絕對路徑，回退遠端時是 `https://kroki.io/<diagram_type>/svg/<encoded>`。main agent 取得這一行後，不論是本地路徑或遠端 URL，一律以同一種方式在背景開啟：
@@ -243,7 +241,7 @@ google-chrome-stable "$target" & disown
 | `references/plantuml-salt.md` | 使用 PlantUML salt 畫 wireframe / UI mockup 時載入 |
 | `references/d2-layout-engines.md` | 使用 d2 且圖較複雜，需要決定 layout engine 或 render style 時 |
 
-Vega-Lite 不需動態載入 reference，因官方 example gallery 已在 LLM 訓練資料中，且 spec 結構穩定。
+Vega-Lite 不需動態載入 reference（含 `regression`、`facet`、`layer`、`selection` 等進階 spec）——官方 example gallery 與這些 spec 結構已在 LLM 訓練資料中；資料圖的強化聚焦於選型與設計判斷，而非語法教學。
 
 ## 輸出格式
 
