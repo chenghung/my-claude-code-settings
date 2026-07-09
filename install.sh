@@ -5,11 +5,16 @@
 # Target shell: bash — requires arrays, process substitution, and bash-specific
 #               string ops that are not available in POSIX sh.
 #
-# DESTRUCTIVE OPERATIONS: one exception. The script never deletes or overwrites
-# any existing file, directory, or symlink outright — conflicts are reported
-# and skipped. The sole exception is backup_migrate_link, which renames a
-# pre-existing real file to a "<path>.pre-symlink.bak" path before replacing
-# it with a symlink, as a one-time migration.
+# DESTRUCTIVE OPERATIONS: two exceptions. The script never deletes or
+# overwrites any existing file, directory, or symlink outright — conflicts
+# are reported and skipped. The exceptions are:
+#   - backup_migrate_link: renames a pre-existing real file to a
+#     "<path>.pre-symlink.bak" path before replacing it with a symlink, as a
+#     one-time migration.
+#   - seed_managed_file: when called with its force flag set (only from
+#     --force-config), backs up a pre-existing Codex-owned real file to a
+#     "<path>.pre-force-config.bak" path before overwriting it with a fresh
+#     copy of the repo template.
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -175,6 +180,58 @@ backup_migrate_link() {
   count_created=$(( count_created + 1 ))
 }
 
+# ---------------------------------------------------------------------------
+# One-time seed of a platform-owned real file from a repo template — for
+# config files that the platform itself rewrites at runtime (e.g. Codex
+# writes plugin/marketplace snapshot fields and TUI state back into
+# config.toml). Symlinking such a file into the repo would let the platform's
+# runtime writes corrupt the version-controlled template, so this always
+# leaves a real, standalone file at $link_path.
+#   $1 = target path (the platform-owned real file)
+#   $2 = repo template path to seed it from
+#   $3 = force flag (non-empty = overwrite an existing real file)
+# Semantics:
+#   - missing             -> copy from template (created)
+#   - existing symlink    -> one-time migration: remove the symlink, copy the
+#                            template in as a real file (created)
+#   - existing real file  -> left untouched unless force is set, in which
+#                            case it is backed up (same backup scheme as
+#                            backup_migrate_link) then overwritten
+# ---------------------------------------------------------------------------
+seed_managed_file() {
+  local link_path="$1"
+  local template_path="$2"
+  local force="${3:-}"
+
+  if [ -L "$link_path" ]; then
+    rm -f "$link_path"
+    cp "$template_path" "$link_path"
+    printf '  MIGRATED %s\n           was a repo symlink; now seeded as a real file owned by the platform\n' "$link_path"
+    count_created=$(( count_created + 1 ))
+    return
+  fi
+
+  if [ -e "$link_path" ]; then
+    if [ -n "$force" ]; then
+      local backup="${link_path}.pre-force-config.bak"
+      [ -e "$backup" ] && backup="${backup}.$(date +%s)"
+      mv "$link_path" "$backup"
+      cp "$template_path" "$link_path"
+      printf '  REWRITTEN %s\n            backed up existing file to: %s\n            re-seeded from repo template (--force-config)\n' \
+        "$link_path" "$backup"
+      count_created=$(( count_created + 1 ))
+    else
+      printf '  OK       %s\n           already seeded and owned by the platform - not overwriting (use --force-config to re-seed)\n' "$link_path"
+      count_ok=$(( count_ok + 1 ))
+    fi
+    return
+  fi
+
+  cp "$template_path" "$link_path"
+  printf '  CREATED  %s (seeded from %s)\n' "$link_path" "$template_path"
+  count_created=$(( count_created + 1 ))
+}
+
 deploy_claude() {
   printf 'Deploying to Claude Code\n  target: %s\n\n' "$CLAUDE_CONFIG_DIR"
   [ -d "$CLAUDE_CONFIG_DIR" ] || mkdir -p "$CLAUDE_CONFIG_DIR"
@@ -322,7 +379,7 @@ deploy_codex() {
 
   link_items_into "${REPO_DIR}/skills" "${AGENTS_HOME}/skills"
   link_commands_flat "${REPO_DIR}/commands" "${CODEX_HOME}/prompts"
-  backup_migrate_link "${CODEX_HOME}/config.toml" "${REPO_DIR}/platforms/codex/config.toml"
+  seed_managed_file "${CODEX_HOME}/config.toml" "${REPO_DIR}/platforms/codex/config.toml" "$force_config"
 
   generate_agents_md "${CODEX_HOME}/AGENTS.md" codex
   generate_codex_subagents
@@ -426,11 +483,14 @@ install_openspec() {
 # ---------------------------------------------------------------------------
 # Superpowers plugin — installed/updated via each platform's native plugin
 # manager. Re-run every time so the plugin tracks the latest version.
-#   - Codex: has no per-plugin update subcommand. The documented update path
-#     is `codex plugin marketplace upgrade` (refresh the Git marketplace
-#     snapshot) followed by `codex plugin add` again, so that sequence is run
-#     unconditionally every time (upgrade failure is non-fatal — e.g. first
-#     run with no snapshot yet — and the add is still attempted).
+#   - Codex: superpowers is declared declaratively inside the seeded
+#     config.toml itself ([plugins."superpowers@superpowers-dev"] +
+#     [marketplaces.superpowers-dev], pointing at the obra/superpowers Git
+#     repo). `codex plugin marketplace upgrade` alone reads that declaration,
+#     fetches the marketplace, and installs/enables the plugin — idempotent
+#     and exit-0 on repeat runs. There is no separate `codex plugin add` step:
+#     the marketplace name it would require was never registered under that
+#     identifier, so that call always failed.
 # Claude Code and opencode are intentionally not handled here; both declare
 # superpowers declaratively in their own config (settings.json enabledPlugins
 # and opencode.json plugin array respectively) so each harness installs and
@@ -447,20 +507,14 @@ install_superpowers() {
         printf '  WARNING  codex CLI not found - skipping superpowers plugin install.\n'
         return
       fi
-      # Refresh the marketplace snapshot first so the subsequent add pulls
-      # the latest version; a failure here is non-fatal (e.g. the
-      # marketplace has never been synced yet) so the add is still tried.
-      if ! codex plugin marketplace upgrade; then
-        printf '  WARNING  failed to refresh codex plugin marketplace snapshot - continuing.\n'
-      fi
-      # `plugin add` is codex's only install/update entry point (no separate
-      # update subcommand), so any exit-0 run is counted as handled — we
-      # cannot cheaply tell "new" apart from "updated" here.
-      if codex plugin add superpowers@openai-curated; then
+      # This single command both fetches the declared marketplace and
+      # installs/enables the plugin it declares; any exit-0 run is counted
+      # as handled — we cannot cheaply tell "new" apart from "updated" here.
+      if codex plugin marketplace upgrade; then
         printf '  INSTALLED superpowers plugin (codex)\n'
         count_created=$(( count_created + 1 ))
       else
-        printf '  WARNING  failed to install superpowers plugin for codex - skipping.\n'
+        printf '  WARNING  failed to run codex plugin marketplace upgrade - skipping.\n'
         count_skipped=$(( count_skipped + 1 ))
       fi
       ;;
@@ -478,6 +532,7 @@ want_claude=""
 want_codex=""
 want_opencode=""
 skip_external=""
+force_config=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -486,7 +541,14 @@ for arg in "$@"; do
     --opencode) want_opencode=1 ;;
     --all)    want_claude=1; want_codex=1; want_opencode=1 ;;
     --no-external) skip_external=1 ;;
-    -h|--help) printf 'Usage: install.sh [--claude] [--codex] [--opencode] [--all] [--no-external]\n'; exit 0 ;;
+    --force-config) force_config=1 ;;
+    -h|--help)
+      printf 'Usage: install.sh [--claude] [--codex] [--opencode] [--all] [--no-external] [--force-config]\n'
+      printf '  --force-config  re-seed an already-seeded Codex config.toml from the repo\n'
+      printf '                  template (backs up the existing file first). Codex-only;\n'
+      printf '                  no effect on Claude Code or opencode.\n'
+      exit 0
+      ;;
     *) printf 'Unknown option: %s\n' "$arg" >&2; exit 2 ;;
   esac
 done

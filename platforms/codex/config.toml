@@ -38,5 +38,9 @@ enabled = false
 path = "/home/eddie/.codex/skills/.system/imagegen/SKILL.md"
 enabled = false
 
-[plugins."superpowers@openai-curated"]
+[plugins."superpowers@superpowers-dev"]
 enabled = true
+
+[marketplaces.superpowers-dev]
+source_type = "git"
+source = "https://github.com/obra/superpowers.git"
