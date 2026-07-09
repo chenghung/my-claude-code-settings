@@ -37,3 +37,6 @@ enabled = false
 [[skills.config]]
 path = "/home/eddie/.codex/skills/.system/imagegen/SKILL.md"
 enabled = false
+
+[plugins."superpowers@openai-curated"]
+enabled = true
