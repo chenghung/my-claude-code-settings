@@ -1,6 +1,6 @@
 ---
 name: diagram-designer
-description: 圖表設計選型知識庫。當使用者要求繪製、設計或產生圖表（流程圖、架構圖、時序圖、ER 圖、心智圖、UML 元件圖、網路拓樸、介面草圖 wireframe / UI mockup 等），或詢問該用哪種圖表語法，或提供需求想把概念或實際數值資料視覺化時觸發。不應觸發：使用者只要 ASCII 示意圖、只是修正既有圖表的小錯字、已明確指定語法且只要原始碼。觸發關鍵字：畫圖、流程圖、架構圖、時序圖、ER 圖、心智圖、網路拓樸、UML、diagram、mermaid、d2、plantuml、graphviz、salt、wireframe、UI mockup、mockup、介面草圖、vega、vega-lite、vegalite、資料圖表、bar chart、line chart、scatter plot、效能圖表、趨勢圖、dashboard、儀表板、圖表選型
+description: 圖表設計選型知識庫。當使用者要求繪製、設計或產生圖表（流程圖、架構圖、時序圖、ER 圖、心智圖、UML 元件圖、網路拓樸、介面草圖 wireframe / UI mockup 等），或詢問該用哪種圖表語法，或提供需求想把概念或實際數值資料視覺化時觸發。不應觸發：使用者只要 ASCII 示意圖、只是修正既有圖表的小錯字、已明確指定語法且只要原始碼。觸發關鍵字：畫圖、流程圖、架構圖、時序圖、ER 圖、心智圖、網路拓樸、UML、diagram、mermaid、d2、plantuml、graphviz、wireframe、UI mockup、mockup、介面草圖、vega、vega-lite、vegalite、資料圖表、bar chart、line chart、scatter plot、效能圖表、趨勢圖、圖表選型
 ---
 
 # Diagram Designer Skill
