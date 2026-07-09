@@ -198,7 +198,7 @@ Vega-Lite 採用 JSON declarative 語法，LLM 寫出正確 spec 的機率高，
 
 ## 圖表預覽
 
-預覽一律透過 `skills/diagram-designer/scripts/render.sh <diagram_type>` 產生，圖表 DSL 原始碼由 stdin 餵入，不透過命令列參數傳遞。main agent 呼叫前須先把環境變數 `DIAGRAM_TMP_DIR` 設為工作區 `.tmp`（依 `tmp-file-usage` rule 解析出的實際路徑）。
+預覽一律透過 `~/.claude/skills/diagram-designer/scripts/render.sh <diagram_type>` 產生，圖表 DSL 原始碼由 stdin 餵入，不透過命令列參數傳遞。main agent 呼叫前須先把環境變數 `DIAGRAM_TMP_DIR` 設為工作區 `.tmp`（依 `tmp-file-usage` rule 解析出的實際路徑）。
 
 `diagram_type` 對應表（即 render.sh 的第一個參數）：
 
@@ -221,7 +221,7 @@ stdout 印出的單行，本地渲染成功時是暫存 SVG 的絕對路徑，�
 
 ```bash
 # DIAGRAM_TMP_DIR 由 main agent 設為工作區 .tmp；開啟 render.sh 印出的單行目標
-target="$(printf '%s' "$DSL" | DIAGRAM_TMP_DIR=<workspace>/.tmp skills/diagram-designer/scripts/render.sh <diagram_type>)"
+target="$(printf '%s' "$DSL" | DIAGRAM_TMP_DIR=<workspace>/.tmp ~/.claude/skills/diagram-designer/scripts/render.sh <diagram_type>)"
 google-chrome-stable "$target" & disown
 ```
 
