@@ -17,7 +17,6 @@ diagram_type=""
 for arg in "$@"; do
   case "$arg" in
     --docker)
-      # shellcheck disable=SC2034 # consumed by Tier 2 docker branch added in Task 2
       use_docker=1
       ;;
     -*) echo "render.sh: unknown flag $arg" >&2; exit 2 ;;
@@ -30,6 +29,7 @@ done
 # (per tmp-file-usage rule); otherwise use a throwaway system temp dir.
 tmp_dir="${DIAGRAM_TMP_DIR:-$(mktemp -d)}"
 mkdir -p "$tmp_dir"
+tmp_dir="$(cd "$tmp_dir" && pwd)"
 src="$tmp_dir/diagram-src.$$"
 out="$tmp_dir/diagram-preview.$$.svg"
 cat > "$src"
@@ -48,7 +48,17 @@ if native_render && [ -s "$out" ]; then
   echo "$out"; exit 0
 fi
 
-# --- Tier 2: local docker kroki (added in Task 2) ---
+# --- Tier 2: local docker kroki (opt-in; falls through if unreachable) ---
+KROKI_LOCAL_URL="${KROKI_LOCAL_URL:-http://localhost:8000}"
+if [ "$use_docker" -eq 1 ]; then
+  if curl -sf -o /dev/null "$KROKI_LOCAL_URL/health" 2>/dev/null \
+     && curl -sf -X POST "$KROKI_LOCAL_URL/$diagram_type/svg" --data-binary @"$src" -o "$out" 2>/dev/null \
+     && [ -s "$out" ]; then
+    echo "render.sh: rendered locally via docker kroki ($diagram_type)" >&2
+    echo "$out"; exit 0
+  fi
+  echo "render.sh: docker kroki unavailable, falling back to remote" >&2
+fi
 
 # --- Tier 3: remote kroki.io ---
 command -v python3 >/dev/null 2>&1 || { echo "render.sh: python3 unavailable for remote encoding" >&2; exit 1; }
