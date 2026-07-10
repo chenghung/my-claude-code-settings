@@ -14,6 +14,7 @@
 
 - 跨範圍任務（例如同時涉及 GitHub PR 與 Linux 系統設定）時，main agent 應拆解後分別委派。
 - 當任務涉及建立或修改 issue 或 PR 的標題或內文時，應先觸發 `github-issue-pr-authoring` skill 進行內容組裝，再委派 `github-manager` 執行。
+- 當任務涉及回覆或收合 reviewer 的 PR 審查留言時，應先觸發 `github-review-comment-reply` skill 進行分類與回覆組裝，再委派 `github-manager` 執行張貼與 resolve。
 
 ## Delegation Contract
 
