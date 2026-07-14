@@ -10,7 +10,9 @@
 # are reported and skipped. The exceptions are:
 #   - backup_migrate_link: renames a pre-existing real file to a
 #     "<path>.pre-symlink.bak" path before replacing it with a symlink, as a
-#     one-time migration.
+#     one-time migration. Used for CLAUDE.md, settings.json, and
+#     opencode.json — all three are repo-owned files, so there is no
+#     hand-written version that should ever win over the repo's.
 #   - seed_managed_file: when called with its force flag set (only from
 #     --force-config), backs up a pre-existing Codex-owned real file to a
 #     "<path>.pre-force-config.bak" path before overwriting it with a fresh
@@ -244,7 +246,7 @@ deploy_claude() {
     link_items "$category"
   done
 
-  link_one "${CLAUDE_CONFIG_DIR}/CLAUDE.md" "${REPO_DIR}/CLAUDE.md"
+  backup_migrate_link "${CLAUDE_CONFIG_DIR}/CLAUDE.md" "${REPO_DIR}/CLAUDE.md"
   backup_migrate_link "${CLAUDE_CONFIG_DIR}/settings.json" "${REPO_DIR}/platforms/claude/settings.json"
 
   install_external_skills "claude-code"
@@ -274,10 +276,12 @@ register_codegraph_mcp() {
   if claude mcp get codegraph > /dev/null 2>&1; then
     printf '  OK       codegraph MCP server already registered (user scope)\n'
     count_ok=$(( count_ok + 1 ))
-  else
-    claude mcp add codegraph --scope user -- codegraph serve --mcp
+  elif claude mcp add codegraph --scope user -- codegraph serve --mcp; then
     printf '  CREATED  codegraph MCP server registered (user scope)\n'
     count_created=$(( count_created + 1 ))
+  else
+    printf '  WARNING  failed to register codegraph MCP server - skipping.\n'
+    count_skipped=$(( count_skipped + 1 ))
   fi
 }
 

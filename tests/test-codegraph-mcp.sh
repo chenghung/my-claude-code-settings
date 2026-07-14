@@ -45,8 +45,8 @@ python3 -c "import json,sys; d=json.load(open(sys.argv[1])); cg=d.get('mcp',{}).
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 python3 -c "import json,sys; d=json.load(open(sys.argv[1])); cg=d.get('mcp',{}).get('codegraph',{}); sys.exit(0 if cg.get('enabled') is True else 1)" "$OPENCODE_SETTINGS" && pass opencode-mcp-codegraph-enabled || bad opencode-mcp-codegraph-enabled
 
-# ---- Codex platform: a standalone [mcp_servers.codegraph] table header must exist ----
+# ---- Codex platform: mcp_servers.codegraph must declare the launch command ----
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qx '\[mcp_servers\.codegraph\]' "$CODEX_CONFIG" && pass codex-mcp-servers-codegraph-table || bad codex-mcp-servers-codegraph-table
+python3 -c "import tomllib,sys; d=tomllib.load(open(sys.argv[1],'rb')); cg=d.get('mcp_servers',{}).get('codegraph',{}); sys.exit(0 if cg.get('command')=='codegraph' and cg.get('args')==['serve','--mcp'] else 1)" "$CODEX_CONFIG" && pass codex-mcp-codegraph-command || bad codex-mcp-codegraph-command
 
 exit $fail

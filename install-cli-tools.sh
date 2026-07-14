@@ -164,6 +164,10 @@ fi
 #      使用者家目錄下，不需 sudo。
 #    冪等判斷：沿用本腳本一貫原則——以「對應指令是否已存在」為準，已存在
 #      即略過，不重跑安裝腳本。
+#    注意：兩者的安裝腳本都把執行檔裝在 ~/.local/bin，該路徑需已加入 PATH，
+#      command -v 才偵測得到，冪等判斷才會生效；若不在 PATH 中，每次重跑都
+#      會重新下載並執行安裝腳本，其中 token-usage-insights 還會連帶重跑
+#      --service，重寫 systemd unit 並重新 enable。
 #    對應：指令名 -> 安裝指令
 #      codegraph->curl -fsSL
 #        https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh

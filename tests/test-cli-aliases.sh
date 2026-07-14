@@ -23,10 +23,21 @@ grep -qF 'bash -s -- --service' "$INSTALL_SH" && pass token-usage-insights-servi
 
 # Regression guard: `codegraph install` rewrites each agent's config file in
 # place, swapping the symlink this repo's install.sh created for a real file.
-# Wiring agents up is install.sh's job, not this script's, so that command
-# must never appear here.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'codegraph install' "$INSTALL_SH" && bad no-codegraph-install || pass no-codegraph-install
+# Checked against both scripts — install.sh is the one that does agent
+# wiring and is the most likely place for this to accidentally get added —
+# with comment-only lines and inline comments stripped first, so an English
+# rewrite of the explanatory prose above can never flip this red by matching
+# its own guard text.
+strip_comments() {
+  grep -vE '^[[:space:]]*#' "$1" | sed -E 's/[[:space:]]+#.*$//'
+}
+assert_no_codegraph_install() {
+  local file="$1" label="$2"
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  strip_comments "$file" | grep -qF 'codegraph install' && bad "no-codegraph-install-${label}" || pass "no-codegraph-install-${label}"
+}
+assert_no_codegraph_install "$INSTALL_SH" install-cli-tools
+assert_no_codegraph_install "$REPO/install.sh" install
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT

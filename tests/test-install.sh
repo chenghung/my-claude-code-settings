@@ -86,10 +86,45 @@ printf -- '---\ndescription: "handmade"\nmode: subagent\n---\nx\n' > "$OPENCODE_
 "$REPO/install.sh" --opencode > "$T/log_oc4" 2>&1
 test -f "$OPENCODE_CONFIG_DIR/agents/handmade.md" && pass oc-keep-handmade || bad oc-keep-handmade
 
-# install.sh must gate its CLI-tools bootstrap step so tests can skip it
-grep -q 'INSTALL_CLI_TOOLS' "$REPO/install.sh" && pass install-cli-tools-guard || bad install-cli-tools-guard
+# ---- codegraph MCP registration (Claude Code): real behavior, not string match ----
+# Stub `claude` logs every invocation ($* per call, one line) and lets
+# `mcp get codegraph`'s exit code be controlled via CLAUDE_MCP_GET_EXIT, so
+# both branches of register_codegraph_mcp can be exercised without a real
+# claude CLI or network access.
+STUB_BIN="$T/stub-bin"
+mkdir -p "$STUB_BIN"
+cat > "$STUB_BIN/claude" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${CLAUDE_STUB_LOG:?}"
+if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "get" ]; then
+  exit "${CLAUDE_MCP_GET_EXIT:-0}"
+fi
+exit 0
+STUB
+chmod +x "$STUB_BIN/claude"
 
-# install.sh must idempotently register the codegraph MCP server for Claude Code
-grep -q 'claude mcp add codegraph --scope user -- codegraph serve --mcp' "$REPO/install.sh" && pass codegraph-mcp-registration || bad codegraph-mcp-registration
+# Scenario A: codegraph not yet registered (mcp get exits 1) -> install.sh
+# must call `claude mcp add codegraph --scope user -- codegraph serve --mcp`.
+export CLAUDE_CONFIG_DIR="$T/claude-notreg"
+CLAUDE_STUB_LOG="$T/claude-stub-notreg.log"
+: > "$CLAUDE_STUB_LOG"
+( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=1; "$REPO/install.sh" --claude --no-external > "$T/log_claude_notreg" 2>&1 )
+grep -qxF 'mcp add codegraph --scope user -- codegraph serve --mcp' "$CLAUDE_STUB_LOG" && pass codegraph-mcp-registers-when-absent || bad codegraph-mcp-registers-when-absent
+
+# Scenario B: codegraph already registered (mcp get exits 0) -> install.sh
+# must NOT call `claude mcp add` at all.
+export CLAUDE_CONFIG_DIR="$T/claude-reg"
+CLAUDE_STUB_LOG="$T/claude-stub-reg.log"
+: > "$CLAUDE_STUB_LOG"
+( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude --no-external > "$T/log_claude_reg" 2>&1 )
+grep -q '^mcp add' "$CLAUDE_STUB_LOG" && bad codegraph-mcp-skips-when-registered || pass codegraph-mcp-skips-when-registered
+
+# ---- INSTALL_CLI_TOOLS=0 must actually skip install-cli-tools.sh, not just avoid crashing ----
+# install-cli-tools.sh's own startup message is a marker: if the bootstrap
+# step never ran, that message can never appear in install.sh's captured
+# output (INSTALL_CLI_TOOLS=0 is exported for this whole suite, so any prior
+# log works as the sample; log_claude_reg from scenario B above is used).
+grep -qF '開始安裝 CLI 工具' "$T/log_claude_reg" && bad install-cli-tools-actually-skipped || pass install-cli-tools-actually-skipped
 
 exit $fail
