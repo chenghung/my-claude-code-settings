@@ -22,6 +22,7 @@ test -f "$CODEX_HOME/config.toml" && pass config-seeded || bad config-seeded
 test -f "$CODEX_HOME/AGENTS.md" && pass agents-md-exists || bad agents-md-exists
 grep -q 'Think Before Coding' "$CODEX_HOME/AGENTS.md" && pass agents-md-claude || bad agents-md-claude
 grep -q 'Routing Table' "$CODEX_HOME/AGENTS.md" && pass agents-md-rules || bad agents-md-rules
+grep -q 'ripgrep' "$CODEX_HOME/AGENTS.md" && pass agents-md-search-rule || bad agents-md-search-rule
 
 # Subagent TOMLs are generated
 test -f "$CODEX_HOME/agents/docker-expert.toml" && pass toml-exists || bad toml-exists
