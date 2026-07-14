@@ -11,17 +11,22 @@ trap 'rm -rf "$T"' EXIT
 export CLAUDE_CONFIG_DIR="$T/claude"
 export CODEX_HOME="$T/codex"
 export AGENTS_HOME="$T/agents"
+# Test-only escape hatch: skip install-cli-tools.sh so this suite never
+# triggers real sudo pacman/yay installs or rewrites the user's real ~/.zshrc.
+export INSTALL_CLI_TOOLS=0
 
 "$REPO/install.sh" --codex > "$T/log1" 2>&1
 
 test -L "$AGENTS_HOME/skills/deep-thinking" && pass skills-symlink || bad skills-symlink
 test -L "$CODEX_HOME/prompts/vf-trello-board-sprint-review.md" && pass cmd-flatten || bad cmd-flatten
-test -L "$CODEX_HOME/config.toml" && pass config-symlink || bad config-symlink
+test -f "$CODEX_HOME/config.toml" && pass config-seeded || bad config-seeded
 
 # AGENTS.md is generated and contains CLAUDE.md + rules content
 test -f "$CODEX_HOME/AGENTS.md" && pass agents-md-exists || bad agents-md-exists
 grep -q 'Think Before Coding' "$CODEX_HOME/AGENTS.md" && pass agents-md-claude || bad agents-md-claude
 grep -q 'Routing Table' "$CODEX_HOME/AGENTS.md" && pass agents-md-rules || bad agents-md-rules
+grep -q 'ripgrep' "$CODEX_HOME/AGENTS.md" && pass agents-md-search-rule || bad agents-md-search-rule
+grep -q 'CodeGraph' "$CODEX_HOME/AGENTS.md" && pass agents-md-codegraph || bad agents-md-codegraph
 
 # Subagent TOMLs are generated
 test -f "$CODEX_HOME/agents/docker-expert.toml" && pass toml-exists || bad toml-exists
@@ -80,5 +85,46 @@ test ! -f "$OPENCODE_CONFIG_DIR/agents/gone.md" && pass oc-prune || bad oc-prune
 printf -- '---\ndescription: "handmade"\nmode: subagent\n---\nx\n' > "$OPENCODE_CONFIG_DIR/agents/handmade.md"
 "$REPO/install.sh" --opencode > "$T/log_oc4" 2>&1
 test -f "$OPENCODE_CONFIG_DIR/agents/handmade.md" && pass oc-keep-handmade || bad oc-keep-handmade
+
+# ---- codegraph MCP registration (Claude Code): real behavior, not string match ----
+# Stub `claude` logs every invocation ($* per call, one line) and lets
+# `mcp get codegraph`'s exit code be controlled via CLAUDE_MCP_GET_EXIT, so
+# both branches of register_codegraph_mcp can be exercised without a real
+# claude CLI or network access.
+STUB_BIN="$T/stub-bin"
+mkdir -p "$STUB_BIN"
+cat > "$STUB_BIN/claude" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${CLAUDE_STUB_LOG:?}"
+if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "get" ]; then
+  exit "${CLAUDE_MCP_GET_EXIT:-0}"
+fi
+exit 0
+STUB
+chmod +x "$STUB_BIN/claude"
+
+# Scenario A: codegraph not yet registered (mcp get exits 1) -> install.sh
+# must call `claude mcp add codegraph --scope user -- codegraph serve --mcp`.
+export CLAUDE_CONFIG_DIR="$T/claude-notreg"
+CLAUDE_STUB_LOG="$T/claude-stub-notreg.log"
+: > "$CLAUDE_STUB_LOG"
+( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=1; "$REPO/install.sh" --claude --no-external > "$T/log_claude_notreg" 2>&1 )
+grep -qxF 'mcp add codegraph --scope user -- codegraph serve --mcp' "$CLAUDE_STUB_LOG" && pass codegraph-mcp-registers-when-absent || bad codegraph-mcp-registers-when-absent
+
+# Scenario B: codegraph already registered (mcp get exits 0) -> install.sh
+# must NOT call `claude mcp add` at all.
+export CLAUDE_CONFIG_DIR="$T/claude-reg"
+CLAUDE_STUB_LOG="$T/claude-stub-reg.log"
+: > "$CLAUDE_STUB_LOG"
+( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude --no-external > "$T/log_claude_reg" 2>&1 )
+grep -q '^mcp add' "$CLAUDE_STUB_LOG" && bad codegraph-mcp-skips-when-registered || pass codegraph-mcp-skips-when-registered
+
+# ---- INSTALL_CLI_TOOLS=0 must actually skip install-cli-tools.sh, not just avoid crashing ----
+# install-cli-tools.sh's own startup message is a marker: if the bootstrap
+# step never ran, that message can never appear in install.sh's captured
+# output (INSTALL_CLI_TOOLS=0 is exported for this whole suite, so any prior
+# log works as the sample; log_claude_reg from scenario B above is used).
+grep -qF '開始安裝 CLI 工具' "$T/log_claude_reg" && bad install-cli-tools-actually-skipped || pass install-cli-tools-actually-skipped
 
 exit $fail

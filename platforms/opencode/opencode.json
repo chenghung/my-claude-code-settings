@@ -6,5 +6,12 @@
     "@slkiser/opencode-quota",
     "superpowers@git+https://github.com/obra/superpowers.git"
   ],
-  "permission": "allow"
+  "permission": "allow",
+  "mcp": {
+    "codegraph": {
+      "type": "local",
+      "command": ["codegraph", "serve", "--mcp"],
+      "enabled": true
+    }
+  }
 }

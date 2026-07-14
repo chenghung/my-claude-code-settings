@@ -44,3 +44,7 @@ enabled = true
 [marketplaces.superpowers-dev]
 source_type = "git"
 source = "https://github.com/obra/superpowers.git"
+
+[mcp_servers.codegraph]
+command = "codegraph"
+args = ["serve", "--mcp"]

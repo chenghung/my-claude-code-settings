@@ -9,6 +9,44 @@ bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 
 grep -qE '^ensure_tool opencode opencode-bin ' "$INSTALL_SH" && pass opencode-install-line || bad opencode-install-line
 
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qE '^ensure_tool rg +ripgrep ' "$INSTALL_SH" && pass rg-install-line || bad rg-install-line
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh' "$INSTALL_SH" && pass codegraph-install-line || bad codegraph-install-line
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.sh' "$INSTALL_SH" && pass token-usage-insights-install-line || bad token-usage-insights-install-line
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'bash -s -- --service' "$INSTALL_SH" && pass token-usage-insights-service-flag || bad token-usage-insights-service-flag
+
+# Regression guard: `codegraph install` rewrites each agent's config file in
+# place, swapping the symlink this repo's install.sh created for a real file.
+# Checked against both scripts — install.sh is the one that does agent
+# wiring and is the most likely place for this to accidentally get added —
+# with comment-only lines and inline comments stripped first, so an English
+# rewrite of the explanatory prose above can never flip this red by matching
+# its own guard text.
+strip_comments() {
+  grep -vE '^[[:space:]]*#' "$1" | sed -E 's/[[:space:]]+#.*$//'
+}
+assert_no_codegraph_install() {
+  local file="$1" label="$2" stripped
+  # Capture via command substitution (not `grep -q` on the pipeline) so the
+  # upstream strip_comments pipeline always runs to completion — piping
+  # straight into `grep -q` lets it exit as soon as it matches, killing sed
+  # with SIGPIPE (141) and, under `set -o pipefail`, flipping this guard's
+  # pass/fail result on large files instead of reporting the real match.
+  stripped="$(strip_comments "$file")"
+  case "$stripped" in
+  *'codegraph install'*) bad "no-codegraph-install-${label}" ;;
+  *) pass "no-codegraph-install-${label}" ;;
+  esac
+}
+assert_no_codegraph_install "$INSTALL_SH" install-cli-tools
+assert_no_codegraph_install "$REPO/install.sh" install
+
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 

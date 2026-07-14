@@ -60,7 +60,8 @@
       "mcp__ide__getDiagnostics",
       "mcp__context7__resolve-library-id",
       "mcp__context7__query-docs",
-      "Skill(planning-with-files:*)"
+      "Skill(planning-with-files:*)",
+      "mcp__codegraph__*"
     ],
     "deny": [],
     "defaultMode": "acceptEdits"
@@ -94,6 +95,16 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/notify-cc.sh notify"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "codegraph prompt-hook"
           }
         ]
       }
@@ -141,7 +152,7 @@
     }
   },
   "language": "Traditional Chinese",
-  "effortLevel": "high",
+  "effortLevel": "xhigh",
   "tui": "fullscreen",
   "voice": {
     "enabled": true,
@@ -149,6 +160,7 @@
   },
   "autoMemoryEnabled": false,
   "skipWorkflowUsageWarning": true,
+  "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
   "voiceEnabled": true
 }

@@ -78,6 +78,17 @@ Judge whether the answer could have changed since your cutoff — or never exist
 - Stay in one message unless the task is especially large or a decision point needs the user's input first.
 - Exception: a turn that is purely a clarifying question — ask directly, there is no conclusion yet.
 
+## CodeGraph
+
+In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the repo root), reach for it before any other way of locating or understanding code. It answers most code questions in one call, returning the relevant symbols' verbatim source plus the call paths between them — including dynamic-dispatch hops that text search cannot follow.
+
+- **MCP tool** (preferred): `codegraph_explore`. Name a file or symbol in the query to read its current line-numbered source.
+- **Shell** (when the MCP tool is unavailable): the `codegraph explore` subcommand prints the same output.
+
+CodeGraph indexes a symbol graph of code, so it does not cover searches for prose, logs, or configuration values — use ordinary text search for those.
+
+If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

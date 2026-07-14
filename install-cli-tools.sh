@@ -2,14 +2,20 @@
 set -euo pipefail
 
 # ============================================================
-# 腳本用途：在 Manjaro Linux 上安裝 16 個 CLI 工具，並將指定的
+# 腳本用途：在 Manjaro Linux 上安裝 19 個 CLI 工具，並將指定的
 #           alias 區塊冪等地寫入 ~/.zshrc。
-# 來源優先序（硬性）：官方 repo > AUR > pipx，且版本不可過舊。
+# 來源優先序（硬性）：官方 repo > AUR > pipx > 上游官方安裝腳本，且版本不可
+#   過舊；第四級（上游官方安裝腳本）僅用於官方 repo 與 AUR 皆無可信對應
+#   套件的工具。
 # 預期影響：
 #   - 透過 pacman 安裝官方 repo 套件：jq、bat、glow、eza、csvlens、
-#     openai-codex、abduco、lf、markdownlint-cli、tflint、python-pipx、shellcheck
+#     openai-codex、abduco、lf、markdownlint-cli、tflint、python-pipx、
+#     ripgrep（提供 rg 指令）、shellcheck
 #   - 透過 yay（AUR helper）安裝 AUR 套件：rtk、claude-code、opencode
 #   - 透過 pipx 安裝官方 repo 與 AUR 皆無的 python 套件：markitdown[all]
+#   - 透過上游官方安裝腳本（curl）安裝官方 repo 與 AUR 皆無可信對應套件的
+#     工具：codegraph、TokenUsageInsights（其 --service 旗標會另外常駐一個
+#     systemd user 服務，詳見下方第 4 節說明）
 #   - 不再使用 npm 全域安裝任何工具（claude code / codex 已改走 repo 或 AUR）
 #   - 於 ~/.zshrc 內以 sentinel 標記包夾的方式維護（重生）alias 區塊
 # 冪等與衝突防護（重點）：
@@ -71,7 +77,7 @@ ensure_tool() {
 # ------------------------------------------------------------
 # 1) 官方 repo 套件（pacman）：
 #    jq bat glow eza csvlens openai-codex abduco lf markdownlint-cli
-#    tflint python-pipx shellcheck
+#    tflint python-pipx shellcheck ripgrep
 #    來源依據：以上皆有官方 repo 版本，且版本不過舊（優先序第 1 級）。
 #      - openai-codex 即 OpenAI Codex CLI 官方套件
 #        （github.com/openai/codex，提供 /usr/bin/codex）。
@@ -87,9 +93,9 @@ ensure_tool() {
 #      jq->jq  bat->bat  glow->glow  eza->eza  csvlens->csvlens
 #      openai-codex->codex  abduco->abduco  lf->lf
 #      markdownlint-cli->markdownlint  tflint->tflint
-#      python-pipx->pipx  shellcheck->shellcheck
+#      python-pipx->pipx  shellcheck->shellcheck  ripgrep->rg
 # ------------------------------------------------------------
-echo "==> [1/3] 透過 pacman 安裝官方 repo 套件（已存在的工具會自動略過）"
+echo "==> [1/4] 透過 pacman 安裝官方 repo 套件（已存在的工具會自動略過）"
 PACMAN_INSTALL=(sudo pacman -S --needed --noconfirm)
 ensure_tool jq           jq               "${PACMAN_INSTALL[@]}"
 ensure_tool bat          bat              "${PACMAN_INSTALL[@]}"
@@ -103,6 +109,7 @@ ensure_tool markdownlint markdownlint-cli "${PACMAN_INSTALL[@]}"
 ensure_tool tflint       tflint           "${PACMAN_INSTALL[@]}"
 ensure_tool pipx         python-pipx      "${PACMAN_INSTALL[@]}"
 ensure_tool shellcheck   shellcheck       "${PACMAN_INSTALL[@]}"
+ensure_tool rg           ripgrep          "${PACMAN_INSTALL[@]}"
 
 # ------------------------------------------------------------
 # 2) AUR 套件（yay）：rtk claude-code opencode-bin
@@ -117,7 +124,7 @@ ensure_tool shellcheck   shellcheck       "${PACMAN_INSTALL[@]}"
 #    對應：套件名 -> 指令名
 #      rtk->rtk  claude-code->claude  opencode-bin->opencode
 # ------------------------------------------------------------
-echo "==> [2/3] 透過 yay 安裝 AUR 套件（已存在的工具會自動略過）"
+echo "==> [2/4] 透過 yay 安裝 AUR 套件（已存在的工具會自動略過）"
 if ! command -v yay >/dev/null 2>&1; then
   echo "    [錯誤] 找不到 yay，請先安裝 AUR helper 後再執行此腳本。" >&2
   exit 1
@@ -141,7 +148,7 @@ ensure_tool opencode opencode-bin "${YAY_INSTALL[@]}"
 #      不中止整支腳本（與 yay 那層不同：yay 是硬性前提，pipx 只影響
 #      這一個工具，故此處選擇 warn-and-skip 而非 exit）。
 # ------------------------------------------------------------
-echo "==> [3/3] 透過 pipx 安裝 python 套件（已存在的工具會自動略過）"
+echo "==> [3/4] 透過 pipx 安裝 python 套件（已存在的工具會自動略過）"
 if ! command -v pipx >/dev/null 2>&1; then
   echo "    [警告] 找不到 pipx，略過 markitdown 安裝。若剛安裝 python-pipx，" >&2
   echo "           請重新開啟終端機或 source ~/.zshrc 後再重跑此腳本。" >&2
@@ -151,7 +158,50 @@ else
 fi
 
 # ------------------------------------------------------------
-# 4) 同步 alias 到 ~/.zshrc（重生整個託管區塊）
+# 4) 上游官方安裝腳本（curl）：codegraph、TokenUsageInsights
+#    來源依據：兩者官方 repo 與 AUR 皆無可信對應套件，改走上游官方安裝
+#      腳本（優先序第 4 級，低於官方 repo、AUR 與 pipx）。兩者皆安裝到
+#      使用者家目錄下，不需 sudo。
+#    冪等判斷：沿用本腳本一貫原則——以「對應指令是否已存在」為準，已存在
+#      即略過，不重跑安裝腳本。
+#    注意：兩者的安裝腳本都把執行檔裝在 ~/.local/bin，該路徑需已加入 PATH，
+#      command -v 才偵測得到，冪等判斷才會生效；若不在 PATH 中，每次重跑都
+#      會重新下載並執行安裝腳本，其中 token-usage-insights 還會連帶重跑
+#      --service，重寫 systemd unit 並重新 enable。
+#    對應：指令名 -> 安裝指令
+#      codegraph->curl -fsSL
+#        https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
+#      token-usage-insights->curl -fsSL
+#        https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.sh
+#        | bash -s -- --service
+#    安全防護：本腳本只執行上述安裝指令取得二進位，絕不額外呼叫 codegraph
+#      官方 CLI 提供的 install 子指令——該子指令會就地改寫各 agent 的設定檔，
+#      把本 repo 用 install.sh 建立的 symlink 換成實體檔；agent 接線是
+#      install.sh 的職責，不屬於這支腳本。
+#    副作用：token-usage-insights 安裝指令帶的 --service 旗標，會在使用者的
+#      systemd user 目錄建立 unit 並執行 systemctl --user enable --now，
+#      使其儀表板常駐監聽 3003 埠。
+# ------------------------------------------------------------
+echo "==> [4/4] 透過上游官方安裝腳本安裝（已存在的工具會自動略過）"
+if ! command -v curl >/dev/null 2>&1; then
+  echo "    [錯誤] 找不到 curl，請先安裝 curl 後再執行此腳本。" >&2
+  exit 1
+fi
+if command -v codegraph >/dev/null 2>&1; then
+  echo "    [略過] 'codegraph' 已存在，不重跑安裝腳本。"
+else
+  echo "    [安裝] 未偵測到 'codegraph'，透過官方安裝腳本安裝 ..."
+  curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
+fi
+if command -v token-usage-insights >/dev/null 2>&1; then
+  echo "    [略過] 'token-usage-insights' 已存在，不重跑安裝腳本。"
+else
+  echo "    [安裝] 未偵測到 'token-usage-insights'，透過官方安裝腳本安裝 ..."
+  curl -fsSL https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.sh | bash -s -- --service
+fi
+
+# ------------------------------------------------------------
+# 5) 同步 alias 到 ~/.zshrc（重生整個託管區塊）
 #    防重複與同步機制：以 BEGIN/END sentinel 標記包夾整段 alias，視為
 #    「託管區塊」。每次執行都用腳本當下定義的內容「重生」此區塊：
 #      - 完整區塊（BEGIN 與 END 皆在）：以 awk 只替換 BEGIN 與 END
