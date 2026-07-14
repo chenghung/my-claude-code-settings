@@ -16,7 +16,7 @@ export AGENTS_HOME="$T/agents"
 
 test -L "$AGENTS_HOME/skills/deep-thinking" && pass skills-symlink || bad skills-symlink
 test -L "$CODEX_HOME/prompts/vf-trello-board-sprint-review.md" && pass cmd-flatten || bad cmd-flatten
-test -L "$CODEX_HOME/config.toml" && pass config-symlink || bad config-symlink
+test -f "$CODEX_HOME/config.toml" && pass config-seeded || bad config-seeded
 
 # AGENTS.md is generated and contains CLAUDE.md + rules content
 test -f "$CODEX_HOME/AGENTS.md" && pass agents-md-exists || bad agents-md-exists
