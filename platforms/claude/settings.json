@@ -141,7 +141,7 @@
     }
   },
   "language": "Traditional Chinese",
-  "effortLevel": "high",
+  "effortLevel": "xhigh",
   "tui": "fullscreen",
   "voice": {
     "enabled": true,
@@ -149,6 +149,7 @@
   },
   "autoMemoryEnabled": false,
   "skipWorkflowUsageWarning": true,
+  "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
   "voiceEnabled": true
 }
