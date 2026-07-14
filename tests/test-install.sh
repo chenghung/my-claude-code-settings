@@ -11,6 +11,9 @@ trap 'rm -rf "$T"' EXIT
 export CLAUDE_CONFIG_DIR="$T/claude"
 export CODEX_HOME="$T/codex"
 export AGENTS_HOME="$T/agents"
+# Test-only escape hatch: skip install-cli-tools.sh so this suite never
+# triggers real sudo pacman/yay installs or rewrites the user's real ~/.zshrc.
+export INSTALL_CLI_TOOLS=0
 
 "$REPO/install.sh" --codex > "$T/log1" 2>&1
 
@@ -82,5 +85,11 @@ test ! -f "$OPENCODE_CONFIG_DIR/agents/gone.md" && pass oc-prune || bad oc-prune
 printf -- '---\ndescription: "handmade"\nmode: subagent\n---\nx\n' > "$OPENCODE_CONFIG_DIR/agents/handmade.md"
 "$REPO/install.sh" --opencode > "$T/log_oc4" 2>&1
 test -f "$OPENCODE_CONFIG_DIR/agents/handmade.md" && pass oc-keep-handmade || bad oc-keep-handmade
+
+# install.sh must gate its CLI-tools bootstrap step so tests can skip it
+grep -q 'INSTALL_CLI_TOOLS' "$REPO/install.sh" && pass install-cli-tools-guard || bad install-cli-tools-guard
+
+# install.sh must idempotently register the codegraph MCP server for Claude Code
+grep -q 'claude mcp add codegraph --scope user -- codegraph serve --mcp' "$REPO/install.sh" && pass codegraph-mcp-registration || bad codegraph-mcp-registration
 
 exit $fail
