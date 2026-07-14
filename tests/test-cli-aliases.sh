@@ -32,9 +32,17 @@ strip_comments() {
   grep -vE '^[[:space:]]*#' "$1" | sed -E 's/[[:space:]]+#.*$//'
 }
 assert_no_codegraph_install() {
-  local file="$1" label="$2"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  strip_comments "$file" | grep -qF 'codegraph install' && bad "no-codegraph-install-${label}" || pass "no-codegraph-install-${label}"
+  local file="$1" label="$2" stripped
+  # Capture via command substitution (not `grep -q` on the pipeline) so the
+  # upstream strip_comments pipeline always runs to completion — piping
+  # straight into `grep -q` lets it exit as soon as it matches, killing sed
+  # with SIGPIPE (141) and, under `set -o pipefail`, flipping this guard's
+  # pass/fail result on large files instead of reporting the real match.
+  stripped="$(strip_comments "$file")"
+  case "$stripped" in
+  *'codegraph install'*) bad "no-codegraph-install-${label}" ;;
+  *) pass "no-codegraph-install-${label}" ;;
+  esac
 }
 assert_no_codegraph_install "$INSTALL_SH" install-cli-tools
 assert_no_codegraph_install "$REPO/install.sh" install
