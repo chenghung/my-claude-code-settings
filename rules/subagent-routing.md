@@ -5,7 +5,7 @@
 | Subagent | Trigger Scope |
 | --- | --- |
 | `docker-expert` | Dockerfile 撰寫與最佳化、Docker Compose 配置、容器 runtime 診斷（OOM、networking、resource constraints） |
-| `github-manager` | 透過 gh 執行 GitHub issue 與 PR 的實際操作，涵蓋查詢、列表、檢視等唯讀操作，以及接收已組好的內容去建立或更新 issue 與 PR；不負責內文的結構化組裝 |
+| `github-manager` | 透過 gh 對 GitHub issue、PR、comment 的各類實際操作，涵蓋唯讀查詢與 mutation（含審查決議與 merge）；只負責執行，不負責 issue/PR 內文與審查回覆的結構化組裝 |
 | `manjaro-linux-admin` | Manjaro 或 Arch Linux 系統管理，包含系統診斷、log 分析、pacman/yay/flatpak 套件管理、需要 sudo 或修改系統狀態的操作 |
 | `shell-script-developer` | 產生 `.sh` 檔案、實質邏輯超過 20 行的 shell script，或含 eval、trap、特殊字元檔名處理、複雜 quoting 等高風險語法的片段 |
 | `sql-expert` | SQL 撰寫與重構、query 最佳化與 EXPLAIN 執行計畫解讀、資料庫 schema 與索引設計、關聯型與分析型資料庫的進階特性問題，涵蓋 PostgreSQL、MySQL 與 MariaDB、SQLite、DuckDB、AWS Athena，以及在使用者提供連線時對資料庫執行唯讀診斷查詢；不涵蓋應用層或 ORM 程式碼撰寫，也不對資料庫執行任何寫入操作 |
