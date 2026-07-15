@@ -29,7 +29,7 @@
       "Bash(cat:*)",
       "Bash(find:*)",
       "Bash(sed:*)",
-      "Bash(grep:*)",
+      "Bash(rg:*)",
       "Bash(mkdir:*)",
       "Bash(diff:*)",
       "Bash(which:*)",
