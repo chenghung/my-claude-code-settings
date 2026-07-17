@@ -1,7 +1,7 @@
 ---
 name: ddd-strategic-modeler
 description: DDD 戰略建模專家。在領域驅動設計建模流程中，由協調流程委派它從需求做 strategic 探索：subdomain 分類、bounded context 邊界、context map 關係、domain event 事件流與 ubiquitous language，並把戰略模型寫成一份語言中立的 markdown 檔。不處理 tactical 細節或程式碼。
-tools: Read, Grep, Glob, Write, Edit
+tools: Read, Grep, Glob, Write, Edit, mcp__codegraph__codegraph_explore
 model: inherit
 color: cyan
 ---

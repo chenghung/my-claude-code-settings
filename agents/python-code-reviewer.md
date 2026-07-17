@@ -1,7 +1,7 @@
 ---
 name: python-code-reviewer
 description: "Use this agent as an independent, read-only reviewer of Python code; it audits for correctness, type safety, SOLID adherence, and test quality, and returns advisory findings without modifying code; use it to review Python that has just been written or changed"
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob, Bash, mcp__codegraph__codegraph_explore
 model: sonnet
 color: cyan
 ---

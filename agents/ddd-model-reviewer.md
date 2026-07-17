@@ -1,7 +1,7 @@
 ---
 name: ddd-model-reviewer
 description: DDD 模型審查專家。在領域驅動設計建模流程中，由協調流程委派它獨立稽核戰略與戰術兩份模型檔的跨產物一致性、完整性、內部矛盾與錯誤資訊，回傳顧問性 findings。唯讀，不建立或修改任何模型檔。
-tools: Read, Grep, Glob
+tools: Read, Grep, Glob, mcp__codegraph__codegraph_explore
 model: inherit
 color: purple
 ---

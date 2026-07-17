@@ -1,7 +1,7 @@
 ---
 name: php-developer
 description: "Use this agent for PHP/Laravel/Swoole backend tasks: writing code, implementing features, or refactoring existing PHP codebases."
-tools: Bash, Read, Edit, Write, Glob, Grep
+tools: Bash, Read, Edit, Write, Glob, Grep, mcp__codegraph__codegraph_explore
 model: sonnet
 color: blue
 ---

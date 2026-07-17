@@ -1,7 +1,7 @@
 ---
 name: ddd-tactical-modeler
 description: DDD 戰術建模專家。在領域驅動設計建模流程中，由協調流程委派它在既定 bounded context 邊界內做 tactical 建模：aggregate、entity 與 value object、domain event、invariant、repository 與 factory 邊界，並把戰術模型寫成一份語言中立的 markdown 檔。不做 strategic 邊界劃分或程式碼。
-tools: Read, Grep, Glob, Write, Edit
+tools: Read, Grep, Glob, Write, Edit, mcp__codegraph__codegraph_explore
 model: inherit
 color: green
 ---
