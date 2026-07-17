@@ -162,33 +162,59 @@ fi
 #    來源依據：兩者官方 repo 與 AUR 皆無可信對應套件，改走上游官方安裝
 #      腳本（優先序第 4 級，低於官方 repo、AUR 與 pipx）。兩者皆安裝到
 #      使用者家目錄下，不需 sudo。
-#    冪等判斷：沿用本腳本一貫原則——以「對應指令是否已存在」為準，已存在
-#      即略過，不重跑安裝腳本。
+#    冪等判斷（兩者行為不同，勿混為一談）：
+#      - codegraph：不是「已存在即略過」。指令已存在時改跑 `codegraph
+#        upgrade`，讓它每次執行本腳本都順便檢查版本並更新到最新；已是
+#        最新版時 upgrade 會印出 "Already up to date" 並以 exit code 0
+#        結束，因此不需要另外先跑 --check 再判斷。
+#      - token-usage-insights：仍沿用「對應指令是否已存在」為準，已存在
+#        即略過，不重跑安裝腳本——因其安裝腳本帶 --service，重跑會連帶
+#        重寫 systemd unit 並重新 enable（見下方「副作用」），不宜每次
+#        自動執行。
 #    注意：兩者的安裝腳本都把執行檔裝在 ~/.local/bin，該路徑需已加入 PATH，
-#      command -v 才偵測得到，冪等判斷才會生效；若不在 PATH 中，每次重跑都
-#      會重新下載並執行安裝腳本，其中 token-usage-insights 還會連帶重跑
+#      command -v 才偵測得到，冪等判斷才會生效；若不在 PATH 中，codegraph
+#      每次重跑都會重新下載並執行安裝腳本（而非改跑 upgrade），
+#      token-usage-insights 則會重新下載並執行安裝腳本，連帶重跑
 #      --service，重寫 systemd unit 並重新 enable。
 #    對應：指令名 -> 安裝指令
 #      codegraph->curl -fsSL
 #        https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
+#        （已存在時改跑：codegraph upgrade）
 #      token-usage-insights->curl -fsSL
 #        https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.sh
 #        | bash -s -- --service
-#    安全防護：本腳本只執行上述安裝指令取得二進位，絕不額外呼叫 codegraph
-#      官方 CLI 提供的 install 子指令——該子指令會就地改寫各 agent 的設定檔，
-#      把本 repo 用 install.sh 建立的 symlink 換成實體檔；agent 接線是
-#      install.sh 的職責，不屬於這支腳本。
+#    安全防護：本腳本只執行上述安裝指令與 `codegraph upgrade` 取得／更新
+#      二進位，絕不額外呼叫 codegraph 官方 CLI 提供的 install 子指令——
+#      已實測驗證：`codegraph install -t opencode` 會把
+#      ~/.config/opencode/opencode.json 從 symlink 換成實體檔；
+#      `codegraph install -t claude` 會把 ~/.claude/settings.json 從
+#      symlink 換成實體檔；即使加上 --no-permissions 旗標，settings.json
+#      仍會被換掉（它還是要寫入 codegraph 的 prompt-hook）。檔案內容是
+#      merge 的，repo 原始檔不會被改壞，但 symlink 一旦消失，該檔案就永久
+#      脫離 repo 管理，之後 install.sh 只會回報 CONFLICT 並跳過。本 repo
+#      的 codegraph MCP 接線改採宣告式：codex 走
+#      platforms/codex/config.toml、opencode 走
+#      platforms/opencode/opencode.json、Claude Code 走 install.sh 裡的
+#      `claude mcp add`，完全不需要 codegraph install 子指令。
+#      附註：`codegraph upgrade` 內部會自動執行 `codegraph install
+#      --refresh`，但已實測 --refresh 不會動到上述 symlink，故呼叫
+#      upgrade 本身是安全的，這點與直接呼叫 codegraph install 不同。
 #    副作用：token-usage-insights 安裝指令帶的 --service 旗標，會在使用者的
 #      systemd user 目錄建立 unit 並執行 systemctl --user enable --now，
 #      使其儀表板常駐監聽 3003 埠。
 # ------------------------------------------------------------
-echo "==> [4/4] 透過上游官方安裝腳本安裝（已存在的工具會自動略過）"
+echo "==> [4/4] 透過上游官方安裝腳本安裝（codegraph 每次檢查並更新，token-usage-insights 已存在即略過）"
 if ! command -v curl >/dev/null 2>&1; then
   echo "    [錯誤] 找不到 curl，請先安裝 curl 後再執行此腳本。" >&2
   exit 1
 fi
 if command -v codegraph >/dev/null 2>&1; then
-  echo "    [略過] 'codegraph' 已存在，不重跑安裝腳本。"
+  echo "    [更新] 'codegraph' 已存在，執行 'codegraph upgrade' 檢查並更新 ..."
+  # upgrade 失敗（例如無網路）不應中斷整支腳本；set -euo pipefail 之下
+  # 裸呼叫失敗會直接 abort，故以 if 包裹取得 exit code 並 warn-and-continue。
+  if ! codegraph upgrade; then
+    echo "    [警告] 'codegraph upgrade' 失敗，略過更新，繼續執行後續步驟。" >&2
+  fi
 else
   echo "    [安裝] 未偵測到 'codegraph'，透過官方安裝腳本安裝 ..."
   curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh

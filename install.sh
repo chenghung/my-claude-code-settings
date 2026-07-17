@@ -637,3 +637,10 @@ printf '\n=== Summary ===\n'
 printf '  created:  %d\n' "$count_created"
 printf '  ok:       %d\n' "$count_ok"
 printf '  skipped:  %d\n' "$count_skipped"
+
+# codegraph 的索引是逐專案的，install.sh 只負責幫本次選取的平台接上 codegraph
+# 的 MCP server，不會替任何專案建立索引，故在此提醒使用者後續自行執行。
+printf '\n提示：本次已為你選取的平台接上 codegraph 的 MCP server，但索引是逐專案\n'
+printf '      進行的，並不包含在這次安裝內。想在某個專案使用 codegraph，請到該\n'
+printf '      專案根目錄執行一次「codegraph init」；已經有 .codegraph/ 目錄的專案\n'
+printf '      不需要重跑。\n'
