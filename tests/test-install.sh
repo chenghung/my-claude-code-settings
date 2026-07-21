@@ -127,4 +127,17 @@ grep -q '^mcp add' "$CLAUDE_STUB_LOG" && bad codegraph-mcp-skips-when-registered
 # log works as the sample; log_claude_reg from scenario B above is used).
 grep -qF '開始安裝 CLI 工具' "$T/log_claude_reg" && bad install-cli-tools-actually-skipped || pass install-cli-tools-actually-skipped
 
+# ---- --claude-personal deploys the repo payload into the personal config dir ----
+export CLAUDE_CONFIG_DIR="$T/claude-default"
+export CLAUDE_PERSONAL_CONFIG_DIR="$T/claude-personal"
+CLAUDE_STUB_LOG="$T/claude-stub-personal.log"
+: > "$CLAUDE_STUB_LOG"
+( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude-personal --no-external > "$T/log_personal" 2>&1 )
+
+grep -q 'No platform selected' "$T/log_personal" && bad personal-flag-counts-as-platform || pass personal-flag-counts-as-platform
+test -L "$CLAUDE_PERSONAL_CONFIG_DIR/agents" && pass personal-agents-symlink || bad personal-agents-symlink
+test -L "$CLAUDE_PERSONAL_CONFIG_DIR/settings.json" && pass personal-settings-symlink || bad personal-settings-symlink
+test -L "$CLAUDE_PERSONAL_CONFIG_DIR/skills/deep-thinking" && pass personal-skills-symlink || bad personal-skills-symlink
+test ! -e "$CLAUDE_CONFIG_DIR/agents" && pass personal-flag-leaves-default-alone || bad personal-flag-leaves-default-alone
+
 exit $fail

@@ -26,6 +26,7 @@ IFS=$'\n\t'
 # ---------------------------------------------------------------------------
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+CLAUDE_PERSONAL_CONFIG_DIR="${CLAUDE_PERSONAL_CONFIG_DIR:-${HOME}/.claude-personal}"
 CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
 AGENTS_HOME="${AGENTS_HOME:-${HOME}/.agents}"
 OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-${HOME}/.config/opencode}"
@@ -253,6 +254,19 @@ deploy_claude() {
   # superpowers for Claude Code is declared in settings.json (enabledPlugins),
   # so it installs/updates through Claude Code itself, not via the CLI here.
   register_codegraph_mcp
+}
+
+# ---------------------------------------------------------------------------
+# Claude Code, personal subscription. A second, fully separate config dir is
+# the only way to keep two subscriptions logged in at once: the credentials
+# file (and .claude.json, which carries oauthAccount) both live inside
+# CLAUDE_CONFIG_DIR, so isolating the dir isolates the token quota.
+# ---------------------------------------------------------------------------
+deploy_claude_personal() {
+  local personal_dir="$CLAUDE_PERSONAL_CONFIG_DIR"
+
+  printf 'Deploying to Claude Code (personal subscription)\n  target: %s\n\n' "$personal_dir"
+  CLAUDE_CONFIG_DIR="$personal_dir" deploy_claude
 }
 
 # ---------------------------------------------------------------------------
@@ -562,6 +576,7 @@ install_superpowers() {
 # so it still works when stdin is piped).
 # ---------------------------------------------------------------------------
 want_claude=""
+want_claude_personal=""
 want_codex=""
 want_opencode=""
 skip_external=""
@@ -570,13 +585,17 @@ force_config=""
 for arg in "$@"; do
   case "$arg" in
     --claude) want_claude=1 ;;
+    --claude-personal) want_claude_personal=1 ;;
     --codex)  want_codex=1 ;;
     --opencode) want_opencode=1 ;;
     --all)    want_claude=1; want_codex=1; want_opencode=1 ;;
     --no-external) skip_external=1 ;;
     --force-config) force_config=1 ;;
     -h|--help)
-      printf 'Usage: install.sh [--claude] [--codex] [--opencode] [--all] [--no-external] [--force-config]\n'
+      printf 'Usage: install.sh [--claude] [--claude-personal] [--codex] [--opencode] [--all] [--no-external] [--force-config]\n'
+      printf '  --claude-personal  deploy the full repo config to a second, personal-\n'
+      printf '                     subscription-only Claude Code config dir (shares\n'
+      printf '                     session state with --claude).\n'
       printf '  --force-config  re-seed an already-seeded Codex config.toml from the repo\n'
       printf '                  template (backs up the existing file first). Codex-only;\n'
       printf '                  no effect on Claude Code or opencode.\n'
@@ -586,7 +605,7 @@ for arg in "$@"; do
   esac
 done
 
-if [ -z "$want_claude" ] && [ -z "$want_codex" ] && [ -z "$want_opencode" ]; then
+if [ -z "$want_claude" ] && [ -z "$want_claude_personal" ] && [ -z "$want_codex" ] && [ -z "$want_opencode" ]; then
   if ! { : > /dev/tty; } 2>/dev/null; then
     printf 'Error: no controlling terminal available for interactive prompts.\n' >&2
     printf 'Re-run with an explicit platform flag: --claude, --codex, --opencode, or --all.\n' >&2
@@ -604,7 +623,7 @@ if [ -z "$want_claude" ] && [ -z "$want_codex" ] && [ -z "$want_opencode" ]; the
   ask_yn "Install for opencode?" && want_opencode=1
 fi
 
-if [ -z "$want_claude" ] && [ -z "$want_codex" ] && [ -z "$want_opencode" ]; then
+if [ -z "$want_claude" ] && [ -z "$want_claude_personal" ] && [ -z "$want_codex" ] && [ -z "$want_opencode" ]; then
   printf 'No platform selected - nothing to do.\n'
   exit 0
 fi
@@ -628,6 +647,7 @@ fi
 [ -n "$want_claude" ] && deploy_claude
 [ -n "$want_codex" ] && deploy_codex
 [ -n "$want_opencode" ] && deploy_opencode
+[ -n "$want_claude_personal" ] && deploy_claude_personal
 
 # OpenSpec is a plain dev CLI tool with no per-platform install target, so it
 # runs once regardless of which platform(s) were selected above.
