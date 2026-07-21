@@ -160,6 +160,7 @@
   },
   "autoMemoryEnabled": false,
   "skipWorkflowUsageWarning": true,
+  "theme": "dark",
   "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
   "voiceEnabled": true
