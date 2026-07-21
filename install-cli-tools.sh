@@ -307,6 +307,21 @@ alias clr='_cc_launch --permission-mode auto --resume'
 alias clw='_cc_launch --permission-mode auto --worktree "$(basename $(git rev-parse --show-toplevel))/wt/$(date +%Y%m%d-%H%M%S)"'
 alias clre='_cc_launch --permission-mode auto --remote-control --name remote-control-onr-notebook-$(date +%Y%m%d-%H%M%S)'
 alias cll='abduco -l'
+# personal 訂閱啟動器：把 config dir 指到獨立目錄，讓憑證與 token 額度和預設
+# (onr) 訂閱完全隔離；用 subshell export 確保 CLAUDE_CONFIG_DIR 一路傳到
+# abduco 再傳到 claude 子行程，且不污染互動 shell。
+_ccp_launch() {
+  (
+    export CLAUDE_CONFIG_DIR="$HOME/.claude-personal"
+    export CC_SESSION_TAG="personal"
+    _cc_launch "$@"
+  )
+}
+alias clp='_ccp_launch --permission-mode auto'
+alias clpc='_ccp_launch --permission-mode auto --continue'
+alias clpr='_ccp_launch --permission-mode auto --resume'
+alias clpw='_ccp_launch --permission-mode auto --worktree "$(basename $(git rev-parse --show-toplevel))/wt/$(date +%Y%m%d-%H%M%S)"'
+alias clpre='_ccp_launch --permission-mode auto --remote-control --name remote-control-personal-notebook-$(date +%Y%m%d-%H%M%S)'
 ## aliases for lf (terminal file manager)
 # lfcd：離開 lf 時 cd 到瀏覽時所在目錄，透過 -last-dir-path 寫出的暫存檔傳遞。
 lfcd() {
