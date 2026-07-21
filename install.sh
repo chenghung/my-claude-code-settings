@@ -25,6 +25,10 @@ IFS=$'\n\t'
 # Paths — derived from the script's own location so the repo can live anywhere
 # ---------------------------------------------------------------------------
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Captured before the default below is applied, so a later check can tell
+# "the user supplied this via the environment" apart from "the script fell
+# back to its own default" (see the CLAUDE_CONFIG_DIR warning further down).
+CLAUDE_CONFIG_DIR_FROM_ENV="${CLAUDE_CONFIG_DIR+1}"
 CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
 CLAUDE_PERSONAL_CONFIG_DIR="${CLAUDE_PERSONAL_CONFIG_DIR:-${HOME}/.claude-personal}"
 CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
@@ -266,16 +270,32 @@ deploy_claude_personal() {
   # Captured now, before CLAUDE_CONFIG_DIR is temporarily overridden below.
   # `CLAUDE_CONFIG_DIR="$personal_dir" deploy_claude` is a prefix assignment,
   # so bash auto-restores CLAUDE_CONFIG_DIR to its prior value the moment
-  # deploy_claude returns — meaning this copy is only defensive today, not
-  # strictly required. Keep it anyway, and never rewrite the prefix
-  # assignment below into a plain `CLAUDE_CONFIG_DIR="$personal_dir"`
-  # statement: a plain assignment is NOT auto-restored, so the override
-  # would persist, default_dir would end up equal to personal_dir, and every
-  # link_one call below would link a path to itself — session sharing would
-  # break silently (links still get created, just useless), surfacing only
-  # when a switched subscription can't resume a prior conversation.
+  # deploy_claude returns — meaning this copy is defensive. Keep it anyway,
+  # and never rewrite the prefix assignment below into a plain
+  # `CLAUDE_CONFIG_DIR="$personal_dir"` statement: a plain assignment is NOT
+  # auto-restored, so the override would persist, default_dir would end up
+  # equal to personal_dir, and every link_one call below would link a path to
+  # itself — session sharing would break silently (links still get created,
+  # just useless), surfacing only when a switched subscription can't resume a
+  # prior conversation.
   local default_dir="$CLAUDE_CONFIG_DIR"
   local personal_dir="$CLAUDE_PERSONAL_CONFIG_DIR"
+
+  # Guard: if both dirs already resolve to the same path, every link_one call
+  # below would link a path to itself, silently breaking session sharing (see
+  # the note above). The common trigger is running install.sh from inside a
+  # Claude Code session started by the personal-subscription launcher, which
+  # exports CLAUDE_CONFIG_DIR into the session — every child process
+  # (including this script) inherits it, so it collides with
+  # CLAUDE_PERSONAL_CONFIG_DIR's own default.
+  if [ "$default_dir" = "$personal_dir" ]; then
+    printf 'Error: CLAUDE_CONFIG_DIR and CLAUDE_PERSONAL_CONFIG_DIR both resolve to %s.\n' "$default_dir" >&2
+    printf 'This usually means install.sh is running inside a Claude Code session\n' >&2
+    printf 'that already has CLAUDE_CONFIG_DIR set (e.g. the personal-subscription\n' >&2
+    printf 'launcher). Re-run install.sh from a plain shell instead.\n' >&2
+    printf 'Aborting --claude-personal deploy — no changes made.\n' >&2
+    exit 1
+  fi
 
   printf 'Deploying to Claude Code (personal subscription)\n  target: %s\n\n' "$personal_dir"
   CLAUDE_CONFIG_DIR="$personal_dir" deploy_claude
@@ -630,7 +650,7 @@ done
 if [ -z "$want_claude" ] && [ -z "$want_claude_personal" ] && [ -z "$want_codex" ] && [ -z "$want_opencode" ]; then
   if ! { : > /dev/tty; } 2>/dev/null; then
     printf 'Error: no controlling terminal available for interactive prompts.\n' >&2
-    printf 'Re-run with an explicit platform flag: --claude, --codex, --opencode, or --all.\n' >&2
+    printf 'Re-run with an explicit platform flag: --claude, --claude-personal, --codex, --opencode, or --all.\n' >&2
     exit 2
   fi
 
@@ -648,6 +668,27 @@ fi
 if [ -z "$want_claude" ] && [ -z "$want_claude_personal" ] && [ -z "$want_codex" ] && [ -z "$want_opencode" ]; then
   printf 'No platform selected - nothing to do.\n'
   exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Warn (do not abort) if CLAUDE_CONFIG_DIR was inherited from the environment
+# and points somewhere other than the default. Legitimate uses exist (tests,
+# advanced setups), so this never blocks the run — but the common accidental
+# trigger is running install.sh from inside a Claude Code session started by
+# the personal-subscription launcher, which exports CLAUDE_CONFIG_DIR into
+# the session; every child process (including this script) inherits it, so a
+# --claude or --all run would silently deploy into that dir instead of the
+# default one. CLAUDE_CONFIG_DIR_FROM_ENV was captured before the default was
+# applied, so it only reflects a value the user actually supplied — not the
+# script's own fallback.
+# ---------------------------------------------------------------------------
+if { [ -n "$want_claude" ] || [ -n "$want_claude_personal" ]; } \
+  && [ -n "$CLAUDE_CONFIG_DIR_FROM_ENV" ] \
+  && [ "$CLAUDE_CONFIG_DIR" != "${HOME}/.claude" ]; then
+  printf '\n*** WARNING: CLAUDE_CONFIG_DIR is set in the environment ***\n' >&2
+  printf 'Deploy target: %s (default would be: %s)\n' "$CLAUDE_CONFIG_DIR" "${HOME}/.claude" >&2
+  printf 'This usually means install.sh is running inside a session that already\n' >&2
+  printf 'has CLAUDE_CONFIG_DIR set (e.g. the personal-subscription launcher).\n\n' >&2
 fi
 
 # ---------------------------------------------------------------------------

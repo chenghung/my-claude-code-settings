@@ -127,7 +127,29 @@ grep -q '^mcp add' "$CLAUDE_STUB_LOG" && bad codegraph-mcp-skips-when-registered
 # log works as the sample; log_claude_reg from scenario B above is used).
 grep -qF '開始安裝 CLI 工具' "$T/log_claude_reg" && bad install-cli-tools-actually-skipped || pass install-cli-tools-actually-skipped
 
-# ---- --claude-personal deploys the repo payload into the personal config dir ----
+# ---- guard: deploy_claude_personal aborts when CLAUDE_CONFIG_DIR and
+# CLAUDE_PERSONAL_CONFIG_DIR resolve to the same directory. This is what
+# happens if install.sh runs inside a Claude Code session started by the
+# personal-subscription launcher, which exports CLAUDE_CONFIG_DIR into the
+# session (every child process inherits it) so it collides with
+# CLAUDE_PERSONAL_CONFIG_DIR's own default. Without the guard, link_one
+# would link every session-state path to itself.
+SELFREF_DIR="$T/claude-selfref"
+mkdir -p "$SELFREF_DIR"
+export CLAUDE_CONFIG_DIR="$SELFREF_DIR"
+export CLAUDE_PERSONAL_CONFIG_DIR="$SELFREF_DIR"
+CLAUDE_STUB_LOG="$T/claude-stub-selfref.log"
+: > "$CLAUDE_STUB_LOG"
+selfref_status=0
+( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude-personal --no-external > "$T/log_selfref" 2>&1 ) || selfref_status=$?
+
+[ "$selfref_status" -ne 0 ] && pass selfref-guard-aborts || bad selfref-guard-aborts
+grep -qF 'CLAUDE_CONFIG_DIR and CLAUDE_PERSONAL_CONFIG_DIR both resolve to' "$T/log_selfref" && pass selfref-guard-message || bad selfref-guard-message
+[ -z "$(ls -A "$SELFREF_DIR")" ] && pass selfref-guard-no-links || bad selfref-guard-no-links
+
+# ---- --claude-personal deploys the repo payload into the personal config
+# dir when the two dirs differ. This block also doubles as the "normal case
+# unaffected" regression check for the equality guard above. ----
 export CLAUDE_CONFIG_DIR="$T/claude-default"
 export CLAUDE_PERSONAL_CONFIG_DIR="$T/claude-personal"
 CLAUDE_STUB_LOG="$T/claude-stub-personal.log"
