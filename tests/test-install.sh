@@ -138,14 +138,21 @@ grep -q 'No platform selected' "$T/log_personal" && bad personal-flag-counts-as-
 test -L "$CLAUDE_PERSONAL_CONFIG_DIR/agents" && pass personal-agents-symlink || bad personal-agents-symlink
 test -L "$CLAUDE_PERSONAL_CONFIG_DIR/settings.json" && pass personal-settings-symlink || bad personal-settings-symlink
 test -L "$CLAUDE_PERSONAL_CONFIG_DIR/skills/deep-thinking" && pass personal-skills-symlink || bad personal-skills-symlink
+# Scope note: this only proves repo-owned config (agents/, rules/, etc.) was
+# not deployed into the default dir by --claude-personal. It does NOT mean
+# the default dir stays untouched overall — the session-state dirs checked
+# below ARE created there on purpose, since link_one's targets must exist.
 test ! -e "$CLAUDE_CONFIG_DIR/agents" && pass personal-flag-leaves-default-alone || bad personal-flag-leaves-default-alone
 
-# ---- the three session-state dirs are symlinked at the DEFAULT config dir ----
-for d in projects session-env file-history; do
+# ---- the four session-state dirs are symlinked at the DEFAULT config dir ----
+for d in projects session-env file-history tasks; do
   test -L "$CLAUDE_PERSONAL_CONFIG_DIR/$d" && pass "personal-$d-is-symlink" || bad "personal-$d-is-symlink"
   [ "$(readlink "$CLAUDE_PERSONAL_CONFIG_DIR/$d")" = "$CLAUDE_CONFIG_DIR/$d" ] && pass "personal-$d-target" || bad "personal-$d-target"
   # Self-referential link would silently defeat session sharing entirely.
-  [ "$(readlink "$CLAUDE_PERSONAL_CONFIG_DIR/$d")" = "$CLAUDE_PERSONAL_CONFIG_DIR/$d" ] && bad "personal-$d-not-self" || pass "personal-$d-not-self"
+  # -L is required first: without it, a missing link makes readlink print
+  # "", which trivially differs from the personal path and would make this
+  # assertion pass even though the link was never created at all.
+  [ -L "$CLAUDE_PERSONAL_CONFIG_DIR/$d" ] && [ "$(readlink "$CLAUDE_PERSONAL_CONFIG_DIR/$d")" != "$CLAUDE_PERSONAL_CONFIG_DIR/$d" ] && pass "personal-$d-not-self" || bad "personal-$d-not-self"
   test -d "$CLAUDE_CONFIG_DIR/$d" && pass "default-$d-dir-ensured" || bad "default-$d-dir-ensured"
 done
 
@@ -153,13 +160,26 @@ done
 ( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude-personal --no-external > "$T/log_personal2" 2>&1 )
 grep -q 'CONFLICT' "$T/log_personal2" && bad personal-idempotent || pass personal-idempotent
 
-# Non-destructive: a real, populated dir sitting at a link path must be
-# reported as a conflict and left completely intact.
+# Non-destructive: a real, populated dir sitting at each of the four link
+# paths must be reported as a conflict and left byte-for-byte intact. These
+# dirs hold the user's actual conversation history, so corruption here is
+# permanent data loss — each gets a non-empty file plus a nested
+# subdirectory, and content is diffed (not just existence-checked) after the
+# run, since a same-name file surviving with its content silently wiped
+# would pass an existence check but must fail this one.
 export CLAUDE_PERSONAL_CONFIG_DIR="$T/claude-personal-conflict"
-mkdir -p "$CLAUDE_PERSONAL_CONFIG_DIR/projects"
-: > "$CLAUDE_PERSONAL_CONFIG_DIR/projects/precious.jsonl"
+CONFLICT_SNAPSHOT="$T/claude-personal-conflict-snapshot"
+for d in projects session-env file-history tasks; do
+  mkdir -p "$CLAUDE_PERSONAL_CONFIG_DIR/$d/nested"
+  printf 'precious-%s-marker\n' "$d" > "$CLAUDE_PERSONAL_CONFIG_DIR/$d/marker.txt"
+  printf 'precious-%s-nested\n' "$d" > "$CLAUDE_PERSONAL_CONFIG_DIR/$d/nested/nested-file.txt"
+done
+mkdir -p "$CONFLICT_SNAPSHOT"
+cp -r "$CLAUDE_PERSONAL_CONFIG_DIR/." "$CONFLICT_SNAPSHOT/"
 ( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude-personal --no-external > "$T/log_personal3" 2>&1 )
-grep -q 'CONFLICT' "$T/log_personal3" && pass personal-projects-conflict-reported || bad personal-projects-conflict-reported
-test -f "$CLAUDE_PERSONAL_CONFIG_DIR/projects/precious.jsonl" && pass personal-projects-not-destroyed || bad personal-projects-not-destroyed
+for d in projects session-env file-history tasks; do
+  grep -qF "CONFLICT ${CLAUDE_PERSONAL_CONFIG_DIR}/${d}" "$T/log_personal3" && pass "personal-$d-conflict-reported" || bad "personal-$d-conflict-reported"
+  diff -r "$CONFLICT_SNAPSHOT/$d" "$CLAUDE_PERSONAL_CONFIG_DIR/$d" > /dev/null 2>&1 && pass "personal-$d-not-destroyed" || bad "personal-$d-not-destroyed"
+done
 
 exit $fail

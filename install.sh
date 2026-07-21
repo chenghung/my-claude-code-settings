@@ -263,18 +263,29 @@ deploy_claude() {
 # CLAUDE_CONFIG_DIR, so isolating the dir isolates the token quota.
 # ---------------------------------------------------------------------------
 deploy_claude_personal() {
+  # Captured now, before CLAUDE_CONFIG_DIR is temporarily overridden below.
+  # `CLAUDE_CONFIG_DIR="$personal_dir" deploy_claude` is a prefix assignment,
+  # so bash auto-restores CLAUDE_CONFIG_DIR to its prior value the moment
+  # deploy_claude returns — meaning this copy is only defensive today, not
+  # strictly required. Keep it anyway, and never rewrite the prefix
+  # assignment below into a plain `CLAUDE_CONFIG_DIR="$personal_dir"`
+  # statement: a plain assignment is NOT auto-restored, so the override
+  # would persist, default_dir would end up equal to personal_dir, and every
+  # link_one call below would link a path to itself — session sharing would
+  # break silently (links still get created, just useless), surfacing only
+  # when a switched subscription can't resume a prior conversation.
   local default_dir="$CLAUDE_CONFIG_DIR"
   local personal_dir="$CLAUDE_PERSONAL_CONFIG_DIR"
 
   printf 'Deploying to Claude Code (personal subscription)\n  target: %s\n\n' "$personal_dir"
   CLAUDE_CONFIG_DIR="$personal_dir" deploy_claude
 
-  # Share chat sessions with the default subscription. These three dirs are
+  # Share chat sessions with the default subscription. These four dirs are
   # keyed by session UUID, so two subscriptions running side by side write to
   # disjoint paths; linking them is what lets one subscription resume a
   # conversation the other one started.
   local d
-  for d in projects session-env file-history; do
+  for d in projects session-env file-history tasks; do
     mkdir -p "${default_dir}/${d}"
     link_one "${personal_dir}/${d}" "${default_dir}/${d}"
   done
