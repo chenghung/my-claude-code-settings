@@ -253,16 +253,44 @@ bash -n "$T/plaunch.sh" && pass ccp-launch-syntax || bad ccp-launch-syntax
 # shellcheck source=/dev/null
 source "$T/plaunch.sh"
 
+# The call to _ccp_launch below must run directly in this shell, with no
+# `$(...)` command substitution or explicit `( ... )` subshell wrapped
+# around it: either wrapper would itself isolate CLAUDE_CONFIG_DIR from this
+# script, regardless of whether _ccp_launch's own internal subshell does the
+# isolating -- which would make the ccp-no-env-leak assertion below
+# structurally unable to fail. So HOME/PATH/cwd are changed directly here
+# for the call and restored by hand afterward, and stdout is captured via
+# redirection to a file instead of command substitution.
+#
+# _cc_launch's first step, _cc_prune_dead_sockets, runs `find "$HOME/.abduco"`
+# under `set -e`; a missing directory makes find exit non-zero. Case sets 3/4
+# never hit this because wrapping the call in `$(...)` incidentally disables
+# errexit inside that subshell (bash's default inherit_errexit=off) -- the
+# same masking effect being removed above. Create the directory so the real
+# call below exercises the intended short-circuit path instead of tripping
+# over an unrelated fixture gap.
+mkdir -p "$LAUNCH_HOME/.abduco"
+
+saved_pwd="$PWD"
+# shellcheck disable=SC2031  # false positive: flagged only because an earlier case set's *subshell* touched HOME; this read is top-level, saving it before the top-level export two lines down
+saved_home="$HOME"
+# shellcheck disable=SC2031  # false positive: flagged only because an earlier case set's *subshell* touched PATH; this read is top-level, saving it before the top-level export two lines down
+saved_path="$PATH"
+
+cd "$REPO_DIR"
+# shellcheck disable=SC2031  # false positive: flagged only because an earlier case set's *subshell* touched HOME; this export is top-level and restored below, not subshell-scoped
+export HOME="$LAUNCH_HOME"
+# shellcheck disable=SC2031  # false positive: flagged only because an earlier case set's *subshell* touched PATH; this export is top-level and restored below, not subshell-scoped
+export PATH="$STUB_BIN:$PATH"
+
 cfg_before="${CLAUDE_CONFIG_DIR:-<unset>}"
-out_p="$(
-  cd "$REPO_DIR"
-  # shellcheck disable=SC2030,SC2031  # intentional: HOME is scoped to this subshell only
-  export HOME="$LAUNCH_HOME"
-  # shellcheck disable=SC2030,SC2031  # intentional: PATH is scoped to this subshell only
-  export PATH="$STUB_BIN:$PATH"
-  _ccp_launch --permission-mode auto
-)"
+_ccp_launch --permission-mode auto > "$T/ccp-out.txt"
 cfg_after="${CLAUDE_CONFIG_DIR:-<unset>}"
+out_p="$(cat "$T/ccp-out.txt")"
+
+cd "$saved_pwd"
+export HOME="$saved_home"
+export PATH="$saved_path"
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 echo "$out_p" | grep -Eq '^SESSION=personal-my-test-repo-[0-9]{8}-[0-9]{6}$' && pass ccp-session-name || bad ccp-session-name
