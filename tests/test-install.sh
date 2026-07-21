@@ -140,4 +140,26 @@ test -L "$CLAUDE_PERSONAL_CONFIG_DIR/settings.json" && pass personal-settings-sy
 test -L "$CLAUDE_PERSONAL_CONFIG_DIR/skills/deep-thinking" && pass personal-skills-symlink || bad personal-skills-symlink
 test ! -e "$CLAUDE_CONFIG_DIR/agents" && pass personal-flag-leaves-default-alone || bad personal-flag-leaves-default-alone
 
+# ---- the three session-state dirs are symlinked at the DEFAULT config dir ----
+for d in projects session-env file-history; do
+  test -L "$CLAUDE_PERSONAL_CONFIG_DIR/$d" && pass "personal-$d-is-symlink" || bad "personal-$d-is-symlink"
+  [ "$(readlink "$CLAUDE_PERSONAL_CONFIG_DIR/$d")" = "$CLAUDE_CONFIG_DIR/$d" ] && pass "personal-$d-target" || bad "personal-$d-target"
+  # Self-referential link would silently defeat session sharing entirely.
+  [ "$(readlink "$CLAUDE_PERSONAL_CONFIG_DIR/$d")" = "$CLAUDE_PERSONAL_CONFIG_DIR/$d" ] && bad "personal-$d-not-self" || pass "personal-$d-not-self"
+  test -d "$CLAUDE_CONFIG_DIR/$d" && pass "default-$d-dir-ensured" || bad "default-$d-dir-ensured"
+done
+
+# Idempotent re-run must not report conflicts.
+( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude-personal --no-external > "$T/log_personal2" 2>&1 )
+grep -q 'CONFLICT' "$T/log_personal2" && bad personal-idempotent || pass personal-idempotent
+
+# Non-destructive: a real, populated dir sitting at a link path must be
+# reported as a conflict and left completely intact.
+export CLAUDE_PERSONAL_CONFIG_DIR="$T/claude-personal-conflict"
+mkdir -p "$CLAUDE_PERSONAL_CONFIG_DIR/projects"
+: > "$CLAUDE_PERSONAL_CONFIG_DIR/projects/precious.jsonl"
+( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude-personal --no-external > "$T/log_personal3" 2>&1 )
+grep -q 'CONFLICT' "$T/log_personal3" && pass personal-projects-conflict-reported || bad personal-projects-conflict-reported
+test -f "$CLAUDE_PERSONAL_CONFIG_DIR/projects/precious.jsonl" && pass personal-projects-not-destroyed || bad personal-projects-not-destroyed
+
 exit $fail

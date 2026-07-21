@@ -263,10 +263,21 @@ deploy_claude() {
 # CLAUDE_CONFIG_DIR, so isolating the dir isolates the token quota.
 # ---------------------------------------------------------------------------
 deploy_claude_personal() {
+  local default_dir="$CLAUDE_CONFIG_DIR"
   local personal_dir="$CLAUDE_PERSONAL_CONFIG_DIR"
 
   printf 'Deploying to Claude Code (personal subscription)\n  target: %s\n\n' "$personal_dir"
   CLAUDE_CONFIG_DIR="$personal_dir" deploy_claude
+
+  # Share chat sessions with the default subscription. These three dirs are
+  # keyed by session UUID, so two subscriptions running side by side write to
+  # disjoint paths; linking them is what lets one subscription resume a
+  # conversation the other one started.
+  local d
+  for d in projects session-env file-history; do
+    mkdir -p "${default_dir}/${d}"
+    link_one "${personal_dir}/${d}" "${default_dir}/${d}"
+  done
 }
 
 # ---------------------------------------------------------------------------
