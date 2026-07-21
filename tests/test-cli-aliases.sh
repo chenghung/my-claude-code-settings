@@ -103,6 +103,7 @@ chmod +x "$STUB_BIN/abduco"
 cat > "$STUB_BIN/claude" <<'STUB'
 #!/usr/bin/env bash
 echo "CLAUDE_ARGS=$*"
+echo "CLAUDE_CFG=${CLAUDE_CONFIG_DIR:-<unset>}"
 STUB
 chmod +x "$STUB_BIN/claude"
 
@@ -211,9 +212,9 @@ export CC_TEST_ABDUCO_L_MARKER
 
 out="$(
   cd "$REPO_DIR"
-  # shellcheck disable=SC2031  # intentional: HOME is scoped to this subshell only
+  # shellcheck disable=SC2030,SC2031  # intentional: HOME is scoped to this subshell only
   export HOME="$LAUNCH_HOME"
-  # shellcheck disable=SC2031  # intentional: PATH is scoped to this subshell only
+  # shellcheck disable=SC2030,SC2031  # intentional: PATH is scoped to this subshell only
   export PATH="$STUB_BIN:$PATH"
   _cc_launch --permission-mode auto
 )"
@@ -222,5 +223,92 @@ out="$(
 echo "$out" | grep -Eq '^SESSION=my-test-repo-[0-9]{8}-[0-9]{6}$' && pass launch-session-name-pattern || bad launch-session-name-pattern
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 echo "$out" | grep -q '^CLAUDE_ARGS=--permission-mode auto$' && pass launch-forwards-args || bad launch-forwards-args
+
+# ------------------------------------------------------------
+# Case set 4: _cc_launch honours CC_SESSION_TAG as a session-name prefix.
+# ------------------------------------------------------------
+out_tagged="$(
+  cd "$REPO_DIR"
+  # shellcheck disable=SC2030,SC2031  # intentional: HOME is scoped to this subshell only
+  export HOME="$LAUNCH_HOME"
+  # shellcheck disable=SC2030,SC2031  # intentional: PATH is scoped to this subshell only
+  export PATH="$STUB_BIN:$PATH"
+  export CC_SESSION_TAG=personal
+  _cc_launch --permission-mode auto
+)"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+echo "$out_tagged" | grep -Eq '^SESSION=personal-my-test-repo-[0-9]{8}-[0-9]{6}$' && pass launch-session-name-tagged || bad launch-session-name-tagged
+
+# ------------------------------------------------------------
+# Case set 5: _ccp_launch points CLAUDE_CONFIG_DIR at the personal config dir,
+# tags the session, propagates the env through abduco into claude, and does
+# not leak CLAUDE_CONFIG_DIR back into the calling shell.
+# ------------------------------------------------------------
+awk '/^_ccp_launch\(\) \{/,/^}/' "$INSTALL_SH" > "$T/plaunch.sh"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+test -s "$T/plaunch.sh" && pass extract-ccp-launch || bad extract-ccp-launch
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+bash -n "$T/plaunch.sh" && pass ccp-launch-syntax || bad ccp-launch-syntax
+# shellcheck source=/dev/null
+source "$T/plaunch.sh"
+
+# The call to _ccp_launch below must run directly in this shell, with no
+# `$(...)` command substitution or explicit `( ... )` subshell wrapped
+# around it: either wrapper would itself isolate CLAUDE_CONFIG_DIR from this
+# script, regardless of whether _ccp_launch's own internal subshell does the
+# isolating -- which would make the ccp-no-env-leak assertion below
+# structurally unable to fail. So HOME/PATH/cwd are changed directly here
+# for the call and restored by hand afterward, and stdout is captured via
+# redirection to a file instead of command substitution.
+#
+# _cc_launch's first step, _cc_prune_dead_sockets, runs `find "$HOME/.abduco"`
+# under `set -e`; a missing directory makes find exit non-zero. Case sets 3/4
+# never hit this because wrapping the call in `$(...)` incidentally disables
+# errexit inside that subshell (bash's default inherit_errexit=off) -- the
+# same masking effect being removed above. Create the directory so the real
+# call below exercises the intended short-circuit path instead of tripping
+# over an unrelated fixture gap.
+mkdir -p "$LAUNCH_HOME/.abduco"
+
+saved_pwd="$PWD"
+# shellcheck disable=SC2031  # false positive: flagged only because an earlier case set's *subshell* touched HOME; this read is top-level, saving it before the top-level export two lines down
+saved_home="$HOME"
+# shellcheck disable=SC2031  # false positive: flagged only because an earlier case set's *subshell* touched PATH; this read is top-level, saving it before the top-level export two lines down
+saved_path="$PATH"
+
+cd "$REPO_DIR"
+# shellcheck disable=SC2031  # false positive: flagged only because an earlier case set's *subshell* touched HOME; this export is top-level and restored below, not subshell-scoped
+export HOME="$LAUNCH_HOME"
+# shellcheck disable=SC2031  # false positive: flagged only because an earlier case set's *subshell* touched PATH; this export is top-level and restored below, not subshell-scoped
+export PATH="$STUB_BIN:$PATH"
+
+cfg_before="${CLAUDE_CONFIG_DIR:-<unset>}"
+_ccp_launch --permission-mode auto > "$T/ccp-out.txt"
+cfg_after="${CLAUDE_CONFIG_DIR:-<unset>}"
+out_p="$(cat "$T/ccp-out.txt")"
+
+cd "$saved_pwd"
+export HOME="$saved_home"
+export PATH="$saved_path"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+echo "$out_p" | grep -Eq '^SESSION=personal-my-test-repo-[0-9]{8}-[0-9]{6}$' && pass ccp-session-name || bad ccp-session-name
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+echo "$out_p" | grep -qF "CLAUDE_CFG=$LAUNCH_HOME/.claude-personal" && pass ccp-config-dir-propagated || bad ccp-config-dir-propagated
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$cfg_before" = "$cfg_after" ] && pass ccp-no-env-leak || bad ccp-no-env-leak
+
+for a in clp clpc clpr clpw clpre; do
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  grep -qE "^alias ${a}=" "$INSTALL_SH" && pass "alias-${a}-present" || bad "alias-${a}-present"
+done
+
+# Regression guard: the managed-block sentinels must never change, or install
+# leaves an orphaned block behind on the next run.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF '# >>> cli-tools aliases (managed) >>>' "$INSTALL_SH" && pass sentinel-begin-unchanged || bad sentinel-begin-unchanged
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF '# <<< cli-tools aliases (managed) <<<' "$INSTALL_SH" && pass sentinel-end-unchanged || bad sentinel-end-unchanged
 
 exit $fail
