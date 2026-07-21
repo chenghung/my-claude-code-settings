@@ -211,9 +211,9 @@ export CC_TEST_ABDUCO_L_MARKER
 
 out="$(
   cd "$REPO_DIR"
-  # shellcheck disable=SC2031  # intentional: HOME is scoped to this subshell only
+  # shellcheck disable=SC2030,SC2031  # intentional: HOME is scoped to this subshell only
   export HOME="$LAUNCH_HOME"
-  # shellcheck disable=SC2031  # intentional: PATH is scoped to this subshell only
+  # shellcheck disable=SC2030,SC2031  # intentional: PATH is scoped to this subshell only
   export PATH="$STUB_BIN:$PATH"
   _cc_launch --permission-mode auto
 )"
@@ -222,5 +222,21 @@ out="$(
 echo "$out" | grep -Eq '^SESSION=my-test-repo-[0-9]{8}-[0-9]{6}$' && pass launch-session-name-pattern || bad launch-session-name-pattern
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 echo "$out" | grep -q '^CLAUDE_ARGS=--permission-mode auto$' && pass launch-forwards-args || bad launch-forwards-args
+
+# ------------------------------------------------------------
+# Case set 4: _cc_launch honours CC_SESSION_TAG as a session-name prefix.
+# ------------------------------------------------------------
+out_tagged="$(
+  cd "$REPO_DIR"
+  # shellcheck disable=SC2030,SC2031  # intentional: HOME is scoped to this subshell only
+  export HOME="$LAUNCH_HOME"
+  # shellcheck disable=SC2030,SC2031  # intentional: PATH is scoped to this subshell only
+  export PATH="$STUB_BIN:$PATH"
+  export CC_SESSION_TAG=personal
+  _cc_launch --permission-mode auto
+)"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+echo "$out_tagged" | grep -Eq '^SESSION=personal-my-test-repo-[0-9]{8}-[0-9]{6}$' && pass launch-session-name-tagged || bad launch-session-name-tagged
 
 exit $fail

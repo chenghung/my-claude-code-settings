@@ -294,10 +294,11 @@ _cc_prune_dead_sockets() {
 # 透過 abduco 啟動 claude，session 可隨時 detach / 用 cll 或 abduco -a 重連。
 _cc_launch() {
   _cc_prune_dead_sockets
-  local base
+  local base tag
   base="$(git rev-parse --show-toplevel 2>/dev/null)"
   base="$(basename "${base:-$PWD}")"
-  abduco -c "${base// /-}-$(date +%Y%m%d-%H%M%S)" claude "$@"
+  tag="${CC_SESSION_TAG:+${CC_SESSION_TAG}-}"
+  abduco -c "${tag}${base// /-}-$(date +%Y%m%d-%H%M%S)" claude "$@"
 }
 alias cl='_cc_launch'
 alias cla='_cc_launch --permission-mode auto'
