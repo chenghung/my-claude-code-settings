@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================================
-# 腳本用途：在 Manjaro Linux 上安裝 19 個 CLI 工具，並將指定的
+# 腳本用途：在 Manjaro Linux 上安裝 20 個 CLI 工具，並將指定的
 #           alias 區塊冪等地寫入 ~/.zshrc。
 # 來源優先序（硬性）：官方 repo > AUR > pipx > 上游官方安裝腳本，且版本不可
 #   過舊；第四級（上游官方安裝腳本）僅用於官方 repo 與 AUR 皆無可信對應
@@ -10,7 +10,9 @@ set -euo pipefail
 # 預期影響：
 #   - 透過 pacman 安裝官方 repo 套件：jq、bat、glow、eza、csvlens、
 #     openai-codex、abduco、lf、markdownlint-cli、tflint、python-pipx、
-#     ripgrep（提供 rg 指令）、shellcheck
+#     ripgrep（提供 rg 指令）、shellcheck、bats；bats 另帶三個輔助庫
+#     bats-support、bats-assert、bats-file（僅提供 /usr/lib/bats 下的
+#     load.bash，無終端指令，以檔案存在與否判斷冪等）
 #   - 透過 yay（AUR helper）安裝 AUR 套件：rtk、claude-code、opencode
 #   - 透過 pipx 安裝官方 repo 與 AUR 皆無的 python 套件：markitdown[all]
 #   - 透過上游官方安裝腳本（curl）安裝官方 repo 與 AUR 皆無可信對應套件的
@@ -110,6 +112,22 @@ ensure_tool tflint       tflint           "${PACMAN_INSTALL[@]}"
 ensure_tool pipx         python-pipx      "${PACMAN_INSTALL[@]}"
 ensure_tool shellcheck   shellcheck       "${PACMAN_INSTALL[@]}"
 ensure_tool rg           ripgrep          "${PACMAN_INSTALL[@]}"
+ensure_tool bats         bats             "${PACMAN_INSTALL[@]}"
+
+# bats 輔助庫（bats-support / bats-assert / bats-file）：官方 repo 套件，但不提供
+# 任何可執行指令，安裝後僅在 /usr/lib/bats/<lib>/load.bash 產生檔案，因此
+# ensure_tool 的 command -v 判斷不適用（會永遠誤判為缺失而每次重裝）。改以
+# load.bash 是否存在作為冪等判斷；三者為官方唯一命名套件、無異名提供者的檔案
+# 衝突風險，直接以 --needed 安裝即可，不需 ensure_tool 的防衝突機制。
+for _bats_lib in bats-support bats-assert bats-file; do
+  if [ -f "/usr/lib/bats/${_bats_lib}/load.bash" ]; then
+    echo "    [略過] bats 輔助庫 '${_bats_lib}' 已安裝，不重裝。"
+  else
+    echo "    [安裝] 未偵測到 bats 輔助庫 '${_bats_lib}'，安裝中 ..."
+    "${PACMAN_INSTALL[@]}" "$_bats_lib"
+  fi
+done
+unset _bats_lib
 
 # ------------------------------------------------------------
 # 2) AUR 套件（yay）：rtk claude-code opencode-bin
