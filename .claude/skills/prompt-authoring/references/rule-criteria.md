@@ -25,7 +25,7 @@
 
 同一條規則不得同時存在於多個會被同時載入的檔案中。
 
-檢查方式：對新增或修改的規則，取其關鍵詞在 `agents/`、`skills/`、`rules/`、`commands/`、`.claude/agents/`、`.claude/skills/`、`.claude/rules/`、`CLAUDE.md` 範圍內跨檔搜尋，確認沒有第二處在講同一件事。
+檢查方式：對受審查檔案中的規則，取其關鍵詞在 `agents/`、`skills/`、`rules/`、`commands/`、`.claude/agents/`、`.claude/skills/`、`.claude/rules/`、`CLAUDE.md` 範圍內跨檔搜尋，確認沒有第二處在講同一件事。
 
 ```bash
 rg -n '<關鍵詞>' agents/ skills/ rules/ commands/ .claude/agents/ .claude/skills/ .claude/rules/ CLAUDE.md
