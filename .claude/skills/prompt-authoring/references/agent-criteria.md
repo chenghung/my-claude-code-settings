@@ -37,6 +37,8 @@
 1. `## Boundary and Failure Behavior`：描述工具呼叫失敗、資料缺失、認證失敗等邊界情境下的處置方式
 1. `## Output to Main Agent`：定義成功與失敗時應回傳給 main agent 的格式與欄位
 
+`## Input from Main Agent` 的必填範圍採過渡判定：新建的 subagent 定義檔，以及本次變更中被修改的既有定義檔，此章節必填；本次變更未觸碰的既有定義檔，缺少此章節不列為 finding。判定方式：檢查該檔案是否在本次變更所異動的檔案清單中——是則必填，否則跳過此項檢查。
+
 ## Optional Sections
 
 以下章節依 agent 型態選用，位置排在所有 Mandatory Sections 之後，章節之間的相對順序由作者依語意決定：
@@ -66,24 +68,12 @@
 
 撰寫 Workflow 章節時，內容類型限制對所有 model 等級一律適用，只有執行具體度隨模型能力調整。這兩條軸對應 `shared-criteria.md` 的 `Content Necessity` 章節「模型能力與執行具體度的兩軸」；本節規定其在 Workflow 章節的落實。
 
-**內容類型限制（所有 model 一律適用）**：只允許以下四類，不因模型較小放寬：
+**內容類型限制（所有 model 一律適用）**：應寫入五類與禁止清單沿用 `shared-criteria.md` 的 `Content Necessity` 章節，本節不重複列出。Workflow 章節在此之外額外禁止一項：條件分支的窮舉。
 
-- 順序敏感的副作用 checkpoint（例：建立 PR 前必須先完成 push、寫入暫存檔前必須先確認目錄是否存在）
-- 此 repo 或此 domain 特有、無法從通用知識推斷的 convention
-- 外部工具的已知 quirks
-- 與 main agent 的 handoff checkpoint（失敗時回報哪些欄位、何時應暫停並向使用者確認）
-
-以下內容對任何模型都不得寫入 Workflow 章節：
-
-- LLM 能自行推理的常識順序（例：先讀檔再編輯、先搜尋再判斷）
-- 標準語法或語言特性教學、通用框架用法
-- 透過 help 指令或工具 schema 即可取得的 CLI flag 逐項清單（型錄式窮舉）
-- 條件分支的窮舉
-
-**執行具體度（依模型能力調整，僅在上述允許四類內生效）：**
+**執行具體度（依模型能力調整，僅在上述允許內容範圍內生效）：**
 
 - **model 為 opus 或 sonnet**：以意圖與約束陳述，信任模型自行推導執行細節，不逐步指揮
-- **model 為 haiku**：對上述允許四類中的步驟與必要指令，寫得更逐步、更具體、更釘死，以減少小模型的推理誤差。具體化只能發生在已允許的內容範圍內，不得作為跨入禁止內容的理由
+- **model 為 haiku**：對上述允許內容中的步驟與必要指令，寫得更逐步、更具體、更釘死，以減少小模型的推理誤差。具體化只能發生在已允許的內容範圍內，不得作為跨入禁止內容的理由
 
 關於 CLI canonical 範例的可寫入界線，依 `shared-criteria.md` 的 `Content Necessity` 章節「CLI 範例的界線」判斷，本節不重複該判準。
 
