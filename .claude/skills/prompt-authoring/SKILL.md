@@ -40,7 +40,7 @@ description: >
 - **委派撰寫**：實際的撰寫工作委派給 `prompt-author`，main agent 不自行編輯 prompt 定義檔。
 - **撰寫者與審查者必須是不同的 subagent**：不得由 `prompt-author` 審查自己剛產出的內容。此規定屬於 `references/shared-criteria.md` 三分類中的第二類（順序敏感的副作用檢查點）——撰寫者審查自己的產出存在自我偏誤，被偏誤放過的問題會直接進入 commit，該後果在單次流程內無法自我修正。
 - **平行委派三個審查端 subagent**：撰寫完成後，同時委派下列三者，各自只取得目標檔案與自身視角的判準，不得取得其他審查者的 findings，以維持視角互相盲目：
-  - `prompt-compliance-reviewer`：內容軸與措辭軸中，除另兩者負責面向與純格式命名規則外的全部，含幻覺引用與跨檔案單一來源。
+  - `prompt-compliance-reviewer`：內容軸與措辭軸中，除另兩者負責面向、以及其定義檔 `Out of Scope` 逐節列舉的格式類章節外的全部，含幻覺引用與跨檔案單一來源。
   - `prompt-constraint-auditor`：強制措辭三分類、規則衝突。
   - `prompt-boundary-auditor`：安全邊界、輸入輸出適當性、驗收模糊性。
 - **合併去重後交回撰寫端**：三者回傳的 findings 由 main agent 合併，指向同一位置且同一問題的重複 findings 併為一則，再交回 `prompt-author` 處理。
