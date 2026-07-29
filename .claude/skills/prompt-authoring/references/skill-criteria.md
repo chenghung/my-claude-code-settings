@@ -6,7 +6,7 @@
 
 本節不對 `SKILL.md` 設行數門檻：行數門檻本身是一條與內容脫鉤的固定數字規則，落在 `shared-criteria.md` `Mandatory Wording Classification` 的第三類（行為指引或風格偏好），反例測試會問「拿掉這條門檻，模型最可能怎麼做錯」——答案因 skill 複雜度而異，說不出單一具體失敗場景，通不過第三類的保留檢驗。改用三個可用是或否回答的檢測：
 
-1. `SKILL.md` 裡的每一段內容，在每一條分支都會用到嗎？若否應下放到 reference。
+1. `SKILL.md` 裡的細節判準——具體規則、清單、操作步驟等內容——是否只有單一分支會用到、其他分支用不到？是的話應下放到 reference。分支路由（例如 `Mode Selection`、`File Type Routing` 等用來決定該走哪條分支的判斷邏輯）與流程骨架（例如 `Authoring Flow`、`Review Flow`、`Findings Grading and Adoption`、`Convergence` 等描述某條分支底下流程如何進行、彼此如何銜接的章節）不是細節判準，不受此檢測約束——即使骨架內容只在特定分支下執行（例如某段只適用撰寫模式），它定義的正是「這條分支要做什麼」，本身就是分支結構的一部分，沒有可抽離的下放對象。
 1. 是否存在從未被 `SKILL.md` 指向的 reference 檔案？有的話屬於無用負擔。
 1. `SKILL.md` 指向的 reference 是否都實際存在？否則屬於幻覺引用。
 

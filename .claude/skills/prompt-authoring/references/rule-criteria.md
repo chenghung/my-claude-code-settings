@@ -25,10 +25,10 @@
 
 同一條規則不得同時存在於多個會被同時載入的檔案中。
 
-檢查方式：對新增或修改的規則，取其關鍵詞在 `rules/`、`.claude/rules/`、`.claude/skills/`、`agents/`、`.claude/agents/`、`CLAUDE.md` 範圍內跨檔搜尋，確認沒有第二處在講同一件事。
+檢查方式：對新增或修改的規則，取其關鍵詞在 `agents/`、`skills/`、`rules/`、`commands/`、`.claude/agents/`、`.claude/skills/`、`.claude/rules/`、`CLAUDE.md` 範圍內跨檔搜尋，確認沒有第二處在講同一件事。
 
 ```bash
-rg -n '<關鍵詞>' rules/ .claude/rules/ .claude/skills/ agents/ .claude/agents/ CLAUDE.md
+rg -n '<關鍵詞>' agents/ skills/ rules/ commands/ .claude/agents/ .claude/skills/ .claude/rules/ CLAUDE.md
 ```
 
 例外：不同層級之間（rule 對 subagent 對 skill）的重複，若是為了避免污染 main agent context 而刻意保留，不算違反；同層級之間的重複（rule 對 rule、subagent 對 subagent、skill 對 skill）一律算違反。
