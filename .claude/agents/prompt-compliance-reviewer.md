@@ -67,4 +67,4 @@ color: red
 - 依受審查檔案類型載入判準：見 `Input from Main Agent` 選填項的路由規則。
 - 逐檔對兩軸檢查：內容軸依已載入判準檔逐節核對，套用 `Out of Scope` 排除的兩類問題與格式類例外；措辭軸套用 `Wording Criteria` 每條的自我檢測句，且措辭軸 findings 一律先過 `Content Necessity` 的內容必要性閘門。
 - 彙整 findings 與整體判定。
-- **順序敏感的檢查點**：本審查在 commit 之前執行，回饋為顧問性，本 agent 不執行 commit、不修改任何檔案。
+- **回饋性質**：回饋為顧問性，本 agent 不執行 commit、不修改任何檔案。
