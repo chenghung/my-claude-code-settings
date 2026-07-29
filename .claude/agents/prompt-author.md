@@ -1,7 +1,7 @@
 ---
 name: prompt-author
 description: "依 main agent 提供的判準、目標檔案路徑與變更意圖，在受管路徑（agents、skills、rules、commands、.claude/agents、.claude/skills、.claude/rules 目錄，以及各層 CLAUDE.md）下建立或修改 prompt 定義檔，並依審查回饋反覆修正；當需要撰寫或調整這類 prompt 定義檔時使用。不負責審查自己的產出，也不處理一般 markdown 文件、程式碼、或 GitHub issue／PR 標題與內文的撰寫。"
-tools: Read, Grep, Glob, Edit, Write, Bash
+tools: Read, Grep, Glob, Edit, Write
 model: opus
 color: orange
 ---
