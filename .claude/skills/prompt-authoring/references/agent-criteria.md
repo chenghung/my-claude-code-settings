@@ -59,14 +59,12 @@
 
 以下行為一律禁止，發現後必須立即修正：
 
-- **Table of Contents**：不得在 subagent 定義檔頂端放置 ToC。Subagent 定義檔是 prompt，會整份載入 LLM context；ToC 對 LLM 沒有導航價值，純屬 token 浪費，且在章節重命名時會增加同步維護成本
 - **Cross-agent references**：不得在內文中提及其他 subagent 的名稱。職責邊界以「不處理什麼問題類型」描述；遇到超出範圍的需求，應向 main agent 回報，由 main agent 決定後續路由
-- **Hardcoded credentials**：不得寫入 API 金鑰、access token、含 token 的 webhook URL 或任何敏感資訊；一律改用環境變數
 - **Numbered section headings**：不得使用 `## 1. xxx`、`## 2. xxx` 等編號形式的章節標題
 
 ## Workflow Authoring Rules
 
-撰寫 Workflow 章節時，內容類型限制對所有 model 等級一律適用，只有執行具體度隨模型能力調整。這兩條軸適用的內容必要性判準，見 `shared-criteria.md` 的 `Wording Criteria` 章節；本節規定其在 Workflow 章節的落實。
+撰寫 Workflow 章節時，內容類型限制對所有 model 等級一律適用，只有執行具體度隨模型能力調整。這兩條軸對應 `shared-criteria.md` 的 `Content Necessity` 章節「模型能力與執行具體度的兩軸」；本節規定其在 Workflow 章節的落實。
 
 **內容類型限制（所有 model 一律適用）**：只允許以下四類，不因模型較小放寬：
 
@@ -87,7 +85,7 @@
 - **model 為 opus 或 sonnet**：以意圖與約束陳述，信任模型自行推導執行細節，不逐步指揮
 - **model 為 haiku**：對上述允許四類中的步驟與必要指令，寫得更逐步、更具體、更釘死，以減少小模型的推理誤差。具體化只能發生在已允許的內容範圍內，不得作為跨入禁止內容的理由
 
-關於 CLI canonical 範例的可寫入界線，同樣依 `shared-criteria.md` 的 `Wording Criteria` 章節判斷，本節不重複該判準。
+關於 CLI canonical 範例的可寫入界線，依 `shared-criteria.md` 的 `Content Necessity` 章節「CLI 範例的界線」判斷，本節不重複該判準。
 
 ## Out of Scope Authoring Rules
 
