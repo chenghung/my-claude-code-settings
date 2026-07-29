@@ -13,6 +13,17 @@ REMINDER='This path is a managed prompt-authoring definition (agents/skills/rule
 # prefixes. Comparison is per path segment, not substring, so "my-agents/x"
 # does not falsely match "agents/". Segments are matched at any depth so
 # both repo-relative and absolute paths are recognized.
+#
+# Known, accepted limitation: matching at any depth means a non-managed
+# nested directory that merely shares a managed name (e.g.
+# "foo/bar/commands/baz.md", or "vendor/.claude/agents/x.md") is also
+# flagged, even though it is not one of the eight governed paths. This is
+# accepted rather than fixed because (a) this hook only reminds and never
+# blocks, so the cost of a false positive is one extra reminder, and (b)
+# anchoring the match to the start of the path would break absolute-path
+# support, which the spec explicitly requires (a relative path and its
+# absolute equivalent must both match). Revisit this if the repo ever
+# grows a real, non-managed directory that shares one of these names.
 is_managed_path() {
   local path="$1"
   local -a segments
@@ -36,19 +47,33 @@ is_managed_path() {
 }
 
 main() {
-  local raw file_path agent_id
+  local raw tool_name file_path agent_id
 
   command -v jq >/dev/null 2>&1 || return 0
 
   raw="$(cat)"
 
   # Invalid JSON on stdin must never fail the hook.
+  if ! tool_name=$(jq -r '.tool_name // empty' <<< "$raw" 2>/dev/null); then
+    return 0
+  fi
   if ! file_path=$(jq -r '.tool_input.file_path // empty' <<< "$raw" 2>/dev/null); then
     return 0
   fi
   if ! agent_id=$(jq -r '.agent_id // empty' <<< "$raw" 2>/dev/null); then
     return 0
   fi
+
+  # Self-contained tool gate: this script is deployed globally too (hooks/
+  # is symlinked to ~/.claude/hooks by install.sh), so it must not rely
+  # solely on the caller's settings.json matcher to stay scoped to
+  # Edit/Write. An empty or unrecognized tool_name (including a missing
+  # field) is treated the same as "not confirmed Edit/Write" and stays
+  # silent, same as an empty file_path below.
+  case "$tool_name" in
+    Edit | Write) ;;
+    *) return 0 ;;
+  esac
 
   # agent_id is only present when a subagent triggered this hook; that
   # subagent is already the sanctioned authoring flow, so stay silent.

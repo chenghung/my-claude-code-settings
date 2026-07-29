@@ -108,3 +108,28 @@ assert_silent() {
   run run_hook_raw "$(build_payload Edit "my-agents/foo.md")"
   assert_silent
 }
+
+@test "13: Edit on bare skills/ path with no agent_id emits a reminder" {
+  run run_hook_raw "$(build_payload Edit "skills/foo.md")"
+  assert_reminder
+}
+
+@test "14: Edit on bare rules/ path with no agent_id emits a reminder" {
+  run run_hook_raw "$(build_payload Edit "rules/foo.md")"
+  assert_reminder
+}
+
+@test "15: Edit on .claude/agents/ path with no agent_id emits a reminder" {
+  run run_hook_raw "$(build_payload Edit ".claude/agents/foo.md")"
+  assert_reminder
+}
+
+@test "16: managed path with an unrecognized tool_name stays silent" {
+  run run_hook_raw "$(build_payload Read "agents/foo.md")"
+  assert_silent
+}
+
+@test "17: managed path with tool_name entirely absent stays silent" {
+  run run_hook_raw '{"tool_input":{"file_path":"agents/foo.md"}}'
+  assert_silent
+}
