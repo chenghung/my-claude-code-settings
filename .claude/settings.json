@@ -9,5 +9,18 @@
   },
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/hooks/prompt-file-guard.sh"
+          }
+        ]
+      }
+    ]
   }
 }
