@@ -33,7 +33,9 @@ rg -n '<關鍵詞>' agents/ skills/ rules/ commands/ .claude/agents/ .claude/ski
 
 例外：不同層級之間（rule 對 subagent 對 skill）的重複，若是為了避免污染 main agent context 而刻意保留，不算違反；同層級之間的重複（rule 對 rule、subagent 對 subagent、skill 對 skill）一律算違反。
 
-自我檢測：這條規則的關鍵詞，在同層級的其他檔案裡搜得到第二次命中嗎？搜到即為 finding。
+**Subagent 結構性重複的窄豁免**：同層級一律算違反的原則，對 subagent 對 subagent 有一個窄豁免。每份 subagent 定義檔是獨立、完整載入的 prompt，沒有 include 機制，角色同構的兩份定義檔在 `Input from Main Agent`、`Boundary and Failure Behavior`、`Output to Main Agent` 三個章節裡，描述通用輸入欄位、通用失敗處置、通用回傳欄位的部分必然相似，此類結構性內容不算違反。豁免不涵蓋判準內容本身：若兩份定義檔在這三個章節裡各自複製了同一條判準的實質規則（例如都完整重述某個面向的判斷標準或門檻，而非引用判準檔的對應章節），仍算違反，應改為指向判準檔。
+
+自我檢測：這條規則的關鍵詞，在同層級的其他檔案裡搜得到第二次命中嗎？搜到即為 finding；若命中落在上述三個章節內，進一步問——拿掉判準名稱與面向指稱後，剩下的是「必填/選填」「缺什麼就停止」這類共通樣板，還是可獨立成立的判斷規則或門檻？前者屬豁免範圍不算 finding，後者仍算 finding。
 
 ## Conflict
 
