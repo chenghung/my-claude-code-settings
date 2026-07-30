@@ -1,15 +1,6 @@
----
-name: subagent-architect
-description: "Subagent 定義檔結構與命名規範知識庫。當使用者要求新建 subagent 定義檔，或修改既有 subagent 的章節結構（新增、刪除、重命名章節），或對 subagent 的 frontmatter / sections / 命名進行合規檢查時觸發。不應觸發：只是修改 subagent 既有章節內文（不改結構）、編輯 skills/ 或 rules/ 目錄下的檔案。觸發關鍵字：subagent、agent 定義、agent 規格、frontmatter、in scope、out of scope、boundary and failure behavior、output to main agent"
----
+# Agent Criteria
 
-本 skill 統一 `agents/` 目錄下所有 subagent 定義檔的結構與命名，使 main agent 能以一致方式解析各 subagent 的職責與行為。本 skill 與 `prompt-quality-checks` rule 互補：後者規定設計原則與品質檢查，本 skill 規定具體格式落實。
-
-## Applicability
-
-- 適用對象：`agents/` 目錄下的所有 subagent 定義檔
-- 不適用：`skills/` 與 `rules/` 目錄（可參考本 skill 的結構，但不強制相同）
-- 觸發時機：新增 subagent 或修改既有 subagent 的章節結構（新增、刪除、重命名章節）時，必須遵循本 skill
+本檔是 `agents/`、`.claude/agents/` 目錄下 subagent 定義檔的專屬判準，與 `shared-criteria.md` 一併載入。
 
 ## Naming Convention
 
@@ -19,7 +10,7 @@ description: "Subagent 定義檔結構與命名規範知識庫。當使用者要
   - `-or`：author、administrator
   - `-ist`：specialist
   - 其他：expert、admin、guide
-- 反映「角色」而非「動作」（例：`markdown-editor` 而非 `edit-markdown`；`subagent-architect` 而非 `subagent-authoring`）
+- 反映「角色」而非「動作」（例：`markdown-editor` 而非 `edit-markdown`；`shell-script-reviewer` 而非 `review-shell-script`）
 - 多單字組合時領域詞在前、角色詞在後（例：`docker-expert`、`github-manager`、`obsidian-md-editor`）
 - 檔名（去除 `.md` 副檔名）必須與 frontmatter `name` 欄位一致
 
@@ -42,8 +33,11 @@ description: "Subagent 定義檔結構與命名規範知識庫。當使用者要
 1. **前言段落（不加 heading）**：緊接在 frontmatter 之後，一段話說明本 agent 的角色與核心職責
 1. `## In Scope`：條列式列出本 agent 負責處理的工作類型
 1. `## Out of Scope`：條列式列出本 agent 明確不負責的工作類型
+1. `## Input from Main Agent`：宣告本 agent 需要 main agent 提供哪些輸入，以及缺少必填輸入時的處置
 1. `## Boundary and Failure Behavior`：描述工具呼叫失敗、資料缺失、認證失敗等邊界情境下的處置方式
 1. `## Output to Main Agent`：定義成功與失敗時應回傳給 main agent 的格式與欄位
+
+`## Input from Main Agent` 的必填範圍採過渡判定：新建的 subagent 定義檔，以及本次變更中被修改的既有定義檔，此章節必填；本次變更未觸碰的既有定義檔，缺少此章節不列為 finding。判定方式：檢查該檔案是否在本次變更所異動的檔案清單中——是則必填，否則跳過此項檢查。
 
 ## Optional Sections
 
@@ -65,37 +59,23 @@ description: "Subagent 定義檔結構與命名規範知識庫。當使用者要
 
 ## Forbidden Patterns
 
-以下行為一律禁止，發現後必須立即修正：
+以下行為一律禁止：撰寫時不得寫入，審查時發現一律列為 finding。發現後的處置沿用 `shared-criteria.md` 的 `Forbidden Patterns` 節，本節不重複。
 
-- **Table of Contents**：不得在 subagent 定義檔頂端放置 ToC。Subagent 定義檔是 prompt，會整份載入 LLM context；ToC 對 LLM 沒有導航價值，純屬 token 浪費，且在章節重命名時會增加同步維護成本
 - **Cross-agent references**：不得在內文中提及其他 subagent 的名稱。職責邊界以「不處理什麼問題類型」描述；遇到超出範圍的需求，應向 main agent 回報，由 main agent 決定後續路由
-- **Hardcoded credentials**：不得寫入 API 金鑰、access token、含 token 的 webhook URL 或任何敏感資訊；一律改用環境變數
 - **Numbered section headings**：不得使用 `## 1. xxx`、`## 2. xxx` 等編號形式的章節標題
 
 ## Workflow Authoring Rules
 
-撰寫 Workflow 章節時，內容類型限制對所有 model 等級一律適用，只有執行具體度隨模型能力調整。這兩條軸對應 prompt-quality-checks 第 4 條「只寫模型推不出的內容」的兩軸；本節規定其在 Workflow 章節的落實。
+撰寫 Workflow 章節時，內容類型限制對所有 model 等級一律適用，只有執行具體度隨模型能力調整。這兩條軸對應 `shared-criteria.md` 的 `Content Necessity` 章節「模型能力與執行具體度的兩軸」；本節規定其在 Workflow 章節的落實。
 
-**內容類型限制（所有 model 一律適用）**：只允許以下四類，不因模型較小放寬：
+**內容類型限制（所有 model 一律適用）**：應寫入五類與禁止清單沿用 `shared-criteria.md` 的 `Content Necessity` 章節，本節不重複列出。Workflow 章節在此之外額外禁止一項：條件分支的窮舉。
 
-- 順序敏感的副作用 checkpoint（例：建立 PR 前必須先完成 push、寫入暫存檔前必須先確認目錄是否存在）
-- 此 repo 或此 domain 特有、無法從通用知識推斷的 convention
-- 外部工具的已知 quirks
-- 與 main agent 的 handoff checkpoint（失敗時回報哪些欄位、何時應暫停並向使用者確認）
-
-以下內容對任何模型都不得寫入 Workflow 章節：
-
-- LLM 能自行推理的常識順序（例：先讀檔再編輯、先搜尋再判斷）
-- 標準語法或語言特性教學、通用框架用法
-- 透過 help 指令或工具 schema 即可取得的 CLI flag 逐項清單（型錄式窮舉）
-- 條件分支的窮舉
-
-**執行具體度（依模型能力調整，僅在上述允許四類內生效）：**
+**執行具體度（依模型能力調整，僅在上述允許內容範圍內生效）：**
 
 - **model 為 opus 或 sonnet**：以意圖與約束陳述，信任模型自行推導執行細節，不逐步指揮
-- **model 為 haiku**：對上述允許四類中的步驟與必要指令，寫得更逐步、更具體、更釘死，以減少小模型的推理誤差。具體化只能發生在已允許的內容範圍內，不得作為跨入禁止內容的理由
+- **model 為 haiku**：對上述允許內容中的步驟與必要指令，寫得更逐步、更具體、更釘死，以減少小模型的推理誤差。具體化只能發生在已允許的內容範圍內，不得作為跨入禁止內容的理由
 
-關於 CLI canonical 範例的可寫入界線，依 prompt-quality-checks 第 4 條「CLI 範例的界線」判斷，本節不重複該判準。
+關於 CLI canonical 範例的可寫入界線，依 `shared-criteria.md` 的 `Content Necessity` 章節「CLI 範例的界線」判斷，本節不重複該判準。
 
 ## Out of Scope Authoring Rules
 
@@ -105,6 +85,23 @@ description: "Subagent 定義檔結構與命名規範知識庫。當使用者要
 - 禁止寫成「請改用 xxx agent」或任何指向其他 subagent 的說法
 - 需要描述超出範圍後的處置時，統一使用：「向 main agent 回報，由其決定後續處理」
 
+## Input from Main Agent Authoring Rules
+
+撰寫 `## Input from Main Agent` 章節時必須涵蓋以下四項內容：
+
+- **必須提供的輸入**：缺少即無法工作的輸入，例如唯有 main agent 才掌握的目標檔案路徑、資源 ID 等事實
+- **選填的輸入**：提供可以提升效果，但缺少也不影響基本執行的輸入
+- **不需要提供的輸入**：本 agent 自己查得到的東西，main agent 不必代為提供
+- **缺少必填輸入時的行為**：main agent 未提供必填輸入時，本 agent 應如何處置，例如暫停並回報缺少哪一項
+
+此章節存在的理由：審查者看的是靜態定義檔，看不到執行期 main agent 實際傳了什麼 prompt；定義檔若不先宣告需要哪些輸入，就沒有判斷 context 是否給足的對照基準。
+
+審查本章節時須檢查三項：
+
+- 必填項是否真的必要，而非過度索取
+- 是否把本 agent 自己查得到的東西列為必填
+- 缺少必填輸入時的行為是否明確
+
 ## Output to Main Agent Authoring Rules
 
 撰寫 `## Output to Main Agent` 章節時必須涵蓋：
@@ -113,10 +110,8 @@ description: "Subagent 定義檔結構與命名規範知識庫。當使用者要
 - **失敗時**：應回傳的具體欄位，例如錯誤代碼、原始錯誤訊息、已嘗試的步驟
 - **不應回傳**的資訊，例如完整的筆記內容、敏感憑證、CLI 原始指令輸出等冗餘或有安全疑慮的內容
 
-## Compliance Check Triggers
+回傳內容的適當性另須檢查以下三項，核心是回傳內容不是越多越好：
 
-以下情況發生時，必須對該 subagent 檔案執行本 skill 的合規檢查：
-
-- 新建 subagent 定義檔
-- 修改既有 subagent 的章節結構（新增、刪除、重命名章節）
-- `prompt-quality-checks` rule 觸發品質檢查時，本 skill 同步執行
+- 每個回傳欄位是否有 main agent 實際會用到的用途；純粹「以防萬一」的欄位應刪除
+- 是否回傳了 main agent 自己就能取得的資訊，例如它已經知道的檔案路徑、它可以自己讀取的檔案內容
+- 是否回傳了體積大而資訊密度低的內容，例如完整檔案內容、逐字 diff、CLI 原始輸出；此類應改為摘要加上可供 main agent 自行取用的定位資訊
