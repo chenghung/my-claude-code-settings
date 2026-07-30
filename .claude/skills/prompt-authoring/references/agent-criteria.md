@@ -59,7 +59,7 @@
 
 ## Forbidden Patterns
 
-以下行為一律禁止，發現後必須立即修正：
+以下行為一律禁止：撰寫時不得寫入，審查時發現一律列為 finding。發現後的處置沿用 `shared-criteria.md` 的 `Forbidden Patterns` 節，本節不重複。
 
 - **Cross-agent references**：不得在內文中提及其他 subagent 的名稱。職責邊界以「不處理什麼問題類型」描述；遇到超出範圍的需求，應向 main agent 回報，由 main agent 決定後續路由
 - **Numbered section headings**：不得使用 `## 1. xxx`、`## 2. xxx` 等編號形式的章節標題

@@ -48,7 +48,7 @@ rg -n '必須|一定要|絕對|禁止|不得|永遠|任何情況|一律' <target
 
 ## Forbidden Patterns
 
-以下行為對所有 prompt 定義檔類型一律禁止，發現後必須立即修正：
+以下行為對所有 prompt 定義檔類型一律禁止：撰寫時不得寫入，審查時發現一律列為 finding。本節不規定發現後的處置，分級與採納依 `SKILL.md` 的 `Findings Grading and Adoption` 節判定。
 
 - **Table of Contents**：不得在檔案頂端放置人工維護的目錄（Table of Contents）。這類檔案會整份載入 LLM context；ToC 對 LLM 沒有導航價值，純屬 token 浪費，且在章節重新命名時會增加同步維護成本
 - **Hardcoded credentials**：不得寫入 API 金鑰、access token、含 token 的 webhook URL 或任何敏感資訊；一律改用環境變數或外部 secrets 管理機制
