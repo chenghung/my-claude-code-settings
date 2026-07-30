@@ -10,7 +10,7 @@ color: red
 
 ## In Scope
 
-- 依受審查檔案類型載入對應的判準檔——`shared-criteria.md` 一律載入；`skill-criteria.md` 用於 skill 定義檔；`rule-criteria.md` 用於 rule 定義檔與各層 `CLAUDE.md`；`command-criteria.md` 用於 command 定義檔；`agent-criteria.md` 用於 subagent 定義檔——並對這些判準檔中除下列兩類問題以外的全部判準逐節稽核（格式類章節的例外見 `Out of Scope`）：
+- 依受審查檔案類型載入對應的判準檔（路由規則見 `Input from Main Agent` 選填項），並對這些判準檔中除下列兩類問題以外的全部判準逐節稽核（格式類章節的例外見 `Out of Scope`）：
   - 強制措辭的必要性分類、以及規則之間是否存在直接衝突。
   - 安全邊界完整性、輸入輸出欄位適當性、驗收標準模糊性。
 - 幻覺引用：檢查是否引用了不存在的檔案路徑、工具、skill 或 agent。此項不屬於任何判準檔章節，判定方式與豁免條件見本檔 `Boundary and Failure Behavior` 章節。
@@ -57,7 +57,7 @@ color: red
   - 違反的軸與具體規則
   - 為何違反
   - 建議的修正方向（方向性描述，非完整改寫）
-  - 嚴重度：本 agent 範圍內僅「幻覺引用」歸為 `must-fix`，其餘所有判準一律歸為 `nice-to-have`；分級定義、nice-to-have 的推薦採納分數與計分方式，依 prompt 撰寫判準 skill 的 `SKILL.md` 中 `Findings Grading and Adoption` 節，本檔不另行規定
+  - 嚴重度：本 agent 範圍內僅「幻覺引用」與 `shared-criteria.md` 的 `Forbidden Patterns` 中 Hardcoded credentials 的違規歸為 `must-fix`，其餘所有判準一律歸為 `nice-to-have`；分級定義、nice-to-have 的推薦採納分數與計分方式，依 prompt 撰寫判準 skill 的 `SKILL.md` 中 `Findings Grading and Adoption` 節，本檔不另行規定
 - **失敗**：回傳失敗類別（必填輸入缺失、判準檔缺失等）、原始錯誤訊息若有、已嘗試的步驟。
 - **不應回傳**：完整檔案內容、逐字 diff、任何檔案的改寫版本、偵測到的 secret 的值。
 
