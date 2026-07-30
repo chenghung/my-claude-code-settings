@@ -19,7 +19,7 @@ globs: "**/*.md"
 - 既有目標檔案已包含 Obsidian 專屬語法（`[[...]]`、`![[...]]`、`==...==`、`%%...%%`、`> [!note]` 小寫 callout、typed frontmatter 等）
 - Main agent 先前已為同一 vault 呼叫過 `obsidian-manager`，延續同一脈絡
 
-上述任一訊號都不成立時，預設使用 `markdown-editor`。當訊號模糊或互相矛盾時，向使用者確認而非擅自判斷。
+上述任一訊號都不成立時，預設使用 `markdown-editor`。若有任一訊號無法判定成立與否（例如無法確認目標檔案路徑是否位於 Obsidian vault 目錄下），向使用者確認而非擅自判斷。
 
 ## Main Agent 的責任
 
