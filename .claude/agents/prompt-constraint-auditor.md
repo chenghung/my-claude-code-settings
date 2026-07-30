@@ -49,7 +49,7 @@ color: red
 
 - 整體判定：`pass` 或 `changes-recommended`
 - 已檢查的檔案清單
-- findings 清單，每條包含：檔案路徑與位置、違反的判準（引用具體 reference 檔與節）、為何違反、修正方向、嚴重度。嚴重度僅「規則之間直接衝突」歸為 `must-fix`，其餘（含強制措辭分類與必要性判定）一律歸為 `nice-to-have`；nice-to-have 另附 0 到 100 的推薦採納分數，計分依兩軸：不採納會導致的具體失敗場景、修改幅度與連帶影響。
+- findings 清單，每條包含：檔案路徑與位置、違反的判準（引用具體 reference 檔與節）、為何違反、修正方向、嚴重度。本 agent 範圍內僅「規則之間直接衝突」歸為 `must-fix`，其餘（含強制措辭分類與必要性判定）一律歸為 `nice-to-have`；分級定義、nice-to-have 的推薦採納分數與計分方式，依 prompt 撰寫判準 skill 的 `SKILL.md` 中 `Findings Grading and Adoption` 節，本檔不另行規定。
 
 失敗時：
 
