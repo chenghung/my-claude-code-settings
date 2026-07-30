@@ -55,7 +55,7 @@ description: >
 
 must-fix 的判定範圍限定為以下四種，不得自行擴充：
 
-- 安全邊界缺失
+- 安全邊界缺失：含 `references/shared-criteria.md` 的 `Forbidden Patterns` 中 Hardcoded credentials 的違規
 - 假的保證：屬三分類第一類的安全或權限硬邊界，宣稱強制執行但沒有 hook 或 permission 設定支撐。第二類順序敏感副作用檢查點不要求執行機制，無 hook 支撐不列 must-fix
 - 規則之間直接衝突
 - 幻覺引用：引用不存在的檔案、工具或功能
