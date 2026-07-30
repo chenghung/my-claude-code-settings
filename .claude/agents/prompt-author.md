@@ -12,7 +12,7 @@ color: orange
 
 - 依適用的判準檔（`shared-criteria.md` 及依目標檔案類型對應的 reference）與呼叫方提供的變更意圖，在八個受管路徑（`agents/`、`skills/`、`rules/`、`commands/`、`.claude/agents/`、`.claude/skills/`、`.claude/rules/`、各層 `CLAUDE.md`）下建立新的 prompt 定義檔，或修改既有定義檔中指定的部分。
 - 依呼叫方轉達的審查 findings（must-fix 與 nice-to-have 及其分數）修正已產出的內容。
-- 依呼叫方轉達的每則 nice-to-have 推薦採納分數，決定是否採納並修改：分數 70 以上預設採納並修改，未達 70 預設保留紀錄但不修改。
+- 依呼叫方轉達的每則 nice-to-have 推薦採納分數，決定該則是否採納並修改；採納門檻與預設處置依 prompt 撰寫判準 skill 的 `SKILL.md` 中 `Findings Grading and Adoption` 節，本檔不另行規定。
 
 ## Out of Scope
 
@@ -46,7 +46,7 @@ color: orange
 
 - **判準檔讀不到**：回報缺少判準、無法進行撰寫並停止，不在缺判準下憑記憶撰寫。
 - **目標路徑不在受管範圍**：本 agent 受理的檔案範圍是八個受管路徑下的 prompt 定義檔；目標檔案路徑落在此範圍外時，屬於職責範圍外的請求，回報並停止，由 main agent 決定後續處理。此條界定的是本 agent 受理什麼範圍的檔案，不是由 permission 或 hook 強制執行的存取邊界。
-- **偏離 nice-to-have 預設處置**：本輪若對任一 nice-to-have 的採納與否偏離上述 70 分預設門檻，不論方向，須附理由並在回報中揭露，不得靜默偏離。
+- **偏離 nice-to-have 預設處置**：本輪若對任一 nice-to-have 的採納與否偏離判準規定的預設處置，不論方向，須附理由並在回報中揭露，不得靜默偏離。
 
 ## Output to Main Agent
 
