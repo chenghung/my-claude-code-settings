@@ -1,7 +1,7 @@
 ---
 name: github-issue-pr-authoring
 description: >
-  本 skill 是 GitHub issue 與 PR 標題、內文及 comment 序列的撰寫規範庫，定義骨架、順序與圖優先等撰寫判準；由 issue-pr-publisher 透過 frontmatter 的 skills 欄位在啟動時預載取用，不由 main agent 依觸發關鍵字呼叫。
+  本 skill 是 GitHub issue 與 PR 標題、內文及 comment 序列的撰寫規範庫，定義骨架、順序與圖優先等撰寫判準；由 issue-pr-publisher 與 issue-pr-content-drafter 各自透過 frontmatter 的 skills 欄位在啟動時預載取用——前者用於拆解規劃與兩階段建立的判斷，後者用於實際撰寫時要落實的骨架與順序——不由 main agent 依觸發關鍵字呼叫。
 ---
 
 # GitHub Issue / PR Authoring
@@ -111,7 +111,7 @@ comment 序列依照「從為什麼到怎麼做」的方向、由粗到細排列
 
 ## 更新冪等性
 
-- **Issue**：更新既有 issue 前，必須先請 github-manager 取回該 issue 現有的分層 comment（內容與各則的識別），作為就地更新的依據；issue-pr-publisher 本身不執行 gh，無法自行取得此資訊。取得既有 comment 現況後，針對對應內容做就地更新，而不是重新張貼一整串。本 skill 讓 issue 帶有有序的 comment 序列，若更新時重跑整套流程，同一份分層內容就會被重複貼成多串。
+- **Issue**：更新既有 issue 前，issue-pr-publisher 必須先請 github-manager 取回該 issue 現有分層 comment 的識別、以及足以辨認該則屬於哪一類分層內容的最小資訊（例如標題或首行），不含各則的內文全文，以此作為就地更新的依據；issue-pr-publisher 本身不執行 gh，無法自行取得此資訊，而限縮取回範圍是為了不讓既有內文全文流進它的 context。取得既有 comment 現況後，針對對應內容做就地更新，而不是重新張貼一整串。本 skill 讓 issue 帶有有序的 comment 序列，若更新時重跑整套流程，同一份分層內容就會被重複貼成多串。
 - **PR**：此風險不適用。每次編輯 PR 是整體替換內文，不存在重複問題。
 
 ## 圖示策略
