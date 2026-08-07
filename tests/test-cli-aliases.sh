@@ -48,7 +48,11 @@ assert_no_codegraph_install "$INSTALL_SH" install-cli-tools
 assert_no_codegraph_install "$REPO/install.sh" install
 
 T="$(mktemp -d)"
-trap 'rm -rf "$T"' EXIT
+# $TMPDIR -- and therefore $T -- can be arbitrarily long on a given machine.
+# Case set 6 asserts against a hard byte ceiling, so it needs a second scratch
+# dir at a short, TMPDIR-independent path to stand in for $HOME.
+T6="$(mktemp -d /tmp/cc-sunpath-XXXXXX)"
+trap 'rm -rf "$T" "$T6"' EXIT
 
 # ------------------------------------------------------------
 # DRY extraction: pull the real _cc_prune_dead_sockets / _cc_launch function
@@ -106,6 +110,14 @@ echo "CLAUDE_ARGS=$*"
 echo "CLAUDE_CFG=${CLAUDE_CONFIG_DIR:-<unset>}"
 STUB
 chmod +x "$STUB_BIN/claude"
+# The real hostname is part of abduco's socket path and varies per machine;
+# stub it so the length budget under test is reproducible. Defaults short so
+# the earlier case sets keep asserting exact, untruncated session names.
+cat > "$STUB_BIN/hostname" <<'STUB'
+#!/usr/bin/env bash
+echo "${CC_TEST_HOSTNAME:-testhost}"
+STUB
+chmod +x "$STUB_BIN/hostname"
 
 # Creates a real AF_UNIX socket file at $1 (bind() leaves the inode behind
 # after close(), which is exactly the artifact _cc_prune_dead_sockets scans
@@ -233,6 +245,7 @@ out_tagged="$(
   export HOME="$LAUNCH_HOME"
   # shellcheck disable=SC2030,SC2031  # intentional: PATH is scoped to this subshell only
   export PATH="$STUB_BIN:$PATH"
+  # shellcheck disable=SC2030  # intentional: scoped to this subshell only; flagged only because case set 6 sets the same variable in its own subshell
   export CC_SESSION_TAG=personal
   _cc_launch --permission-mode auto
 )"
@@ -298,6 +311,58 @@ echo "$out_p" | grep -Eq '^SESSION=personal-my-test-repo-[0-9]{8}-[0-9]{6}$' && 
 echo "$out_p" | grep -qF "CLAUDE_CFG=$LAUNCH_HOME/.claude-personal" && pass ccp-config-dir-propagated || bad ccp-config-dir-propagated
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$cfg_before" = "$cfg_after" ] && pass ccp-no-env-leak || bad ccp-no-env-leak
+
+# ------------------------------------------------------------
+# Case set 6: the session name must keep abduco's socket path inside the
+# AF_UNIX limit. abduco binds $HOME/.abduco/<session>@<hostname>, and
+# sockaddr_un.sun_path is 108 bytes including the NUL -- 107 usable. Past
+# that, abduco exits with "create-session: File name too long" and claude
+# never starts. So an over-long repo basename has to be truncated, while the
+# CC_SESSION_TAG prefix and the timestamp (which is what keeps concurrent
+# session names apart) must survive intact.
+#
+# The fixture reproduces the real failure: a 39-char hostname plus the
+# "personal-" tag left `my-claude-code-settings` one character over budget.
+# ------------------------------------------------------------
+SUN_PATH_MAX=107
+LONG_HOST=eddie-hpelitebook84014inchg10notebookpc
+BUDGET_HOME="$T6/h"
+mkdir -p "$BUDGET_HOME/.abduco"
+
+# Echoes just the session name _cc_launch hands to `abduco -c` for a repo
+# whose basename is $1, under the long-hostname budget above.
+launch_session_name() {
+  local repo="$T6/$1"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  (
+    cd "$repo"
+    # shellcheck disable=SC2030,SC2031  # intentional: scoped to this subshell only
+    export HOME="$BUDGET_HOME"
+    # shellcheck disable=SC2030,SC2031  # intentional: scoped to this subshell only
+    export PATH="$STUB_BIN:$PATH"
+    # shellcheck disable=SC2030,SC2031  # intentional: scoped to this subshell only
+    export CC_SESSION_TAG=personal
+    export CC_TEST_HOSTNAME="$LONG_HOST"
+    _cc_launch --permission-mode auto
+  ) | sed -n 's/^SESSION=//p'
+}
+
+long_session="$(launch_session_name my-claude-code-settings)"
+long_path="$BUDGET_HOME/.abduco/${long_session}@${LONG_HOST}"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "${#long_path}" -le "$SUN_PATH_MAX" ] && pass launch-session-name-within-sun-path || bad launch-session-name-within-sun-path
+# $BUDGET_HOME is 24 chars, so the ceiling leaves the basename exactly
+# 107 - 24 - 9 ("/.abduco/") - 9 ("personal-") - 1 ("-") - 15 (timestamp)
+# - 1 ("@") - 39 (hostname) = 9 characters: "my-claude".
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+echo "$long_session" | grep -Eq '^personal-my-claude-[0-9]{8}-[0-9]{6}$' && pass launch-truncates-basename-only || bad launch-truncates-basename-only
+
+# Guard the other direction: a basename that already fits must come through
+# untouched, so truncation can never silently shorten ordinary session names.
+short_session="$(launch_session_name app)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+echo "$short_session" | grep -Eq '^personal-app-[0-9]{8}-[0-9]{6}$' && pass launch-keeps-short-basename-intact || bad launch-keeps-short-basename-intact
 
 for a in clp clpc clpr clpw clpre; do
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)

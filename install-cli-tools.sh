@@ -312,11 +312,23 @@ _cc_prune_dead_sockets() {
 # 透過 abduco 啟動 claude，session 可隨時 detach / 用 cll 或 abduco -a 重連。
 _cc_launch() {
   _cc_prune_dead_sockets
-  local base tag
+  local base tag stamp host room
   base="$(git rev-parse --show-toplevel 2>/dev/null)"
   base="$(basename "${base:-$PWD}")"
+  base="${base// /-}"
   tag="${CC_SESSION_TAG:+${CC_SESSION_TAG}-}"
-  abduco -c "${tag}${base// /-}-$(date +%Y%m%d-%H%M%S)" claude "$@"
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  host="$(hostname)"
+  # abduco 綁 AF_UNIX socket 於 $HOME/.abduco/<session>@<hostname>，而
+  # sockaddr_un.sun_path 只有 108 bytes（含結尾 NUL，可用 107）；超過時
+  # abduco 會以「create-session: File name too long」失敗，claude 根本不會
+  # 啟動。故過長時只從尾端截 repo 名稱，保留 tag 與時間戳——時間戳是同一
+  # repo 併行 session 名稱不互撞的唯一依據，不可截。
+  # 固定成本 11 = "/.abduco/"(9) + repo 名與時間戳間的 "-" + 主機名前的 "@"。
+  room=$(( 107 - ${#HOME} - 11 - ${#tag} - ${#stamp} - ${#host} ))
+  # 長度必須寫成 $room：zsh 會把 ${base:0:room} 的 ":r" 當成修飾子而報錯。
+  [ "$room" -gt 0 ] && [ ${#base} -gt "$room" ] && base="${base:0:$room}"
+  abduco -c "${tag}${base}-${stamp}" claude "$@"
 }
 alias cl='_cc_launch'
 alias cla='_cc_launch --permission-mode auto'
