@@ -1,18 +1,14 @@
 ---
 name: github-issue-pr-authoring
 description: >
-  當使用者想建立或修改 GitHub issue 或 PR 的標題或內文時觸發。在主對話層完成分層內容組裝，再將組裝好的標題、內文與 comment 清單交給 github-manager 執行實際的 gh 指令。純查詢、列表、檢視等唯讀操作不觸發本 skill，直接交給 github-manager 處理即可。觸發關鍵字：github issue、github pr、pull request、開 issue、建立 issue、修改 issue、開 PR、issue description、PR description、sub-issue、子議題、拆解 issue、parent issue、多個 issue。
+  本 skill 是 GitHub issue 與 PR 標題、內文及 comment 序列的撰寫規範庫，定義骨架、順序與圖優先等撰寫判準；由 issue-pr-publisher 透過 frontmatter 的 skills 欄位在啟動時預載取用，不由 main agent 依觸發關鍵字呼叫。
 ---
 
 # GitHub Issue / PR Authoring
 
 ## 目標
 
-本 skill 在主對話層（main agent）完成 issue 或 PR 的內容組裝，再把組裝好的標題、內文與 comment 清單交給 github-manager 執行實際的 gh 指令；main agent 本身不執行 gh。
-
-採這種分層是因為內容組裝需要 plan file 與整段對話脈絡，而解法圖示的類型選型也必須在 main agent 層先完成——這些都是執行型 subagent 拿不到或做不好的工作，因此讓內容在主層組裝、執行交給 github-manager。大綱骨架的產生可安全委派，因為 main agent 在派工前已從對話脈絡與 plan file 萃取出關鍵事實並提供給大綱產生環節；把大綱展開成完整內容的組裝工作與圖表類型選型，則仍留在 main agent 層。
-
-核心目標是讓產出的 issue 與 PR 內文由淺入深、由全局概觀逐步帶入細節，降低讀者的認知負載。具體做法由以下三條核心原則統攝。
+本 skill 定義撰寫或修改 GitHub issue 與 PR 標題、內文及 comment 序列時應遵守的規範，確保產出由淺入深、由全局概觀逐步帶入細節，降低讀者的認知負載。具體做法由以下三條核心原則統攝。
 
 ## 三條核心原則
 
@@ -38,42 +34,6 @@ comment 序列依照「從為什麼到怎麼做」的方向、由粗到細排列
 - 能用圖表達就用圖，圖為主、文字為輔。
 - 需要用文字解釋一件事情或一張圖時，優先用表格或清單逐步拆解，而非長段落。
 - 圖能降低理解成本才畫，圖無助理解時退回結構化的表格或清單文字。
-
-## 撰寫管線
-
-撰寫或修改 issue 或 PR 的標題或內文時，main agent 在主對話層統籌一條分階段且帶審查的撰寫管線；管線的繁簡依變更的重要性決定。
-
-**分層判準**：先判斷變更的重要性。屬於 major feature 走完整管線；
-屬於明確既非核心又低風險的 minor 變更（例如修改 validation rule、
-調整 style、增加 log），走輕量路徑。重要性不確定時，預設走完整管線，
-避免品質被默默打折。
-
-**Multi-issue 前置步驟**：當任務要拆成一個 parent 加多個 sub-issue 時，不論走完整管線或輕量路徑，都在派工大綱產生環節之前，先由 main agent 依 Multi-Issue 撰寫規範完成拆解規劃、產出拆解地圖，再把拆解地圖連同來源材料一起提供給 issue-pr-outline-drafter，讓它在同一次派工中為 parent 與每個 sub-issue 各自產出分層大綱。
-
-**完整管線**共六步：
-
-1. 派工 issue-pr-outline-drafter 產生分層大綱：提供 plan file 路徑與
-   關鍵事實給它，因為它沒有對話脈絡，請它逐段標明描述重點與圖表溝通意圖，
-   不需要圖的段落附理由；把它回傳的大綱寫入暫存檔，暫存檔依 tmp-file-usage rule 處理。
-1. 大綱審查迴圈：把暫存檔的大綱交給 issue-pr-content-reviewer 審查，
-   依其 findings 請 issue-pr-outline-drafter 修訂後再審，依內容複雜度
-   重複一到五回，審查者回報通過即提早結束。
-1. 大綱通過後，main agent 把大綱展開成完整內容，依圖示策略章節為每個圖表意圖完成選型並產生 DSL，再把 description、comment 序列與圖表 DSL 依既有 Issue 或 PR 撰寫規範組裝到暫存檔。
-1. 發佈前最終審查：把組裝好的完整內容交給 issue-pr-content-reviewer 審查，取得整體判定與帶有強度的 findings；multi-issue 情境下，把組裝好的整組 parent 加 sub-issue 內容一起交給它審查，啟用跨 issue 連貫性與連結完整性檢查。
-1. main agent 依 findings 的強度決定是否在發佈前微調內容。
-1. 把完成的內容交給 github-manager 發佈，沿用既有的委派與更新冪等性規則。
-
-**輕量路徑**：省略多輪迴圈與最終審查，派工 issue-pr-outline-drafter
-產生大綱，由 issue-pr-content-reviewer 審查大綱一次，接著展開成完整
-內容並直接交給 github-manager 發佈，不做發佈前最終審查。
-
-issue-pr-outline-drafter 與 issue-pr-content-reviewer 是本 skill 內部管線的環節，由本 skill 統籌呼叫，不經由路由表觸發。
-
-## 觸發與不觸發
-
-觸發時機：建立或修改 issue 或 PR 的標題或內文。
-
-不觸發的情況：純查詢、列表、檢視等唯讀操作。這類操作直接交給 github-manager，不經本 skill。同樣地，若只是調整 label、assignee、狀態等中繼資料，而完全沒有更動標題或內文，也不觸發本 skill，直接交給 github-manager 處理。
 
 ## 內容來源與省略原則
 
@@ -110,7 +70,7 @@ issue-pr-outline-drafter 與 issue-pr-content-reviewer 是本 skill 內部管線
 
 ## PR 撰寫規範
 
-**標題**：用英文撰寫，簡潔、易懂、容易被搜尋。標題結尾的 issue 參照由 github-manager 自動補上，本 skill 不自行加入。
+**標題**：用英文撰寫，簡潔、易懂、容易被搜尋。標題結尾的 issue 參照由 github-manager 自動補上，本 skill 不自行加入——這是 github-manager 連結 issue 時的無條件預設行為，自行添加只會造成無法清除的重複內容。
 
 **Description**（繁體中文，只用 description 分層，不開 comment；PR description 可整體替換且支援折疊展開，分層需求由 description 本身承載，靠標題層級與折疊區塊做由淺入深的揭露）：
 
@@ -129,7 +89,7 @@ issue-pr-outline-drafter 與 issue-pr-content-reviewer 是本 skill 內部管線
 
 當一個複雜任務要拆成一個 parent issue 加多個 GitHub 原生 sub-issue 時適用本節；本節疊加在既有 Issue 撰寫規範之上，不取代它。
 
-**拆解規劃階段**：管線最前面（派工大綱產生環節之前），先由 main agent 產出一份「拆解地圖」，內容包含 parent 的整體目標、sub-issue 清單（每個附一句話範圍），以及 sub-issue 之間的順序與依賴關係（誰阻擋誰、誰解鎖誰）。拆解規劃留在 main agent 層、不委派，理由與內容組裝留在主層一致——拆解需要完整的 plan file 與對話脈絡。拆解地圖產出後，用來驅動後續大綱產生環節。
+**拆解規劃階段**：在派工 issue-pr-content-drafter 產生大綱之前，先由 issue-pr-publisher 產出一份「拆解地圖」，內容包含 parent 的整體目標、sub-issue 清單（每個附一句話範圍），以及 sub-issue 之間的順序與依賴關係（誰阻擋誰、誰解鎖誰）。拆解規劃留在 issue-pr-publisher 層、不委派給 issue-pr-content-drafter，因為拆解需要完整的 plan file 與對話脈絡，而 issue-pr-content-drafter 沒有這些脈絡。拆解地圖產出後，連同來源材料一起提供給 issue-pr-content-drafter，由它在同一次派工中為 parent 與每個 sub-issue 各自產出分層大綱。
 
 **Sub-issue 專屬輕量骨架**：sub-issue 不照抄 parent 的完整 description 骨架，也不開分層 comment 序列，改用以下四段，繁體中文依序排列：
 
@@ -145,13 +105,13 @@ issue-pr-outline-drafter 與 issue-pr-content-reviewer 是本 skill 內部管線
 **兩階段建立與冪等性**：parent 的拆解總覽要引用 sub-issue 編號、sub-issue 的定位段要引用 parent 與手足的編號——這些交叉引用編號在 issue 建立前都還不存在，形成循環，因此建立分兩階段進行：
 
 1. **階段一** — 建立 parent 與所有 sub-issue，取得各自編號；此時內文尚無法填入還不存在的交叉引用編號。
-1. **階段二** — 所有編號到手後，main agent 產出含完整交叉引用的最終內文，交由 github-manager 就地更新各 issue 內文，並建立原生父子關聯。
+1. **階段二** — 所有編號到手後，issue-pr-publisher 委派 issue-pr-content-drafter 產出含完整交叉引用的最終內文，彙整結果後交由 github-manager 就地更新各 issue 內文，並建立原生父子關聯。
 
 冪等性上與更新冪等性章節一致：內文更新是整體替換，沒有重複風險；委派建立原生父子關聯同樣是冪等的，重複委派不會產生重複關聯，由 github-manager 自行保證。
 
 ## 更新冪等性
 
-- **Issue**：更新既有 issue 前，必須先請 github-manager 取回該 issue 現有的分層 comment（內容與各則的識別），作為就地更新的依據；main agent 本身不執行 gh，無法自行取得此資訊。取得既有 comment 現況後，針對對應內容做就地更新，而不是重新張貼一整串。本 skill 讓 issue 帶有有序的 comment 序列，若更新時重跑整套流程，同一份分層內容就會被重複貼成多串。
+- **Issue**：更新既有 issue 前，必須先請 github-manager 取回該 issue 現有的分層 comment（內容與各則的識別），作為就地更新的依據；issue-pr-publisher 本身不執行 gh，無法自行取得此資訊。取得既有 comment 現況後，針對對應內容做就地更新，而不是重新張貼一整串。本 skill 讓 issue 帶有有序的 comment 序列，若更新時重跑整套流程，同一份分層內容就會被重複貼成多串。
 - **PR**：此風險不適用。每次編輯 PR 是整體替換內文，不存在重複問題。
 
 ## 圖示策略
@@ -177,17 +137,3 @@ kroki 這類外部 renderer，遇此情況應改用原生可算繪的圖，或�
 對 issue 或 PR 的一般 comment，預設使用繁體中文撰寫，不套用任何結構模板——這類 comment 是日常輕量溝通，不需要強制結構化。
 
 注意：此節的「comment」指日常討論回覆，與 Issue 撰寫規範中作為分層揭露載體的結構化 comment 序列是不同用途，兩者不應混淆。
-
-## 委派執行
-
-把組裝好的最終標題、內文，以及一份已排好序的 comment 清單交給 github-manager 執行實際的 gh 指令。
-
-建立新 issue 或 PR 時，交付時載明輸出契約：
-
-> 這是若干則獨立的 comment，請依此次序張貼。
-
-更新既有 issue 時，comment 清單中每一則須明確標示性質：就地更新既有 comment 者附上對應既有 comment 的識別，新增 comment 者標示為新增；github-manager 依此無歧義地分別處理，若任何操作的可行性有疑慮，由它回報。
-
-Multi-issue 情境下，交付內容除了標題、內文與 comment 清單，還要以意圖層級要求 github-manager 建立 parent 與這些 sub-issue 的原生父子關聯，並提供相關的 issue number 等事實；具體如何建立原生父子關聯由 github-manager 自行負責，本 skill 不指定實作步驟。
-
-整合細節：github-manager 在處理連結 issue 的 PR 時，會自動在 PR 標題結尾補上 issue 參照、並在內文開頭補上 issue 連結，且此行為無法關閉。因此本 skill 在組裝 PR 內容時，不自行添加這兩項；只需把對應的 issue number 提供給 github-manager，由它自動補上，這樣才不會重複。
