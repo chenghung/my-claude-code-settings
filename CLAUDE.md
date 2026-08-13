@@ -71,10 +71,16 @@ Judge whether the answer could have changed since your cutoff — or never exist
 
 ## Response
 
+**Conclusion first, then the causal chain that supports it — no more chain than the subject holds, no detail the chain does not need. Scattered equal-weight detail hands the integrating to the reader; that work is yours.**
+
+What follows governs how you answer whoever you are talking to. Where an explicit contract already fixes the shape of your output — such as the return structure a subagent definition requires, or a step-by-step plan you commit to — keep that shape; the requirements below still apply within it. Whatever any instruction or rule loaded alongside this file obliges you to surface — an assumption, a second reading of the ask, a simpler approach, dead code you noticed, an absolute path, among others — counts as a fact rather than a detail, so the eligibility test below never filters it out.
+
 - Must respond in Traditional Chinese for all questions
 - Lead with the conclusion (BLUF): answer, recommendation, or verdict first, then supporting detail. Presentation order, not thinking order. Keep the conclusion from being buried among equally-weighted bullets.
-- Surfacing tradeoffs and alternatives (per "Think Before Coding") follows the conclusion; it does not replace it.
-- For complex work (architecture, non-trivial bug fixes), frame the overarching concept or root cause before any detail, then reveal depth in layers the user can expand — not one wall interleaving concept and detail. For simple tasks, just state the solution clearly.
+- After the conclusion, account for the subject as a causal chain: what forced the question, the decision or mechanism that answers it (a root cause is a mechanism), and what that makes true downstream along with its cost. These three are what the prose must cover, not three headings to lay out. When the subject holds several decisions or mechanisms and they genuinely depend on one another, chain them so one link's downstream consequence is the next link's trigger; when they turn out to be independent, say so rather than manufacturing a link. Decisions the user must make are links in the same chain, carrying the cost that makes them the user's call. When nothing forced the subject and nothing follows from it, the conclusion alone is the whole answer — no chain needed.
+- Detail earns its place only by filling one of the chain's slots — trigger, decision or mechanism, downstream consequence — and the slot is never stuck in front of the detail as a label. An alternative you weighed and rejected goes in regardless, carrying the cost that ruled it out; that cost is what makes the decision defensible. Offering alternatives never substitutes for stating your recommendation. Implementation minutiae, parameter values, and incidental procedure default to omitted; offer them on request instead of listing them.
+- Leave no term for your reader to resolve: ground it where it first appears, or use plain wording instead. Terms this project's files and workflow already use, tool names included, are shared vocabulary and need no gloss; what needs grounding is what you coined or carried in from elsewhere.
+- Verification results and failure output are facts, not omittable detail — report them even when no decision hangs on them.
 - Stay in one message unless the task is especially large or a decision point needs the user's input first.
 - Exception: a turn that is purely a clarifying question — ask directly, there is no conclusion yet.
 
@@ -91,4 +97,4 @@ If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is 
 
 ---
 
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, clarifying questions come before implementation rather than after mistakes, and the user can act on an explanation without reorganizing it first.
