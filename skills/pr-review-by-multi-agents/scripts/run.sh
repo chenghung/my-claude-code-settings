@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Orchestrates parallel PR code review by claude, codex, and opencode CLIs.
 #
-# This script is built up across several tasks. This task (input parsing and
-# preflight checks) only defines the functions that decide whether to run at
-# all and how many reviewer CLIs are available. Worktree creation, prompt
-# assembly, and process launch/supervision are added by later tasks further
-# down this same file.
+# This script is built up across several tasks. So far it defines: whether to
+# run at all and how many reviewer CLIs are available (input parsing and
+# preflight checks); and the code workspace and full prompt each reviewer CLI
+# needs (worktree setup and prompt assembly). Process launch and supervision
+# are added by a later task further down this same file.
 set -euo pipefail
 
 # IFS is intentionally left at its bash default here. Nothing in this file
@@ -97,7 +97,154 @@ detect_reviewers() {
   [ "$found" -eq 1 ] || return 1
 }
 
+# resolve_contract_path
+#
+# Locates references/reviewer-contract.md relative to this script's own
+# file, resolving any symlinks the skill was installed through (e.g.
+# install.sh deploys the whole skill directory as a single symlink under
+# ~/.claude/skills or ~/.agents/skills). Prints the absolute contract path
+# to stdout on success. A missing contract file is a hard failure -- it
+# means this run has no review standard to hand any reviewer -- so this
+# returns non-zero and prints nothing rather than falling back to anything.
+resolve_contract_path() {
+  local script_path script_dir skill_root contract_path
+
+  script_path="$(readlink -f "${BASH_SOURCE[0]}")" || return 1
+  script_dir="$(cd "$(dirname "$script_path")" && pwd)" || return 1
+  skill_root="$(cd "$script_dir/.." && pwd)" || return 1
+  contract_path="$skill_root/references/reviewer-contract.md"
+
+  if [ ! -f "$contract_path" ]; then
+    printf 'resolve_contract_path: contract file not found at %s\n' "$contract_path" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$contract_path"
+}
+
+# setup_worktree <owner> <repo> <number> <base_dir>
+#
+# Prunes stale worktree registrations, then checks the PR's head commit out
+# into a new worktree at <base_dir>/worktree, leaving the caller's current
+# branch and working tree untouched. Prints the worktree's absolute path to
+# stdout on success. Returns non-zero, printing nothing, on any failure --
+# spec section 6 treats a worktree that didn't actually get created as a
+# hard-stop precondition, same tier as gh being missing.
+setup_worktree() {
+  local owner="$1" repo="$2" number="$3" base_dir="$4"
+  local origin_url worktree_path pr_ref
+
+  # Fail fast if the cwd's origin doesn't actually point at this PR's own
+  # repo, rather than silently fetching/reviewing the wrong codebase.
+  origin_url="$(git remote get-url origin 2>/dev/null)" || return 1
+  case "$origin_url" in
+    *"$owner/$repo".git | *"$owner/$repo") ;;
+    *)
+      printf 'setup_worktree: origin remote (%s) does not match %s/%s\n' "$origin_url" "$owner" "$repo" >&2
+      return 1
+      ;;
+  esac
+
+  git worktree prune >/dev/null 2>&1 || true
+
+  worktree_path="$base_dir/worktree"
+  # $$ keeps this local ref name unique across concurrent runs that happen
+  # to target the same PR number.
+  pr_ref="pr-review-$number-$$"
+
+  # GitHub always exposes this ref on the base repo, regardless of whether
+  # the PR's source branch lives there or in a fork.
+  git fetch origin "pull/$number/head:$pr_ref" >/dev/null 2>&1 || return 1
+  git worktree add "$worktree_path" "$pr_ref" >/dev/null 2>&1 || return 1
+
+  printf '%s\n' "$worktree_path"
+}
+
+# resolve_model <cli_name>
+#
+# Reads the given reviewer CLI's own config file for its default model and
+# prints the model name to stdout. Sources: codex reads the top-level
+# `model` key from ~/.codex/config.toml (a `model =` line living under a
+# later [profile] table is a different model, not the default one, so
+# parsing stops at the first section header); opencode reads .model from
+# ~/.config/opencode/opencode.json; claude reads .model from
+# ~/.claude/settings.json. Failing to resolve a value -- missing config
+# file, missing field, or jq unavailable for the JSON sources -- is not an
+# error: it prints the fixed "unknown-model" marker and still returns 0,
+# because an honestly-reported unknown is exactly what the reviewer
+# contract's disclosure section needs, not a reason to abort.
+resolve_model() {
+  local cli="$1" unknown="unknown-model"
+  local config_file value=""
+
+  case "$cli" in
+    codex)
+      config_file="$HOME/.codex/config.toml"
+      if [ -f "$config_file" ]; then
+        # Stop at the first [section] header so a per-profile `model =`
+        # further down the file is never mistaken for the top-level default.
+        value="$(sed -n '/^\[/q; s/^[[:space:]]*model[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' "$config_file" | head -n1)"
+      fi
+      ;;
+    opencode)
+      config_file="$HOME/.config/opencode/opencode.json"
+      if [ -f "$config_file" ] && command -v jq >/dev/null 2>&1; then
+        value="$(jq -r '.model // empty' "$config_file" 2>/dev/null)"
+      fi
+      ;;
+    claude)
+      config_file="$HOME/.claude/settings.json"
+      if [ -f "$config_file" ] && command -v jq >/dev/null 2>&1; then
+        value="$(jq -r '.model // empty' "$config_file" 2>/dev/null)"
+      fi
+      ;;
+    *)
+      ;;
+  esac
+
+  printf '%s\n' "${value:-$unknown}"
+}
+
+# build_prompt <contract_path> <pr_url> <issue_url> <design_doc_path> \
+#              <cli_name> <model> <worktree_path> <base_ref> <scratch_dir>
+#
+# Prints the complete prompt for one reviewer CLI to stdout: the reviewer
+# contract's full text, verbatim and unabridged, followed by this run's
+# coordinates -- the PR and issue links, the design doc path, this
+# worktree's absolute path, the base ref the contract's pinned diff command
+# needs, this reviewer's own CLI/model identity, and a scratch directory
+# outside the worktree for the comment-body file the contract requires.
+# issue_url and design_doc_path may be empty strings; the contract's own
+# input-list section requires an explicit "not provided" statement rather
+# than a blank field for those two, so an empty value is rendered as such
+# here instead of being left out.
+build_prompt() {
+  local contract_path="$1" pr_url="$2" issue_url="$3" design_doc_path="$4"
+  local cli_name="$5" model="$6" worktree_path="$7" base_ref="$8" scratch_dir="$9"
+  local contract issue_display design_display
+
+  contract="$(cat "$contract_path")" || return 1
+
+  issue_display="${issue_url:-（未提供，明確視為不存在）}"
+  design_display="${design_doc_path:-（未提供，明確視為不存在）}"
+
+  cat <<PROMPT_EOF
+$contract
+
+## 本次審查的座標資訊
+
+- PR：$pr_url
+- git worktree 絕對路徑：$worktree_path
+- base ref：$base_ref
+- issue：$issue_display
+- design document 路徑：$design_display
+- 產出這則 review 的 CLI 名稱：$cli_name
+- 產出這則 review 的 model 名稱：$model
+- 暫存目錄（worktree 之外，張貼 comment 前把內文寫入此處的檔案）：$scratch_dir
+PROMPT_EOF
+}
+
 # ---------------------------------------------------------------------------
-# Later tasks add the rest of the pipeline here: worktree creation, prompt
-# assembly, and reviewer process launch/supervision.
+# A later task adds the rest of the pipeline here: reviewer process launch
+# and supervision.
 # ---------------------------------------------------------------------------

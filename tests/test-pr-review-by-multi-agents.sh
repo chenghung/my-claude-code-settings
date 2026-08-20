@@ -195,4 +195,262 @@ export PATH="$saved_path"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -z "$out" ] && pass detect-none-empty-output || bad detect-none-empty-output
 
+# ==============================================================
+# resolve_contract_path
+#
+# The most load-bearing test in this file: if the script can't find its own
+# review contract, there is no standard for any reviewer to work from, and
+# that must never fail silently. All three cases below run in a real bash
+# subprocess (not this sourced test shell) so BASH_SOURCE reflects the
+# actual invocation path, exactly like a real run.
+# ==============================================================
+
+REAL_CONTRACT="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
+
+# Direct case: resolve from run.sh's own real, un-symlinked location.
+out="$(resolve_contract_path)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$out" = "$REAL_CONTRACT" ] && pass contract-path-direct || bad contract-path-direct
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$out" ] && pass contract-path-direct-readable || bad contract-path-direct-readable
+
+# Symlink case: mirrors how install.sh actually deploys this skill (the
+# whole skill directory symlinked under ~/.claude/skills or ~/.agents/skills).
+# readlink must resolve through that symlink to the real references/ dir.
+SYMLINKED_SKILL="$T/symlinked-skill"
+mkdir -p "$SYMLINKED_SKILL/scripts"
+ln -s "$RUN_SH" "$SYMLINKED_SKILL/scripts/run.sh"
+out="$(bash -c "source '$SYMLINKED_SKILL/scripts/run.sh'; resolve_contract_path")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$out" = "$REAL_CONTRACT" ] && pass contract-path-symlink || bad contract-path-symlink
+
+# Missing case: a scripts/ directory with no sibling references/ at all ->
+# non-zero, no stdout. Must not be confused with the two cases above.
+NO_CONTRACT_SKILL="$T/no-contract-skill"
+mkdir -p "$NO_CONTRACT_SKILL/scripts"
+cp "$RUN_SH" "$NO_CONTRACT_SKILL/scripts/run.sh"
+if out="$(bash -c "source '$NO_CONTRACT_SKILL/scripts/run.sh'; resolve_contract_path" 2>/dev/null)"; then
+  bad contract-path-missing
+else
+  pass contract-path-missing
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$out" ] && pass contract-path-missing-no-output || bad contract-path-missing-no-output
+
+# ==============================================================
+# resolve_model
+#
+# Each case gets its own isolated $HOME so this never reads the real user's
+# actual codex/opencode/claude config -- both for hermeticity and because
+# those files may contain the user's real settings.
+# ==============================================================
+
+# --- codex: ~/.codex/config.toml, top-level `model` key ---
+
+HOME_CODEX_OK="$T/home-codex-ok"
+mkdir -p "$HOME_CODEX_OK/.codex"
+cat > "$HOME_CODEX_OK/.codex/config.toml" <<'TOML'
+model = "top-level-model"
+personality = "pragmatic"
+
+[profiles.o3]
+model = "nested-model-must-not-win"
+TOML
+out="$(HOME="$HOME_CODEX_OK" resolve_model codex)"
+rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "top-level-model" ] && pass resolve-model-codex-found || bad resolve-model-codex-found
+
+HOME_CODEX_NOFILE="$T/home-codex-nofile"
+mkdir -p "$HOME_CODEX_NOFILE"
+out="$(HOME="$HOME_CODEX_NOFILE" resolve_model codex)"
+rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-codex-missing-file || bad resolve-model-codex-missing-file
+
+HOME_CODEX_NOFIELD="$T/home-codex-nofield"
+mkdir -p "$HOME_CODEX_NOFIELD/.codex"
+cat > "$HOME_CODEX_NOFIELD/.codex/config.toml" <<'TOML'
+personality = "pragmatic"
+TOML
+out="$(HOME="$HOME_CODEX_NOFIELD" resolve_model codex)"
+rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-codex-missing-field || bad resolve-model-codex-missing-field
+
+# --- opencode: ~/.config/opencode/opencode.json, .model ---
+
+HOME_OC_OK="$T/home-opencode-ok"
+mkdir -p "$HOME_OC_OK/.config/opencode"
+printf '{"model": "test-provider/test-model"}' > "$HOME_OC_OK/.config/opencode/opencode.json"
+out="$(HOME="$HOME_OC_OK" resolve_model opencode)"
+rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "test-provider/test-model" ] && pass resolve-model-opencode-found || bad resolve-model-opencode-found
+
+HOME_OC_NOFILE="$T/home-opencode-nofile"
+mkdir -p "$HOME_OC_NOFILE"
+out="$(HOME="$HOME_OC_NOFILE" resolve_model opencode)"
+rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-opencode-missing-file || bad resolve-model-opencode-missing-file
+
+HOME_OC_NOFIELD="$T/home-opencode-nofield"
+mkdir -p "$HOME_OC_NOFIELD/.config/opencode"
+printf '{"other": true}' > "$HOME_OC_NOFIELD/.config/opencode/opencode.json"
+out="$(HOME="$HOME_OC_NOFIELD" resolve_model opencode)"
+rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-opencode-missing-field || bad resolve-model-opencode-missing-field
+
+# --- claude: ~/.claude/settings.json, .model ---
+
+HOME_CC_OK="$T/home-claude-ok"
+mkdir -p "$HOME_CC_OK/.claude"
+printf '{"model": "sonnet-test"}' > "$HOME_CC_OK/.claude/settings.json"
+out="$(HOME="$HOME_CC_OK" resolve_model claude)"
+rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "sonnet-test" ] && pass resolve-model-claude-found || bad resolve-model-claude-found
+
+HOME_CC_NOFILE="$T/home-claude-nofile"
+mkdir -p "$HOME_CC_NOFILE"
+out="$(HOME="$HOME_CC_NOFILE" resolve_model claude)"
+rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-claude-missing-file || bad resolve-model-claude-missing-file
+
+HOME_CC_NOFIELD="$T/home-claude-nofield"
+mkdir -p "$HOME_CC_NOFIELD/.claude"
+printf '{"other": true}' > "$HOME_CC_NOFIELD/.claude/settings.json"
+out="$(HOME="$HOME_CC_NOFIELD" resolve_model claude)"
+rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-claude-missing-field || bad resolve-model-claude-missing-field
+
+# ==============================================================
+# build_prompt
+# ==============================================================
+
+BP_PR_URL="https://github.com/acme/widgets/pull/42"
+BP_ISSUE_URL="https://github.com/acme/widgets/issues/7"
+BP_DESIGN_DOC="docs/design/foo-design.md"
+BP_CLI="codex"
+BP_MODEL="gpt-codex-test"
+BP_WORKTREE="/fake/worktree/path"
+BP_BASE_REF="origin/main"
+BP_SCRATCH="/fake/scratch/dir"
+
+prompt="$(build_prompt "$REAL_CONTRACT" "$BP_PR_URL" "$BP_ISSUE_URL" "$BP_DESIGN_DOC" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF" "$BP_SCRATCH")"
+contract_text="$(cat "$REAL_CONTRACT")"
+
+# Contract full text must appear verbatim and unabridged -- checked as an
+# exact prefix match against the file's own content, so any rewriting or
+# truncation of the contract would fail this.
+case "$prompt" in
+  "$contract_text"*) pass build-prompt-contract-verbatim ;;
+  *) bad build-prompt-contract-verbatim ;;
+esac
+
+# Every one of the contract's required inputs must show up somewhere in the
+# assembled prompt: PR link, issue link, design doc path, this reviewer's
+# own CLI/model identity, the worktree it should read code from, the base
+# ref its pinned diff command needs, and a scratch dir outside the worktree.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$prompt" | grep -qF "$BP_PR_URL" && pass build-prompt-pr-url || bad build-prompt-pr-url
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$prompt" | grep -qF "$BP_ISSUE_URL" && pass build-prompt-issue-url || bad build-prompt-issue-url
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$prompt" | grep -qF "$BP_DESIGN_DOC" && pass build-prompt-design-doc || bad build-prompt-design-doc
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$prompt" | grep -qF "$BP_CLI" && pass build-prompt-cli-name || bad build-prompt-cli-name
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$prompt" | grep -qF "$BP_MODEL" && pass build-prompt-model || bad build-prompt-model
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$prompt" | grep -qF "$BP_WORKTREE" && pass build-prompt-worktree-path || bad build-prompt-worktree-path
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$prompt" | grep -qF "$BP_BASE_REF" && pass build-prompt-base-ref || bad build-prompt-base-ref
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$prompt" | grep -qF "$BP_SCRATCH" && pass build-prompt-scratch-dir || bad build-prompt-scratch-dir
+
+# Each of the three SKILL.md-gathered coordinates (PR link, issue link,
+# design doc path) may individually come in as an empty string -- must
+# still produce a non-empty, well-formed prompt rather than aborting.
+out="$(build_prompt "$REAL_CONTRACT" "" "$BP_ISSUE_URL" "$BP_DESIGN_DOC" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF" "$BP_SCRATCH")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$out" ] && pass build-prompt-empty-pr-url || bad build-prompt-empty-pr-url
+
+out="$(build_prompt "$REAL_CONTRACT" "$BP_PR_URL" "" "$BP_DESIGN_DOC" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF" "$BP_SCRATCH")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$out" ] && printf '%s' "$out" | grep -qF '未提供' && pass build-prompt-empty-issue-url || bad build-prompt-empty-issue-url
+
+out="$(build_prompt "$REAL_CONTRACT" "$BP_PR_URL" "$BP_ISSUE_URL" "" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF" "$BP_SCRATCH")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$out" ] && printf '%s' "$out" | grep -qF '未提供' && pass build-prompt-empty-design-doc || bad build-prompt-empty-design-doc
+
+# ==============================================================
+# setup_worktree
+#
+# Exercises real local git plumbing (never touches actual GitHub): a bare
+# repo standing in for the GitHub-hosted origin, with a PR-like
+# refs/pull/<N>/head ref pushed to it exactly as GitHub itself exposes one,
+# and a separate work clone acting as the caller's cwd. The origin's path
+# is placed under a directory literally named acme/widgets so it satisfies
+# setup_worktree's own owner/repo sanity check the same way a real
+# https://github.com/acme/widgets(.git) origin URL would.
+# ==============================================================
+
+GIT_FIXTURE="$T/git-fixture"
+mkdir -p "$GIT_FIXTURE/remotes/acme" "$GIT_FIXTURE/work"
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+
+git init -q -b main --bare "$GIT_FIXTURE/remotes/acme/widgets.git"
+git init -q -b main "$GIT_FIXTURE/work"
+(
+  cd "$GIT_FIXTURE/work"
+  git config user.email test@example.com
+  git config user.name "Test"
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "$GIT_FIXTURE/remotes/acme/widgets.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b feature
+  printf 'change\n' >> f.txt
+  git commit -aq -m change
+  git push -q origin feature:refs/pull/9/head
+  git checkout -q main
+)
+PR_SHA="$(git -C "$GIT_FIXTURE/work" rev-parse feature)"
+
+BASE_DIR="$T/setup-worktree-base"
+out="$(cd "$GIT_FIXTURE/work" && setup_worktree acme widgets 9 "$BASE_DIR")"
+rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "$BASE_DIR/worktree" ] && pass setup-worktree-success || bad setup-worktree-success
+got_sha="$(git -C "$out" rev-parse HEAD 2>/dev/null || true)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$got_sha" = "$PR_SHA" ] && pass setup-worktree-checks-out-pr-head || bad setup-worktree-checks-out-pr-head
+
+# owner/repo that doesn't match this cwd's actual origin -> refuse rather
+# than silently fetch/review the wrong codebase.
+if out="$(cd "$GIT_FIXTURE/work" && setup_worktree wrong-owner wrong-repo 9 "$T/setup-worktree-mismatch" 2>/dev/null)"; then
+  bad setup-worktree-owner-mismatch
+else
+  pass setup-worktree-owner-mismatch
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$out" ] && pass setup-worktree-owner-mismatch-no-output || bad setup-worktree-owner-mismatch-no-output
+
+# PR number with no matching refs/pull/<N>/head on the remote -> fetch
+# fails -> non-zero, no stdout.
+if out="$(cd "$GIT_FIXTURE/work" && setup_worktree acme widgets 999 "$T/setup-worktree-missing-pr" 2>/dev/null)"; then
+  bad setup-worktree-missing-pr-ref
+else
+  pass setup-worktree-missing-pr-ref
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$out" ] && pass setup-worktree-missing-pr-ref-no-output || bad setup-worktree-missing-pr-ref-no-output
+
 exit $fail
