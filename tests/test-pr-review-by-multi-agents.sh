@@ -849,6 +849,22 @@ esac
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -f "$LAUNCH_ROOT/.git-status-before-$pid_codex" ] && pass launch-reviewer-codex-records-before-snapshot || bad launch-reviewer-codex-records-before-snapshot
 
+# --- direct pairing: build_prompt's real output fed straight into
+# launch_reviewer, then compared byte-for-byte against what the stub
+# actually received on stdin. The stdin-matches-a-canned-string case above
+# and the build_prompt-output tests elsewhere in this file only establish
+# this property by combining two separate tests; this one exercises the
+# real handoff between the two functions directly. ---
+
+bp_direct_prompt="$(build_prompt "$REAL_CONTRACT" "https://github.com/acme/widgets/pull/1" "" "" \
+  codex "direct-pairing-model-marker" "$LAUNCH_WT" "origin/main" "$LAUNCH_ROOT/scratch")"
+printf '%s' "$bp_direct_prompt" > "$LAUNCH_LOGS/codex-direct.prompt"
+pid_codex_direct="$(launch_reviewer codex "$LAUNCH_WT" "$LAUNCH_LOGS/codex-direct.log" < "$LAUNCH_LOGS/codex-direct.prompt")"
+i=0
+until [ -f "$LAUNCH_ROOT/.exit-$pid_codex_direct" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$LAUNCH_RECORD_DIR/codex.stdin")" = "$bp_direct_prompt" ] && pass launch-reviewer-receives-real-build-prompt-output || bad launch-reviewer-receives-real-build-prompt-output
+
 # --- opencode: --dir flag, OPENCODE_CONFIG env var wired to a real config file ---
 
 printf 'opencode-prompt-content' > "$LAUNCH_LOGS/opencode.prompt"
@@ -919,10 +935,13 @@ export PATH="$saved_path"
 # Each scenario below gets its own fresh worktree fixture, so the
 # git-status invalidation checks stay unambiguous rather than depending on
 # how a shared worktree happened to interleave across concurrently
-# launched reviewers (spawn_supervisor's own docstring already covers why
-# that interleaving is an accepted, inherent property of the shared-
-# worktree design -- these tests isolate around it instead of depending on
-# a particular ordering of it).
+# launched reviewers. spawn_supervisor's own docstring documents that
+# interleaving as a known, accepted limitation of processing PIDs
+# sequentially against one shared worktree (conservative: it can only
+# false-flag an innocent reviewer as invalidated, never miss a real
+# tamper) -- these tests isolate around it entirely rather than exercising
+# it, so they stay deterministic instead of depending on a particular
+# ordering of concurrently launched reviewers.
 # ==============================================================
 
 SV_STUB_BIN="$T/supervisor-stub-bin"
@@ -1103,6 +1122,34 @@ else
 fi
 unset GH_STUB_BASE_REF_NAME
 export PATH="$saved_path"
+
+# ==============================================================
+# _dispatch_failed_cleanup
+#
+# Direct unit tests for the helper main()'s reviewer-dispatch loop calls
+# on a partial failure (see its own docstring in run.sh): it must report
+# any already-launched, now-unsupervised PIDs to stderr and remove the
+# worktree, and must not claim a PID was launched when none was.
+# ==============================================================
+
+DFC_ROOT="$T/dispatch-failed-cleanup-fixture"
+DFC_WT="$(_make_worktree_fixture "$DFC_ROOT")"
+
+dfc_err="$(cd "$DFC_ROOT/work" && _dispatch_failed_cleanup "$DFC_WT" 12345 2>&1 1>/dev/null)"
+case "$dfc_err" in
+  *'12345'*) pass dispatch-failed-cleanup-reports-orphaned-pid ;;
+  *) bad dispatch-failed-cleanup-reports-orphaned-pid ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$DFC_WT" ] && pass dispatch-failed-cleanup-removes-worktree || bad dispatch-failed-cleanup-removes-worktree
+
+DFC_ROOT2="$T/dispatch-failed-cleanup-fixture-none-launched"
+DFC_WT2="$(_make_worktree_fixture "$DFC_ROOT2")"
+dfc_err2="$(cd "$DFC_ROOT2/work" && _dispatch_failed_cleanup "$DFC_WT2" 2>&1 1>/dev/null)"
+case "$dfc_err2" in
+  *'before any reviewer was launched'*) pass dispatch-failed-cleanup-no-pid-message ;;
+  *) bad dispatch-failed-cleanup-no-pid-message ;;
+esac
 
 # ==============================================================
 # main() end-to-end

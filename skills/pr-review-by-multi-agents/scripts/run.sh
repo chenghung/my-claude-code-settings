@@ -312,6 +312,19 @@ build_prompt() {
 # only if nothing about the worktree changed in between -- covering both an
 # uncommitted edit (caught by `git status`) and a commit that leaves the
 # tree clean again (caught by the HEAD line, which status alone would miss).
+# `--ignored` is required, not optional: the reviewer contract promises
+# that "呼叫端會在每個 review 行程啟動前後比對 worktree 的 git 狀態" with no
+# carve-out for gitignored paths, so a snapshot that silently skipped them
+# would make that promise false for exactly the paths a reviewer could
+# write to with the least chance of being noticed otherwise. The tradeoff
+# this accepts: if some reviewer CLI drops its own incidental cache/scratch
+# file inside a gitignored path within the worktree (rather than under its
+# own home-dir config, where well-behaved CLIs keep that kind of state),
+# this snapshot will flag that run as invalidated even though nothing
+# about the *reviewed code* changed -- a false positive, but one that
+# fails toward distrusting a review rather than toward silently trusting a
+# tampered one, which is the direction this check exists to protect.
+#
 # Every command is guarded with `|| var=""` for the same reason
 # resolve_model's are: this can run inside a command substitution (bash
 # disables errexit there on this repo's bash 4.3 floor, pre-inherit_errexit),
@@ -320,7 +333,7 @@ build_prompt() {
 _git_status_snapshot() {
   local worktree_dir="$1" status_output head_sha
 
-  status_output="$(git -C "$worktree_dir" status --porcelain=v1 --untracked-files=all 2>/dev/null)" || status_output=""
+  status_output="$(git -C "$worktree_dir" status --porcelain=v1 --untracked-files=all --ignored 2>/dev/null)" || status_output=""
   head_sha="$(git -C "$worktree_dir" rev-parse HEAD 2>/dev/null)" || head_sha=""
 
   printf '%s\nHEAD:%s\n' "$status_output" "$head_sha"
@@ -330,13 +343,28 @@ _git_status_snapshot() {
 #
 # Writes opencode's own permission config (consulted via the OPENCODE_CONFIG
 # env var -- see launch_reviewer) to <path>: the built-in `edit` tool is
-# denied outright, and `bash` defaults to allowed (read commands, including
-# the contract's pinned `git diff` command, need to keep working) with the
-# git/gh/filesystem mutation verbs this run must not perform denied by
-# pattern, except the one write the contract requires. Rules are static and
-# contain no interpolated content, so a plain quoted heredoc (no
-# variable/command expansion) is safe here, unlike build_prompt's contract
-# text which is untrusted external content assembled with printf instead.
+# denied outright, and `bash` lists only the git/gh/filesystem mutation
+# verbs this run must not perform (denied by pattern) plus the one write
+# the contract requires (`gh pr comment*`, explicitly allowed). Read
+# commands, including the contract's pinned `git diff` command, are never
+# listed here at all -- they fall through to launch_reviewer's `--auto`
+# flag, which auto-approves anything not explicitly denied. This
+# deliberately has no catch-all "*": "allow" entry: an earlier version did,
+# but opencode's actual precedence rule for multiple *matching* bash
+# patterns (does the first match win, the last one, or the most specific
+# one?) could not be confirmed against the compiled binary, and an
+# explicit catch-all sharing key-space with the deny patterns makes the
+# correctness of every deny below depend on guessing that rule right. With
+# no catch-all, a command either matches exactly one of the deny patterns
+# below (denied, unambiguous) or matches none of them (falls through to
+# --auto's own default-allow, equally unambiguous) -- correct regardless
+# of which precedence rule opencode actually implements, at zero extra
+# cost over the catch-all version.
+#
+# Rules are static and contain no interpolated content, so a plain quoted
+# heredoc (no variable/command expansion) is safe here, unlike
+# build_prompt's contract text which is untrusted external content
+# assembled with printf instead.
 _write_opencode_permission_config() {
   local path="$1"
 
@@ -346,7 +374,6 @@ _write_opencode_permission_config() {
   "permission": {
     "edit": "deny",
     "bash": {
-      "*": "allow",
       "git add*": "deny",
       "git commit*": "deny",
       "git push*": "deny",
@@ -395,7 +422,19 @@ JSON
 #     Edit/Write/NotebookEdit is redundant with dontAsk's own default-deny
 #     but is kept as an explicit second layer, since disallowedTools always
 #     wins over allowedTools regardless of dontAsk's exact edge-case
-#     behavior for non-Bash tools.
+#     behavior for non-Bash tools. The "except read-only Bash commands"
+#     part is NOT documented anywhere in claude's own --help/--permission-
+#     mode text -- that text only says dontAsk denies anything not pre-
+#     approved, with no read-only carve-out mentioned at all. This
+#     function's claim is instead an empirically verified fact: a real
+#     `claude -p --permission-mode dontAsk` call with exactly this
+#     allowedTools/disallowedTools pair, asked to run the contract's pinned
+#     `git diff <base>...HEAD`, actually executed it and returned its
+#     output. Confirmed against a real claude binary before shipping this,
+#     not inferred from the docs (which, if anything, suggest the opposite
+#     would happen) -- if this ever needs re-verifying against a future
+#     claude release, re-run that same probe rather than trusting either
+#     this comment or the official text alone.
 #   - codex: `-s read-only`, the sandbox mode probing confirmed lets `gh`
 #     still reach the network (read-only blocks local filesystem writes
 #     only, not network I/O).
@@ -407,9 +446,24 @@ JSON
 #     block waiting for a human who, in this headless run, will never
 #     answer.
 #
-# None of the three CLIs are given a model flag (design decision: each uses
-# its own configured default; resolve_model reads that default back out for
-# disclosure, it is never fed back in here).
+# None of the three CLIs are given a model flag (design decision, made
+# before this task and held here unchanged: each uses its own configured
+# default; resolve_model reads that default back out for disclosure, it is
+# never fed back in here). This is a deliberate override of, not an
+# oversight against, .tmp/probe-results.md's own recorded finding that
+# opencode's probe run needed an explicit, funded model because its
+# configured default had insufficient billing -- that finding is about the
+# state of one account's opencode config, not about this script's design,
+# and hardcoding a model here to work around it would trade one staleness
+# problem (a model name baked into this script drifting from whatever the
+# user actually configures) for another. Concretely, this means: if a
+# user's own opencode default model is unusable (no billing, revoked
+# credentials, etc.), the opencode reviewer is expected to fail with a
+# non-zero exit code -- spawn_supervisor records that in the summary file
+# exactly like any other reviewer failure, and print_summary's PID/log
+# line lets the caller find the failing run's log to see why. Fixing an
+# individual user's opencode billing/model setup is out of this script's
+# scope.
 #
 # Implementation note on the PID this prints: the underlying process is
 # wrapped as `nohup bash -c '...' &` so that process's own exit code can be
@@ -459,7 +513,7 @@ launch_reviewer() {
   # itself a short-lived command-substitution subshell already -- so this
   # never leaks into the caller's cwd.
   if [ "$cli_name" = claude ]; then
-    starting_dir="$(pwd)"
+    starting_dir="$(pwd)" || return 1
     cd "$worktree_dir" || return 1
   fi
 
@@ -529,6 +583,20 @@ launch_reviewer() {
 # sidesteps the whole problem by having each reviewer process record its
 # own exit code to a file when it finishes, which needs no parent-child
 # relationship to observe from here.
+#
+# Known limitation from processing PIDs sequentially in the order given,
+# combined with all of them sharing one worktree (a separate, already-
+# accepted tradeoff of the shared-worktree design itself, not something
+# introduced here): the "after" snapshot for an earlier PID in the list is
+# only taken once this loop gets around to it, which can be *after* a
+# still-running later reviewer has already written something. In that
+# window, an innocent earlier reviewer can be marked "invalidated" for a
+# change it didn't make. This is a conservative failure mode, not a
+# detection gap -- it can only ever cause a false "invalidated" on an
+# innocent run, never a false "ok" on a run that actually tampered with
+# the worktree, since every real tamper still gets caught by whichever
+# PID's window it actually fell inside. Accepted as-is rather than
+# reworked into concurrent/interleaved polling, given that direction.
 spawn_supervisor() {
   local worktree_dir="$1" summary_file="$2"
   shift 2
@@ -647,6 +715,35 @@ resolve_base_ref() {
   printf 'origin/%s\n' "$base_ref_name"
 }
 
+# _dispatch_failed_cleanup <worktree_dir> <already_launched_pid>...
+#
+# main()'s reviewer-dispatch loop calls resolve_model, build_prompt, and
+# launch_reviewer once per detected CLI; under set -e, any one of those
+# failing partway through (say, on the second of three CLIs) would abort
+# main() right there with no further cleanup -- leaving the worktree in
+# place forever (nothing else in this script's lifetime ever removes it
+# outside spawn_supervisor, which this abort path never reaches) and, if a
+# CLI *before* the one that failed already got launched, its process
+# running as a permanent orphan with no spawn_supervisor ever tracking it
+# to completion or recording its exit. Both are silent resource leaks with
+# no error surfaced anywhere else, which is why main() calls this instead
+# of just letting set -e abort bare: it reports exactly which already-
+# launched PIDs are now unsupervised (so a human has something to `kill`
+# or `ps` on) and makes a best-effort attempt to remove the worktree before
+# main() exits non-zero.
+_dispatch_failed_cleanup() {
+  local worktree_dir="$1"
+  shift
+
+  if [ "$#" -gt 0 ]; then
+    printf 'run.sh: reviewer dispatch failed partway through; PID(s) already launched and now unsupervised: %s\n' "$*" >&2
+  else
+    printf 'run.sh: reviewer dispatch failed before any reviewer was launched\n' >&2
+  fi
+
+  git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+}
+
 # main <pr-link> <issue-link> <design-doc-path>
 #
 # The full pipeline: resolve and validate the PR, detect which reviewer
@@ -701,7 +798,11 @@ main() {
   }
   project_hash="$(printf '%s' "$project_root" | sha256sum | cut -c1-8)"
   project_folder="$(basename "$project_root")-$project_hash"
-  base_dir="$HOME/.tmp/$project_folder/pr-review/$number-$(date -u +%Y%m%d%H%M%S)"
+  # $$ (same disambiguation setup_worktree's own pr_ref already relies on)
+  # keeps two calls for the same PR started within the same second from
+  # colliding on one base_dir -- the timestamp alone isn't fine-grained
+  # enough to rule that out.
+  base_dir="$HOME/.tmp/$project_folder/pr-review/$number-$(date -u +%Y%m%d%H%M%S)-$$"
   logs_dir="$base_dir/logs"
   scratch_dir="$base_dir/scratch"
   summary_file="$base_dir/summary.txt"
@@ -715,11 +816,21 @@ main() {
   pr_url="https://github.com/$owner/$repo/pull/$number"
 
   for cli in "${all_reviewers[@]}"; do
-    model="$(resolve_model "$cli")"
-    prompt="$(build_prompt "$contract_path" "$pr_url" "$issue_url" "$design_doc_path" \
-      "$cli" "$model" "$worktree_dir" "$base_ref" "$scratch_dir")"
+    # Each step is checked explicitly (rather than as a bare statement)
+    # so a failure partway through this loop runs _dispatch_failed_cleanup
+    # instead of letting set -e abort main() with an already-launched
+    # reviewer or the worktree left behind with nothing to clean it up.
+    if ! model="$(resolve_model "$cli")" \
+      || ! prompt="$(build_prompt "$contract_path" "$pr_url" "$issue_url" "$design_doc_path" \
+             "$cli" "$model" "$worktree_dir" "$base_ref" "$scratch_dir")"; then
+      _dispatch_failed_cleanup "$worktree_dir" "${pids[@]+"${pids[@]}"}"
+      exit 1
+    fi
     printf '%s' "$prompt" > "$logs_dir/$cli.prompt"
-    pid="$(launch_reviewer "$cli" "$worktree_dir" "$logs_dir/$cli.log" < "$logs_dir/$cli.prompt")"
+    if ! pid="$(launch_reviewer "$cli" "$worktree_dir" "$logs_dir/$cli.log" < "$logs_dir/$cli.prompt")"; then
+      _dispatch_failed_cleanup "$worktree_dir" "${pids[@]+"${pids[@]}"}"
+      exit 1
+    fi
     pids+=("$pid")
     printf '%s\n' "$pid" > "$logs_dir/$cli.pid"
   done
