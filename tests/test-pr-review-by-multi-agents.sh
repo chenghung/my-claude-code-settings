@@ -320,19 +320,26 @@ rc=$?
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-opencode-missing-field || bad resolve-model-opencode-missing-field
 
-# --- claude: ~/.claude/settings.json, .model ---
+# --- claude: $CLAUDE_CONFIG_DIR/settings.json (falling back to
+# ~/.claude/settings.json), .model. CLAUDE_CONFIG_DIR is explicitly
+# cleared (set to empty, which run.sh's own `${CLAUDE_CONFIG_DIR:-...}`
+# fallback treats the same as unset) on every call below: this test
+# process may itself be running under a real CLAUDE_CONFIG_DIR set in the
+# environment it was launched from, and without clearing it here,
+# resolve_model would read that real, unrelated settings file instead of
+# the isolated $HOME fixture each case below sets up. ---
 
 HOME_CC_OK="$T/home-claude-ok"
 mkdir -p "$HOME_CC_OK/.claude"
 printf '{"model": "sonnet-test"}' > "$HOME_CC_OK/.claude/settings.json"
-out="$(HOME="$HOME_CC_OK" resolve_model claude)"
+out="$(CLAUDE_CONFIG_DIR="" HOME="$HOME_CC_OK" resolve_model claude)"
 rc=$?
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$rc" -eq 0 ] && [ "$out" = "sonnet-test" ] && pass resolve-model-claude-found || bad resolve-model-claude-found
 
 HOME_CC_NOFILE="$T/home-claude-nofile"
 mkdir -p "$HOME_CC_NOFILE"
-out="$(HOME="$HOME_CC_NOFILE" resolve_model claude)"
+out="$(CLAUDE_CONFIG_DIR="" HOME="$HOME_CC_NOFILE" resolve_model claude)"
 rc=$?
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-claude-missing-file || bad resolve-model-claude-missing-file
@@ -340,10 +347,22 @@ rc=$?
 HOME_CC_NOFIELD="$T/home-claude-nofield"
 mkdir -p "$HOME_CC_NOFIELD/.claude"
 printf '{"other": true}' > "$HOME_CC_NOFIELD/.claude/settings.json"
-out="$(HOME="$HOME_CC_NOFIELD" resolve_model claude)"
+out="$(CLAUDE_CONFIG_DIR="" HOME="$HOME_CC_NOFIELD" resolve_model claude)"
 rc=$?
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-claude-missing-field || bad resolve-model-claude-missing-field
+
+# A distinct CLAUDE_CONFIG_DIR, separate from HOME/.claude, must actually
+# be honored (not just harmlessly cleared) -- otherwise the fallback-only
+# path above would pass even if the env var were never read at all.
+HOME_CC_ENVDIR="$T/home-claude-envdir-home"
+CLAUDE_CONFIG_DIR_CASE="$T/home-claude-envdir-config"
+mkdir -p "$HOME_CC_ENVDIR" "$CLAUDE_CONFIG_DIR_CASE"
+printf '{"model": "env-dir-model"}' > "$CLAUDE_CONFIG_DIR_CASE/settings.json"
+out="$(CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR_CASE" HOME="$HOME_CC_ENVDIR" resolve_model claude)"
+rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "env-dir-model" ] && pass resolve-model-claude-honors-config-dir-env-var || bad resolve-model-claude-honors-config-dir-env-var
 
 # ==============================================================
 # resolve_model -- malformed/anomalous config content
@@ -411,7 +430,7 @@ fi
 HOME_CC_BADJSON="$T/home-claude-badjson"
 mkdir -p "$HOME_CC_BADJSON/.claude"
 printf '{"model": "unterminated' > "$HOME_CC_BADJSON/.claude/settings.json"
-if out="$(bash -c "source '$RUN_SH'; HOME='$HOME_CC_BADJSON' resolve_model claude" 2>/dev/null)"; then
+if out="$(bash -c "source '$RUN_SH'; CLAUDE_CONFIG_DIR='' HOME='$HOME_CC_BADJSON' resolve_model claude" 2>/dev/null)"; then
   rc=0
 else
   rc=$?
@@ -423,7 +442,7 @@ fi
 HOME_CC_TYPE="$T/home-claude-typemismatch"
 mkdir -p "$HOME_CC_TYPE/.claude"
 printf '["not", "an", "object"]' > "$HOME_CC_TYPE/.claude/settings.json"
-if out="$(bash -c "source '$RUN_SH'; HOME='$HOME_CC_TYPE' resolve_model claude" 2>/dev/null)"; then
+if out="$(bash -c "source '$RUN_SH'; CLAUDE_CONFIG_DIR='' HOME='$HOME_CC_TYPE' resolve_model claude" 2>/dev/null)"; then
   rc=0
 else
   rc=$?
@@ -771,6 +790,39 @@ case "$oc_config_content" in
   *'"git push*": "deny"'*) pass opencode-permission-config-denies-git-push ;;
   *) bad opencode-permission-config-denies-git-push ;;
 esac
+
+# `gh issue*`/`gh api*` must NOT appear as blanket deny keys -- a blanket
+# deny there would also block the read-only issue/API queries the
+# reviewer contract's requirements-conformance axis needs (issue content
+# is listed as judging material there), silently degrading that axis to
+# "material not provided" for a reason invisible on the posted comment.
+# Only the specific mutating subcommand/HTTP-method patterns should be
+# denied.
+case "$oc_config_content" in
+  *'"gh issue*"'*) bad opencode-permission-config-no-blanket-issue-deny ;;
+  *) pass opencode-permission-config-no-blanket-issue-deny ;;
+esac
+case "$oc_config_content" in
+  *'"gh api*"'*) bad opencode-permission-config-no-blanket-api-deny ;;
+  *) pass opencode-permission-config-no-blanket-api-deny ;;
+esac
+case "$oc_config_content" in
+  *'"gh issue edit*": "deny"'*) pass opencode-permission-config-denies-issue-edit ;;
+  *) bad opencode-permission-config-denies-issue-edit ;;
+esac
+case "$oc_config_content" in
+  *'"gh issue comment*": "deny"'*) pass opencode-permission-config-denies-issue-comment ;;
+  *) bad opencode-permission-config-denies-issue-comment ;;
+esac
+case "$oc_config_content" in
+  *'"gh api -X POST*": "deny"'*) pass opencode-permission-config-denies-api-post ;;
+  *) bad opencode-permission-config-denies-api-post ;;
+esac
+case "$oc_config_content" in
+  *'"gh api -X DELETE*": "deny"'*) pass opencode-permission-config-denies-api-delete ;;
+  *) bad opencode-permission-config-denies-api-delete ;;
+esac
+
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 jq empty "$OC_CONFIG" >/dev/null 2>&1 && pass opencode-permission-config-valid-json || bad opencode-permission-config-valid-json
 
@@ -911,10 +963,42 @@ case "$(cat "$LAUNCH_RECORD_DIR/claude.argv")" in
   *'Bash(gh pr comment:*)'*) pass launch-reviewer-claude-allows-pr-comment ;;
   *) bad launch-reviewer-claude-allows-pr-comment ;;
 esac
-case "$(cat "$LAUNCH_RECORD_DIR/claude.argv")" in
-  *'Edit'*'Write'*'NotebookEdit'*) pass launch-reviewer-claude-disallows-edit-write ;;
-  *) bad launch-reviewer-claude-disallows-edit-write ;;
-esac
+
+# Write must be on --allowedTools (needed for the contract's required
+# comment-body file -- a real claude binary confirmed it cannot write
+# anywhere at all, including its own scratch directory, without this; see
+# launch_reviewer's docstring) and must NOT also be on --disallowedTools
+# (disallowedTools always wins, so that would silently cancel it back out)
+# -- checked as the argument immediately following each flag, not just
+# "Write appears somewhere", so this can't be fooled by Write showing up
+# in the wrong flag's value.
+mapfile -t claude_argv < "$LAUNCH_RECORD_DIR/claude.argv"
+write_allowed=0
+edit_notebookedit_disallowed=0
+write_wrongly_disallowed=0
+for idx in "${!claude_argv[@]}"; do
+  case "${claude_argv[$idx]}" in
+    --allowedTools)
+      case "${claude_argv[$((idx + 1))]:-}" in
+        *Write*) write_allowed=1 ;;
+      esac
+      ;;
+    --disallowedTools)
+      case "${claude_argv[$((idx + 1))]:-}" in
+        *Edit*NotebookEdit*) edit_notebookedit_disallowed=1 ;;
+      esac
+      case "${claude_argv[$((idx + 1))]:-}" in
+        *Write*) write_wrongly_disallowed=1 ;;
+      esac
+      ;;
+  esac
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$write_allowed" -eq 1 ] && pass launch-reviewer-claude-allows-write || bad launch-reviewer-claude-allows-write
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$edit_notebookedit_disallowed" -eq 1 ] && pass launch-reviewer-claude-disallows-edit-notebookedit || bad launch-reviewer-claude-disallows-edit-notebookedit
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$write_wrongly_disallowed" -eq 0 ] && pass launch-reviewer-claude-write-not-also-disallowed || bad launch-reviewer-claude-write-not-also-disallowed
 
 # --- unknown CLI name -> non-zero, no PID printed ---
 
@@ -1043,6 +1127,44 @@ until { [ -f "$SV3_SUMMARY" ] && [ "$(wc -l < "$SV3_SUMMARY")" -eq 2 ]; } || [ "
 [ "$(wc -l < "$SV3_SUMMARY")" -eq 2 ] && pass spawn-supervisor-converges-on-actual-pid-count || bad spawn-supervisor-converges-on-actual-pid-count
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -q "^pid=$sv3_pid_a " "$SV3_SUMMARY" && grep -q "^pid=$sv3_pid_b " "$SV3_SUMMARY" && pass spawn-supervisor-records-every-given-pid || bad spawn-supervisor-records-every-given-pid
+
+# --- the backgrounded subshell survives a real SIGHUP delivered directly
+# to it, not just `disown` (which only stops *this shell* from sending
+# SIGHUP on its own exit -- it does nothing about the kernel delivering
+# one some other way, e.g. a closed controlling terminal). $! is captured
+# from *inside* the same subshell that calls spawn_supervisor (into a
+# file, since $! itself does not survive that subshell exiting) --
+# spawn_supervisor's own internal `(...)&` is what $! refers to right
+# after the call, per bash's normal $!-after-a-backgrounded-job semantics,
+# even though that job gets disowned immediately after. ---
+
+SV4_ROOT="$T/supervisor-fixture-sighup"
+SV4_WT="$(_make_worktree_fixture "$SV4_ROOT")"
+mkdir -p "$SV4_ROOT/logs"
+printf 'p' > "$SV4_ROOT/logs/opencode.prompt"
+sv4_pid="$(launch_reviewer opencode "$SV4_WT" "$SV4_ROOT/logs/opencode.log" < "$SV4_ROOT/logs/opencode.prompt")"
+SV4_SUMMARY="$SV4_ROOT/summary.txt"
+SV4_PID_FILE="$T/sv4-supervisor-pid.txt"
+(
+  cd "$SV4_ROOT/work" || exit 1
+  spawn_supervisor "$SV4_WT" "$SV4_SUMMARY" "$sv4_pid"
+  printf '%s' "$!" > "$SV4_PID_FILE"
+)
+sv4_supervisor_pid="$(cat "$SV4_PID_FILE" 2>/dev/null)"
+# A real, unignored SIGHUP would kill a plain backgrounded subshell
+# instantly; giving it a moment first makes sure this is actually
+# targeting a live process, not racing its own already-fast completion.
+sleep 0.2
+kill -HUP "$sv4_supervisor_pid" 2>/dev/null || true
+
+i=0
+until [ -s "$SV4_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$SV4_SUMMARY" ] && pass spawn-supervisor-survives-sighup || bad spawn-supervisor-survives-sighup
+i=0
+until [ ! -e "$SV4_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$SV4_WT" ] && pass spawn-supervisor-removes-worktree-after-sighup || bad spawn-supervisor-removes-worktree-after-sighup
 
 export PATH="$saved_path"
 
@@ -1198,7 +1320,7 @@ E2E_HOME="$T/main-e2e-home"
 mkdir -p "$E2E_HOME/.codex"
 printf 'model = "e2e-distinctive-model"\n' > "$E2E_HOME/.codex/config.toml"
 
-if out="$(cd "$E2E_FIXTURE/work" && GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" \
+if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" \
   bash "$RUN_SH" \
     "https://github.com/acme9pr/widgets9pr/pull/321" \
     "https://example.com/distinctive-issue-marker" \
@@ -1229,15 +1351,81 @@ grep -qxF -- '- design document 路徑：docs/distinctive-design-doc-marker.md' 
 grep -qxF -- '- 產出這則 review 的 CLI 名稱：codex' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-cli-name-in-place || bad main-e2e-prompt-cli-name-in-place
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qxF -- '- 產出這則 review 的 model 名稱：e2e-distinctive-model' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-model-in-place || bad main-e2e-prompt-model-in-place
+# scratch_dir is per-CLI (a subdirectory named after the reviewer, e.g.
+# .../scratch/codex), not the shared top-level scratch_dir -- see main()'s
+# own comment on why the three reviewers can't safely share one scratch
+# directory for their comment-body files.
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF -- "- 暫存目錄（worktree 之外，張貼 comment 前把內文寫入此處的檔案）：$E2E_BASE_DIR/scratch" "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-scratch-dir-in-place || bad main-e2e-prompt-scratch-dir-in-place
+grep -qxF -- "- 暫存目錄（worktree 之外，張貼 comment 前把內文寫入此處的檔案）：$E2E_BASE_DIR/scratch/codex" "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-scratch-dir-in-place || bad main-e2e-prompt-scratch-dir-in-place
+
+E2E_WORKTREE_DIR="$E2E_BASE_DIR/worktree"
+
+# --- the `chmod -R a-w` mechanism main() applies to the worktree (closing
+# the gap that every individual reviewer CLI's own sandbox/permission
+# flags turned out, on real testing, not to fully close on their own --
+# see launch_reviewer's docstring) is checked directly against its own
+# fixture here, not against the e2e run above: that run's stub reviewers
+# finish and get cleaned up by spawn_supervisor near-instantly, so
+# checking the worktree's permissions or attempting a write against it
+# *after* `bash "$RUN_SH"` has already returned would race spawn_supervisor
+# possibly having already removed it. ---
+
+CHMOD_ROOT="$T/chmod-worktree-fixture"
+CHMOD_WT="$(_make_worktree_fixture "$CHMOD_ROOT")"
+chmod -R a-w "$CHMOD_WT"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -w "$CHMOD_WT" ] && pass chmod-worktree-is-os-level-read-only || bad chmod-worktree-is-os-level-read-only
+if ( : > "$CHMOD_WT/should-not-be-writable.txt" ) 2>/dev/null; then
+  bad chmod-worktree-write-actually-denied
+else
+  pass chmod-worktree-write-actually-denied
+fi
+# git status/diff -- everything the reviewer contract's read-only true-
+# source-of-truth section asks a reviewer to do -- must still work: a
+# linked worktree's own index/HEAD housekeeping lives under the main
+# repo's .git/worktrees/<name>/, not inside the worktree's own directory
+# tree, so chmod'ing that tree read-only should not affect them.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+git -C "$CHMOD_WT" status --porcelain >/dev/null 2>&1 && pass chmod-worktree-status-still-works || bad chmod-worktree-status-still-works
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+git -C "$CHMOD_WT" diff main...HEAD >/dev/null 2>&1 && pass chmod-worktree-diff-still-works || bad chmod-worktree-diff-still-works
+chmod -R u+w "$CHMOD_WT"
+
+# --- print_summary's own stdout (main()'s only output) names every
+# dispatched reviewer with its PID and log path -- the exact chain
+# SKILL.md's reporting depends on. ---
+
+case "$out" in
+  *'codex'*"$E2E_LOGS_DIR/codex.log"*) pass main-e2e-summary-output-lists-log-path ;;
+  *) bad main-e2e-summary-output-lists-log-path ;;
+esac
+
+# --- spawn_supervisor's summary_file (base_dir/summary.txt, i.e. two
+# directories up from any <cli>.log path -- the exact derivation SKILL.md
+# uses to find it) eventually exists and converges to exactly one line per
+# dispatched reviewer, then the worktree it removes on completion is
+# actually gone. Bounded polling, not a fixed sleep, since this run's
+# stub reviewers finish in well under a second but real ones would not. ---
+
+E2E_SUMMARY_FILE="$E2E_BASE_DIR/summary.txt"
+i=0
+until { [ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 3 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 3 ] && pass main-e2e-summary-file-converges || bad main-e2e-summary-file-converges
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q 'worktree_status=ok' "$E2E_SUMMARY_FILE" 2>/dev/null && pass main-e2e-summary-file-worktree-status-ok || bad main-e2e-summary-file-worktree-status-ok
+
+i=0
+until [ ! -e "$E2E_WORKTREE_DIR" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$E2E_WORKTREE_DIR" ] && pass main-e2e-worktree-removed-after-completion || bad main-e2e-worktree-removed-after-completion
 
 # --- all three positional args empty: PR derives from branch, issue/design
 # render as "not provided" rather than blocking the run ---
 
 E2E_HOME2="$T/main-e2e-home2"
 if out="$(cd "$E2E_FIXTURE/work" \
-  && GH_STUB_DERIVE_OK=1 GH_STUB_DERIVED_URL="https://github.com/acme9pr/widgets9pr/pull/321" \
+  && CLAUDE_CONFIG_DIR="" GH_STUB_DERIVE_OK=1 GH_STUB_DERIVED_URL="https://github.com/acme9pr/widgets9pr/pull/321" \
      GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME2" PATH="$STUB_BIN:$saved_path" \
   bash "$RUN_SH" "" "" "" 2>&1)"; then
   pass main-e2e-empty-args-accepted

@@ -206,7 +206,11 @@ setup_worktree() {
 # later [profile] table is a different model, not the default one, so
 # parsing stops at the first section header); opencode reads .model from
 # ~/.config/opencode/opencode.json; claude reads .model from
-# ~/.claude/settings.json. Failing to resolve a value -- missing config
+# $CLAUDE_CONFIG_DIR/settings.json, falling back to ~/.claude/settings.json
+# when that env var is unset -- the same variable and fallback SKILL.md
+# uses to locate this very script, since a personal-subscription deployment
+# points it at a different config directory and a hardcoded ~/.claude would
+# miss that deployment's actual settings file. Failing to resolve a value -- missing config
 # file, missing field, malformed content (invalid JSON, or a value of the
 # wrong type), or jq unavailable for the JSON sources -- is not an error:
 # it prints the fixed "unknown-model" marker and still returns 0, because
@@ -249,7 +253,7 @@ resolve_model() {
       fi
       ;;
     claude)
-      config_file="$HOME/.claude/settings.json"
+      config_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
       if [ -f "$config_file" ] && command -v jq >/dev/null 2>&1; then
         value="$(jq -r '.model // empty' "$config_file" 2>/dev/null)" || value=""
       fi
@@ -346,9 +350,18 @@ _git_status_snapshot() {
 # denied outright, and `bash` lists only the git/gh/filesystem mutation
 # verbs this run must not perform (denied by pattern) plus the one write
 # the contract requires (`gh pr comment*`, explicitly allowed). Read
-# commands, including the contract's pinned `git diff` command, are never
-# listed here at all -- they fall through to launch_reviewer's `--auto`
-# flag, which auto-approves anything not explicitly denied. This
+# commands, including the contract's pinned `git diff` command, `gh issue
+# view`/`gh issue list` (the contract lists issue content as fit-for-
+# requirements-conformance-axis material, so a reviewer needs to actually
+# be able to read it), and a plain `gh api` GET request, are never listed
+# here at all -- they fall through to launch_reviewer's `--auto` flag,
+# which auto-approves anything not explicitly denied. `gh issue*` and
+# `gh api*` are deliberately NOT used as blanket deny patterns for this
+# reason: an earlier version did, and it silently denied those same read
+# commands too, degrading the requirements-conformance axis to "issue
+# material not provided" for a reason opaque to whoever later reads that
+# comment on the PR. Each `gh issue`/`gh api` deny below instead names the
+# specific mutating subcommand or HTTP write method it blocks. This
 # deliberately has no catch-all "*": "allow" entry: an earlier version did,
 # but opencode's actual precedence rule for multiple *matching* bash
 # patterns (does the first match win, the last one, or the most specific
@@ -387,13 +400,30 @@ _write_opencode_permission_config() {
       "mv *": "deny",
       "chmod *": "deny",
       "sudo*": "deny",
-      "gh api*": "deny",
+      "gh api -X POST*": "deny",
+      "gh api -X PUT*": "deny",
+      "gh api -X PATCH*": "deny",
+      "gh api -X DELETE*": "deny",
+      "gh api --method POST*": "deny",
+      "gh api --method PUT*": "deny",
+      "gh api --method PATCH*": "deny",
+      "gh api --method DELETE*": "deny",
       "gh pr edit*": "deny",
       "gh pr review*": "deny",
       "gh pr merge*": "deny",
       "gh pr close*": "deny",
       "gh pr reopen*": "deny",
-      "gh issue*": "deny",
+      "gh issue close*": "deny",
+      "gh issue comment*": "deny",
+      "gh issue create*": "deny",
+      "gh issue delete*": "deny",
+      "gh issue edit*": "deny",
+      "gh issue lock*": "deny",
+      "gh issue pin*": "deny",
+      "gh issue reopen*": "deny",
+      "gh issue transfer*": "deny",
+      "gh issue unlock*": "deny",
+      "gh issue unpin*": "deny",
       "gh pr comment*": "allow"
     }
   }
@@ -406,54 +436,123 @@ JSON
 # Starts one reviewer CLI as a detached, nohup'd background process whose
 # working directory is <worktree_dir> and whose prompt is this function's
 # own stdin (the caller redirects it in, e.g. `launch_reviewer ... <
-# prompt_file` -- every reviewer CLI confirmed stdin support during
-# preflight probing, see .tmp/probe-results.md). Combined stdout+stderr go
-# to <log_file>. Prints the launched process's PID to stdout on success.
+# prompt_file`). All three reviewer CLIs were confirmed during preflight
+# probing to read their prompt from stdin when no positional prompt
+# argument is given: `claude -p`, `codex exec`, and `opencode run` (without
+# a `message` argument) all do this -- that probe result is recorded here
+# rather than only in .tmp/probe-results.md, since that file is gitignored
+# and won't exist for anyone who didn't run the probe themselves. Combined
+# stdout+stderr go to <log_file>. Prints the launched process's PID to
+# stdout on success.
 #
 # Each CLI gets its own least-privilege enforcement, using that CLI's own
 # mechanism rather than trusting the reviewer contract's natural-language
 # read-only rule alone (the contract itself only binds the reviewer CLI's
 # behavior; nothing about it stops the CLI's host environment from already
-# having git/gh/sed pre-approved, which is exactly the gap this closes):
+# having git/gh/sed pre-approved, which is exactly the gap this closes).
+# None of these three mechanisms turned out, on real testing, to reliably
+# stop a write into the *worktree* on their own (see the OS-level chmod
+# note further below) -- they're kept regardless as each CLI's own first
+# line of defense, shaping what it can even attempt, with chmod as the
+# backstop that actually has to hold:
 #   - claude: `--permission-mode dontAsk` (auto-denies anything not
 #     explicitly allowed, except read-only Bash commands) plus an explicit
-#     `--allowedTools` whitelist naming only the read tools and the one
-#     `gh pr comment` write the contract requires; `--disallowedTools` for
-#     Edit/Write/NotebookEdit is redundant with dontAsk's own default-deny
-#     but is kept as an explicit second layer, since disallowedTools always
-#     wins over allowedTools regardless of dontAsk's exact edge-case
-#     behavior for non-Bash tools. The "except read-only Bash commands"
-#     part is NOT documented anywhere in claude's own --help/--permission-
-#     mode text -- that text only says dontAsk denies anything not pre-
-#     approved, with no read-only carve-out mentioned at all. This
-#     function's claim is instead an empirically verified fact: a real
-#     `claude -p --permission-mode dontAsk` call with exactly this
-#     allowedTools/disallowedTools pair, asked to run the contract's pinned
-#     `git diff <base>...HEAD`, actually executed it and returned its
-#     output. Confirmed against a real claude binary before shipping this,
-#     not inferred from the docs (which, if anything, suggest the opposite
-#     would happen) -- if this ever needs re-verifying against a future
-#     claude release, re-run that same probe rather than trusting either
-#     this comment or the official text alone.
-#   - codex: `-s read-only`, the sandbox mode probing confirmed lets `gh`
-#     still reach the network (read-only blocks local filesystem writes
-#     only, not network I/O).
+#     `--allowedTools` whitelist naming the read tools, `Write` (needed for
+#     the contract's required comment-body file -- see below), and the one
+#     `gh pr comment` write the contract requires; `--disallowedTools`
+#     covers Edit/NotebookEdit, which this run never needs.
+#
+#     Two things here are empirically verified facts about a real claude
+#     binary, not inferred from --help text (which, on the first point,
+#     suggests the opposite would happen; on the second, actively
+#     recommends a syntax that turned out not to work) -- if either ever
+#     needs re-verifying against a future claude release, re-run the same
+#     kind of probe rather than trusting this comment or the official text
+#     alone:
+#       1. dontAsk auto-denies anything not on --allowedTools *except*
+#          read-only Bash commands, which it lets through uncondition-
+#          ally -- confirmed by asking it to run the contract's pinned
+#          `git diff <base>...HEAD` with this exact allowedTools/
+#          disallowedTools pair (no Bash pattern for `git diff` in the
+#          allow list at all) and getting real diff output back.
+#       2. There is no way to scope the `Write` tool to a specific path via
+#          `--allowedTools`/`--disallowedTools`: `Write(<path>/**)` is
+#          rejected outright at startup with "is not matched by file
+#          permission checks -- only Edit(path) rules are. Use Edit(...)
+#          instead" -- but that suggestion doesn't actually work either;
+#          an `Edit(<worktree>/**)` disallow rule, combined with a bare
+#          `Write` allow, still let a real claude process write into that
+#          worktree in a real test run. `Write` in claude's tool-permission
+#          model is all-or-nothing: either the whole tool is allowed
+#          (anywhere the process can reach) or it isn't. This is why the
+#          worktree itself is separately protected at the OS level below,
+#          instead of through this flag.
+#   - codex: `-s read-only`, the most restrictive of codex's three sandbox
+#     modes (the other two, `workspace-write` and
+#     `--dangerously-bypass-approvals-and-sandbox`, grant filesystem writes
+#     codex doesn't need for reviewing) and the one that best matches the
+#     contract's own read-only requirement. It was tried first, before
+#     either of the more permissive modes, specifically because it's the
+#     most restrictive; sandbox probing confirmed `gh` still reaches the
+#     network under it (read-only blocks local filesystem writes only, not
+#     network I/O), so there was no need to fall back to a less restrictive
+#     mode. (The worktree write-attempt this same probing later surfaced --
+#     see the OS-level chmod protection below -- means codex's sandbox
+#     alone turned out not to fully enforce that filesystem restriction in
+#     `codex exec`'s non-interactive mode; this flag is kept anyway as a
+#     first line of defense, on top of the chmod backstop that now carries
+#     the real guarantee.)
 #   - opencode: no CLI-level permission flag exists, so the restriction
 #     lives in a scratch, run-specific config file (see
 #     _write_opencode_permission_config) pointed at via the OPENCODE_CONFIG
 #     env var; `--auto` is required alongside it so permissions this config
 #     leaves unset (i.e. everything not on the explicit deny list) don't
 #     block waiting for a human who, in this headless run, will never
-#     answer.
+#     answer. That config's `bash` deny list is necessarily a list of
+#     specific risky verbs (git commit, rm, sudo, ...), not an exhaustive
+#     one -- a real test run confirmed a plain shell redirect
+#     (`printf ... > file`, which matches none of those specific patterns)
+#     writes successfully wherever the underlying shell can reach,
+#     including into the worktree. No bash-pattern blacklist can close
+#     that off completely (there is no bounded list of every way a shell
+#     command can write a file), which is the other reason the worktree
+#     gets OS-level protection below rather than depending on this list
+#     alone.
+#
+# All three of the mechanisms above turned out, on real testing, not to
+# reliably stop a write into the worktree by itself -- claude's `Write`
+# tool has no path scoping at all (see above), codex's `-s read-only`
+# sandbox did not block a real write attempt in `codex exec`'s non-
+# interactive mode (a sandbox-escalation path this script has no flag to
+# turn off for `codex exec` specifically), and opencode's bash deny list
+# is a blacklist of specific verbs that a plain shell redirect walks
+# straight past. Given that, the worktree's actual protection is now an
+# OS-level one applied uniformly to all three from main(), independent of
+# any single CLI's own permission engine: `chmod -R a-w` on the worktree
+# right after setup_worktree creates it (before any reviewer is launched),
+# restored with `chmod -R u+w` immediately before removal (see
+# spawn_supervisor and _dispatch_failed_cleanup). `git status`/`git diff`
+# -- everything the contract's read-only true-source-of-truth section asks
+# a reviewer to do -- were confirmed to still work against a worktree
+# chmod'd this way, since a linked worktree's own index/HEAD housekeeping
+# lives under the main repo's .git/worktrees/<name>/, not inside the
+# worktree's own directory tree. Each CLI's flags above are kept anyway:
+# they still shape what the model even attempts (fewer tool calls that
+# have to fail), and they're the only defense at all for scratch-dir
+# writes and for whatever this script's own git-status-snapshot comparison
+# in spawn_supervisor cannot see (see that function's own docstring on the
+# gitignored-path tradeoff).
 #
 # None of the three CLIs are given a model flag (design decision, made
 # before this task and held here unchanged: each uses its own configured
 # default; resolve_model reads that default back out for disclosure, it is
 # never fed back in here). This is a deliberate override of, not an
-# oversight against, .tmp/probe-results.md's own recorded finding that
-# opencode's probe run needed an explicit, funded model because its
-# configured default had insufficient billing -- that finding is about the
-# state of one account's opencode config, not about this script's design,
+# oversight against, a preflight probing finding recorded elsewhere (in a
+# gitignored scratch file that won't exist for anyone who didn't run the
+# probe themselves, so the finding itself is restated here): opencode's
+# probe run needed an explicit, funded model because its configured
+# default had insufficient billing -- that finding is about the state of
+# one account's opencode config, not about this script's design,
 # and hardcoding a model here to work around it would trade one staleness
 # problem (a model name baked into this script drifting from whatever the
 # user actually configures) for another. Concretely, this means: if a
@@ -488,8 +587,8 @@ launch_reviewer() {
   case "$cli_name" in
     claude)
       cmd=(claude -p --permission-mode dontAsk \
-        --allowedTools "Read Grep Glob WebFetch Bash(gh pr comment:*)" \
-        --disallowedTools "Edit Write NotebookEdit")
+        --allowedTools "Read Grep Glob WebFetch Write Bash(gh pr comment:*)" \
+        --disallowedTools "Edit NotebookEdit")
       ;;
     codex)
       cmd=(codex exec -s read-only -C "$worktree_dir")
@@ -597,12 +696,26 @@ launch_reviewer() {
 # the worktree, since every real tamper still gets caught by whichever
 # PID's window it actually fell inside. Accepted as-is rather than
 # reworked into concurrent/interleaved polling, given that direction.
+#
+# `trap '' HUP` right below, before anything else runs in the backgrounded
+# subshell, is not redundant with the `disown` after it: `disown` only
+# stops *this shell* from sending SIGHUP to the job when the shell itself
+# exits; it does nothing about the kernel sending SIGHUP to the whole
+# foreground process group when the controlling terminal goes away (e.g.
+# the terminal this whole run.sh invocation was started from gets closed).
+# Without also ignoring that signal, this subshell dying is not a minor
+# inconvenience: it is the only thing that ever removes the worktree or
+# completes the summary file, so its death leaves the worktree (still
+# holding the branch this run created) permanently stuck -- neither this
+# script's own future runs (which only prune worktrees whose directory is
+# already gone) nor a normal branch cleanup ever reaches it again.
 spawn_supervisor() {
   local worktree_dir="$1" summary_file="$2"
   shift 2
   local -a pids=("$@")
 
   (
+    trap '' HUP
     local pid rc end_time before after status exit_file base_dir
     base_dir="$(dirname "$worktree_dir")"
     : > "$summary_file"
@@ -634,6 +747,10 @@ spawn_supervisor() {
         "$pid" "${rc:-unknown}" "$end_time" "$status" >> "$summary_file"
     done
 
+    # Undo main()'s `chmod -R a-w` (see main()'s own comment) before
+    # removing -- `git worktree remove` needs write access to actually
+    # delete the tree, and a still-read-only tree makes it fail outright.
+    chmod -R u+w "$worktree_dir" 2>/dev/null || true
     git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
   ) &
   disown
@@ -741,6 +858,9 @@ _dispatch_failed_cleanup() {
     printf 'run.sh: reviewer dispatch failed before any reviewer was launched\n' >&2
   fi
 
+  # Undo main()'s `chmod -R a-w` before removing -- see spawn_supervisor's
+  # matching step for why `git worktree remove` needs this first.
+  chmod -R u+w "$worktree_dir" 2>/dev/null || true
   git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
 }
 
@@ -759,7 +879,7 @@ main() {
   local pr_info owner repo number contract_path base_ref pr_url
   local project_root project_hash project_folder
   local base_dir logs_dir scratch_dir summary_file worktree_dir
-  local cli d found model prompt pid
+  local cli d found model prompt pid cli_scratch_dir
   local -a all_reviewers=() skipped=() pids=()
 
   if ! pr_info="$(parse_pr_url "$pr_arg")"; then
@@ -813,16 +933,44 @@ main() {
     exit 1
   }
 
+  # This chmod, not any single reviewer CLI's own sandbox/permission flags,
+  # is the actual enforcement behind the reviewer contract's read-only
+  # promise -- launch_reviewer's docstring records the real testing that
+  # led here (every one of the three CLIs' own mechanisms turned out to
+  # have a real gap). Applied once, right after the worktree exists and
+  # before any reviewer is launched; spawn_supervisor and
+  # _dispatch_failed_cleanup both restore write access before removing it.
+  if ! chmod -R a-w "$worktree_dir"; then
+    printf 'run.sh: failed to make the review worktree read-only\n' >&2
+    git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+    exit 1
+  fi
+
   pr_url="https://github.com/$owner/$repo/pull/$number"
 
   for cli in "${all_reviewers[@]}"; do
-    # Each step is checked explicitly (rather than as a bare statement)
-    # so a failure partway through this loop runs _dispatch_failed_cleanup
-    # instead of letting set -e abort main() with an already-launched
-    # reviewer or the worktree left behind with nothing to clean it up.
-    if ! model="$(resolve_model "$cli")" \
+    # A per-CLI subdirectory under scratch_dir, not scratch_dir itself:
+    # all three reviewers get the byte-for-byte same prompt and run
+    # concurrently, so if they all wrote their comment-body file into one
+    # shared directory, two of them picking the same filename (nothing in
+    # the contract constrains the name beyond "a file") is a real risk,
+    # not a hypothetical one -- a same-named overwrite in the few seconds
+    # between one reviewer writing its file and posting from it would post
+    # someone else's comment body under this reviewer's own disclosure
+    # header, and the contract forbids ever editing or deleting a posted
+    # comment to fix that after the fact. logs_dir already gets this same
+    # per-CLI split (each reviewer's own <cli>.log); this mirrors it.
+    #
+    # Each step below is checked explicitly (rather than as a bare
+    # statement) so a failure partway through this loop runs
+    # _dispatch_failed_cleanup instead of letting set -e abort main() with
+    # an already-launched reviewer or the worktree left behind with
+    # nothing to clean it up.
+    cli_scratch_dir="$scratch_dir/$cli"
+    if ! mkdir -p "$cli_scratch_dir" \
+      || ! model="$(resolve_model "$cli")" \
       || ! prompt="$(build_prompt "$contract_path" "$pr_url" "$issue_url" "$design_doc_path" \
-             "$cli" "$model" "$worktree_dir" "$base_ref" "$scratch_dir")"; then
+             "$cli" "$model" "$worktree_dir" "$base_ref" "$cli_scratch_dir")"; then
       _dispatch_failed_cleanup "$worktree_dir" "${pids[@]+"${pids[@]}"}"
       exit 1
     fi
