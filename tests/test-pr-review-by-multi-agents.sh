@@ -64,6 +64,12 @@ out="$(parse_pr_url "acme/widgets#42")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$out" = "acme widgets 42" ] && pass parse-shorthand || bad parse-shorthand
 
+# Full URL with a trailing path suffix (e.g. the "/files" tab a browser adds
+# when a user copies a PR URL) must still parse to the same three values.
+out="$(parse_pr_url "https://github.com/acme/widgets/pull/42/files")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$out" = "acme widgets 42" ] && pass parse-full-url-trailing-suffix || bad parse-full-url-trailing-suffix
+
 # Empty input: derive from the current branch via the stubbed gh. GH_STUB_*
 # must be `export`ed (not just assigned) so the gh stub subprocess sees them.
 export PATH="$STUB_BIN:$PATH"
@@ -164,6 +170,19 @@ out="$(detect_reviewers)"
 export PATH="$saved_path"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$out" = "codex" ] && pass detect-partial || bad detect-partial
+
+# Two of three installed, with the middle one (codex) missing -> exactly
+# two lines, in fixed order, and codex must not appear. This rules out a
+# broken loop that silently skips or reorders entries.
+TWO_OF_THREE="$T/two-of-three-bin"
+mkdir -p "$TWO_OF_THREE"
+cp "$STUB_BIN/claude" "$TWO_OF_THREE/claude"
+cp "$STUB_BIN/opencode" "$TWO_OF_THREE/opencode"
+export PATH="$TWO_OF_THREE"
+out="$(detect_reviewers)"
+export PATH="$saved_path"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$out" = "$(printf 'claude\nopencode')" ] && pass detect-two-of-three || bad detect-two-of-three
 
 # None installed -> empty stdout, non-zero exit.
 export PATH="$EMPTY_BIN"

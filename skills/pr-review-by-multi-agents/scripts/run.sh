@@ -7,7 +7,15 @@
 # assembly, and process launch/supervision are added by later tasks further
 # down this same file.
 set -euo pipefail
-IFS=$'\n\t'
+
+# IFS is intentionally left at its bash default here. Nothing in this file
+# currently iterates over multi-line/multi-word command output, and this
+# file is `source`d directly into tests/test-pr-review-by-multi-agents.sh's
+# own shell process -- a global IFS override here would silently leak into
+# that test script (and into whatever later tasks append below). When a
+# future addition actually needs to split on newlines, scope it locally
+# instead of overriding IFS at file scope, e.g. `while IFS= read -r line;
+# do ...; done < <(cmd)` or `local IFS=$'\n\t'` inside just that function.
 
 # parse_pr_url <input>
 #
