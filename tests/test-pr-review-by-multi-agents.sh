@@ -214,9 +214,13 @@ out="$(resolve_contract_path)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$out" ] && pass contract-path-direct-readable || bad contract-path-direct-readable
 
-# Symlink case: mirrors how install.sh actually deploys this skill (the
-# whole skill directory symlinked under ~/.claude/skills or ~/.agents/skills).
-# readlink must resolve through that symlink to the real references/ dir.
+# Symlink case: this fixture symlinks only run.sh itself, not the whole
+# skill directory the way install.sh actually deploys it (a single symlink
+# for the whole tree under ~/.claude/skills or ~/.agents/skills) -- but
+# readlink resolves BASH_SOURCE[0] the same way regardless of which level
+# of the path is the symlink, so this still exercises the exact resolution
+# step (readlink -f "${BASH_SOURCE[0]}") that install.sh's real deployment
+# depends on.
 SYMLINKED_SKILL="$T/symlinked-skill"
 mkdir -p "$SYMLINKED_SKILL/scripts"
 ln -s "$RUN_SH" "$SYMLINKED_SKILL/scripts/run.sh"
@@ -327,6 +331,92 @@ out="$(HOME="$HOME_CC_NOFIELD" resolve_model claude)"
 rc=$?
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-claude-missing-field || bad resolve-model-claude-missing-field
+
+# ==============================================================
+# resolve_model -- malformed/anomalous config content
+#
+# These specifically guard the errexit-propagation bug found in review:
+# resolve_model must degrade to "unknown-model" (rc 0) even when the
+# underlying parser (jq or sed) genuinely fails partway through, not just
+# when a file/field is simply absent (the scenarios above never actually
+# fail a command, so they could not have caught this). Each case below
+# runs resolve_model in a fresh, unwrapped bash -c subprocess rather than
+# via a bare "$(resolve_model ...)" in this already-sourced test shell --
+# bash disables errexit inside command substitutions by default, which
+# would incidentally mask the exact bug being tested here. The outer
+# `if out="$(bash -c ...)"` only protects this test script itself from
+# dying; it does not affect whether the failure happens for real inside
+# the child process.
+# ==============================================================
+
+# codex: two top-level `model =` lines before any [section] header. Before
+# the fix, this raced a `sed | head -n1` pipeline and could kill the whole
+# calling shell with SIGPIPE under pipefail (reproduced separately with a
+# large fixture during development); the fix removes the pipe entirely, so
+# this is now a plain correctness check that the first one wins.
+HOME_CODEX_DUP="$T/home-codex-dup"
+mkdir -p "$HOME_CODEX_DUP/.codex"
+cat > "$HOME_CODEX_DUP/.codex/config.toml" <<'TOML'
+model = "first-model"
+model = "second-model-must-not-win"
+TOML
+if out="$(bash -c "source '$RUN_SH'; HOME='$HOME_CODEX_DUP' resolve_model codex" 2>/dev/null)"; then
+  rc=0
+else
+  rc=$?
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "first-model" ] && pass resolve-model-codex-duplicate-lines || bad resolve-model-codex-duplicate-lines
+
+# opencode: syntactically invalid JSON.
+HOME_OC_BADJSON="$T/home-opencode-badjson"
+mkdir -p "$HOME_OC_BADJSON/.config/opencode"
+printf '{"model": "unterminated' > "$HOME_OC_BADJSON/.config/opencode/opencode.json"
+if out="$(bash -c "source '$RUN_SH'; HOME='$HOME_OC_BADJSON' resolve_model opencode" 2>/dev/null)"; then
+  rc=0
+else
+  rc=$?
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-opencode-invalid-json || bad resolve-model-opencode-invalid-json
+
+# opencode: syntactically valid JSON, but the wrong type at the top level
+# (an array instead of an object) -- `.model` on an array is a jq runtime
+# error, not a quietly-empty missing-field result.
+HOME_OC_TYPE="$T/home-opencode-typemismatch"
+mkdir -p "$HOME_OC_TYPE/.config/opencode"
+printf '["not", "an", "object"]' > "$HOME_OC_TYPE/.config/opencode/opencode.json"
+if out="$(bash -c "source '$RUN_SH'; HOME='$HOME_OC_TYPE' resolve_model opencode" 2>/dev/null)"; then
+  rc=0
+else
+  rc=$?
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-opencode-type-mismatch || bad resolve-model-opencode-type-mismatch
+
+# claude: syntactically invalid JSON.
+HOME_CC_BADJSON="$T/home-claude-badjson"
+mkdir -p "$HOME_CC_BADJSON/.claude"
+printf '{"model": "unterminated' > "$HOME_CC_BADJSON/.claude/settings.json"
+if out="$(bash -c "source '$RUN_SH'; HOME='$HOME_CC_BADJSON' resolve_model claude" 2>/dev/null)"; then
+  rc=0
+else
+  rc=$?
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-claude-invalid-json || bad resolve-model-claude-invalid-json
+
+# claude: valid JSON, wrong top-level type.
+HOME_CC_TYPE="$T/home-claude-typemismatch"
+mkdir -p "$HOME_CC_TYPE/.claude"
+printf '["not", "an", "object"]' > "$HOME_CC_TYPE/.claude/settings.json"
+if out="$(bash -c "source '$RUN_SH'; HOME='$HOME_CC_TYPE' resolve_model claude" 2>/dev/null)"; then
+  rc=0
+else
+  rc=$?
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-claude-type-mismatch || bad resolve-model-claude-type-mismatch
 
 # ==============================================================
 # build_prompt
@@ -452,5 +542,136 @@ else
 fi
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -z "$out" ] && pass setup-worktree-missing-pr-ref-no-output || bad setup-worktree-missing-pr-ref-no-output
+
+# A same-named local ref left behind by an earlier run whose PID got
+# reused (setup_worktree names its ref pr-review-<N>-$$, and $$ stays
+# constant across this whole test script run) pointing at an unrelated,
+# non-fast-forward commit. Without the fetch's + prefix, this would make
+# the fetch fail for a reason that has nothing to do with the current PR.
+# Uses a fresh PR number (20, pushed here) rather than PR 9: PR 9's own ref
+# name is already checked out by the still-open worktree from the success
+# test above, so reusing it wouldn't actually be testing a stale ref.
+(
+  cd "$GIT_FIXTURE/work"
+  git push -q origin feature:refs/pull/20/head
+  git checkout -q -b diverged main
+  printf 'diverged\n' >> f.txt
+  git commit -aq -m diverged
+  git branch -f "pr-review-20-$$" diverged
+  git checkout -q main
+  git branch -q -D diverged
+)
+out="$(cd "$GIT_FIXTURE/work" && setup_worktree acme widgets 20 "$T/setup-worktree-stale-ref")"
+rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 0 ] && [ "$out" = "$T/setup-worktree-stale-ref/worktree" ] && pass setup-worktree-force-updates-stale-ref || bad setup-worktree-force-updates-stale-ref
+stale_got_sha="$(git -C "$out" rev-parse HEAD 2>/dev/null || true)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$stale_got_sha" = "$PR_SHA" ] && pass setup-worktree-force-update-correct-commit || bad setup-worktree-force-update-correct-commit
+
+# ==============================================================
+# _origin_matches_owner_repo
+#
+# Direct unit tests for the boundary-safe origin/owner/repo matching used
+# by setup_worktree's sanity check. Covers both HTTPS and SSH remote URL
+# forms, with and without a trailing .git, and the exact boundary-bypass
+# vulnerability found in review: a bare `*` prefix with no boundary
+# character would let an owner of "acme" be satisfied by an unrelated
+# owner like "not-acme" whose URL just happens to share the tail (a
+# .../not-acme/widgets.git URL does end with "acme/widgets.git").
+# ==============================================================
+
+if _origin_matches_owner_repo "https://github.com/acme/widgets.git" acme widgets; then
+  pass origin-match-https-git
+else
+  bad origin-match-https-git
+fi
+
+if _origin_matches_owner_repo "https://github.com/acme/widgets" acme widgets; then
+  pass origin-match-https-no-git
+else
+  bad origin-match-https-no-git
+fi
+
+if _origin_matches_owner_repo "git@github.com:acme/widgets.git" acme widgets; then
+  pass origin-match-ssh-git
+else
+  bad origin-match-ssh-git
+fi
+
+if _origin_matches_owner_repo "git@github.com:acme/widgets" acme widgets; then
+  pass origin-match-ssh-no-git
+else
+  bad origin-match-ssh-no-git
+fi
+
+if _origin_matches_owner_repo "https://github.com/not-acme/widgets.git" acme widgets; then
+  bad origin-match-rejects-boundary-bypass
+else
+  pass origin-match-rejects-boundary-bypass
+fi
+
+if _origin_matches_owner_repo "https://github.com/other/other.git" acme widgets; then
+  bad origin-match-rejects-unrelated
+else
+  pass origin-match-rejects-unrelated
+fi
+
+# End-to-end confirmation through setup_worktree itself, not just the
+# helper in isolation: rejection must happen before any network operation,
+# so a repo whose origin is merely set (never actually fetchable) is
+# enough here.
+BOUNDARY_REPO="$T/boundary-repo"
+mkdir -p "$BOUNDARY_REPO"
+git init -q -b main "$BOUNDARY_REPO"
+(
+  cd "$BOUNDARY_REPO"
+  git remote add origin "https://github.com/not-acme/widgets.git"
+)
+if out="$(cd "$BOUNDARY_REPO" && setup_worktree acme widgets 1 "$T/setup-worktree-boundary" 2>/dev/null)"; then
+  bad setup-worktree-rejects-boundary-bypass
+else
+  pass setup-worktree-rejects-boundary-bypass
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$out" ] && pass setup-worktree-rejects-boundary-bypass-no-output || bad setup-worktree-rejects-boundary-bypass-no-output
+
+# ==============================================================
+# setup_worktree -- stale local-ref cleanup
+#
+# Isolated fixture (rather than reusing GIT_FIXTURE) so this doesn't
+# collide with the pr-review-* refs the tests above already left checked
+# out in live worktrees.
+# ==============================================================
+
+CLEANUP_FIXTURE="$T/git-fixture-cleanup"
+mkdir -p "$CLEANUP_FIXTURE/remotes/acme" "$CLEANUP_FIXTURE/work"
+git init -q -b main --bare "$CLEANUP_FIXTURE/remotes/acme/widgets.git"
+git init -q -b main "$CLEANUP_FIXTURE/work"
+(
+  cd "$CLEANUP_FIXTURE/work"
+  git config user.email test@example.com
+  git config user.name "Test"
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "$CLEANUP_FIXTURE/remotes/acme/widgets.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b feature
+  printf 'change\n' >> f.txt
+  git commit -aq -m change
+  git push -q origin feature:refs/pull/5/head
+  git checkout -q main
+  # A stale, non-checked-out leftover from a fictitious earlier run.
+  git branch pr-review-999-12345 HEAD
+)
+
+(cd "$CLEANUP_FIXTURE/work" && setup_worktree acme widgets 5 "$T/setup-worktree-cleanup-check") >/dev/null 2>&1 || true
+
+if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-999-12345; then
+  bad setup-worktree-cleans-stale-refs
+else
+  pass setup-worktree-cleans-stale-refs
+fi
 
 exit $fail
