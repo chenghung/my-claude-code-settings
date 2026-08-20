@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 # Orchestrates parallel PR code review by claude, codex, and opencode CLIs.
 #
-# This script is built up across several tasks. So far it defines: whether to
-# run at all and how many reviewer CLIs are available (input parsing and
-# preflight checks); and the code workspace and full prompt each reviewer CLI
-# needs (worktree setup and prompt assembly). Process launch and supervision
-# are added by a later task further down this same file.
+# Command line: run.sh <pr-link> <issue-link> <design-doc-path>. All three
+# positional arguments may be the empty string -- an empty PR link derives
+# the PR from the current branch (see parse_pr_url); an empty issue link or
+# design doc path is passed straight through to build_prompt, which renders
+# it as an explicit "not provided" statement for the reviewer contract.
+#
+# This file defines, in order: whether to run at all and how many reviewer
+# CLIs are available (input parsing and preflight checks); the code
+# workspace and full prompt each reviewer CLI needs (worktree setup and
+# prompt assembly); and, below, launching each reviewer CLI with its own
+# least-privilege sandbox/permission flags, supervising them to completion,
+# and reporting a summary -- the main() function at the bottom strings all
+# of the above into the complete pipeline.
 set -euo pipefail
 
 # IFS is intentionally left at its bash default here. Nothing in this file
@@ -296,7 +304,434 @@ build_prompt() {
   printf -- '- 暫存目錄（worktree 之外，張貼 comment 前把內文寫入此處的檔案）：%s\n' "$scratch_dir"
 }
 
-# ---------------------------------------------------------------------------
-# A later task adds the rest of the pipeline here: reviewer process launch
-# and supervision.
-# ---------------------------------------------------------------------------
+# _git_status_snapshot <worktree_dir>
+#
+# Prints a single comparable snapshot of the worktree's git state: its
+# working-tree/index status plus its current HEAD commit. Two snapshots
+# taken before and after a reviewer's run are byte-for-byte equal if and
+# only if nothing about the worktree changed in between -- covering both an
+# uncommitted edit (caught by `git status`) and a commit that leaves the
+# tree clean again (caught by the HEAD line, which status alone would miss).
+# Every command is guarded with `|| var=""` for the same reason
+# resolve_model's are: this can run inside a command substitution (bash
+# disables errexit there on this repo's bash 4.3 floor, pre-inherit_errexit),
+# so it must degrade to an empty field rather than depend on the caller's
+# invocation style to catch a failure.
+_git_status_snapshot() {
+  local worktree_dir="$1" status_output head_sha
+
+  status_output="$(git -C "$worktree_dir" status --porcelain=v1 --untracked-files=all 2>/dev/null)" || status_output=""
+  head_sha="$(git -C "$worktree_dir" rev-parse HEAD 2>/dev/null)" || head_sha=""
+
+  printf '%s\nHEAD:%s\n' "$status_output" "$head_sha"
+}
+
+# _write_opencode_permission_config <path>
+#
+# Writes opencode's own permission config (consulted via the OPENCODE_CONFIG
+# env var -- see launch_reviewer) to <path>: the built-in `edit` tool is
+# denied outright, and `bash` defaults to allowed (read commands, including
+# the contract's pinned `git diff` command, need to keep working) with the
+# git/gh/filesystem mutation verbs this run must not perform denied by
+# pattern, except the one write the contract requires. Rules are static and
+# contain no interpolated content, so a plain quoted heredoc (no
+# variable/command expansion) is safe here, unlike build_prompt's contract
+# text which is untrusted external content assembled with printf instead.
+_write_opencode_permission_config() {
+  local path="$1"
+
+  cat > "$path" <<'JSON'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "edit": "deny",
+    "bash": {
+      "*": "allow",
+      "git add*": "deny",
+      "git commit*": "deny",
+      "git push*": "deny",
+      "git checkout*": "deny",
+      "git reset*": "deny",
+      "git rebase*": "deny",
+      "git merge*": "deny",
+      "git rm*": "deny",
+      "git branch -D*": "deny",
+      "rm *": "deny",
+      "mv *": "deny",
+      "chmod *": "deny",
+      "sudo*": "deny",
+      "gh api*": "deny",
+      "gh pr edit*": "deny",
+      "gh pr review*": "deny",
+      "gh pr merge*": "deny",
+      "gh pr close*": "deny",
+      "gh pr reopen*": "deny",
+      "gh issue*": "deny",
+      "gh pr comment*": "allow"
+    }
+  }
+}
+JSON
+}
+
+# launch_reviewer <cli_name> <worktree_dir> <log_file>
+#
+# Starts one reviewer CLI as a detached, nohup'd background process whose
+# working directory is <worktree_dir> and whose prompt is this function's
+# own stdin (the caller redirects it in, e.g. `launch_reviewer ... <
+# prompt_file` -- every reviewer CLI confirmed stdin support during
+# preflight probing, see .tmp/probe-results.md). Combined stdout+stderr go
+# to <log_file>. Prints the launched process's PID to stdout on success.
+#
+# Each CLI gets its own least-privilege enforcement, using that CLI's own
+# mechanism rather than trusting the reviewer contract's natural-language
+# read-only rule alone (the contract itself only binds the reviewer CLI's
+# behavior; nothing about it stops the CLI's host environment from already
+# having git/gh/sed pre-approved, which is exactly the gap this closes):
+#   - claude: `--permission-mode dontAsk` (auto-denies anything not
+#     explicitly allowed, except read-only Bash commands) plus an explicit
+#     `--allowedTools` whitelist naming only the read tools and the one
+#     `gh pr comment` write the contract requires; `--disallowedTools` for
+#     Edit/Write/NotebookEdit is redundant with dontAsk's own default-deny
+#     but is kept as an explicit second layer, since disallowedTools always
+#     wins over allowedTools regardless of dontAsk's exact edge-case
+#     behavior for non-Bash tools.
+#   - codex: `-s read-only`, the sandbox mode probing confirmed lets `gh`
+#     still reach the network (read-only blocks local filesystem writes
+#     only, not network I/O).
+#   - opencode: no CLI-level permission flag exists, so the restriction
+#     lives in a scratch, run-specific config file (see
+#     _write_opencode_permission_config) pointed at via the OPENCODE_CONFIG
+#     env var; `--auto` is required alongside it so permissions this config
+#     leaves unset (i.e. everything not on the explicit deny list) don't
+#     block waiting for a human who, in this headless run, will never
+#     answer.
+#
+# None of the three CLIs are given a model flag (design decision: each uses
+# its own configured default; resolve_model reads that default back out for
+# disclosure, it is never fed back in here).
+#
+# Implementation note on the PID this prints: the underlying process is
+# wrapped as `nohup bash -c '...' &` so that process's own exit code can be
+# captured to a file once it finishes (see the header comment above
+# spawn_supervisor for why this file-based handoff is used instead of
+# `wait`). That wrapper file is named after the wrapped process's own PID
+# using `$$` from *inside* the wrapper script -- which is the same PID this
+# function's `$!` observes, because `nohup` execs its argument in place
+# rather than forking an extra layer. This holds true even when this whole
+# function is invoked via command substitution (`pid=$(launch_reviewer
+# ...)`), which is the normal way main() calls it: unlike `wait`, this
+# file-based handoff has no dependency on process parentage, so it survives
+# the command substitution's own transient subshell exiting immediately
+# after printing the PID.
+launch_reviewer() {
+  local cli_name="$1" worktree_dir="$2" log_file="$3"
+  local -a cmd=()
+  local base_dir before_snapshot starting_dir config_file pid
+
+  base_dir="$(dirname "$worktree_dir")"
+
+  case "$cli_name" in
+    claude)
+      cmd=(claude -p --permission-mode dontAsk \
+        --allowedTools "Read Grep Glob WebFetch Bash(gh pr comment:*)" \
+        --disallowedTools "Edit Write NotebookEdit")
+      ;;
+    codex)
+      cmd=(codex exec -s read-only -C "$worktree_dir")
+      ;;
+    opencode)
+      config_file="$(dirname "$log_file")/opencode-permission.json"
+      _write_opencode_permission_config "$config_file"
+      cmd=(opencode run --auto --dir "$worktree_dir")
+      ;;
+    *)
+      printf 'launch_reviewer: unknown reviewer CLI: %s\n' "$cli_name" >&2
+      return 1
+      ;;
+  esac
+
+  before_snapshot="$(_git_status_snapshot "$worktree_dir")"
+
+  # claude has no working-directory flag; it uses whatever the process's
+  # cwd is. Changing and restoring cwd here (a plain `cd`, not a subshell)
+  # affects only this function's own shell, which for every real call is
+  # itself a short-lived command-substitution subshell already -- so this
+  # never leaks into the caller's cwd.
+  if [ "$cli_name" = claude ]; then
+    starting_dir="$(pwd)"
+    cd "$worktree_dir" || return 1
+  fi
+
+  # opencode has no CLI flag for its permission config; it reads the
+  # OPENCODE_CONFIG env var instead, so it's the only CLI needing anything
+  # prefixed onto the launch below. `env` (rather than a bare `VAR=val`
+  # prefix) lets this stay one shared launch line for every CLI: an empty
+  # env_prefix expands to zero words, so the line reduces to plain `nohup
+  # ...` for claude/codex.
+  local -a env_prefix=()
+  if [ "$cli_name" = opencode ]; then
+    env_prefix=(env "OPENCODE_CONFIG=$config_file")
+  fi
+
+  # The `bash -c` wrapper's script body is single-quoted on purpose: `$1`,
+  # `$$`, `$@` and `$?` inside it must reach *that* subshell unexpanded by
+  # this shell, to be evaluated once that process actually starts running
+  # (see this function's docstring for why exit-code capture works this
+  # way instead of `wait`).
+  #
+  # `< /dev/stdin` is required, not decorative: POSIX has asynchronous
+  # commands (anything started with `&`) default their stdin to /dev/null
+  # unless *that specific command* carries its own explicit redirect --
+  # this function's own stdin already being the prompt (via the caller's
+  # `launch_reviewer ... < prompt_file`) does not, by itself, carry through
+  # to a backgrounded command inside it. Verified empirically against this
+  # repo's actual bash before adding this: the backgrounded reviewer
+  # received an empty stdin without it.
+  # shellcheck disable=SC2016 # single quotes are intentional, see comment above
+  "${env_prefix[@]+"${env_prefix[@]}"}" nohup bash -c '
+    base_dir="$1"; shift
+    exit_file="$base_dir/.exit-$$"
+    "$@"
+    printf "%s" "$?" > "$exit_file"
+  ' _ "$base_dir" "${cmd[@]}" < /dev/stdin > "$log_file" 2>&1 &
+  pid=$!
+
+  if [ "$cli_name" = claude ]; then
+    cd "$starting_dir" || true
+  fi
+
+  printf '%s\n' "$before_snapshot" > "$base_dir/.git-status-before-$pid"
+
+  printf '%s\n' "$pid"
+}
+
+# spawn_supervisor <worktree_dir> <summary_file> <pid>...
+#
+# Backgrounds itself and returns immediately (the caller, main(), does not
+# wait for it). For each given PID, waits for that reviewer to finish,
+# compares the worktree's git state against the snapshot launch_reviewer
+# took right before starting it (see _git_status_snapshot), and appends one
+# line to <summary_file> recording its PID, exit code, end time, and
+# whether the comparison found the worktree modified during its run. Once
+# every PID has been recorded, removes the worktree. The number of PIDs
+# handled is exactly the number given -- nothing here assumes three.
+#
+# Why this polls for a per-PID exit-code file instead of using `wait`: bash
+# can only `wait` on an actual child of the *current* process. By the time
+# main() calls this function, each reviewer process is already a child of
+# main()'s own shell (launch_reviewer backgrounded it there); the `(...)&`
+# this function uses to background itself forks a *new*, separate process
+# that is a sibling of those reviewers, not their parent, so `wait` on
+# their PIDs from inside that subshell fails outright ("not a child of this
+# shell") -- verified against this repo's actual bash before settling on
+# this design, not merely reasoned about. launch_reviewer's nohup wrapper
+# sidesteps the whole problem by having each reviewer process record its
+# own exit code to a file when it finishes, which needs no parent-child
+# relationship to observe from here.
+spawn_supervisor() {
+  local worktree_dir="$1" summary_file="$2"
+  shift 2
+  local -a pids=("$@")
+
+  (
+    local pid rc end_time before after status exit_file base_dir
+    base_dir="$(dirname "$worktree_dir")"
+    : > "$summary_file"
+
+    for pid in "${pids[@]}"; do
+      exit_file="$base_dir/.exit-$pid"
+      # Also breaks out if the process is simply gone (e.g. killed by a
+      # signal the wrapper couldn't trap) so this can't poll forever.
+      until [ -f "$exit_file" ] || ! kill -0 "$pid" 2>/dev/null; do
+        sleep 1
+      done
+
+      rc="$(cat "$exit_file" 2>/dev/null)" || rc=""
+      # The exit file's own mtime is this reviewer's real completion time;
+      # `date` at this point in the loop would instead read whenever this
+      # sequential loop happened to get around to checking it, which lags
+      # further behind for whichever PID is checked later.
+      end_time="$(date -u -r "$exit_file" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" || end_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+      before="$(cat "$base_dir/.git-status-before-$pid" 2>/dev/null)" || before=""
+      after="$(_git_status_snapshot "$worktree_dir")"
+      if [ "$before" = "$after" ]; then
+        status="ok"
+      else
+        status="invalidated"
+      fi
+
+      printf 'pid=%s exit=%s ended_at=%s worktree_status=%s\n' \
+        "$pid" "${rc:-unknown}" "$end_time" "$status" >> "$summary_file"
+    done
+
+    git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+  ) &
+  disown
+}
+
+# print_summary <logs_dir> <dispatched_cli>... --skipped <skipped_cli>...
+#
+# Prints the dispatch summary the skill relays to the user: which reviewers
+# were actually launched (with each one's PID, read back from the
+# <cli>.pid file main() writes right after launch_reviewer, and its log
+# file path), and which were skipped because that CLI wasn't installed.
+# When exactly one reviewer was dispatched, adds a line calling out that
+# cross-validation across independent reviewers does not hold for this run.
+print_summary() {
+  local logs_dir="$1"
+  shift
+  local -a dispatched=() skipped=()
+  local arg mode="dispatched" cli pid
+
+  for arg in "$@"; do
+    if [ "$arg" = "--skipped" ]; then
+      mode="skipped"
+      continue
+    fi
+    if [ "$mode" = "dispatched" ]; then
+      dispatched+=("$arg")
+    else
+      skipped+=("$arg")
+    fi
+  done
+
+  printf '已派出的 reviewer：\n'
+  if [ "${#dispatched[@]}" -eq 0 ]; then
+    printf '（無）\n'
+  else
+    for cli in "${dispatched[@]+"${dispatched[@]}"}"; do
+      pid="$(cat "$logs_dir/$cli.pid" 2>/dev/null)" || pid=""
+      printf -- '- %s（PID：%s，log：%s）\n' "$cli" "${pid:-未知}" "$logs_dir/$cli.log"
+    done
+  fi
+
+  printf '\n已跳過的 reviewer：\n'
+  if [ "${#skipped[@]}" -eq 0 ]; then
+    printf '（無）\n'
+  else
+    for cli in "${skipped[@]+"${skipped[@]}"}"; do
+      printf -- '- %s（原因：未安裝）\n' "$cli"
+    done
+  fi
+
+  if [ "${#dispatched[@]}" -eq 1 ]; then
+    printf '\n本次只有一個 reviewer，交叉驗證效果不成立。\n'
+  fi
+}
+
+# resolve_base_ref <owner> <repo> <number>
+#
+# Looks up this PR's base branch name via gh, then fetches it from origin
+# into a local remote-tracking ref (refs/remotes/origin/<name>) so the diff
+# command every reviewer's contract is pinned to
+# (`git diff <base-ref>...HEAD`) can actually resolve <base-ref> inside the
+# shared worktree -- a linked worktree shares refs/objects with the repo
+# it's attached to, so fetching here (in the caller's cwd, the same repo
+# setup_worktree operates against) makes the ref resolve there too. Prints
+# "origin/<base-branch-name>" to stdout on success. This is a hard
+# precondition, same tier as setup_worktree failing: with no resolvable
+# base ref, every reviewer would independently hit the contract's own
+# "base ref 沒有提供" abort path and immediately exit without reviewing
+# anything, so failing here first avoids paying for three CLI invocations
+# that would only self-abort anyway.
+resolve_base_ref() {
+  local owner="$1" repo="$2" number="$3" base_ref_name
+
+  base_ref_name="$(gh pr view "$number" --repo "$owner/$repo" --json baseRefName --jq .baseRefName 2>/dev/null)" || return 1
+  [ -n "$base_ref_name" ] || return 1
+
+  git fetch origin "+refs/heads/$base_ref_name:refs/remotes/origin/$base_ref_name" >/dev/null 2>&1 || return 1
+
+  printf 'origin/%s\n' "$base_ref_name"
+}
+
+# main <pr-link> <issue-link> <design-doc-path>
+#
+# The full pipeline: resolve and validate the PR, detect which reviewer
+# CLIs are installed, set up the shared worktree and base ref, launch every
+# detected reviewer with its own prompt, hand them to spawn_supervisor, and
+# print the dispatch summary. Every hard precondition (gh missing/not
+# authenticated, PR not found, no reviewer CLI installed, contract file
+# missing, base ref unresolvable, worktree creation failing) exits non-zero
+# before anything is launched -- see each called function's own docstring
+# for what it reports on failure.
+main() {
+  local pr_arg="${1:-}" issue_url="${2:-}" design_doc_path="${3:-}"
+  local pr_info owner repo number contract_path base_ref pr_url
+  local project_root project_hash project_folder
+  local base_dir logs_dir scratch_dir summary_file worktree_dir
+  local cli d found model prompt pid
+  local -a all_reviewers=() skipped=() pids=()
+
+  if ! pr_info="$(parse_pr_url "$pr_arg")"; then
+    printf 'run.sh: unable to resolve the PR from %s\n' \
+      "${pr_arg:-the current branch (no PR link given, and no PR is associated with it)}" >&2
+    exit 1
+  fi
+  read -r owner repo number <<< "$pr_info"
+
+  check_prerequisites "$owner" "$repo" "$number" || exit 1
+
+  mapfile -t all_reviewers < <(detect_reviewers)
+  if [ "${#all_reviewers[@]}" -eq 0 ]; then
+    printf 'run.sh: none of claude, codex, opencode are installed\n' >&2
+    exit 1
+  fi
+
+  for cli in claude codex opencode; do
+    found=0
+    for d in "${all_reviewers[@]}"; do
+      [ "$d" = "$cli" ] && { found=1; break; }
+    done
+    [ "$found" -eq 1 ] || skipped+=("$cli")
+  done
+
+  contract_path="$(resolve_contract_path)" || exit 1
+
+  base_ref="$(resolve_base_ref "$owner" "$repo" "$number")" || {
+    printf 'run.sh: unable to resolve the PR base ref\n' >&2
+    exit 1
+  }
+
+  project_root="$(git rev-parse --show-toplevel)" || {
+    printf 'run.sh: not inside a git repository\n' >&2
+    exit 1
+  }
+  project_hash="$(printf '%s' "$project_root" | sha256sum | cut -c1-8)"
+  project_folder="$(basename "$project_root")-$project_hash"
+  base_dir="$HOME/.tmp/$project_folder/pr-review/$number-$(date -u +%Y%m%d%H%M%S)"
+  logs_dir="$base_dir/logs"
+  scratch_dir="$base_dir/scratch"
+  summary_file="$base_dir/summary.txt"
+  mkdir -p "$logs_dir" "$scratch_dir"
+
+  worktree_dir="$(setup_worktree "$owner" "$repo" "$number" "$base_dir")" || {
+    printf 'run.sh: failed to set up the review worktree\n' >&2
+    exit 1
+  }
+
+  pr_url="https://github.com/$owner/$repo/pull/$number"
+
+  for cli in "${all_reviewers[@]}"; do
+    model="$(resolve_model "$cli")"
+    prompt="$(build_prompt "$contract_path" "$pr_url" "$issue_url" "$design_doc_path" \
+      "$cli" "$model" "$worktree_dir" "$base_ref" "$scratch_dir")"
+    printf '%s' "$prompt" > "$logs_dir/$cli.prompt"
+    pid="$(launch_reviewer "$cli" "$worktree_dir" "$logs_dir/$cli.log" < "$logs_dir/$cli.prompt")"
+    pids+=("$pid")
+    printf '%s\n' "$pid" > "$logs_dir/$cli.pid"
+  done
+
+  spawn_supervisor "$worktree_dir" "$summary_file" "${pids[@]}"
+
+  print_summary "$logs_dir" "${all_reviewers[@]}" --skipped "${skipped[@]+"${skipped[@]}"}"
+}
+
+# Only run the pipeline when this file is executed directly -- sourcing it
+# (as tests/test-pr-review-by-multi-agents.sh does, to call these functions
+# individually) must not trigger a real run.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

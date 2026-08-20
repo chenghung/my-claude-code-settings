@@ -42,6 +42,19 @@ pr)
       printf '%s\n' "${GH_STUB_DERIVED_URL:-https://github.com/acme/widgets/pull/7}"
       exit 0
     fi
+    case " $* " in
+      *' --json baseRefName '*)
+        # resolve_base_ref's call: gh pr view NUMBER --repo OWNER/REPO --json
+        # baseRefName --jq .baseRefName
+        [ "${GH_STUB_BASE_REF_OK:-1}" = "1" ] || exit 1
+        # `-` (no colon) rather than `:-`: a *set-but-empty*
+        # GH_STUB_BASE_REF_NAME must print as empty (the resolve-base-ref-
+        # empty-name test case), not fall back to "main" the way `:-`
+        # would treat empty the same as unset.
+        printf '%s\n' "${GH_STUB_BASE_REF_NAME-main}"
+        exit 0
+        ;;
+    esac
     # check_prerequisites' PR-existence call: gh pr view NUMBER --repo OWNER/REPO
     [ "${GH_STUB_PR_EXISTS:-1}" = "1" ] && exit 0 || exit 1
   fi
@@ -673,5 +686,520 @@ if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review
 else
   pass setup-worktree-cleans-stale-refs
 fi
+
+# ==============================================================
+# _git_status_snapshot
+# ==============================================================
+
+# _make_worktree_fixture <root>
+#
+# Creates a bare "origin" repo plus a work clone with one commit, then adds
+# a second, real *linked* worktree at <root>/worktree on its own branch --
+# the same topology `git worktree add`/`git worktree remove` need to behave
+# for real, which launch_reviewer's snapshot and spawn_supervisor's cleanup
+# both depend on. Prints the worktree's absolute path.
+_make_worktree_fixture() {
+  local root="$1" worktree_dir
+  mkdir -p "$root/origin" "$root/work"
+  git init -q -b main --bare "$root/origin/repo.git"
+  git init -q -b main "$root/work"
+  (
+    cd "$root/work"
+    git config user.email t@t.com
+    git config user.name t
+    printf 'base\n' > f.txt
+    git add f.txt
+    git commit -q -m base
+    git remote add origin "$root/origin/repo.git"
+    git push -q origin HEAD:refs/heads/main
+    git checkout -q -b feature
+    printf 'feature\n' >> f.txt
+    git commit -aq -m feature
+    git checkout -q main
+  )
+  worktree_dir="$root/worktree"
+  (cd "$root/work" && git worktree add -q "$worktree_dir" feature)
+  printf '%s\n' "$worktree_dir"
+}
+
+SNAP_ROOT="$T/snapshot-fixture"
+SNAP_WT="$(_make_worktree_fixture "$SNAP_ROOT")"
+
+snap1="$(_git_status_snapshot "$SNAP_WT")"
+snap2="$(_git_status_snapshot "$SNAP_WT")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$snap1" = "$snap2" ] && pass git-status-snapshot-stable-when-unchanged || bad git-status-snapshot-stable-when-unchanged
+
+printf 'dirty\n' > "$SNAP_WT/untracked-marker.txt"
+snap3="$(_git_status_snapshot "$SNAP_WT")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$snap1" != "$snap3" ] && pass git-status-snapshot-detects-untracked-file || bad git-status-snapshot-detects-untracked-file
+rm -f "$SNAP_WT/untracked-marker.txt"
+
+# A commit that leaves the working tree clean again must still be detected
+# -- `git status --porcelain` alone would miss it, which is exactly why
+# _git_status_snapshot also folds in HEAD.
+(
+  cd "$SNAP_WT"
+  printf 'more\n' >> f.txt
+  git add f.txt
+  git commit -q -m more
+)
+snap4="$(_git_status_snapshot "$SNAP_WT")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$snap1" != "$snap4" ] && pass git-status-snapshot-detects-commit-with-clean-tree || bad git-status-snapshot-detects-commit-with-clean-tree
+
+# ==============================================================
+# _write_opencode_permission_config
+# ==============================================================
+
+OC_CONFIG="$T/oc-permission.json"
+_write_opencode_permission_config "$OC_CONFIG"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$OC_CONFIG" ] && pass opencode-permission-config-written || bad opencode-permission-config-written
+
+oc_config_content="$(cat "$OC_CONFIG")"
+case "$oc_config_content" in
+  *'"edit": "deny"'*) pass opencode-permission-config-denies-edit ;;
+  *) bad opencode-permission-config-denies-edit ;;
+esac
+case "$oc_config_content" in
+  *'"gh pr comment*": "allow"'*) pass opencode-permission-config-allows-pr-comment ;;
+  *) bad opencode-permission-config-allows-pr-comment ;;
+esac
+case "$oc_config_content" in
+  *'"git push*": "deny"'*) pass opencode-permission-config-denies-git-push ;;
+  *) bad opencode-permission-config-denies-git-push ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+jq empty "$OC_CONFIG" >/dev/null 2>&1 && pass opencode-permission-config-valid-json || bad opencode-permission-config-valid-json
+
+# ==============================================================
+# launch_reviewer
+#
+# Recording stubs (distinct from the plain "exit 0" claude/codex/opencode
+# stubs used for detect_reviewers above) that capture their own argv,
+# stdin, cwd, and the OPENCODE_CONFIG env var into files under
+# LAUNCH_RECORD_DIR, so this can assert on exactly what launch_reviewer
+# handed the underlying CLI -- not just that something ran.
+# ==============================================================
+
+LAUNCH_ROOT="$T/launch-fixture"
+LAUNCH_WT="$(_make_worktree_fixture "$LAUNCH_ROOT")"
+LAUNCH_LOGS="$LAUNCH_ROOT/logs"
+mkdir -p "$LAUNCH_LOGS"
+LAUNCH_RECORD_DIR="$LAUNCH_ROOT/records"
+mkdir -p "$LAUNCH_RECORD_DIR"
+
+LAUNCH_STUB_BIN="$T/launch-stub-bin"
+mkdir -p "$LAUNCH_STUB_BIN"
+cat > "$LAUNCH_STUB_BIN/claude" <<'STUB'
+#!/usr/bin/env bash
+name="$(basename "$0")"
+: > "$LAUNCH_RECORD_DIR/$name.argv"
+for a in "$@"; do printf '%s\n' "$a" >> "$LAUNCH_RECORD_DIR/$name.argv"; done
+pwd > "$LAUNCH_RECORD_DIR/$name.pwd"
+cat > "$LAUNCH_RECORD_DIR/$name.stdin"
+printf '%s' "${OPENCODE_CONFIG:-}" > "$LAUNCH_RECORD_DIR/$name.env-opencode-config"
+echo "stub $name ran"
+sleep 0.1
+exit "${LAUNCH_STUB_EXIT_CODE:-0}"
+STUB
+chmod +x "$LAUNCH_STUB_BIN/claude"
+cp "$LAUNCH_STUB_BIN/claude" "$LAUNCH_STUB_BIN/codex"
+cp "$LAUNCH_STUB_BIN/claude" "$LAUNCH_STUB_BIN/opencode"
+
+export PATH="$LAUNCH_STUB_BIN:$saved_path"
+export LAUNCH_RECORD_DIR
+
+printf 'codex-prompt-content' > "$LAUNCH_LOGS/codex.prompt"
+pid_codex="$(launch_reviewer codex "$LAUNCH_WT" "$LAUNCH_LOGS/codex.log" < "$LAUNCH_LOGS/codex.prompt")"
+
+# Bounded poll for the backgrounded stub to actually finish (its exit-code
+# file only appears once it does) instead of guessing a sleep duration.
+i=0
+until [ -f "$LAUNCH_ROOT/.exit-$pid_codex" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$pid_codex" -gt 0 ] 2>/dev/null && pass launch-reviewer-codex-pid-is-numeric || bad launch-reviewer-codex-pid-is-numeric
+
+# codex must receive `-C <worktree>` as adjacent argv entries, not just
+# have both tokens appear somewhere.
+mapfile -t codex_argv < "$LAUNCH_RECORD_DIR/codex.argv"
+found=0
+for idx in "${!codex_argv[@]}"; do
+  if [ "${codex_argv[$idx]}" = "-C" ] && [ "${codex_argv[$((idx + 1))]:-}" = "$LAUNCH_WT" ]; then
+    found=1
+  fi
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$found" -eq 1 ] && pass launch-reviewer-codex-workdir-flag || bad launch-reviewer-codex-workdir-flag
+
+case "$(cat "$LAUNCH_RECORD_DIR/codex.argv")" in
+  *'read-only'*) pass launch-reviewer-codex-sandbox-flag ;;
+  *) bad launch-reviewer-codex-sandbox-flag ;;
+esac
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$LAUNCH_RECORD_DIR/codex.stdin")" = "codex-prompt-content" ] && pass launch-reviewer-codex-stdin-matches-prompt || bad launch-reviewer-codex-stdin-matches-prompt
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$LAUNCH_LOGS/codex.log" ] && grep -qF 'stub codex ran' "$LAUNCH_LOGS/codex.log" && pass launch-reviewer-codex-log-created-and-written || bad launch-reviewer-codex-log-created-and-written
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$LAUNCH_ROOT/.git-status-before-$pid_codex" ] && pass launch-reviewer-codex-records-before-snapshot || bad launch-reviewer-codex-records-before-snapshot
+
+# --- opencode: --dir flag, OPENCODE_CONFIG env var wired to a real config file ---
+
+printf 'opencode-prompt-content' > "$LAUNCH_LOGS/opencode.prompt"
+pid_opencode="$(launch_reviewer opencode "$LAUNCH_WT" "$LAUNCH_LOGS/opencode.log" < "$LAUNCH_LOGS/opencode.prompt")"
+i=0
+until [ -f "$LAUNCH_ROOT/.exit-$pid_opencode" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+
+mapfile -t opencode_argv < "$LAUNCH_RECORD_DIR/opencode.argv"
+found=0
+for idx in "${!opencode_argv[@]}"; do
+  if [ "${opencode_argv[$idx]}" = "--dir" ] && [ "${opencode_argv[$((idx + 1))]:-}" = "$LAUNCH_WT" ]; then
+    found=1
+  fi
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$found" -eq 1 ] && pass launch-reviewer-opencode-workdir-flag || bad launch-reviewer-opencode-workdir-flag
+
+oc_env_config_path="$(cat "$LAUNCH_RECORD_DIR/opencode.env-opencode-config")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$oc_env_config_path" ] && [ -s "$oc_env_config_path" ] && pass launch-reviewer-opencode-config-env-set || bad launch-reviewer-opencode-config-env-set
+case "$(cat "$oc_env_config_path" 2>/dev/null)" in
+  *'"edit": "deny"'*) pass launch-reviewer-opencode-config-content ;;
+  *) bad launch-reviewer-opencode-config-content ;;
+esac
+
+# --- claude: no -C/--dir flag; instead the process's own cwd is the worktree ---
+
+printf 'claude-prompt-content' > "$LAUNCH_LOGS/claude.prompt"
+pid_claude="$(launch_reviewer claude "$LAUNCH_WT" "$LAUNCH_LOGS/claude.log" < "$LAUNCH_LOGS/claude.prompt")"
+i=0
+until [ -f "$LAUNCH_ROOT/.exit-$pid_claude" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$LAUNCH_RECORD_DIR/claude.pwd")" = "$LAUNCH_WT" ] && pass launch-reviewer-claude-cwd-is-worktree || bad launch-reviewer-claude-cwd-is-worktree
+case "$(cat "$LAUNCH_RECORD_DIR/claude.argv")" in
+  *'-C'*|*'--dir'*) bad launch-reviewer-claude-no-workdir-flag ;;
+  *) pass launch-reviewer-claude-no-workdir-flag ;;
+esac
+case "$(cat "$LAUNCH_RECORD_DIR/claude.argv")" in
+  *'dontAsk'*) pass launch-reviewer-claude-permission-mode ;;
+  *) bad launch-reviewer-claude-permission-mode ;;
+esac
+case "$(cat "$LAUNCH_RECORD_DIR/claude.argv")" in
+  *'Bash(gh pr comment:*)'*) pass launch-reviewer-claude-allows-pr-comment ;;
+  *) bad launch-reviewer-claude-allows-pr-comment ;;
+esac
+case "$(cat "$LAUNCH_RECORD_DIR/claude.argv")" in
+  *'Edit'*'Write'*'NotebookEdit'*) pass launch-reviewer-claude-disallows-edit-write ;;
+  *) bad launch-reviewer-claude-disallows-edit-write ;;
+esac
+
+# --- unknown CLI name -> non-zero, no PID printed ---
+
+if out="$(launch_reviewer bogus-cli "$LAUNCH_WT" "$LAUNCH_LOGS/bogus.log" < /dev/null 2>/dev/null)"; then
+  bad launch-reviewer-unknown-cli
+else
+  pass launch-reviewer-unknown-cli
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$out" ] && pass launch-reviewer-unknown-cli-no-output || bad launch-reviewer-unknown-cli-no-output
+
+unset LAUNCH_RECORD_DIR
+export PATH="$saved_path"
+
+# ==============================================================
+# spawn_supervisor
+#
+# Each scenario below gets its own fresh worktree fixture, so the
+# git-status invalidation checks stay unambiguous rather than depending on
+# how a shared worktree happened to interleave across concurrently
+# launched reviewers (spawn_supervisor's own docstring already covers why
+# that interleaving is an accepted, inherent property of the shared-
+# worktree design -- these tests isolate around it instead of depending on
+# a particular ordering of it).
+# ==============================================================
+
+SV_STUB_BIN="$T/supervisor-stub-bin"
+mkdir -p "$SV_STUB_BIN"
+
+# A "dirty" reviewer: writes a file into the worktree it's given via -C,
+# then exits with a distinct non-zero code so both the exit-code capture
+# and the invalidation detection can be asserted in the same run.
+cat > "$SV_STUB_BIN/codex" <<'STUB'
+#!/usr/bin/env bash
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-C" ]; then
+    printf 'dirty\n' > "$a/INJECTED-BY-TEST.txt"
+  fi
+  prev="$a"
+done
+exit "${LAUNCH_STUB_EXIT_CODE:-5}"
+STUB
+chmod +x "$SV_STUB_BIN/codex"
+
+# A "clean" reviewer: touches nothing, exits 0.
+cat > "$SV_STUB_BIN/opencode" <<'STUB'
+#!/usr/bin/env bash
+sleep 0.1
+exit 0
+STUB
+chmod +x "$SV_STUB_BIN/opencode"
+
+export PATH="$SV_STUB_BIN:$saved_path"
+
+# --- single PID, dirty: worktree_status=invalidated, worktree still removed ---
+
+SV1_ROOT="$T/supervisor-fixture-invalidated"
+SV1_WT="$(_make_worktree_fixture "$SV1_ROOT")"
+mkdir -p "$SV1_ROOT/logs"
+printf 'p' > "$SV1_ROOT/logs/codex.prompt"
+sv1_pid="$(launch_reviewer codex "$SV1_WT" "$SV1_ROOT/logs/codex.log" < "$SV1_ROOT/logs/codex.prompt")"
+SV1_SUMMARY="$SV1_ROOT/summary.txt"
+# `git worktree remove` (which spawn_supervisor's background subshell runs
+# at the end) needs a cwd inside the repo it's removing a worktree from --
+# same precondition setup_worktree's own tests rely on cwd for. Running
+# the call itself inside a `(cd ... && ...)` subshell scopes that cd to
+# just this call, including the backgrounded subshell it forks internally
+# (which inherits whatever cwd was active when spawn_supervisor was
+# invoked), without disturbing this test script's own cwd afterward.
+(cd "$SV1_ROOT/work" && spawn_supervisor "$SV1_WT" "$SV1_SUMMARY" "$sv1_pid")
+
+i=0
+until [ -s "$SV1_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+
+sv1_line="$(cat "$SV1_SUMMARY" 2>/dev/null)"
+case "$sv1_line" in
+  "pid=$sv1_pid exit=5"*'worktree_status=invalidated') pass spawn-supervisor-records-exit-code-and-invalidation ;;
+  *) bad spawn-supervisor-records-exit-code-and-invalidation ;;
+esac
+
+i=0
+until [ ! -e "$SV1_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$SV1_WT" ] && pass spawn-supervisor-removes-worktree || bad spawn-supervisor-removes-worktree
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -d "$SV1_ROOT/logs" ] && pass spawn-supervisor-preserves-logs-dir || bad spawn-supervisor-preserves-logs-dir
+
+# --- single PID, clean: worktree_status=ok ---
+
+SV2_ROOT="$T/supervisor-fixture-ok"
+SV2_WT="$(_make_worktree_fixture "$SV2_ROOT")"
+mkdir -p "$SV2_ROOT/logs"
+printf 'p' > "$SV2_ROOT/logs/opencode.prompt"
+sv2_pid="$(launch_reviewer opencode "$SV2_WT" "$SV2_ROOT/logs/opencode.log" < "$SV2_ROOT/logs/opencode.prompt")"
+SV2_SUMMARY="$SV2_ROOT/summary.txt"
+(cd "$SV2_ROOT/work" && spawn_supervisor "$SV2_WT" "$SV2_SUMMARY" "$sv2_pid")
+
+i=0
+until [ -s "$SV2_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+
+case "$(cat "$SV2_SUMMARY" 2>/dev/null)" in
+  "pid=$sv2_pid exit=0"*'worktree_status=ok') pass spawn-supervisor-ok-when-unmodified ;;
+  *) bad spawn-supervisor-ok-when-unmodified ;;
+esac
+
+# --- multiple PIDs converge without being hardcoded to three ---
+
+SV3_ROOT="$T/supervisor-fixture-multi"
+SV3_WT="$(_make_worktree_fixture "$SV3_ROOT")"
+mkdir -p "$SV3_ROOT/logs"
+printf 'p' > "$SV3_ROOT/logs/opencode-a.prompt"
+printf 'p' > "$SV3_ROOT/logs/opencode-b.prompt"
+sv3_pid_a="$(launch_reviewer opencode "$SV3_WT" "$SV3_ROOT/logs/opencode-a.log" < "$SV3_ROOT/logs/opencode-a.prompt")"
+sv3_pid_b="$(launch_reviewer opencode "$SV3_WT" "$SV3_ROOT/logs/opencode-b.log" < "$SV3_ROOT/logs/opencode-b.prompt")"
+SV3_SUMMARY="$SV3_ROOT/summary.txt"
+(cd "$SV3_ROOT/work" && spawn_supervisor "$SV3_WT" "$SV3_SUMMARY" "$sv3_pid_a" "$sv3_pid_b")
+
+i=0
+until { [ -f "$SV3_SUMMARY" ] && [ "$(wc -l < "$SV3_SUMMARY")" -eq 2 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(wc -l < "$SV3_SUMMARY")" -eq 2 ] && pass spawn-supervisor-converges-on-actual-pid-count || bad spawn-supervisor-converges-on-actual-pid-count
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q "^pid=$sv3_pid_a " "$SV3_SUMMARY" && grep -q "^pid=$sv3_pid_b " "$SV3_SUMMARY" && pass spawn-supervisor-records-every-given-pid || bad spawn-supervisor-records-every-given-pid
+
+export PATH="$saved_path"
+
+# ==============================================================
+# print_summary
+# ==============================================================
+
+PS_LOGS="$T/print-summary-logs"
+mkdir -p "$PS_LOGS"
+printf '11111\n' > "$PS_LOGS/claude.pid"
+printf '22222\n' > "$PS_LOGS/codex.pid"
+
+ps_out="$(print_summary "$PS_LOGS" claude codex --skipped opencode)"
+
+case "$ps_out" in
+  *'claude'*'11111'*"$PS_LOGS/claude.log"*) pass print-summary-shows-dispatched-pid-and-log ;;
+  *) bad print-summary-shows-dispatched-pid-and-log ;;
+esac
+case "$ps_out" in
+  *'codex'*'22222'*"$PS_LOGS/codex.log"*) pass print-summary-shows-second-dispatched-entry ;;
+  *) bad print-summary-shows-second-dispatched-entry ;;
+esac
+case "$ps_out" in
+  *'opencode'*'未安裝'*) pass print-summary-shows-skipped-reason ;;
+  *) bad print-summary-shows-skipped-reason ;;
+esac
+case "$ps_out" in
+  *'交叉驗證'*) bad print-summary-no-cross-validation-note-for-two ;;
+  *) pass print-summary-no-cross-validation-note-for-two ;;
+esac
+
+ps_out_single="$(print_summary "$PS_LOGS" claude --skipped codex opencode)"
+case "$ps_out_single" in
+  *'交叉驗證'*) pass print-summary-cross-validation-note-for-one ;;
+  *) bad print-summary-cross-validation-note-for-one ;;
+esac
+
+ps_out_none_skipped="$(print_summary "$PS_LOGS" claude codex opencode --skipped)"
+case "$ps_out_none_skipped" in
+  *'（無）'*) pass print-summary-none-skipped-marker ;;
+  *) bad print-summary-none-skipped-marker ;;
+esac
+
+# ==============================================================
+# resolve_base_ref
+# ==============================================================
+
+export PATH="$STUB_BIN:$saved_path"
+export GH_STUB_BASE_REF_OK=1
+export GH_STUB_BASE_REF_NAME=main
+out="$(cd "$GIT_FIXTURE/work" && resolve_base_ref acme widgets 9)"
+unset GH_STUB_BASE_REF_OK GH_STUB_BASE_REF_NAME
+export PATH="$saved_path"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$out" = "origin/main" ] && pass resolve-base-ref-success || bad resolve-base-ref-success
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+git -C "$GIT_FIXTURE/work" show-ref --verify --quiet refs/remotes/origin/main && pass resolve-base-ref-creates-tracking-ref || bad resolve-base-ref-creates-tracking-ref
+
+export PATH="$STUB_BIN:$saved_path"
+export GH_STUB_BASE_REF_OK=0
+if out="$(cd "$GIT_FIXTURE/work" && resolve_base_ref acme widgets 9 2>/dev/null)"; then
+  bad resolve-base-ref-gh-failure
+else
+  pass resolve-base-ref-gh-failure
+fi
+unset GH_STUB_BASE_REF_OK
+export PATH="$saved_path"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$out" ] && pass resolve-base-ref-gh-failure-no-output || bad resolve-base-ref-gh-failure-no-output
+
+export PATH="$STUB_BIN:$saved_path"
+export GH_STUB_BASE_REF_NAME=""
+if out="$(cd "$GIT_FIXTURE/work" && resolve_base_ref acme widgets 9 2>/dev/null)"; then
+  bad resolve-base-ref-empty-name
+else
+  pass resolve-base-ref-empty-name
+fi
+unset GH_STUB_BASE_REF_NAME
+export PATH="$saved_path"
+
+# ==============================================================
+# main() end-to-end
+#
+# The most load-bearing test in this section: Task 4's build_prompt takes
+# 9 positional parameters, and a caller that transposes two of them (e.g.
+# swaps issue_url and design_doc_path, or worktree_path and base_ref)
+# produces a syntactically valid but semantically wrong prompt with no
+# error anywhere -- set -u only catches a missing argument, never a
+# misordered one. Every value below is deliberately distinct from every
+# other, and each assertion below checks that value against *its own*
+# labeled line in the prompt file main() actually wrote to disk, not just
+# that the value appears somewhere in it (which would pass even if two
+# labels' values were swapped).
+#
+# This also exercises run.sh's command-line contract end to end (task 5's
+# own addition, not specified by the earlier tasks): three positional
+# arguments -- PR link, issue link, design doc path -- invoked exactly as
+# a real caller would, via `bash run.sh ...`, not by sourcing and calling
+# main() directly (main() calls `exit` on its failure paths, which would
+# kill this whole test script if called in-process instead of as a real
+# subprocess).
+# ==============================================================
+
+E2E_FIXTURE="$T/e2e-fixture"
+mkdir -p "$E2E_FIXTURE/remotes/acme9pr" "$E2E_FIXTURE/work"
+git init -q -b main --bare "$E2E_FIXTURE/remotes/acme9pr/widgets9pr.git"
+git init -q -b main "$E2E_FIXTURE/work"
+(
+  cd "$E2E_FIXTURE/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "$E2E_FIXTURE/remotes/acme9pr/widgets9pr.git"
+  git push -q origin HEAD:refs/heads/e2e-distinctive-base
+  git checkout -q -b feature
+  printf 'feature\n' >> f.txt
+  git commit -aq -m feature
+  git push -q origin feature:refs/pull/321/head
+  git checkout -q main
+)
+
+E2E_HOME="$T/main-e2e-home"
+mkdir -p "$E2E_HOME/.codex"
+printf 'model = "e2e-distinctive-model"\n' > "$E2E_HOME/.codex/config.toml"
+
+if out="$(cd "$E2E_FIXTURE/work" && GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" \
+  bash "$RUN_SH" \
+    "https://github.com/acme9pr/widgets9pr/pull/321" \
+    "https://example.com/distinctive-issue-marker" \
+    "docs/distinctive-design-doc-marker.md" 2>&1)"; then
+  pass main-e2e-succeeds
+else
+  bad main-e2e-succeeds
+fi
+
+E2E_LOGS_DIR="$(find "$E2E_HOME/.tmp" -type d -name logs 2>/dev/null | head -1)"
+E2E_BASE_DIR="$(dirname "${E2E_LOGS_DIR:-/nonexistent}")"
+E2E_PROMPT_FILE="$E2E_LOGS_DIR/codex.prompt"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$E2E_LOGS_DIR" ] && [ -s "$E2E_PROMPT_FILE" ] && pass main-e2e-prompt-file-written || bad main-e2e-prompt-file-written
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF -- '- PR：https://github.com/acme9pr/widgets9pr/pull/321' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-pr-url-in-place || bad main-e2e-prompt-pr-url-in-place
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF -- "- git worktree 絕對路徑：$E2E_BASE_DIR/worktree" "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-worktree-path-in-place || bad main-e2e-prompt-worktree-path-in-place
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF -- '- base ref：origin/e2e-distinctive-base' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-base-ref-in-place || bad main-e2e-prompt-base-ref-in-place
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF -- '- issue：https://example.com/distinctive-issue-marker' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-issue-url-in-place || bad main-e2e-prompt-issue-url-in-place
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF -- '- design document 路徑：docs/distinctive-design-doc-marker.md' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-design-doc-in-place || bad main-e2e-prompt-design-doc-in-place
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF -- '- 產出這則 review 的 CLI 名稱：codex' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-cli-name-in-place || bad main-e2e-prompt-cli-name-in-place
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF -- '- 產出這則 review 的 model 名稱：e2e-distinctive-model' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-model-in-place || bad main-e2e-prompt-model-in-place
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF -- "- 暫存目錄（worktree 之外，張貼 comment 前把內文寫入此處的檔案）：$E2E_BASE_DIR/scratch" "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-scratch-dir-in-place || bad main-e2e-prompt-scratch-dir-in-place
+
+# --- all three positional args empty: PR derives from branch, issue/design
+# render as "not provided" rather than blocking the run ---
+
+E2E_HOME2="$T/main-e2e-home2"
+if out="$(cd "$E2E_FIXTURE/work" \
+  && GH_STUB_DERIVE_OK=1 GH_STUB_DERIVED_URL="https://github.com/acme9pr/widgets9pr/pull/321" \
+     GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME2" PATH="$STUB_BIN:$saved_path" \
+  bash "$RUN_SH" "" "" "" 2>&1)"; then
+  pass main-e2e-empty-args-accepted
+else
+  bad main-e2e-empty-args-accepted
+fi
+
+E2E_LOGS_DIR2="$(find "$E2E_HOME2/.tmp" -type d -name logs 2>/dev/null | head -1)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$E2E_LOGS_DIR2" ] && grep -qF '未提供' "$E2E_LOGS_DIR2/codex.prompt" 2>/dev/null && pass main-e2e-empty-args-render-not-provided || bad main-e2e-empty-args-render-not-provided
 
 exit $fail
