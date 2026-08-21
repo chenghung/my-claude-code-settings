@@ -1118,6 +1118,15 @@ esac
 # tamper) -- these tests isolate around it entirely rather than exercising
 # it, so they stay deterministic instead of depending on a particular
 # ordering of concurrently launched reviewers.
+#
+# None of the stub reviewers below print the contract's BEGIN/END
+# markers, so every posting outcome in this section is "no-content" --
+# that is expected and correct here (these tests are about exit-code
+# capture, invalidation detection, PID convergence, and SIGHUP survival,
+# not about the extract-and-post mechanism itself, which gets its own
+# dedicated section below with stubs that do print markers). No `gh` stub
+# is needed on PATH for any of this section either: _post_review_comment
+# never calls `gh` at all when extraction fails first.
 # ==============================================================
 
 SV_STUB_BIN="$T/supervisor-stub-bin"
@@ -1164,14 +1173,14 @@ SV1_SUMMARY="$SV1_ROOT/summary.txt"
 # just this call, including the backgrounded subshell it forks internally
 # (which inherits whatever cwd was active when spawn_supervisor was
 # invoked), without disturbing this test script's own cwd afterward.
-(cd "$SV1_ROOT/work" && spawn_supervisor "$SV1_WT" "$SV1_SUMMARY" "$sv1_pid")
+(cd "$SV1_ROOT/work" && spawn_supervisor "$SV1_WT" "$SV1_SUMMARY" acme widgets 1 "$sv1_pid")
 
 i=0
 until [ -s "$SV1_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 
 sv1_line="$(cat "$SV1_SUMMARY" 2>/dev/null)"
 case "$sv1_line" in
-  "pid=$sv1_pid exit=5"*'worktree_status=invalidated') pass spawn-supervisor-records-exit-code-and-invalidation ;;
+  "pid=$sv1_pid exit=5"*'worktree_status=invalidated'*'post_status=no-content') pass spawn-supervisor-records-exit-code-and-invalidation ;;
   *) bad spawn-supervisor-records-exit-code-and-invalidation ;;
 esac
 
@@ -1190,13 +1199,13 @@ mkdir -p "$SV2_ROOT/logs"
 printf 'p' > "$SV2_ROOT/logs/opencode.prompt"
 sv2_pid="$(launch_reviewer opencode "$SV2_WT" "$SV2_ROOT/logs/opencode.log" < "$SV2_ROOT/logs/opencode.prompt")"
 SV2_SUMMARY="$SV2_ROOT/summary.txt"
-(cd "$SV2_ROOT/work" && spawn_supervisor "$SV2_WT" "$SV2_SUMMARY" "$sv2_pid")
+(cd "$SV2_ROOT/work" && spawn_supervisor "$SV2_WT" "$SV2_SUMMARY" acme widgets 2 "$sv2_pid")
 
 i=0
 until [ -s "$SV2_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 
 case "$(cat "$SV2_SUMMARY" 2>/dev/null)" in
-  "pid=$sv2_pid exit=0"*'worktree_status=ok') pass spawn-supervisor-ok-when-unmodified ;;
+  "pid=$sv2_pid exit=0"*'worktree_status=ok'*'post_status=no-content') pass spawn-supervisor-ok-when-unmodified ;;
   *) bad spawn-supervisor-ok-when-unmodified ;;
 esac
 
@@ -1210,7 +1219,7 @@ printf 'p' > "$SV3_ROOT/logs/opencode-b.prompt"
 sv3_pid_a="$(launch_reviewer opencode "$SV3_WT" "$SV3_ROOT/logs/opencode-a.log" < "$SV3_ROOT/logs/opencode-a.prompt")"
 sv3_pid_b="$(launch_reviewer opencode "$SV3_WT" "$SV3_ROOT/logs/opencode-b.log" < "$SV3_ROOT/logs/opencode-b.prompt")"
 SV3_SUMMARY="$SV3_ROOT/summary.txt"
-(cd "$SV3_ROOT/work" && spawn_supervisor "$SV3_WT" "$SV3_SUMMARY" "$sv3_pid_a" "$sv3_pid_b")
+(cd "$SV3_ROOT/work" && spawn_supervisor "$SV3_WT" "$SV3_SUMMARY" acme widgets 3 "$sv3_pid_a" "$sv3_pid_b")
 
 i=0
 until { [ -f "$SV3_SUMMARY" ] && [ "$(wc -l < "$SV3_SUMMARY")" -eq 2 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
@@ -1239,7 +1248,7 @@ SV4_SUMMARY="$SV4_ROOT/summary.txt"
 SV4_PID_FILE="$T/sv4-supervisor-pid.txt"
 (
   cd "$SV4_ROOT/work" || exit 1
-  spawn_supervisor "$SV4_WT" "$SV4_SUMMARY" "$sv4_pid"
+  spawn_supervisor "$SV4_WT" "$SV4_SUMMARY" acme widgets 4 "$sv4_pid"
   printf '%s' "$!" > "$SV4_PID_FILE"
 )
 sv4_supervisor_pid="$(cat "$SV4_PID_FILE" 2>/dev/null)"
@@ -1258,6 +1267,231 @@ until [ ! -e "$SV4_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ ! -e "$SV4_WT" ] && pass spawn-supervisor-removes-worktree-after-sighup || bad spawn-supervisor-removes-worktree-after-sighup
 
+export PATH="$saved_path"
+
+# ==============================================================
+# _extract_review_content
+# ==============================================================
+
+EXTRACT_FIXTURE_DIR="$T/extract-fixture"
+mkdir -p "$EXTRACT_FIXTURE_DIR"
+
+cat > "$EXTRACT_FIXTURE_DIR/good.log" <<'LOGEOF'
+some noise before the marker
+===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===
+line one of the review
+line two of the review
+===PR-REVIEW-BY-MULTI-AGENTS-END===
+some noise after the marker
+LOGEOF
+
+out="$(_extract_review_content "$EXTRACT_FIXTURE_DIR/good.log")"
+expected=$'line one of the review\nline two of the review'
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$out" = "$expected" ] && pass extract-review-content-happy-path || bad extract-review-content-happy-path
+
+cat > "$EXTRACT_FIXTURE_DIR/no-begin.log" <<'LOGEOF'
+no begin marker anywhere in here
+===PR-REVIEW-BY-MULTI-AGENTS-END===
+LOGEOF
+if out="$(_extract_review_content "$EXTRACT_FIXTURE_DIR/no-begin.log" 2>/dev/null)"; then
+  bad extract-review-content-missing-begin
+else
+  pass extract-review-content-missing-begin
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$out" ] && pass extract-review-content-missing-begin-no-output || bad extract-review-content-missing-begin-no-output
+
+cat > "$EXTRACT_FIXTURE_DIR/no-end.log" <<'LOGEOF'
+===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===
+never closed
+LOGEOF
+if out="$(_extract_review_content "$EXTRACT_FIXTURE_DIR/no-end.log" 2>/dev/null)"; then
+  bad extract-review-content-missing-end
+else
+  pass extract-review-content-missing-end
+fi
+
+cat > "$EXTRACT_FIXTURE_DIR/reversed.log" <<'LOGEOF'
+===PR-REVIEW-BY-MULTI-AGENTS-END===
+end marker shows up first
+===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===
+LOGEOF
+if out="$(_extract_review_content "$EXTRACT_FIXTURE_DIR/reversed.log" 2>/dev/null)"; then
+  bad extract-review-content-reversed-markers
+else
+  pass extract-review-content-reversed-markers
+fi
+
+# A marker-like substring that is NOT its own complete line (extra
+# trailing text on the same line) must not count as a match -- the
+# contract requires each marker to occupy its own line exactly.
+cat > "$EXTRACT_FIXTURE_DIR/partial-marker.log" <<'LOGEOF'
+===PR-REVIEW-BY-MULTI-AGENTS-BEGIN=== extra text on the same line
+content
+===PR-REVIEW-BY-MULTI-AGENTS-END===
+LOGEOF
+if out="$(_extract_review_content "$EXTRACT_FIXTURE_DIR/partial-marker.log" 2>/dev/null)"; then
+  bad extract-review-content-rejects-partial-marker-line
+else
+  pass extract-review-content-rejects-partial-marker-line
+fi
+
+# ==============================================================
+# _post_review_comment
+#
+# A stub gh that records every invocation to a call-count file, so
+# "gh was never even attempted" (the no-content case) can be told apart
+# from "gh was attempted and failed".
+# ==============================================================
+
+POST_STUB_BIN="$T/post-stub-bin"
+mkdir -p "$POST_STUB_BIN"
+cat > "$POST_STUB_BIN/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s
+' "$*" >> "$GH_CALL_LOG"
+exit "${GH_STUB_EXIT:-0}"
+STUB
+chmod +x "$POST_STUB_BIN/gh"
+
+export PATH="$POST_STUB_BIN:$saved_path"
+
+# --- success: content extracted, gh called once with the right args, the
+# content file gh was pointed at contains exactly the extracted text ---
+
+POST_ROOT="$T/post-fixture"
+mkdir -p "$POST_ROOT"
+export GH_CALL_LOG="$POST_ROOT/gh-calls-success.log"
+: > "$GH_CALL_LOG"
+export GH_STUB_EXIT=0
+post_status="$(_post_review_comment "$EXTRACT_FIXTURE_DIR/good.log" acme widgets 42 "$POST_ROOT/content-success.md")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$post_status" = "posted" ] && pass post-review-comment-success-status || bad post-review-comment-success-status
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(wc -l < "$GH_CALL_LOG")" -eq 1 ] && pass post-review-comment-success-calls-gh-once || bad post-review-comment-success-calls-gh-once
+case "$(cat "$GH_CALL_LOG")" in
+  'pr comment 42 --repo acme/widgets --body-file '*) pass post-review-comment-success-correct-args ;;
+  *) bad post-review-comment-success-correct-args ;;
+esac
+out="$(cat "$POST_ROOT/content-success.md" 2>/dev/null)"
+expected=$'line one of the review\nline two of the review'
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$out" = "$expected" ] && pass post-review-comment-content-file-correct || bad post-review-comment-content-file-correct
+
+# --- no-content: gh is never even attempted ---
+
+: > "$GH_CALL_LOG"
+post_status="$(_post_review_comment "$EXTRACT_FIXTURE_DIR/no-begin.log" acme widgets 42 "$POST_ROOT/content-nocontent.md")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$post_status" = "no-content" ] && pass post-review-comment-no-content-status || bad post-review-comment-no-content-status
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$GH_CALL_LOG" ] && pass post-review-comment-no-content-never-calls-gh || bad post-review-comment-no-content-never-calls-gh
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$POST_ROOT/content-nocontent.md" ] && pass post-review-comment-no-content-no-file-written || bad post-review-comment-no-content-no-file-written
+
+# --- failure: retried exactly once (two attempts total), status recorded
+# as post-failed, content file kept (not deleted) so the review isn't lost ---
+
+: > "$GH_CALL_LOG"
+export GH_STUB_EXIT=1
+post_status="$(_post_review_comment "$EXTRACT_FIXTURE_DIR/good.log" acme widgets 42 "$POST_ROOT/content-failed.md")"
+export GH_STUB_EXIT=0
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$post_status" = "post-failed" ] && pass post-review-comment-failure-status || bad post-review-comment-failure-status
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(wc -l < "$GH_CALL_LOG")" -eq 2 ] && pass post-review-comment-failure-retries-once || bad post-review-comment-failure-retries-once
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$POST_ROOT/content-failed.md" ] && pass post-review-comment-failure-keeps-content-file || bad post-review-comment-failure-keeps-content-file
+
+unset GH_CALL_LOG GH_STUB_EXIT
+export PATH="$saved_path"
+
+# ==============================================================
+# spawn_supervisor -- end-to-end posting through a real reviewer process
+#
+# A stub codex that actually prints the BEGIN/END markers (unlike the
+# stubs in the spawn_supervisor section above, which exist to test
+# exit-code/invalidation/PID-convergence and never print any markers) and
+# a stub gh that records calls, wired through launch_reviewer and
+# spawn_supervisor together end to end -- not just calling
+# _post_review_comment directly -- confirming the summary_file's new
+# post_status field reflects a real posting outcome for a real reviewer
+# run, and that spawn_supervisor picks the right log file for the right
+# PID via the .log-<pid> file launch_reviewer writes.
+# ==============================================================
+
+POSTE2E_ROOT="$T/post-e2e-fixture"
+POSTE2E_WT="$(_make_worktree_fixture "$POSTE2E_ROOT")"
+mkdir -p "$POSTE2E_ROOT/logs"
+
+POSTE2E_STUB_BIN="$T/post-e2e-stub-bin"
+mkdir -p "$POSTE2E_STUB_BIN"
+cat > "$POSTE2E_STUB_BIN/codex" <<'STUB'
+#!/usr/bin/env bash
+echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
+echo "nothing critical found"
+echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
+exit 0
+STUB
+chmod +x "$POSTE2E_STUB_BIN/codex"
+cp "$POST_STUB_BIN/gh" "$POSTE2E_STUB_BIN/gh"
+
+export PATH="$POSTE2E_STUB_BIN:$saved_path"
+export GH_CALL_LOG="$POSTE2E_ROOT/gh-calls.log"
+: > "$GH_CALL_LOG"
+export GH_STUB_EXIT=0
+
+printf 'p' > "$POSTE2E_ROOT/logs/codex.prompt"
+poste2e_pid="$(launch_reviewer codex "$POSTE2E_WT" "$POSTE2E_ROOT/logs/codex.log" < "$POSTE2E_ROOT/logs/codex.prompt")"
+POSTE2E_SUMMARY="$POSTE2E_ROOT/summary.txt"
+(cd "$POSTE2E_ROOT/work" && spawn_supervisor "$POSTE2E_WT" "$POSTE2E_SUMMARY" acme widgets 99 "$poste2e_pid")
+
+i=0
+until [ -s "$POSTE2E_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+
+case "$(cat "$POSTE2E_SUMMARY" 2>/dev/null)" in
+  "pid=$poste2e_pid exit=0"*'post_status=posted') pass spawn-supervisor-e2e-posts-successfully ;;
+  *) bad spawn-supervisor-e2e-posts-successfully ;;
+esac
+case "$(cat "$GH_CALL_LOG" 2>/dev/null)" in
+  'pr comment 99 --repo acme/widgets --body-file '*) pass spawn-supervisor-e2e-gh-called-with-correct-pr ;;
+  *) bad spawn-supervisor-e2e-gh-called-with-correct-pr ;;
+esac
+
+unset GH_CALL_LOG GH_STUB_EXIT
+export PATH="$saved_path"
+
+# --- same real reviewer + spawn_supervisor pipeline, but gh always fails
+# -- summary_file must show post_status=post-failed (not just tested at
+# the _post_review_comment function level above, but end to end through
+# a real spawn_supervisor run) ---
+
+POSTFAIL_ROOT="$T/post-e2e-fail-fixture"
+POSTFAIL_WT="$(_make_worktree_fixture "$POSTFAIL_ROOT")"
+mkdir -p "$POSTFAIL_ROOT/logs"
+
+export PATH="$POSTE2E_STUB_BIN:$saved_path"
+export GH_CALL_LOG="$POSTFAIL_ROOT/gh-calls.log"
+: > "$GH_CALL_LOG"
+export GH_STUB_EXIT=1
+
+printf 'p' > "$POSTFAIL_ROOT/logs/codex.prompt"
+postfail_pid="$(launch_reviewer codex "$POSTFAIL_WT" "$POSTFAIL_ROOT/logs/codex.log" < "$POSTFAIL_ROOT/logs/codex.prompt")"
+POSTFAIL_SUMMARY="$POSTFAIL_ROOT/summary.txt"
+(cd "$POSTFAIL_ROOT/work" && spawn_supervisor "$POSTFAIL_WT" "$POSTFAIL_SUMMARY" acme widgets 100 "$postfail_pid")
+
+i=0
+until [ -s "$POSTFAIL_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+
+case "$(cat "$POSTFAIL_SUMMARY" 2>/dev/null)" in
+  "pid=$postfail_pid exit=0"*'post_status=post-failed') pass spawn-supervisor-e2e-records-post-failure ;;
+  *) bad spawn-supervisor-e2e-records-post-failure ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(wc -l < "$GH_CALL_LOG")" -eq 2 ] && pass spawn-supervisor-e2e-post-failure-retried-once || bad spawn-supervisor-e2e-post-failure-retried-once
+
+unset GH_CALL_LOG GH_STUB_EXIT
 export PATH="$saved_path"
 
 # ==============================================================
