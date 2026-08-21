@@ -266,21 +266,24 @@ resolve_model() {
 }
 
 # build_prompt <contract_path> <pr_url> <issue_url> <design_doc_path> \
-#              <cli_name> <model> <worktree_path> <base_ref> <scratch_dir>
+#              <cli_name> <model> <worktree_path> <base_ref>
 #
 # Prints the complete prompt for one reviewer CLI to stdout: the reviewer
 # contract's full text, verbatim and unabridged, followed by this run's
 # coordinates -- the PR and issue links, the design doc path, this
 # worktree's absolute path, the base ref the contract's pinned diff command
-# needs, this reviewer's own CLI/model identity, and a scratch directory
-# outside the worktree for the comment-body file the contract requires.
+# needs, and this reviewer's own CLI/model identity. No scratch directory
+# coordinate: the reviewer no longer writes a comment-body file anywhere --
+# it prints its full review to stdout instead (see launch_reviewer's
+# docstring), and this script's own log file is what captures that, not
+# any file path handed to the reviewer itself.
 # issue_url and design_doc_path may be empty strings; the contract's own
 # input-list section requires an explicit "not provided" statement rather
 # than a blank field for those two, so an empty value is rendered as such
 # here instead of being left out.
 build_prompt() {
   local contract_path="$1" pr_url="$2" issue_url="$3" design_doc_path="$4"
-  local cli_name="$5" model="$6" worktree_path="$7" base_ref="$8" scratch_dir="$9"
+  local cli_name="$5" model="$6" worktree_path="$7" base_ref="$8"
   local contract issue_display design_display
 
   contract="$(cat "$contract_path")" || return 1
@@ -305,7 +308,6 @@ build_prompt() {
   printf -- '- design document 路徑：%s\n' "$design_display"
   printf -- '- 產出這則 review 的 CLI 名稱：%s\n' "$cli_name"
   printf -- '- 產出這則 review 的 model 名稱：%s\n' "$model"
-  printf -- '- 暫存目錄（worktree 之外，張貼 comment 前把內文寫入此處的檔案）：%s\n' "$scratch_dir"
 }
 
 # _git_status_snapshot <worktree_dir>
@@ -347,21 +349,32 @@ _git_status_snapshot() {
 #
 # Writes opencode's own permission config (consulted via the OPENCODE_CONFIG
 # env var -- see launch_reviewer) to <path>: the built-in `edit` tool is
-# denied outright, and `bash` lists only the git/gh/filesystem mutation
-# verbs this run must not perform (denied by pattern) plus the one write
-# the contract requires (`gh pr comment*`, explicitly allowed). Read
-# commands, including the contract's pinned `git diff` command, `gh issue
-# view`/`gh issue list` (the contract lists issue content as fit-for-
-# requirements-conformance-axis material, so a reviewer needs to actually
-# be able to read it), and a plain `gh api` GET request, are never listed
-# here at all -- they fall through to launch_reviewer's `--auto` flag,
-# which auto-approves anything not explicitly denied. `gh issue*` and
-# `gh api*` are deliberately NOT used as blanket deny patterns for this
-# reason: an earlier version did, and it silently denied those same read
-# commands too, degrading the requirements-conformance axis to "issue
-# material not provided" for a reason opaque to whoever later reads that
-# comment on the PR. Each `gh issue`/`gh api` deny below instead names the
-# specific mutating subcommand or HTTP write method it blocks. This
+# denied outright, and `bash` denies every GitHub-state-changing `gh`
+# operation this reviewer could plausibly reach by name (`gh pr`/`gh
+# issue`/`gh repo`/`gh label`/`gh release`/`gh secret`/`gh variable`/
+# `gh workflow`/`gh auth login`|`logout`, plus non-GET `gh api` calls),
+# including `gh pr comment*` -- this reviewer no longer posts anything
+# itself (see launch_reviewer's docstring on why: it prints its review to
+# stdout and a separate layer posts it), so there is no longer any `gh`
+# write this config needs to leave open. This list is deliberately broad
+# rather than an exhaustive enumeration of gh's entire command surface --
+# see launch_reviewer's docstring on why a bash-pattern blacklist is a
+# first line of defense here, not the actual guarantee (the OS-level
+# chmod is), so widening it further than "every gh write command a code
+# reviewer could plausibly be steered into running" has diminishing
+# return. Read commands, including the contract's pinned `git diff`
+# command, `gh issue view`/`gh issue list` (the contract lists issue
+# content as fit-for-requirements-conformance-axis material, so a
+# reviewer needs to actually be able to read it), and a plain `gh api` GET
+# request, are never listed here at all -- they fall through to
+# launch_reviewer's `--auto` flag, which auto-approves anything not
+# explicitly denied. `gh issue*` and `gh api*` bare prefixes are
+# deliberately NOT used as blanket deny patterns for this reason: an
+# earlier version did, and it silently denied those same read commands
+# too, degrading the requirements-conformance axis to "issue material not
+# provided" for a reason opaque to whoever later reads that comment on
+# the PR. Each `gh` deny below instead names a specific mutating
+# subcommand or HTTP write method it blocks. This
 # deliberately has no catch-all "*": "allow" entry: an earlier version did,
 # but opencode's actual precedence rule for multiple *matching* bash
 # patterns (does the first match win, the last one, or the most specific
@@ -413,6 +426,10 @@ _write_opencode_permission_config() {
       "gh pr merge*": "deny",
       "gh pr close*": "deny",
       "gh pr reopen*": "deny",
+      "gh pr comment*": "deny",
+      "gh pr create*": "deny",
+      "gh pr ready*": "deny",
+      "gh pr checkout*": "deny",
       "gh issue close*": "deny",
       "gh issue comment*": "deny",
       "gh issue create*": "deny",
@@ -424,7 +441,26 @@ _write_opencode_permission_config() {
       "gh issue transfer*": "deny",
       "gh issue unlock*": "deny",
       "gh issue unpin*": "deny",
-      "gh pr comment*": "allow"
+      "gh repo create*": "deny",
+      "gh repo delete*": "deny",
+      "gh repo edit*": "deny",
+      "gh repo rename*": "deny",
+      "gh repo archive*": "deny",
+      "gh label create*": "deny",
+      "gh label edit*": "deny",
+      "gh label delete*": "deny",
+      "gh release create*": "deny",
+      "gh release edit*": "deny",
+      "gh release delete*": "deny",
+      "gh secret set*": "deny",
+      "gh secret delete*": "deny",
+      "gh variable set*": "deny",
+      "gh variable delete*": "deny",
+      "gh workflow run*": "deny",
+      "gh workflow enable*": "deny",
+      "gh workflow disable*": "deny",
+      "gh auth logout*": "deny",
+      "gh auth login*": "deny"
     }
   }
 }
@@ -441,9 +477,29 @@ JSON
 # argument is given: `claude -p`, `codex exec`, and `opencode run` (without
 # a `message` argument) all do this -- that probe result is recorded here
 # rather than only in .tmp/probe-results.md, since that file is gitignored
-# and won't exist for anyone who didn't run the probe themselves. Combined
-# stdout+stderr go to <log_file>. Prints the launched process's PID to
+# and won't exist for anyone who didn't run the probe themselves. Stdout
+# goes to <log_file> (the reviewer's full review text, wrapped in the
+# contract's own BEGIN/END markers -- SKILL.md's reporting chain parses
+# this file by those markers); stderr goes to a separate `<log_file>.stderr`
+# file, not merged into the same one, so a stderr write can never end up
+# interleaved with -- and never risks displacing -- a marker line in the
+# file SKILL.md actually parses. Prints the launched process's PID to
 # stdout on success.
+#
+# The reviewer is never given any tool that can write anything, anywhere
+# (see the claude/codex/opencode bullets below): it reports its findings
+# by printing them to stdout instead of posting them itself, and a
+# separate layer (SKILL.md, outside this script) reads that stdout back
+# from the log and delegates the actual GitHub posting to a dedicated
+# subagent. This is deliberate, not merely convenient: the PR diff and
+# issue content this prompt embeds are external, attacker-controllable
+# input that flows straight into the reviewer's own context, i.e. a
+# textbook indirect-prompt-injection surface -- and the repo this skill
+# itself operates against is very often the user's own AI tool
+# configuration. Giving the reviewer no write capability at all, rather
+# than trying to scope one down to just what the contract needs, removes
+# an entire class of "the injected content talked the model into doing
+# something bad with a tool it technically still had" outcomes.
 #
 # Each CLI gets its own least-privilege enforcement, using that CLI's own
 # mechanism rather than trusting the reviewer contract's natural-language
@@ -457,10 +513,9 @@ JSON
 # backstop that actually has to hold:
 #   - claude: `--permission-mode dontAsk` (auto-denies anything not
 #     explicitly allowed, except read-only Bash commands) plus an explicit
-#     `--allowedTools` whitelist naming the read tools, `Write` (needed for
-#     the contract's required comment-body file -- see below), and the one
-#     `gh pr comment` write the contract requires; `--disallowedTools`
-#     covers Edit/NotebookEdit, which this run never needs.
+#     `--allowedTools` whitelist naming only the read tools -- no Bash
+#     pattern at all, since this reviewer never needs to run `gh`, and no
+#     `Write`; `--disallowedTools` covers Edit/Write/NotebookEdit.
 #
 #     Two things here are empirically verified facts about a real claude
 #     binary, not inferred from --help text (which, on the first point,
@@ -484,9 +539,31 @@ JSON
 #          `Write` allow, still let a real claude process write into that
 #          worktree in a real test run. `Write` in claude's tool-permission
 #          model is all-or-nothing: either the whole tool is allowed
-#          (anywhere the process can reach) or it isn't. This is why the
-#          worktree itself is separately protected at the OS level below,
-#          instead of through this flag.
+#          (anywhere the process can reach) or it isn't -- which is why
+#          `Write` is fully disallowed here rather than scoped, and why
+#          the worktree is separately protected at the OS level below.
+#
+#     Known residual gap, found while re-verifying this after `Write` was
+#     removed, not yet closed: dontAsk's "read-only Bash commands are
+#     always allowed" carve-out from point 1 above is broader than
+#     strictly read-only in practice. A real run, with no `gh` pattern on
+#     either --allowedTools or --disallowedTools (and even with an
+#     explicit `Bash(gh pr comment:*)` added to --disallowedTools), still
+#     let `gh pr comment ...` actually *execute* via the Bash tool -- it
+#     only failed for an unrelated environmental reason (the test repo
+#     had no configured git remote for `gh` to resolve a target from),
+#     not because claude's permission layer blocked it. In this script's
+#     real usage, setup_worktree always configures a real `origin` remote
+#     pointing at the actual PR's repo, so this path is not purely
+#     theoretical. This means neither omitting a Bash pattern from
+#     --allowedTools nor adding one to --disallowedTools reliably stops
+#     dontAsk from letting a `gh` write command run, if the model decides
+#     (on its own, or steered by injected PR/issue content) to try one --
+#     the actual backstop against that is that gh commands need network
+#     access and the user's own stored `gh` credentials, neither of which
+#     this script does anything to isolate the reviewer from. Recorded
+#     here rather than silently worked around, since no fix was in scope
+#     for the change that surfaced it.
 #   - codex: `-s read-only`, the most restrictive of codex's three sandbox
 #     modes (the other two, `workspace-write` and
 #     `--dangerously-bypass-approvals-and-sandbox`, grant filesystem writes
@@ -508,8 +585,12 @@ JSON
 #     env var; `--auto` is required alongside it so permissions this config
 #     leaves unset (i.e. everything not on the explicit deny list) don't
 #     block waiting for a human who, in this headless run, will never
-#     answer. That config's `bash` deny list is necessarily a list of
-#     specific risky verbs (git commit, rm, sudo, ...), not an exhaustive
+#     answer. Since this reviewer no longer posts anything itself, `gh pr
+#     comment` is now denied too, alongside every other state-changing `gh`
+#     verb this config lists -- there is no longer any `gh` write this
+#     reviewer needs, so none is left allowed. That config's `bash` deny
+#     list is necessarily a list of specific risky verbs (git commit, rm,
+#     sudo, the various `gh` write subcommands, ...), not an exhaustive
 #     one -- a real test run confirmed a plain shell redirect
 #     (`printf ... > file`, which matches none of those specific patterns)
 #     writes successfully wherever the underlying shell can reach,
@@ -520,28 +601,35 @@ JSON
 #     alone.
 #
 # All three of the mechanisms above turned out, on real testing, not to
-# reliably stop a write into the worktree by itself -- claude's `Write`
-# tool has no path scoping at all (see above), codex's `-s read-only`
-# sandbox did not block a real write attempt in `codex exec`'s non-
-# interactive mode (a sandbox-escalation path this script has no flag to
-# turn off for `codex exec` specifically), and opencode's bash deny list
-# is a blacklist of specific verbs that a plain shell redirect walks
-# straight past. Given that, the worktree's actual protection is now an
-# OS-level one applied uniformly to all three from main(), independent of
-# any single CLI's own permission engine: `chmod -R a-w` on the worktree
-# right after setup_worktree creates it (before any reviewer is launched),
-# restored with `chmod -R u+w` immediately before removal (see
-# spawn_supervisor and _dispatch_failed_cleanup). `git status`/`git diff`
-# -- everything the contract's read-only true-source-of-truth section asks
-# a reviewer to do -- were confirmed to still work against a worktree
-# chmod'd this way, since a linked worktree's own index/HEAD housekeeping
-# lives under the main repo's .git/worktrees/<name>/, not inside the
-# worktree's own directory tree. Each CLI's flags above are kept anyway:
-# they still shape what the model even attempts (fewer tool calls that
-# have to fail), and they're the only defense at all for scratch-dir
-# writes and for whatever this script's own git-status-snapshot comparison
-# in spawn_supervisor cannot see (see that function's own docstring on the
-# gitignored-path tradeoff).
+# reliably stop a write into the worktree by itself, at the point `Write`
+# was still allowed for claude (needed then for a comment-body file the
+# reviewer no longer writes at all): `Write` has no path scoping in
+# claude's permission model (see above -- moot now that it's fully
+# disallowed, but the OS-level layer below predates that and stays
+# regardless, per the next paragraph), codex's `-s read-only` sandbox did
+# not block a real write attempt in `codex exec`'s non-interactive mode (a
+# sandbox-escalation path this script has no flag to turn off for
+# `codex exec` specifically), and opencode's bash deny list is a blacklist
+# of specific verbs that a plain shell redirect walks straight past.
+# Given that, the worktree's actual protection is an OS-level one applied
+# uniformly to all three from main(), independent of any single CLI's own
+# permission engine: `chmod -R a-w` on the worktree right after
+# setup_worktree creates it (before any reviewer is launched), restored
+# with `chmod -R u+w` immediately before removal (see spawn_supervisor and
+# _dispatch_failed_cleanup). `git status`/`git diff` -- everything the
+# contract's read-only true-source-of-truth section asks a reviewer to do
+# -- were confirmed to still work against a worktree chmod'd this way,
+# since a linked worktree's own index/HEAD housekeeping lives under the
+# main repo's .git/worktrees/<name>/, not inside the worktree's own
+# directory tree. This OS-level layer is kept even though every CLI is
+# now also fully disallowed from writing through its own tool/sandbox
+# mechanism: it is still the only defense against whatever this script's
+# own git-status-snapshot comparison in spawn_supervisor cannot see (see
+# that function's own docstring on the gitignored-path tradeoff), and it
+# does not depend on any single CLI's permission engine behaving as
+# expected -- which the claude `Write`-tool and codex sandbox-escalation
+# findings above are exactly the kind of thing it exists to not have to
+# trust.
 #
 # None of the three CLIs are given a model flag (design decision, made
 # before this task and held here unchanged: each uses its own configured
@@ -580,15 +668,30 @@ JSON
 launch_reviewer() {
   local cli_name="$1" worktree_dir="$2" log_file="$3"
   local -a cmd=()
-  local base_dir before_snapshot starting_dir config_file pid
+  local base_dir before_snapshot starting_dir config_file pid stderr_file
 
   base_dir="$(dirname "$worktree_dir")"
+  # Stdout and stderr are captured to two separate files, not one shared
+  # one via `2>&1`: the reviewer's full review text (between the
+  # BEGIN/END markers the contract wraps it in) now goes to stdout, and
+  # SKILL.md's own reporting chain parses <cli>.log by those markers to
+  # extract it. Sharing one file with stderr risks a stderr write landing
+  # between two stdout writes (stdio is commonly block-buffered rather
+  # than line-buffered once stdout isn't a TTY, so a large stdout flush
+  # and a small interleaved stderr write are not guaranteed to land in
+  # the order they were logically written) -- which could not tear a
+  # single marker line in half, but could still displace where a marker
+  # line ends up relative to stderr content in a way that breaks a naive
+  # sequential parse. Splitting the streams removes the ambiguity
+  # entirely: <cli>.log is pure reviewer stdout, nothing else ever writes
+  # to it.
+  stderr_file="$log_file.stderr"
 
   case "$cli_name" in
     claude)
       cmd=(claude -p --permission-mode dontAsk \
-        --allowedTools "Read Grep Glob WebFetch Write Bash(gh pr comment:*)" \
-        --disallowedTools "Edit NotebookEdit")
+        --allowedTools "Read Grep Glob WebFetch" \
+        --disallowedTools "Edit Write NotebookEdit")
       ;;
     codex)
       cmd=(codex exec -s read-only -C "$worktree_dir")
@@ -647,7 +750,7 @@ launch_reviewer() {
     exit_file="$base_dir/.exit-$$"
     "$@"
     printf "%s" "$?" > "$exit_file"
-  ' _ "$base_dir" "${cmd[@]}" < /dev/stdin > "$log_file" 2>&1 &
+  ' _ "$base_dir" "${cmd[@]}" < /dev/stdin > "$log_file" 2> "$stderr_file" &
   pid=$!
 
   if [ "$cli_name" = claude ]; then
@@ -764,6 +867,16 @@ spawn_supervisor() {
 # file path), and which were skipped because that CLI wasn't installed.
 # When exactly one reviewer was dispatched, adds a line calling out that
 # cross-validation across independent reviewers does not hold for this run.
+#
+# Each dispatched reviewer's log path here is a functional dependency now,
+# not just diagnostic output: the reviewer no longer posts its own review,
+# it prints the full text to stdout (captured in exactly this <cli>.log --
+# see launch_reviewer's docstring on why stdout and stderr are captured to
+# separate files), wrapped in the contract's BEGIN/END markers. SKILL.md
+# reads this printed path, parses <cli>.log by those markers, and
+# delegates the actual GitHub posting to a dedicated subagent -- if this
+# line's log path is ever wrong or missing for a dispatched reviewer,
+# nothing else in this pipeline reports its findings anywhere.
 print_summary() {
   local logs_dir="$1"
   shift
@@ -878,8 +991,8 @@ main() {
   local pr_arg="${1:-}" issue_url="${2:-}" design_doc_path="${3:-}"
   local pr_info owner repo number contract_path base_ref pr_url
   local project_root project_hash project_folder
-  local base_dir logs_dir scratch_dir summary_file worktree_dir
-  local cli d found model prompt pid cli_scratch_dir
+  local base_dir logs_dir summary_file worktree_dir
+  local cli d found model prompt pid
   local -a all_reviewers=() skipped=() pids=()
 
   if ! pr_info="$(parse_pr_url "$pr_arg")"; then
@@ -924,9 +1037,8 @@ main() {
   # enough to rule that out.
   base_dir="$HOME/.tmp/$project_folder/pr-review/$number-$(date -u +%Y%m%d%H%M%S)-$$"
   logs_dir="$base_dir/logs"
-  scratch_dir="$base_dir/scratch"
   summary_file="$base_dir/summary.txt"
-  mkdir -p "$logs_dir" "$scratch_dir"
+  mkdir -p "$logs_dir"
 
   worktree_dir="$(setup_worktree "$owner" "$repo" "$number" "$base_dir")" || {
     printf 'run.sh: failed to set up the review worktree\n' >&2
@@ -942,6 +1054,12 @@ main() {
   # _dispatch_failed_cleanup both restore write access before removing it.
   if ! chmod -R a-w "$worktree_dir"; then
     printf 'run.sh: failed to make the review worktree read-only\n' >&2
+    # chmod -R can fail partway through a tree (e.g. one entry hits a
+    # permission error) and still have already flipped some entries to
+    # read-only before that -- restore write access the same way the
+    # other two cleanup paths do before removing, so a partial chmod
+    # can't also make this removal fail.
+    chmod -R u+w "$worktree_dir" 2>/dev/null || true
     git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
     exit 1
   fi
@@ -949,28 +1067,14 @@ main() {
   pr_url="https://github.com/$owner/$repo/pull/$number"
 
   for cli in "${all_reviewers[@]}"; do
-    # A per-CLI subdirectory under scratch_dir, not scratch_dir itself:
-    # all three reviewers get the byte-for-byte same prompt and run
-    # concurrently, so if they all wrote their comment-body file into one
-    # shared directory, two of them picking the same filename (nothing in
-    # the contract constrains the name beyond "a file") is a real risk,
-    # not a hypothetical one -- a same-named overwrite in the few seconds
-    # between one reviewer writing its file and posting from it would post
-    # someone else's comment body under this reviewer's own disclosure
-    # header, and the contract forbids ever editing or deleting a posted
-    # comment to fix that after the fact. logs_dir already gets this same
-    # per-CLI split (each reviewer's own <cli>.log); this mirrors it.
-    #
     # Each step below is checked explicitly (rather than as a bare
     # statement) so a failure partway through this loop runs
     # _dispatch_failed_cleanup instead of letting set -e abort main() with
     # an already-launched reviewer or the worktree left behind with
     # nothing to clean it up.
-    cli_scratch_dir="$scratch_dir/$cli"
-    if ! mkdir -p "$cli_scratch_dir" \
-      || ! model="$(resolve_model "$cli")" \
+    if ! model="$(resolve_model "$cli")" \
       || ! prompt="$(build_prompt "$contract_path" "$pr_url" "$issue_url" "$design_doc_path" \
-             "$cli" "$model" "$worktree_dir" "$base_ref" "$cli_scratch_dir")"; then
+             "$cli" "$model" "$worktree_dir" "$base_ref")"; then
       _dispatch_failed_cleanup "$worktree_dir" "${pids[@]+"${pids[@]}"}"
       exit 1
     fi

@@ -461,9 +461,8 @@ BP_CLI="codex"
 BP_MODEL="gpt-codex-test"
 BP_WORKTREE="/fake/worktree/path"
 BP_BASE_REF="origin/main"
-BP_SCRATCH="/fake/scratch/dir"
 
-prompt="$(build_prompt "$REAL_CONTRACT" "$BP_PR_URL" "$BP_ISSUE_URL" "$BP_DESIGN_DOC" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF" "$BP_SCRATCH")"
+prompt="$(build_prompt "$REAL_CONTRACT" "$BP_PR_URL" "$BP_ISSUE_URL" "$BP_DESIGN_DOC" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF")"
 contract_text="$(cat "$REAL_CONTRACT")"
 
 # Contract full text must appear verbatim and unabridged -- checked as an
@@ -476,8 +475,8 @@ esac
 
 # Every one of the contract's required inputs must show up somewhere in the
 # assembled prompt: PR link, issue link, design doc path, this reviewer's
-# own CLI/model identity, the worktree it should read code from, the base
-# ref its pinned diff command needs, and a scratch dir outside the worktree.
+# own CLI/model identity, the worktree it should read code from, and the
+# base ref its pinned diff command needs.
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 printf '%s' "$prompt" | grep -qF "$BP_PR_URL" && pass build-prompt-pr-url || bad build-prompt-pr-url
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -492,21 +491,29 @@ printf '%s' "$prompt" | grep -qF "$BP_MODEL" && pass build-prompt-model || bad b
 printf '%s' "$prompt" | grep -qF "$BP_WORKTREE" && pass build-prompt-worktree-path || bad build-prompt-worktree-path
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 printf '%s' "$prompt" | grep -qF "$BP_BASE_REF" && pass build-prompt-base-ref || bad build-prompt-base-ref
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$prompt" | grep -qF "$BP_SCRATCH" && pass build-prompt-scratch-dir || bad build-prompt-scratch-dir
+
+# The reviewer no longer writes a comment-body file anywhere (it prints
+# its review to stdout instead, wrapped in markers the contract defines),
+# so build_prompt no longer takes or renders a scratch-directory
+# coordinate at all -- confirm that label is genuinely gone from the
+# prompt, not just pointed at an empty/different value.
+case "$prompt" in
+  *'暫存目錄'*) bad build-prompt-no-scratch-dir-coordinate ;;
+  *) pass build-prompt-no-scratch-dir-coordinate ;;
+esac
 
 # Each of the three SKILL.md-gathered coordinates (PR link, issue link,
 # design doc path) may individually come in as an empty string -- must
 # still produce a non-empty, well-formed prompt rather than aborting.
-out="$(build_prompt "$REAL_CONTRACT" "" "$BP_ISSUE_URL" "$BP_DESIGN_DOC" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF" "$BP_SCRATCH")"
+out="$(build_prompt "$REAL_CONTRACT" "" "$BP_ISSUE_URL" "$BP_DESIGN_DOC" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -n "$out" ] && pass build-prompt-empty-pr-url || bad build-prompt-empty-pr-url
 
-out="$(build_prompt "$REAL_CONTRACT" "$BP_PR_URL" "" "$BP_DESIGN_DOC" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF" "$BP_SCRATCH")"
+out="$(build_prompt "$REAL_CONTRACT" "$BP_PR_URL" "" "$BP_DESIGN_DOC" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -n "$out" ] && printf '%s' "$out" | grep -qF '未提供' && pass build-prompt-empty-issue-url || bad build-prompt-empty-issue-url
 
-out="$(build_prompt "$REAL_CONTRACT" "$BP_PR_URL" "$BP_ISSUE_URL" "" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF" "$BP_SCRATCH")"
+out="$(build_prompt "$REAL_CONTRACT" "$BP_PR_URL" "$BP_ISSUE_URL" "" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -n "$out" ] && printf '%s' "$out" | grep -qF '未提供' && pass build-prompt-empty-design-doc || bad build-prompt-empty-design-doc
 
@@ -782,9 +789,17 @@ case "$oc_config_content" in
   *'"edit": "deny"'*) pass opencode-permission-config-denies-edit ;;
   *) bad opencode-permission-config-denies-edit ;;
 esac
+# The reviewer no longer posts anything itself (see launch_reviewer's
+# docstring), so `gh pr comment` is now denied like every other GitHub
+# write -- there is no longer any `gh` write this config needs to leave
+# allowed.
 case "$oc_config_content" in
-  *'"gh pr comment*": "allow"'*) pass opencode-permission-config-allows-pr-comment ;;
-  *) bad opencode-permission-config-allows-pr-comment ;;
+  *'"gh pr comment*": "deny"'*) pass opencode-permission-config-denies-pr-comment ;;
+  *) bad opencode-permission-config-denies-pr-comment ;;
+esac
+case "$oc_config_content" in
+  *'"gh pr comment*": "allow"'*) bad opencode-permission-config-pr-comment-not-allowed ;;
+  *) pass opencode-permission-config-pr-comment-not-allowed ;;
 esac
 case "$oc_config_content" in
   *'"git push*": "deny"'*) pass opencode-permission-config-denies-git-push ;;
@@ -821,6 +836,29 @@ esac
 case "$oc_config_content" in
   *'"gh api -X DELETE*": "deny"'*) pass opencode-permission-config-denies-api-delete ;;
   *) bad opencode-permission-config-denies-api-delete ;;
+esac
+
+# The deny list was widened beyond pr/issue to every GitHub-state-changing
+# `gh` noun this reviewer could plausibly reach, now that it has no `gh`
+# write it still needs -- spot-check a representative sample beyond
+# pr/issue (repo, auth) plus two pr-scoped ones the earlier list didn't
+# have (create, checkout -- the latter mutates local git state via gh,
+# not just GitHub-side state).
+case "$oc_config_content" in
+  *'"gh pr create*": "deny"'*) pass opencode-permission-config-denies-pr-create ;;
+  *) bad opencode-permission-config-denies-pr-create ;;
+esac
+case "$oc_config_content" in
+  *'"gh pr checkout*": "deny"'*) pass opencode-permission-config-denies-pr-checkout ;;
+  *) bad opencode-permission-config-denies-pr-checkout ;;
+esac
+case "$oc_config_content" in
+  *'"gh repo delete*": "deny"'*) pass opencode-permission-config-denies-repo-delete ;;
+  *) bad opencode-permission-config-denies-repo-delete ;;
+esac
+case "$oc_config_content" in
+  *'"gh auth logout*": "deny"'*) pass opencode-permission-config-denies-auth-logout ;;
+  *) bad opencode-permission-config-denies-auth-logout ;;
 esac
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -909,7 +947,7 @@ esac
 # real handoff between the two functions directly. ---
 
 bp_direct_prompt="$(build_prompt "$REAL_CONTRACT" "https://github.com/acme/widgets/pull/1" "" "" \
-  codex "direct-pairing-model-marker" "$LAUNCH_WT" "origin/main" "$LAUNCH_ROOT/scratch")"
+  codex "direct-pairing-model-marker" "$LAUNCH_WT" "origin/main")"
 printf '%s' "$bp_direct_prompt" > "$LAUNCH_LOGS/codex-direct.prompt"
 pid_codex_direct="$(launch_reviewer codex "$LAUNCH_WT" "$LAUNCH_LOGS/codex-direct.log" < "$LAUNCH_LOGS/codex-direct.prompt")"
 i=0
@@ -959,46 +997,50 @@ case "$(cat "$LAUNCH_RECORD_DIR/claude.argv")" in
   *'dontAsk'*) pass launch-reviewer-claude-permission-mode ;;
   *) bad launch-reviewer-claude-permission-mode ;;
 esac
+# The reviewer no longer executes any `gh` command at all (it prints its
+# review to stdout instead of posting anything itself -- see
+# launch_reviewer's docstring), so there must be no Bash pattern for `gh
+# pr comment` anywhere in --allowedTools.
 case "$(cat "$LAUNCH_RECORD_DIR/claude.argv")" in
-  *'Bash(gh pr comment:*)'*) pass launch-reviewer-claude-allows-pr-comment ;;
-  *) bad launch-reviewer-claude-allows-pr-comment ;;
+  *'Bash(gh pr comment:*)'*) bad launch-reviewer-claude-no-gh-comment-bash-pattern ;;
+  *) pass launch-reviewer-claude-no-gh-comment-bash-pattern ;;
 esac
 
-# Write must be on --allowedTools (needed for the contract's required
-# comment-body file -- a real claude binary confirmed it cannot write
-# anywhere at all, including its own scratch directory, without this; see
-# launch_reviewer's docstring) and must NOT also be on --disallowedTools
-# (disallowedTools always wins, so that would silently cancel it back out)
-# -- checked as the argument immediately following each flag, not just
-# "Write appears somewhere", so this can't be fooled by Write showing up
-# in the wrong flag's value.
+# Write must be on --disallowedTools and must NOT be on --allowedTools:
+# this reviewer has no write capability of any kind any more (a real
+# claude binary confirmed dontAsk mode makes the Write tool entirely
+# unavailable under this exact flag pair -- "Write tool 在本 session 不存
+# 在" -- while the same flag pair still let a real `git diff` run; see
+# launch_reviewer's docstring) -- checked as the argument immediately
+# following each flag, not just "Write appears somewhere", so this can't
+# be fooled by Write showing up in the wrong flag's value.
 mapfile -t claude_argv < "$LAUNCH_RECORD_DIR/claude.argv"
-write_allowed=0
+write_wrongly_allowed=0
+write_disallowed=0
 edit_notebookedit_disallowed=0
-write_wrongly_disallowed=0
 for idx in "${!claude_argv[@]}"; do
   case "${claude_argv[$idx]}" in
     --allowedTools)
       case "${claude_argv[$((idx + 1))]:-}" in
-        *Write*) write_allowed=1 ;;
+        *Write*) write_wrongly_allowed=1 ;;
       esac
       ;;
     --disallowedTools)
       case "${claude_argv[$((idx + 1))]:-}" in
-        *Edit*NotebookEdit*) edit_notebookedit_disallowed=1 ;;
+        *Write*) write_disallowed=1 ;;
       esac
       case "${claude_argv[$((idx + 1))]:-}" in
-        *Write*) write_wrongly_disallowed=1 ;;
+        *Edit*NotebookEdit*) edit_notebookedit_disallowed=1 ;;
       esac
       ;;
   esac
 done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$write_allowed" -eq 1 ] && pass launch-reviewer-claude-allows-write || bad launch-reviewer-claude-allows-write
+[ "$write_wrongly_allowed" -eq 0 ] && pass launch-reviewer-claude-write-not-allowed || bad launch-reviewer-claude-write-not-allowed
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$write_disallowed" -eq 1 ] && pass launch-reviewer-claude-disallows-write || bad launch-reviewer-claude-disallows-write
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$edit_notebookedit_disallowed" -eq 1 ] && pass launch-reviewer-claude-disallows-edit-notebookedit || bad launch-reviewer-claude-disallows-edit-notebookedit
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$write_wrongly_disallowed" -eq 0 ] && pass launch-reviewer-claude-write-not-also-disallowed || bad launch-reviewer-claude-write-not-also-disallowed
 
 # --- unknown CLI name -> non-zero, no PID printed ---
 
@@ -1012,6 +1054,56 @@ fi
 
 unset LAUNCH_RECORD_DIR
 export PATH="$saved_path"
+
+# ==============================================================
+# launch_reviewer -- stdout and stderr are captured to separate files
+#
+# The reviewer's full review (wrapped in the contract's BEGIN/END markers)
+# is what SKILL.md parses back out of <cli>.log, so this confirms directly
+# -- against a stub that actually interleaves stdout and stderr writes,
+# not just a stub that happens to only use one stream -- that <cli>.log
+# ends up as exactly the stdout content, complete, in order, with both
+# marker lines intact, and that stderr never lands in it at all.
+# ==============================================================
+
+LOGSPLIT_ROOT="$T/logsplit-fixture"
+LOGSPLIT_WT="$(_make_worktree_fixture "$LOGSPLIT_ROOT")"
+LOGSPLIT_LOGS="$LOGSPLIT_ROOT/logs"
+mkdir -p "$LOGSPLIT_LOGS"
+
+LOGSPLIT_STUB_BIN="$T/logsplit-stub-bin"
+mkdir -p "$LOGSPLIT_STUB_BIN"
+cat > "$LOGSPLIT_STUB_BIN/codex" <<'STUB'
+#!/usr/bin/env bash
+echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
+echo "line one of the review"
+echo "diagnostic noise one" >&2
+echo "line two of the review"
+echo "diagnostic noise two" >&2
+echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
+exit 0
+STUB
+chmod +x "$LOGSPLIT_STUB_BIN/codex"
+
+export PATH="$LOGSPLIT_STUB_BIN:$saved_path"
+printf 'p' > "$LOGSPLIT_LOGS/codex.prompt"
+logsplit_pid="$(launch_reviewer codex "$LOGSPLIT_WT" "$LOGSPLIT_LOGS/codex.log" < "$LOGSPLIT_LOGS/codex.prompt")"
+i=0
+until [ -f "$LOGSPLIT_ROOT/.exit-$logsplit_pid" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+export PATH="$saved_path"
+
+logsplit_log_content="$(cat "$LOGSPLIT_LOGS/codex.log" 2>/dev/null)"
+logsplit_expected=$'===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===\nline one of the review\nline two of the review\n===PR-REVIEW-BY-MULTI-AGENTS-END==='
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$logsplit_log_content" = "$logsplit_expected" ] && pass launch-reviewer-log-file-is-stdout-only-and-complete || bad launch-reviewer-log-file-is-stdout-only-and-complete
+
+case "$logsplit_log_content" in
+  *'diagnostic noise'*) bad launch-reviewer-log-file-excludes-stderr ;;
+  *) pass launch-reviewer-log-file-excludes-stderr ;;
+esac
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$LOGSPLIT_LOGS/codex.log.stderr" ] && grep -qF 'diagnostic noise one' "$LOGSPLIT_LOGS/codex.log.stderr" 2>/dev/null && pass launch-reviewer-stderr-captured-separately || bad launch-reviewer-stderr-captured-separately
 
 # ==============================================================
 # spawn_supervisor
@@ -1351,12 +1443,14 @@ grep -qxF -- '- design document 路徑：docs/distinctive-design-doc-marker.md' 
 grep -qxF -- '- 產出這則 review 的 CLI 名稱：codex' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-cli-name-in-place || bad main-e2e-prompt-cli-name-in-place
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qxF -- '- 產出這則 review 的 model 名稱：e2e-distinctive-model' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-model-in-place || bad main-e2e-prompt-model-in-place
-# scratch_dir is per-CLI (a subdirectory named after the reviewer, e.g.
-# .../scratch/codex), not the shared top-level scratch_dir -- see main()'s
-# own comment on why the three reviewers can't safely share one scratch
-# directory for their comment-body files.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF -- "- 暫存目錄（worktree 之外，張貼 comment 前把內文寫入此處的檔案）：$E2E_BASE_DIR/scratch/codex" "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-scratch-dir-in-place || bad main-e2e-prompt-scratch-dir-in-place
+# No scratch-directory coordinate at all any more: the reviewer prints
+# its review to stdout (main()'s log file) instead of writing a comment-
+# body file anywhere, so there is no longer a scratch path to hand it.
+oc_e2e_prompt_content="$(cat "$E2E_PROMPT_FILE" 2>/dev/null)"
+case "$oc_e2e_prompt_content" in
+  *'暫存目錄'*) bad main-e2e-prompt-no-scratch-dir-coordinate ;;
+  *) pass main-e2e-prompt-no-scratch-dir-coordinate ;;
+esac
 
 E2E_WORKTREE_DIR="$E2E_BASE_DIR/worktree"
 
