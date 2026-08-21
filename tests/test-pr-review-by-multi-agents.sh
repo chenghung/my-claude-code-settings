@@ -13,7 +13,13 @@ bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 source "$RUN_SH"
 
 T="$(mktemp -d)"
-trap 'rm -rf "$T"' EXIT
+# chmod -R u+w before rm -rf: several fixtures below exercise main()'s own
+# read-only chmod on logs_dir/worktree_dir for real (that being the whole
+# point of testing it), and a directory tree with any read-only entries
+# left in it would otherwise make this cleanup itself fail partway
+# through and leave a nonzero exit status from the trap, independent of
+# whether every actual test assertion above it passed.
+trap 'chmod -R u+w "$T" 2>/dev/null; rm -rf "$T"' EXIT
 
 STUB_BIN="$T/bin"
 EMPTY_BIN="$T/empty-bin"
@@ -523,10 +529,15 @@ out="$(build_prompt "$REAL_CONTRACT" "$BP_PR_URL" "$BP_ISSUE_URL" "" "$BP_CLI" "
 # Exercises real local git plumbing (never touches actual GitHub): a bare
 # repo standing in for the GitHub-hosted origin, with a PR-like
 # refs/pull/<N>/head ref pushed to it exactly as GitHub itself exposes one,
-# and a separate work clone acting as the caller's cwd. The origin's path
-# is placed under a directory literally named acme/widgets so it satisfies
-# setup_worktree's own owner/repo sanity check the same way a real
-# https://github.com/acme/widgets(.git) origin URL would.
+# and a separate work clone acting as the caller's cwd. The origin remote
+# is configured with a literal https://github.com/acme/widgets.git URL --
+# what setup_worktree's own origin/owner/repo check (_check_origin_matches,
+# which reads the raw configured URL, not the resolved one -- see its own
+# docstring) needs to see -- with a `url.<local-path>.insteadOf` rule
+# transparently redirecting the actual network operations (fetch/push) to
+# this fixture's own local bare repo instead. This never touches real
+# GitHub: insteadOf rewriting happens client-side, before any connection
+# is made.
 # ==============================================================
 
 GIT_FIXTURE="$T/git-fixture"
@@ -543,7 +554,8 @@ git init -q -b main "$GIT_FIXTURE/work"
   printf 'base\n' > f.txt
   git add f.txt
   git commit -q -m base
-  git remote add origin "$GIT_FIXTURE/remotes/acme/widgets.git"
+  git remote add origin "https://github.com/acme/widgets.git"
+  git config "url.$GIT_FIXTURE/remotes/acme/widgets.git.insteadOf" "https://github.com/acme/widgets.git"
   git push -q origin HEAD:refs/heads/main
   git checkout -q -b feature
   printf 'change\n' >> f.txt
@@ -656,6 +668,32 @@ else
   pass origin-match-rejects-unrelated
 fi
 
+# A local filesystem path ending in .../acme/widgets(.git), or a remote on
+# a *different* host that happens to share the same owner/repo suffix,
+# must both be rejected -- the old suffix-only match (`*/<owner>/<repo>`
+# with no host anchor at all) accepted either just as readily as a real
+# https://github.com/acme/widgets remote.
+if _origin_matches_owner_repo "/home/user/repos/acme/widgets" acme widgets; then
+  bad origin-match-rejects-local-path
+else
+  pass origin-match-rejects-local-path
+fi
+if _origin_matches_owner_repo "/home/user/repos/acme/widgets.git" acme widgets; then
+  bad origin-match-rejects-local-path-git-suffix
+else
+  pass origin-match-rejects-local-path-git-suffix
+fi
+if _origin_matches_owner_repo "git@gitlab.example.com:acme/widgets.git" acme widgets; then
+  bad origin-match-rejects-different-host
+else
+  pass origin-match-rejects-different-host
+fi
+if _origin_matches_owner_repo "https://gitlab.example.com/acme/widgets.git" acme widgets; then
+  bad origin-match-rejects-different-host-https
+else
+  pass origin-match-rejects-different-host-https
+fi
+
 # End-to-end confirmation through setup_worktree itself, not just the
 # helper in isolation: rejection must happen before any network operation,
 # so a repo whose origin is merely set (never actually fetchable) is
@@ -694,15 +732,23 @@ git init -q -b main "$CLEANUP_FIXTURE/work"
   printf 'base\n' > f.txt
   git add f.txt
   git commit -q -m base
-  git remote add origin "$CLEANUP_FIXTURE/remotes/acme/widgets.git"
+  git remote add origin "https://github.com/acme/widgets.git"
+  git config "url.$CLEANUP_FIXTURE/remotes/acme/widgets.git.insteadOf" "https://github.com/acme/widgets.git"
   git push -q origin HEAD:refs/heads/main
   git checkout -q -b feature
   printf 'change\n' >> f.txt
   git commit -aq -m change
   git push -q origin feature:refs/pull/5/head
   git checkout -q main
-  # A stale, non-checked-out leftover from a fictitious earlier run.
+  # A stale, non-checked-out leftover from a fictitious earlier run --
+  # this function's own exact ref shape, so it must be deleted.
   git branch pr-review-999-12345 HEAD
+  # A user's own, differently-purposed branches that merely start with
+  # the same "pr-review-" prefix -- these must survive. Both are
+  # non-checked-out (deletable if the cleanup's own shape check didn't
+  # exist at all), so only the stricter shape match is what protects them.
+  git branch pr-review-notes HEAD
+  git branch pr-review-42 HEAD
 )
 
 (cd "$CLEANUP_FIXTURE/work" && setup_worktree acme widgets 5 "$T/setup-worktree-cleanup-check") >/dev/null 2>&1 || true
@@ -712,6 +758,11 @@ if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review
 else
   pass setup-worktree-cleans-stale-refs
 fi
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-notes && pass setup-worktree-preserves-unrelated-user-branch || bad setup-worktree-preserves-unrelated-user-branch
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-42 && pass setup-worktree-preserves-single-number-user-branch || bad setup-worktree-preserves-single-number-user-branch
 
 # ==============================================================
 # _git_status_snapshot
@@ -971,6 +1022,17 @@ for idx in "${!opencode_argv[@]}"; do
 done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$found" -eq 1 ] && pass launch-reviewer-opencode-workdir-flag || bad launch-reviewer-opencode-workdir-flag
+
+# --auto is required alongside the permission config (see launch_reviewer's
+# docstring): without it, any permission this run's config leaves unset
+# would block waiting for a human who, in this headless run, never
+# answers -- the same class of gap the claude dontAsk/codex read-only
+# flag assertions elsewhere in this section already cover for their own
+# CLIs, so this closes the one CLI that didn't have an equivalent check.
+case "$(cat "$LAUNCH_RECORD_DIR/opencode.argv")" in
+  *'--auto'*) pass launch-reviewer-opencode-auto-flag ;;
+  *) bad launch-reviewer-opencode-auto-flag ;;
+esac
 
 oc_env_config_path="$(cat "$LAUNCH_RECORD_DIR/opencode.env-opencode-config")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -1270,6 +1332,67 @@ until [ ! -e "$SV4_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 export PATH="$saved_path"
 
 # ==============================================================
+# _reap_stale_run_dirs
+#
+# A dead PID for the "stale" sibling is obtained by actually starting and
+# waiting out a short-lived subprocess, not just picking a large constant
+# -- guarantees it is genuinely free at the moment this runs, rather than
+# risking collision with some unrelated real process that happens to
+# still be using an arbitrarily-chosen PID number.
+# ==============================================================
+
+REAP_ROOT="$T/reap-fixture"
+mkdir -p "$REAP_ROOT/remotes" "$REAP_ROOT/work"
+git init -q -b main --bare "$REAP_ROOT/remotes/repo.git"
+git init -q -b main "$REAP_ROOT/work"
+(
+  cd "$REAP_ROOT/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "$REAP_ROOT/remotes/repo.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b branch-a
+  printf 'a\n' >> f.txt
+  git commit -aq -m a
+  git checkout -q -b branch-b main
+  printf 'b\n' >> f.txt
+  git commit -aq -m b
+  git checkout -q main
+)
+
+( exit 0 ) & dead_pid=$!
+wait "$dead_pid" 2>/dev/null || true
+
+REAP_PR_ROOT="$REAP_ROOT/pr-review"
+mkdir -p "$REAP_PR_ROOT"
+REAP_CURRENT_BASE="$REAP_PR_ROOT/1-current-$$"
+mkdir -p "$REAP_CURRENT_BASE"
+
+REAP_STALE_BASE="$REAP_PR_ROOT/2-stale-$dead_pid"
+mkdir -p "$REAP_STALE_BASE"
+(cd "$REAP_ROOT/work" && git worktree add -q "$REAP_STALE_BASE/worktree" branch-a)
+chmod -R a-w "$REAP_STALE_BASE/worktree"
+
+REAP_ALIVE_BASE="$REAP_PR_ROOT/3-alive-$$"
+mkdir -p "$REAP_ALIVE_BASE"
+(cd "$REAP_ROOT/work" && git worktree add -q "$REAP_ALIVE_BASE/worktree" branch-b)
+chmod -R a-w "$REAP_ALIVE_BASE/worktree"
+
+(cd "$REAP_ROOT/work" && _reap_stale_run_dirs "$REAP_CURRENT_BASE")
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$REAP_STALE_BASE/worktree" ] && pass reap-stale-run-dirs-removes-dead-worktree || bad reap-stale-run-dirs-removes-dead-worktree
+# A sibling whose PID ($$, this very test script) is still very much
+# alive must be left completely untouched.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -e "$REAP_ALIVE_BASE/worktree" ] && pass reap-stale-run-dirs-preserves-live-worktree || bad reap-stale-run-dirs-preserves-live-worktree
+chmod -R u+w "$REAP_ALIVE_BASE/worktree" 2>/dev/null || true
+(cd "$REAP_ROOT/work" && git worktree remove --force "$REAP_ALIVE_BASE/worktree") >/dev/null 2>&1 || true
+
+# ==============================================================
 # _extract_review_content
 # ==============================================================
 
@@ -1337,6 +1460,34 @@ else
   pass extract-review-content-rejects-partial-marker-line
 fi
 
+# Adjacent markers (END immediately follows BEGIN, zero content lines
+# between them) is the exact bug all three reviewers independently caught
+# in the skill's own self-review: `sed -n "X,Yp"` with X > Y is NOT sed's
+# "print nothing" case -- it prints line X itself, which for an inverted
+# range built from adjacent markers is the END marker line, silently
+# turned into "content" and posted as if it were the reviewer's actual
+# review. Both the empty-content rejection and the explicit
+# content_start > content_end guard exist specifically because of this.
+cat > "$EXTRACT_FIXTURE_DIR/adjacent-markers.log" <<'LOGEOF'
+before
+===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===
+===PR-REVIEW-BY-MULTI-AGENTS-END===
+after
+LOGEOF
+if out="$(_extract_review_content "$EXTRACT_FIXTURE_DIR/adjacent-markers.log" 2>/dev/null)"; then
+  bad extract-review-content-rejects-adjacent-markers
+else
+  pass extract-review-content-rejects-adjacent-markers
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$out" ] && pass extract-review-content-rejects-adjacent-markers-no-output || bad extract-review-content-rejects-adjacent-markers-no-output
+# Specifically guards against the exact failure mode found: the END
+# marker line itself must never leak out as if it were "content".
+case "$out" in
+  *'PR-REVIEW-BY-MULTI-AGENTS-END'*) bad extract-review-content-adjacent-markers-no-marker-leak ;;
+  *) pass extract-review-content-adjacent-markers-no-marker-leak ;;
+esac
+
 # ==============================================================
 # _post_review_comment
 #
@@ -1349,23 +1500,32 @@ POST_STUB_BIN="$T/post-stub-bin"
 mkdir -p "$POST_STUB_BIN"
 cat > "$POST_STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
-printf '%s
-' "$*" >> "$GH_CALL_LOG"
+printf '%s\n' "$*" >> "$GH_CALL_LOG"
 exit "${GH_STUB_EXIT:-0}"
 STUB
 chmod +x "$POST_STUB_BIN/gh"
 
 export PATH="$POST_STUB_BIN:$saved_path"
 
-# --- success: content extracted, gh called once with the right args, the
-# content file gh was pointed at contains exactly the extracted text ---
+# _post_review_comment no longer does extraction itself (spawn_supervisor
+# now decides whether to call it *after* checking exit code/worktree
+# status, which needs the extracted content either way -- see its own
+# docstring on "withheld"), so these tests extract via
+# _extract_review_content directly first, exactly like spawn_supervisor's
+# own loop now does, then call _post_review_comment with the already-
+# written content file.
+
+# --- success: gh called once with the right args, the content file it
+# was pointed at contains exactly the extracted text ---
 
 POST_ROOT="$T/post-fixture"
 mkdir -p "$POST_ROOT"
 export GH_CALL_LOG="$POST_ROOT/gh-calls-success.log"
 : > "$GH_CALL_LOG"
 export GH_STUB_EXIT=0
-post_status="$(_post_review_comment "$EXTRACT_FIXTURE_DIR/good.log" acme widgets 42 "$POST_ROOT/content-success.md")"
+post_content="$(_extract_review_content "$EXTRACT_FIXTURE_DIR/good.log")"
+printf '%s' "$post_content" > "$POST_ROOT/content-success.md"
+post_status="$(_post_review_comment acme widgets 42 "$POST_ROOT/content-success.md")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$post_status" = "posted" ] && pass post-review-comment-success-status || bad post-review-comment-success-status
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -1379,23 +1539,13 @@ expected=$'line one of the review\nline two of the review'
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$out" = "$expected" ] && pass post-review-comment-content-file-correct || bad post-review-comment-content-file-correct
 
-# --- no-content: gh is never even attempted ---
-
-: > "$GH_CALL_LOG"
-post_status="$(_post_review_comment "$EXTRACT_FIXTURE_DIR/no-begin.log" acme widgets 42 "$POST_ROOT/content-nocontent.md")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$post_status" = "no-content" ] && pass post-review-comment-no-content-status || bad post-review-comment-no-content-status
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$GH_CALL_LOG" ] && pass post-review-comment-no-content-never-calls-gh || bad post-review-comment-no-content-never-calls-gh
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$POST_ROOT/content-nocontent.md" ] && pass post-review-comment-no-content-no-file-written || bad post-review-comment-no-content-no-file-written
-
 # --- failure: retried exactly once (two attempts total), status recorded
 # as post-failed, content file kept (not deleted) so the review isn't lost ---
 
 : > "$GH_CALL_LOG"
 export GH_STUB_EXIT=1
-post_status="$(_post_review_comment "$EXTRACT_FIXTURE_DIR/good.log" acme widgets 42 "$POST_ROOT/content-failed.md")"
+printf '%s' "$post_content" > "$POST_ROOT/content-failed.md"
+post_status="$(_post_review_comment acme widgets 42 "$POST_ROOT/content-failed.md")"
 export GH_STUB_EXIT=0
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$post_status" = "post-failed" ] && pass post-review-comment-failure-status || bad post-review-comment-failure-status
@@ -1494,6 +1644,103 @@ esac
 unset GH_CALL_LOG GH_STUB_EXIT
 export PATH="$saved_path"
 
+# --- posting is gated on exit code 0 AND worktree_status=ok -- a reviewer
+# that produces a perfectly valid, marker-wrapped review but exits
+# non-zero, or one whose worktree got tampered with during its run, must
+# never be posted (post_status=withheld), while the extracted content is
+# still saved to the same content_file a successful post would have used,
+# so a human can still look at it. Both scenarios use a real marker-
+# printing stub through the full launch_reviewer + spawn_supervisor
+# pipeline, not a direct call to the lower-level helpers, since what's
+# being pinned down here is spawn_supervisor's own gating decision. ---
+
+WITHHOLD_STUB_BIN="$T/withhold-stub-bin"
+mkdir -p "$WITHHOLD_STUB_BIN"
+cp "$POST_STUB_BIN/gh" "$WITHHOLD_STUB_BIN/gh"
+
+# Non-zero exit, otherwise a perfectly valid review.
+cat > "$WITHHOLD_STUB_BIN/codex" <<'STUB'
+#!/usr/bin/env bash
+echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
+echo "found a real issue, but then the process crashed"
+echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
+exit 3
+STUB
+chmod +x "$WITHHOLD_STUB_BIN/codex"
+
+WITHHOLD_EXIT_ROOT="$T/withhold-exit-fixture"
+WITHHOLD_EXIT_WT="$(_make_worktree_fixture "$WITHHOLD_EXIT_ROOT")"
+mkdir -p "$WITHHOLD_EXIT_ROOT/logs"
+export PATH="$WITHHOLD_STUB_BIN:$saved_path"
+export GH_CALL_LOG="$WITHHOLD_EXIT_ROOT/gh-calls.log"
+: > "$GH_CALL_LOG"
+export GH_STUB_EXIT=0
+printf 'p' > "$WITHHOLD_EXIT_ROOT/logs/codex.prompt"
+withhold_exit_pid="$(launch_reviewer codex "$WITHHOLD_EXIT_WT" "$WITHHOLD_EXIT_ROOT/logs/codex.log" < "$WITHHOLD_EXIT_ROOT/logs/codex.prompt")"
+WITHHOLD_EXIT_SUMMARY="$WITHHOLD_EXIT_ROOT/summary.txt"
+(cd "$WITHHOLD_EXIT_ROOT/work" && spawn_supervisor "$WITHHOLD_EXIT_WT" "$WITHHOLD_EXIT_SUMMARY" acme widgets 200 "$withhold_exit_pid")
+
+i=0
+until [ -s "$WITHHOLD_EXIT_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+
+case "$(cat "$WITHHOLD_EXIT_SUMMARY" 2>/dev/null)" in
+  "pid=$withhold_exit_pid exit=3"*'post_status=withheld') pass spawn-supervisor-withholds-on-nonzero-exit ;;
+  *) bad spawn-supervisor-withholds-on-nonzero-exit ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$GH_CALL_LOG" ] && pass spawn-supervisor-withheld-never-calls-gh-nonzero-exit || bad spawn-supervisor-withheld-never-calls-gh-nonzero-exit
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'found a real issue' "$WITHHOLD_EXIT_ROOT/.comment-body-$withhold_exit_pid.md" 2>/dev/null && pass spawn-supervisor-withheld-still-saves-content-nonzero-exit || bad spawn-supervisor-withheld-still-saves-content-nonzero-exit
+
+unset GH_CALL_LOG GH_STUB_EXIT
+export PATH="$saved_path"
+
+# Exit 0, but the reviewer also wrote into the worktree it was given via
+# -C (a contract violation the git-status comparison is specifically
+# there to catch), producing a real invalidated result, not a contrived
+# one.
+cat > "$WITHHOLD_STUB_BIN/codex" <<'STUB'
+#!/usr/bin/env bash
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-C" ]; then
+    printf 'dirty\n' > "$a/INJECTED-BY-WITHHOLD-TEST.txt"
+  fi
+  prev="$a"
+done
+echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
+echo "a review the worktree tampering means we can no longer trust"
+echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
+exit 0
+STUB
+chmod +x "$WITHHOLD_STUB_BIN/codex"
+
+WITHHOLD_INVALID_ROOT="$T/withhold-invalidated-fixture"
+WITHHOLD_INVALID_WT="$(_make_worktree_fixture "$WITHHOLD_INVALID_ROOT")"
+mkdir -p "$WITHHOLD_INVALID_ROOT/logs"
+export PATH="$WITHHOLD_STUB_BIN:$saved_path"
+export GH_CALL_LOG="$WITHHOLD_INVALID_ROOT/gh-calls.log"
+: > "$GH_CALL_LOG"
+printf 'p' > "$WITHHOLD_INVALID_ROOT/logs/codex.prompt"
+withhold_invalid_pid="$(launch_reviewer codex "$WITHHOLD_INVALID_WT" "$WITHHOLD_INVALID_ROOT/logs/codex.log" < "$WITHHOLD_INVALID_ROOT/logs/codex.prompt")"
+WITHHOLD_INVALID_SUMMARY="$WITHHOLD_INVALID_ROOT/summary.txt"
+(cd "$WITHHOLD_INVALID_ROOT/work" && spawn_supervisor "$WITHHOLD_INVALID_WT" "$WITHHOLD_INVALID_SUMMARY" acme widgets 201 "$withhold_invalid_pid")
+
+i=0
+until [ -s "$WITHHOLD_INVALID_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+
+case "$(cat "$WITHHOLD_INVALID_SUMMARY" 2>/dev/null)" in
+  "pid=$withhold_invalid_pid exit=0"*'worktree_status=invalidated'*'post_status=withheld') pass spawn-supervisor-withholds-on-invalidated-worktree ;;
+  *) bad spawn-supervisor-withholds-on-invalidated-worktree ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$GH_CALL_LOG" ] && pass spawn-supervisor-withheld-never-calls-gh-invalidated || bad spawn-supervisor-withheld-never-calls-gh-invalidated
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'tampering means' "$WITHHOLD_INVALID_ROOT/.comment-body-$withhold_invalid_pid.md" 2>/dev/null && pass spawn-supervisor-withheld-still-saves-content-invalidated || bad spawn-supervisor-withheld-still-saves-content-invalidated
+
+unset GH_CALL_LOG
+export PATH="$saved_path"
+
 # ==============================================================
 # print_summary
 # ==============================================================
@@ -1571,6 +1818,90 @@ fi
 unset GH_STUB_BASE_REF_NAME
 export PATH="$saved_path"
 
+# --- _check_origin_matches must run, and reject, before resolve_base_ref
+# ever gets a chance to fetch -- exercised through a real main() run
+# (bash "$RUN_SH" ...), not just a direct resolve_base_ref call, since
+# what's actually being pinned down here is main()'s own call *order*.
+# Before this fix, a run against the wrong owner/repo still mutated a
+# remote-tracking ref for the (unrelated) base branch before eventually
+# being rejected by setup_worktree's own origin check further down. ---
+
+ORIGIN_ORDER_FIXTURE="$T/origin-order-fixture"
+mkdir -p "$ORIGIN_ORDER_FIXTURE/remotes/acme" "$ORIGIN_ORDER_FIXTURE/work"
+git init -q -b main --bare "$ORIGIN_ORDER_FIXTURE/remotes/acme/widgets.git"
+git init -q -b main "$ORIGIN_ORDER_FIXTURE/work"
+(
+  cd "$ORIGIN_ORDER_FIXTURE/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "https://github.com/acme/widgets.git"
+  git config "url.$ORIGIN_ORDER_FIXTURE/remotes/acme/widgets.git.insteadOf" "https://github.com/acme/widgets.git"
+  git push -q origin HEAD:refs/heads/main
+  git push -q origin HEAD:refs/heads/origin-order-base-branch
+  git checkout -q -b feature
+  printf 'feature\n' >> f.txt
+  git commit -aq -m feature
+  git push -q origin feature:refs/pull/1/head
+  git checkout -q main
+  # `git push` itself already creates/updates the local remote-tracking
+  # ref for whatever it just pushed, as a normal side effect independent
+  # of resolve_base_ref -- deleted right back out so the assertion below
+  # can tell "resolve_base_ref's own fetch created this" apart from "this
+  # was already here from this fixture's own setup push".
+  git update-ref -d refs/remotes/origin/origin-order-base-branch
+)
+
+if out="$(cd "$ORIGIN_ORDER_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="origin-order-base-branch" \
+  HOME="$T/origin-order-home" PATH="$STUB_BIN:$saved_path" \
+  bash "$RUN_SH" "https://github.com/wrong-owner/wrong-repo/pull/1" "" "" 2>&1)"; then
+  bad main-e2e-origin-check-rejects-wrong-owner
+else
+  pass main-e2e-origin-check-rejects-wrong-owner
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+git -C "$ORIGIN_ORDER_FIXTURE/work" show-ref --verify --quiet refs/remotes/origin/origin-order-base-branch && bad main-e2e-origin-check-runs-before-fetch || pass main-e2e-origin-check-runs-before-fetch
+
+# --- gh missing is checked (and reported clearly) before parse_pr_url's
+# own empty-input derivation attempt, which needs gh itself and would
+# otherwise fail for the right underlying reason but report the wrong one
+# ("no PR is associated with this branch" reads like a branch problem,
+# not an environment one). ---
+
+GH_MISSING_FIXTURE="$T/gh-missing-fixture"
+mkdir -p "$GH_MISSING_FIXTURE"
+git init -q -b main "$GH_MISSING_FIXTURE"
+(
+  cd "$GH_MISSING_FIXTURE"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'x\n' > f.txt
+  git add f.txt
+  git commit -q -m init
+)
+
+# `bash` itself must be resolved via an absolute path here: prefixing
+# PATH=$EMPTY_BIN onto the command line applies to resolving *that*
+# command too, not just to what it does internally -- an empty PATH would
+# make "bash" itself fail to be found (exit 127, "command not found"),
+# which is not what this test is trying to exercise.
+BASH_ABS_PATH="$(command -v bash)"
+if out="$(cd "$GH_MISSING_FIXTURE" && PATH="$EMPTY_BIN" "$BASH_ABS_PATH" "$RUN_SH" "" "" "" 2>&1)"; then
+  bad main-e2e-gh-missing-fails
+else
+  pass main-e2e-gh-missing-fails
+fi
+case "$out" in
+  *'gh CLI not found'*) pass main-e2e-gh-missing-reports-correct-reason ;;
+  *) bad main-e2e-gh-missing-reports-correct-reason ;;
+esac
+case "$out" in
+  *'no PR is associated'*) bad main-e2e-gh-missing-does-not-blame-branch ;;
+  *) pass main-e2e-gh-missing-does-not-blame-branch ;;
+esac
+
 # ==============================================================
 # _dispatch_failed_cleanup
 #
@@ -1602,8 +1933,8 @@ esac
 # ==============================================================
 # main() end-to-end
 #
-# The most load-bearing test in this section: Task 4's build_prompt takes
-# 9 positional parameters, and a caller that transposes two of them (e.g.
+# The most load-bearing test in this section: build_prompt takes 8
+# positional parameters, and a caller that transposes two of them (e.g.
 # swaps issue_url and design_doc_path, or worktree_path and base_ref)
 # produces a syntactically valid but semantically wrong prompt with no
 # error anywhere -- set -u only catches a missing argument, never a
@@ -1620,6 +1951,12 @@ esac
 # main() directly (main() calls `exit` on its failure paths, which would
 # kill this whole test script if called in-process instead of as a real
 # subprocess).
+#
+# The origin remote is a literal https://github.com/acme9pr/widgets9pr.git
+# URL, matching what _check_origin_matches needs to see in the raw
+# configured value, with a `url.<local-path>.insteadOf` rule redirecting
+# the actual fetch/push traffic to this fixture's own local bare repo --
+# see GIT_FIXTURE's own comment on this technique.
 # ==============================================================
 
 E2E_FIXTURE="$T/e2e-fixture"
@@ -1633,7 +1970,8 @@ git init -q -b main "$E2E_FIXTURE/work"
   printf 'base\n' > f.txt
   git add f.txt
   git commit -q -m base
-  git remote add origin "$E2E_FIXTURE/remotes/acme9pr/widgets9pr.git"
+  git remote add origin "https://github.com/acme9pr/widgets9pr.git"
+  git config "url.$E2E_FIXTURE/remotes/acme9pr/widgets9pr.git.insteadOf" "https://github.com/acme9pr/widgets9pr.git"
   git push -q origin HEAD:refs/heads/e2e-distinctive-base
   git checkout -q -b feature
   printf 'feature\n' >> f.txt
@@ -1764,5 +2102,99 @@ fi
 E2E_LOGS_DIR2="$(find "$E2E_HOME2/.tmp" -type d -name logs 2>/dev/null | head -1)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -n "$E2E_LOGS_DIR2" ] && grep -qF '未提供' "$E2E_LOGS_DIR2/codex.prompt" 2>/dev/null && pass main-e2e-empty-args-render-not-provided || bad main-e2e-empty-args-render-not-provided
+
+# --- main() actually applies its own worktree/logs_dir read-only chmod,
+# not just "chmod behaves this way when I do it myself in a fixture"
+# (which CHMOD_ROOT above already covers, but deleting main()'s own
+# chmod line entirely would leave that test just as green). logs_dir is
+# never removed by this pipeline, so checking its permissions after
+# `bash "$RUN_SH"` returns is not racy; the worktree, on the other hand,
+# gets removed asynchronously by spawn_supervisor, so checking *its*
+# permissions the same way would race that removal -- instead, a real
+# stub reviewer attempts one write against the worktree path it was
+# actually launched against (via its own -C argument) at startup, and
+# records whether that write succeeded or was blocked into its own
+# stdout (captured in <cli>.log, outside the worktree, so it survives
+# the worktree's later removal) -- avoiding both the race and having to
+# inspect permissions after the fact at all. ---
+
+CHMODE2E_FIXTURE="$T/chmod-e2e-fixture"
+mkdir -p "$CHMODE2E_FIXTURE/remotes/acme" "$CHMODE2E_FIXTURE/work"
+git init -q -b main --bare "$CHMODE2E_FIXTURE/remotes/acme/widgets.git"
+git init -q -b main "$CHMODE2E_FIXTURE/work"
+(
+  cd "$CHMODE2E_FIXTURE/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "https://github.com/acme/widgets.git"
+  git config "url.$CHMODE2E_FIXTURE/remotes/acme/widgets.git.insteadOf" "https://github.com/acme/widgets.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b feature
+  printf 'feature\n' >> f.txt
+  git commit -aq -m feature
+  git push -q origin feature:refs/pull/50/head
+  git checkout -q main
+)
+
+CHMODE2E_STUB_BIN="$T/chmod-e2e-stub-bin"
+mkdir -p "$CHMODE2E_STUB_BIN"
+cp "$STUB_BIN/gh" "$CHMODE2E_STUB_BIN/gh"
+# claude and opencode are also stubbed here (as trivial "exit 0" stand-ins
+# that never actually run for this test's own purpose) even though this
+# test only cares about codex's own write-attempt probe: PATH below is
+# "$CHMODE2E_STUB_BIN:$saved_path", not an exclusive PATH, so leaving
+# either name out would let detect_reviewers resolve it to the *real*,
+# system-installed claude/opencode further down that same PATH -- which
+# main() would then actually launch, for real, burning real tokens. Bitten
+# by exactly this once already earlier in this same task (see this task's
+# own report).
+cp "$STUB_BIN/claude" "$CHMODE2E_STUB_BIN/claude"
+cp "$STUB_BIN/opencode" "$CHMODE2E_STUB_BIN/opencode"
+cat > "$CHMODE2E_STUB_BIN/codex" <<'STUB'
+#!/usr/bin/env bash
+prev=""
+worktree_arg=""
+for a in "$@"; do
+  [ "$prev" = "-C" ] && worktree_arg="$a"
+  prev="$a"
+done
+if : > "$worktree_arg/WRITE-ATTEMPT-PROBE.txt" 2>/dev/null; then
+  echo "WRITE_ATTEMPT_RESULT: succeeded"
+else
+  echo "WRITE_ATTEMPT_RESULT: blocked"
+fi
+echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
+echo "probe review"
+echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
+exit 0
+STUB
+chmod +x "$CHMODE2E_STUB_BIN/codex"
+
+CHMODE2E_HOME="$T/chmod-e2e-home"
+if out="$(cd "$CHMODE2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME=main HOME="$CHMODE2E_HOME" PATH="$CHMODE2E_STUB_BIN:$saved_path" \
+  bash "$RUN_SH" "https://github.com/acme/widgets/pull/50" "" "" 2>&1)"; then
+  pass main-e2e-chmod-run-succeeds
+else
+  bad main-e2e-chmod-run-succeeds
+fi
+
+CHMODE2E_LOGS_DIR="$(find "$CHMODE2E_HOME/.tmp" -type d -name logs 2>/dev/null | head -1)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$CHMODE2E_LOGS_DIR" ] && grep -qF 'WRITE_ATTEMPT_RESULT: blocked' "$CHMODE2E_LOGS_DIR/codex.log" 2>/dev/null && pass main-e2e-worktree-write-actually-blocked || bad main-e2e-worktree-write-actually-blocked
+
+CHMODE2E_BASE_DIR="$(dirname "${CHMODE2E_LOGS_DIR:-/nonexistent}")"
+# Not racy: logs_dir is never removed by this pipeline, so its
+# permissions are stable to inspect any time after the run returns.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -d "$CHMODE2E_LOGS_DIR" ] && [ ! -w "$CHMODE2E_LOGS_DIR" ] && pass main-e2e-logs-dir-actually-read-only || bad main-e2e-logs-dir-actually-read-only
+if ( : > "$CHMODE2E_LOGS_DIR/should-not-be-writable.txt" ) 2>/dev/null; then
+  bad main-e2e-logs-dir-write-actually-denied
+else
+  pass main-e2e-logs-dir-write-actually-denied
+fi
+chmod -R u+w "$CHMODE2E_BASE_DIR" 2>/dev/null || true
 
 exit $fail

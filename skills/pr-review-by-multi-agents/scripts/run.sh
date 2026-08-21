@@ -60,23 +60,43 @@ parse_pr_url() {
   printf '%s %s %s\n' "$owner" "$repo" "$number"
 }
 
-# check_prerequisites <owner> <repo> <number>
+# _check_gh_available
 #
-# Verifies gh is installed, gh is authenticated, and the target PR exists.
-# Returns 0 when all three hold. On the first failure, prints the reason to
-# stderr and returns non-zero.
-check_prerequisites() {
-  local owner="$1" repo="$2" number="$3"
-
+# Verifies gh is installed and authenticated. Returns 0 when both hold; on
+# the first failure prints the reason to stderr and returns non-zero.
+# Split out from check_prerequisites (which also checks the PR exists,
+# needing owner/repo/number that main() doesn't have yet until parse_pr_url
+# has already run) so main() can call this before parse_pr_url: an empty
+# PR link makes parse_pr_url call `gh pr view` itself, with stderr
+# discarded, to derive the PR from the current branch -- without this
+# check running first, a missing/unauthenticated gh would make that
+# derivation fail for the *right* underlying reason but surface the
+# *wrong* one, since parse_pr_url's own failure message ("no PR is
+# associated with this branch") reads like a branch problem, not an
+# environment one.
+_check_gh_available() {
   if ! command -v gh >/dev/null 2>&1; then
-    printf 'check_prerequisites: gh CLI not found in PATH\n' >&2
+    printf 'run.sh: gh CLI not found in PATH\n' >&2
     return 1
   fi
 
   if ! gh auth status >/dev/null 2>&1; then
-    printf 'check_prerequisites: gh is not authenticated (run: gh auth login)\n' >&2
+    printf 'run.sh: gh is not authenticated (run: gh auth login)\n' >&2
     return 1
   fi
+
+  return 0
+}
+
+# check_prerequisites <owner> <repo> <number>
+#
+# Verifies gh is installed, gh is authenticated (see _check_gh_available),
+# and the target PR exists. Returns 0 when all three hold. On the first
+# failure, prints the reason to stderr and returns non-zero.
+check_prerequisites() {
+  local owner="$1" repo="$2" number="$3"
+
+  _check_gh_available || return 1
 
   if ! gh pr view "$number" --repo "$owner/$repo" >/dev/null 2>&1; then
     printf 'check_prerequisites: PR %s/%s#%s not found\n' "$owner" "$repo" "$number" >&2
@@ -132,42 +152,145 @@ resolve_contract_path() {
 
 # _origin_matches_owner_repo <origin_url> <owner> <repo>
 #
-# True (exit 0) when origin_url is a github-style HTTPS or SSH remote URL
-# for exactly <owner>/<repo>, with or without a trailing .git. Requires an
-# explicit / or : boundary immediately before <owner> -- a bare `*` prefix
-# is not enough, because e.g. an owner of "acme" would then also match a
-# same-suffixed but different owner like "not-acme" (.../not-acme/widgets.git
-# ends with "acme/widgets.git" too). owner/repo are quoted inside the case
-# pattern, so any glob metacharacters that happened to be in their values
-# are matched literally rather than interpreted as wildcards.
+# True (exit 0) when origin_url is a github.com HTTPS or SSH remote URL
+# for exactly <owner>/<repo>, with or without a trailing .git. Every
+# accepted form is matched in full -- host included, anchored at both
+# ends, not merely "ends with /<owner>/<repo>" -- so this only accepts
+# github.com specifically: a *local filesystem path* that happens to end
+# in .../acme/widgets, or an SSH/HTTPS remote on a *different* host
+# (git@gitlab.example.com:acme/widgets.git, or a self-hosted GitHub
+# Enterprise instance) used to pass the old suffix-only check just as
+# readily as a real https://github.com/acme/widgets remote would --
+# neither of those is actually this PR's repo, and this function's whole
+# job is refusing to fetch/operate against something that isn't. owner/
+# repo are quoted inside each case pattern, so any glob metacharacters
+# that happened to be in their values are matched literally rather than
+# interpreted as wildcards.
 _origin_matches_owner_repo() {
   local origin_url="$1" owner="$2" repo="$3"
 
   case "$origin_url" in
-    */"$owner/$repo" | */"$owner/$repo".git | *:"$owner/$repo" | *:"$owner/$repo".git) return 0 ;;
+    "https://github.com/$owner/$repo" | "https://github.com/$owner/$repo.git") return 0 ;;
+    "git@github.com:$owner/$repo" | "git@github.com:$owner/$repo.git") return 0 ;;
+    "ssh://git@github.com/$owner/$repo" | "ssh://git@github.com/$owner/$repo.git") return 0 ;;
     *) return 1 ;;
   esac
 }
 
-# setup_worktree <owner> <repo> <number> <base_dir>
+# _check_origin_matches <owner> <repo>
 #
-# Prunes stale worktree registrations, then checks the PR's head commit out
-# into a new worktree at <base_dir>/worktree, leaving the caller's current
-# branch and working tree untouched. Prints the worktree's absolute path to
-# stdout on success. Returns non-zero, printing nothing, on any failure --
-# spec section 6 treats a worktree that didn't actually get created as a
-# hard-stop precondition, same tier as gh being missing.
-setup_worktree() {
-  local owner="$1" repo="$2" number="$3" base_dir="$4"
-  local origin_url worktree_path pr_ref stale_ref
+# Reads the caller's cwd's `origin` remote URL and verifies it actually
+# points at <owner>/<repo> on github.com (see _origin_matches_owner_repo),
+# printing a clear reason to stderr and returning non-zero otherwise. Both
+# setup_worktree and main() call this -- main() calls it once, up front,
+# before resolve_base_ref or setup_worktree ever run, because
+# resolve_base_ref's own `git fetch` (updating a remote-tracking ref) used
+# to run *before* setup_worktree's origin check did, meaning a run started
+# from the wrong cwd would still mutate that ref before eventually being
+# rejected. setup_worktree keeps its own call too, as a second, redundant
+# gate -- it is exercised directly in this repo's own tests and could in
+# principle be called by some future caller that skips this new
+# up-front main() check, and it must stay safe on its own regardless.
+#
+# Reads `git config --get remote.origin.url` (the raw, literally-
+# configured value) rather than `git remote get-url origin` (the
+# *resolved* value, after any `url.<x>.insteadOf` rewrite rule applies) on
+# purpose: this check's job is confirming the remote's *identity* matches
+# the target PR's repo, and a user who has configured an insteadOf rule to
+# route their own github.com traffic through a mirror or proxy has made
+# that redirection an intentional part of their own git configuration, not
+# a foreign substitution this script should be second-guessing -- the
+# actual `git fetch` calls elsewhere in this file still go through the
+# `origin` remote by name either way, so any such rewrite still applies to
+# them exactly as the user configured it. Checking the resolved value
+# instead would also reject that legitimate setup outright, since a
+# mirror's own URL will almost never itself end in `/<owner>/<repo>`.
+_check_origin_matches() {
+  local owner="$1" repo="$2" origin_url
 
-  # Fail fast if the cwd's origin doesn't actually point at this PR's own
-  # repo, rather than silently fetching/reviewing the wrong codebase.
-  origin_url="$(git remote get-url origin 2>/dev/null)" || return 1
+  origin_url="$(git config --get remote.origin.url 2>/dev/null)" || return 1
   if ! _origin_matches_owner_repo "$origin_url" "$owner" "$repo"; then
-    printf 'setup_worktree: origin remote (%s) does not match %s/%s\n' "$origin_url" "$owner" "$repo" >&2
+    printf '_check_origin_matches: origin remote (%s) does not match %s/%s\n' "$origin_url" "$owner" "$repo" >&2
     return 1
   fi
+}
+
+# _reap_stale_run_dirs <base_dir>
+#
+# Best-effort recovery for run directories left behind by a previous
+# invocation whose spawn_supervisor died non-gracefully (SIGKILL, machine
+# reboot) before it could restore write access to the worktree and remove
+# it. Neither `git worktree prune` (only clears registrations whose
+# directory is already gone -- this one's directory is very much still
+# there) nor the stale-ref branch cleanup below (git refuses to delete a
+# branch still checked out in a still-registered worktree) ever reaches
+# this on their own; left alone, every crashed run permanently
+# accumulates one abandoned read-only worktree, one abandoned branch, and
+# one abandoned git worktree registration, and a human trying to clean it
+# up by hand has to restore write access themselves before anything else
+# will even let them delete it.
+#
+# Scans <base_dir>'s own siblings (other run directories under the same
+# pr-review root) for ones whose embedded PID (the trailing -<PID> this
+# script's own base_dir naming always ends in) no longer belongs to a
+# running process, and whose worktree subdirectory still exists. For each
+# one found, restores write access and removes it the same way
+# spawn_supervisor's own successful-path cleanup does. Runs before
+# `git worktree prune` and the stale-ref branch cleanup below, in the same
+# invocation, specifically so that by the time those run, this reap has
+# already made both of them effective for whatever it just cleaned up
+# (registration gone, branch no longer checked out) instead of leaving
+# that branch for a follow-up run to notice.
+#
+# Best-effort throughout -- failures here must never block the current
+# run from proceeding, since this is opportunistic cleanup of a *previous*
+# run's mess, not a precondition of this one.
+_reap_stale_run_dirs() {
+  local base_dir="$1"
+  local pr_review_root sibling sibling_pid sibling_worktree
+
+  pr_review_root="$(dirname "$base_dir")"
+  [ -d "$pr_review_root" ] || return 0
+
+  for sibling in "$pr_review_root"/*; do
+    [ -d "$sibling" ] || continue
+    [ "$sibling" != "$base_dir" ] || continue
+
+    sibling_pid="${sibling##*-}"
+    [[ "$sibling_pid" =~ ^[0-9]+$ ]] || continue
+    kill -0 "$sibling_pid" 2>/dev/null && continue
+
+    sibling_worktree="$sibling/worktree"
+    [ -d "$sibling_worktree" ] || continue
+
+    chmod -R u+w "$sibling_worktree" 2>/dev/null || true
+    git worktree remove --force "$sibling_worktree" >/dev/null 2>&1 || rm -rf "$sibling_worktree" 2>/dev/null || true
+  done
+
+  return 0
+}
+
+# setup_worktree <owner> <repo> <number> <base_dir>
+#
+# Reaps stale run directories from crashed previous invocations (see
+# _reap_stale_run_dirs), prunes stale worktree registrations, then checks
+# the PR's head commit out into a new worktree at <base_dir>/worktree,
+# leaving the caller's current branch and working tree untouched. Prints
+# the worktree's absolute path to stdout on success. Returns non-zero,
+# printing nothing, on any failure -- spec section 6 treats a worktree
+# that didn't actually get created as a hard-stop precondition, same tier
+# as gh being missing.
+setup_worktree() {
+  local owner="$1" repo="$2" number="$3" base_dir="$4"
+  local worktree_path pr_ref stale_ref
+
+  # Fail fast if the cwd's origin doesn't actually point at this PR's own
+  # repo, rather than silently fetching/reviewing the wrong codebase. See
+  # _check_origin_matches's own docstring on why main() also calls this
+  # up front now, before this function ever runs.
+  _check_origin_matches "$owner" "$repo" || return 1
+
+  _reap_stale_run_dirs "$base_dir" || true
 
   git worktree prune >/dev/null 2>&1 || true
 
@@ -176,8 +299,22 @@ setup_worktree() {
   # run adds one more branch that never goes away. git refuses to delete a
   # branch that is still checked out in a live worktree, so this only ever
   # removes ones that are genuinely stale.
+  #
+  # The `pr-review-*` glob below is only a cheap pre-filter for
+  # enumeration; the actual delete decision is gated by the `[[ =~ ]]`
+  # match right below it, which requires the FULL ref name to fit this
+  # function's own exact ref shape -- `pr-review-<PR-number>-<PID>`, both
+  # segments purely numeric, anchored at both ends. This match used to be
+  # just the glob-based prefix check above, which would also match (and
+  # force-delete) a user's own differently-purposed branch that merely
+  # happened to start with the same prefix, e.g. "pr-review-notes" -- with
+  # no confirmation prompt, since the model-facing consent gate in
+  # SKILL.md is natural language a human reads, not something this script
+  # invoked directly (skipping SKILL.md entirely) ever goes through.
   while IFS= read -r stale_ref; do
-    git branch -D "$stale_ref" >/dev/null 2>&1 || true
+    if [[ "$stale_ref" =~ ^pr-review-[0-9]+-[0-9]+$ ]]; then
+      git branch -D "$stale_ref" >/dev/null 2>&1 || true
+    fi
   done < <(git for-each-ref --format='%(refname:short)' 'refs/heads/pr-review-*' 2>/dev/null)
 
   worktree_path="$base_dir/worktree"
@@ -479,19 +616,20 @@ JSON
 # rather than only in .tmp/probe-results.md, since that file is gitignored
 # and won't exist for anyone who didn't run the probe themselves. Stdout
 # goes to <log_file> (the reviewer's full review text, wrapped in the
-# contract's own BEGIN/END markers -- SKILL.md's reporting chain parses
-# this file by those markers); stderr goes to a separate `<log_file>.stderr`
-# file, not merged into the same one, so a stderr write can never end up
-# interleaved with -- and never risks displacing -- a marker line in the
-# file SKILL.md actually parses. Prints the launched process's PID to
-# stdout on success.
+# contract's own BEGIN/END markers -- spawn_supervisor's own extract-and-
+# post step, not any AI-driven layer, parses this file by those markers);
+# stderr goes to a separate `<log_file>.stderr` file, not merged into the
+# same one, so a stderr write can never end up interleaved with -- and
+# never risks displacing -- a marker line in the file that step actually
+# parses. Prints the launched process's PID to stdout on success.
 #
 # The reviewer is never given any tool that can write anything, anywhere
 # (see the claude/codex/opencode bullets below): it reports its findings
-# by printing them to stdout instead of posting them itself, and a
-# separate layer (SKILL.md, outside this script) reads that stdout back
-# from the log and delegates the actual GitHub posting to a dedicated
-# subagent. This is deliberate, not merely convenient: the PR diff and
+# by printing them to stdout instead of posting them itself, and
+# spawn_supervisor -- a plain shell subprocess this script forked, not an
+# AI agent -- reads that stdout back from the log once this reviewer
+# finishes and posts it itself (see spawn_supervisor's own docstring).
+# This is deliberate, not merely convenient: the PR diff and
 # issue content this prompt embeds are external, attacker-controllable
 # input that flows straight into the reviewer's own context, i.e. a
 # textbook indirect-prompt-injection surface -- and the repo this skill
@@ -674,8 +812,9 @@ launch_reviewer() {
   # Stdout and stderr are captured to two separate files, not one shared
   # one via `2>&1`: the reviewer's full review text (between the
   # BEGIN/END markers the contract wraps it in) now goes to stdout, and
-  # SKILL.md's own reporting chain parses <cli>.log by those markers to
-  # extract it. Sharing one file with stderr risks a stderr write landing
+  # spawn_supervisor's own extract-and-post step parses <cli>.log by
+  # those markers to extract it. Sharing one file with stderr risks a
+  # stderr write landing
   # between two stdout writes (stdio is commonly block-buffered rather
   # than line-buffered once stdout isn't a TTY, so a large stdout flush
   # and a small interleaved stderr write are not guaranteed to land in
@@ -772,18 +911,30 @@ launch_reviewer() {
 # Prints the reviewer's review text -- everything between the reviewer
 # contract's two marker lines -- to stdout and returns 0, but only when
 # both markers are found as their own complete line (byte-for-byte, not
-# merely containing the marker text somewhere) and the begin marker's
-# line number is strictly before the end marker's. Any other outcome
-# (either marker missing, or the end marker at or before the begin
-# marker) means this reviewer produced no content this call can trust,
-# and returns 1 with nothing printed -- callers must not fall back to
-# posting a partial or mis-scoped excerpt in that case. Takes the first
-# occurrence of each marker in the file; a reviewer is only ever prompted
-# to print one review, so a real second BEGIN or END would itself be a
-# sign something is already wrong, not a case to search past.
+# merely containing the marker text somewhere), the begin marker's line
+# number is strictly before the end marker's, AND at least one line of
+# actual content sits between them. Any other outcome (either marker
+# missing, the end marker at or before the begin marker, or nothing but
+# blank result between two adjacent markers) means this reviewer produced
+# no content this call can trust, and returns 1 with nothing printed --
+# callers must not fall back to posting a partial or mis-scoped excerpt in
+# that case. Takes the first occurrence of each marker in the file; a
+# reviewer is only ever prompted to print one review, so a real second
+# BEGIN or END would itself be a sign something is already wrong, not a
+# case to search past.
+#
+# Adjacent markers (end_line immediately follows begin_line, zero content
+# lines between them) get an explicit early return rather than being left
+# to `sed -n "X,Yp"` with X > Y: that is NOT sed's "print nothing" case --
+# verified empirically that GNU sed instead prints line X itself, which
+# here would be the END marker line, silently turned into "content" and
+# posted as if it were the reviewer's actual review. The non-empty check
+# after a successful sed call is a second, independent guard against the
+# same underlying failure mode (a reviewer producing a technically-valid
+# but substance-free review), not a leftover from the adjacent-marker fix.
 _extract_review_content() {
   local log_file="$1"
-  local begin_line end_line
+  local begin_line end_line content_start content_end content
 
   begin_line="$(grep -n -x -F -m 1 '===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===' "$log_file" 2>/dev/null | cut -d: -f1)" || begin_line=""
   end_line="$(grep -n -x -F -m 1 '===PR-REVIEW-BY-MULTI-AGENTS-END===' "$log_file" 2>/dev/null | cut -d: -f1)" || end_line=""
@@ -792,44 +943,36 @@ _extract_review_content() {
   [ -n "$end_line" ] || return 1
   [ "$begin_line" -lt "$end_line" ] || return 1
 
-  sed -n "$((begin_line + 1)),$((end_line - 1))p" "$log_file"
+  content_start=$((begin_line + 1))
+  content_end=$((end_line - 1))
+  [ "$content_start" -le "$content_end" ] || return 1
+
+  content="$(sed -n "${content_start},${content_end}p" "$log_file")"
+  [ -n "$content" ] || return 1
+
+  printf '%s\n' "$content"
 }
 
-# _post_review_comment <log_file> <owner> <repo> <number> <content_file>
+# _post_review_comment <owner> <repo> <number> <content_file>
 #
-# Extracts this reviewer's review from <log_file> (see
-# _extract_review_content) and, if found, posts it to the PR via
-# `gh pr comment <number> --repo <owner>/<repo> --body-file <content_file>`,
-# retrying once (two attempts total) on failure. <content_file> is created
-# by this function -- by this script itself, not by the reviewer -- so the
-# reviewer contract's read-only constraint (which binds the reviewer CLI's
-# own behavior, not this script's) does not apply to it; the caller is
-# responsible for pointing it somewhere outside the worktree (spawn_
-# supervisor uses base_dir, the run's own scratch/log area). Prints
-# exactly one of "posted", "no-content", or "post-failed" to stdout and
+# Posts the content already sitting in <content_file> (the caller is
+# responsible for having extracted and written it there -- see
+# _extract_review_content) to the PR via `gh pr comment <number> --repo
+# <owner>/<repo> --body-file <content_file>`, retrying once (two attempts
+# total) on failure. <content_file> is created by the caller, not the
+# reviewer, so the reviewer contract's read-only constraint (which binds
+# the reviewer CLI's own behavior, not this script's) does not apply to
+# it; the caller is responsible for pointing it somewhere outside the
+# worktree (spawn_supervisor uses base_dir, the run's own scratch/log
+# area). Prints exactly one of "posted" or "post-failed" to stdout and
 # always returns 0 -- callers branch on the printed word, not the exit
 # code, the same never-abort contract resolve_model uses, so a caller
 # processing several reviewers in a loop can't have one reviewer's
 # posting outcome accidentally abort the whole loop under set -e.
-#
-# The content file is left in place regardless of outcome: on a post
-# failure it is the one copy of this reviewer's findings the user can
-# still recover and post by hand; keeping it on success too costs nothing
-# and matches every other per-reviewer artifact in this run (prompt, pid,
-# exit code) already being left behind for inspection rather than cleaned
-# up mid-run.
 _post_review_comment() {
-  local log_file="$1" owner="$2" repo="$3" number="$4" content_file="$5"
-  local content attempt
+  local owner="$1" repo="$2" number="$3" content_file="$4"
+  local attempt=1
 
-  if ! content="$(_extract_review_content "$log_file")"; then
-    printf 'no-content\n'
-    return 0
-  fi
-
-  printf '%s' "$content" > "$content_file"
-
-  attempt=1
   while [ "$attempt" -le 2 ]; do
     if gh pr comment "$number" --repo "$owner/$repo" --body-file "$content_file" >/dev/null 2>&1; then
       printf 'posted\n'
@@ -847,18 +990,51 @@ _post_review_comment() {
 # Backgrounds itself and returns immediately (the caller, main(), does not
 # wait for it). For each given PID, waits for that reviewer to finish,
 # compares the worktree's git state against the snapshot launch_reviewer
-# took right before starting it (see _git_status_snapshot), extracts and
-# posts that reviewer's review via _post_review_comment (using the log
-# file path launch_reviewer recorded for this PID -- see its own
-# docstring), and appends one line to <summary_file> recording its PID,
-# exit code, end time, the git-state comparison's result, and the posting
-# outcome. Once every PID has been recorded, removes the worktree -- only
-# after every reviewer has been through the extract-and-post step above,
-# not right after the last one finishes running, since the worktree isn't
-# what that step reads from anyway (the log files it needs live in
-# base_dir, alongside the worktree, not inside it) but posting must still
-# fully finish first. The number of PIDs handled is exactly the number
-# given -- nothing here assumes three.
+# took right before starting it (see _git_status_snapshot), extracts that
+# reviewer's review from its log (using the log file path launch_reviewer
+# recorded for this PID -- see its own docstring; see _extract_review_
+# content for what counts as a valid extraction), and -- only when that
+# reviewer's own exit code was 0 AND the git-state comparison came back
+# "ok" -- posts it via _post_review_comment. Either way, appends one line
+# to <summary_file> recording the PID, exit code, end time, the git-state
+# comparison's result, and the posting outcome (post_status; see below for
+# its possible values). Once every PID has been recorded, removes the
+# worktree -- only after every reviewer has been through this step, not
+# right after the last one finishes running, since the worktree isn't what
+# this step reads from anyway (the log files it needs live in base_dir,
+# alongside the worktree, not inside it) but posting must still fully
+# finish first. The number of PIDs handled is exactly the number given --
+# nothing here assumes three.
+#
+# post_status is one of:
+#   - "posted": extraction succeeded, exit code was 0, git state was "ok",
+#     and gh actually posted the comment.
+#   - "no-content": extraction failed (see _extract_review_content) --
+#     nothing to post regardless of exit code or git state.
+#   - "withheld": extraction succeeded, but the exit code was non-zero or
+#     the git state came back "invalidated", so this was never even
+#     attempted. A non-zero exit or an invalidated worktree both mean this
+#     review has lost its factual grounding -- the diff it read may not be
+#     the diff still on the PR by the time posting would happen, or the
+#     process may have crashed partway through producing it -- and posting
+#     a review that might not reflect reality onto a public PR is worse
+#     than not posting at all. The extracted content is still written to
+#     the same content_file "posted" would have used, so a human can look
+#     at what would have been posted and decide by hand.
+#
+#     This does sharpen an already-known, already-accepted tradeoff (see
+#     this function's own note further down on sequential PID processing
+#     against one shared worktree): before this gate existed, a reviewer
+#     falsely flagged "invalidated" by that limitation still got posted,
+#     just with the caveat visible only in the summary_file after the
+#     fact. Now it does not get posted at all. Kept this way anyway --
+#     posting a review that has lost its evidentiary basis is a worse
+#     outcome than silently withholding an innocent one, given the
+#     alternative (positing on every git-status difference) already only
+#     ever produces false positives, never false negatives, on real
+#     tampering.
+#   - "post-failed": extraction succeeded and the exit code/git state gate
+#     passed, but both `gh pr comment` attempts failed.
 #
 # <owner>/<repo>/<number> identify the PR every posted comment goes to;
 # this is the one place in this script that actually posts anything to
@@ -918,7 +1094,7 @@ spawn_supervisor() {
   (
     trap '' HUP
     local pid rc end_time before after status exit_file base_dir
-    local log_file content_file post_status
+    local log_file content_file post_status content
     base_dir="$(dirname "$worktree_dir")"
     : > "$summary_file"
 
@@ -951,8 +1127,16 @@ spawn_supervisor() {
       # read-only constraint (see _post_review_comment's own docstring).
       log_file="$(cat "$base_dir/.log-$pid" 2>/dev/null)" || log_file=""
       content_file="$base_dir/.comment-body-$pid.md"
-      if [ -n "$log_file" ]; then
-        post_status="$(_post_review_comment "$log_file" "$owner" "$repo" "$number" "$content_file")" || post_status="post-failed"
+      if [ -n "$log_file" ] && content="$(_extract_review_content "$log_file")"; then
+        printf '%s' "$content" > "$content_file"
+        if [ "$rc" = "0" ] && [ "$status" = "ok" ]; then
+          post_status="$(_post_review_comment "$owner" "$repo" "$number" "$content_file")" || post_status="post-failed"
+        else
+          # See this function's docstring on "withheld": content exists
+          # (kept in content_file above for manual inspection) but this
+          # review has lost its factual grounding, so it is never posted.
+          post_status="withheld"
+        fi
       else
         post_status="no-content"
       fi
@@ -983,15 +1167,20 @@ spawn_supervisor() {
 # When exactly one reviewer was dispatched, adds a line calling out that
 # cross-validation across independent reviewers does not hold for this run.
 #
-# Each dispatched reviewer's log path here is a functional dependency now,
-# not just diagnostic output: the reviewer no longer posts its own review,
-# it prints the full text to stdout (captured in exactly this <cli>.log --
-# see launch_reviewer's docstring on why stdout and stderr are captured to
-# separate files), wrapped in the contract's BEGIN/END markers. SKILL.md
-# reads this printed path, parses <cli>.log by those markers, and
-# delegates the actual GitHub posting to a dedicated subagent -- if this
-# line's log path is ever wrong or missing for a dispatched reviewer,
-# nothing else in this pipeline reports its findings anywhere.
+# Each dispatched reviewer's log path here is a diagnostic aid for a
+# human, not a functional dependency of the posting pipeline itself any
+# more: the reviewer prints its full review to stdout (captured in
+# exactly this <cli>.log -- see launch_reviewer's docstring on why stdout
+# and stderr are captured to separate files), wrapped in the contract's
+# BEGIN/END markers, and spawn_supervisor -- not this function -- is what
+# actually reads that log back and posts it (via a separate <cli>.log
+# path launch_reviewer records for spawn_supervisor's own use, in
+# base_dir's `.log-<pid>` file; see launch_reviewer's and
+# spawn_supervisor's docstrings). This function's own log path is still
+# worth getting right -- it is what a human uses to go find a
+# reviewer's log by hand, e.g. after a summary_file line reports
+# post_status=post-failed -- it just no longer gates anything else in
+# this pipeline the way it once did.
 print_summary() {
   local logs_dir="$1"
   shift
@@ -1110,6 +1299,12 @@ main() {
   local cli d found model prompt pid
   local -a all_reviewers=() skipped=() pids=()
 
+  # Before parse_pr_url: an empty pr_arg makes that function call gh
+  # itself to derive the PR from the current branch (see its own
+  # docstring), so gh's own availability/auth must already be confirmed
+  # by the time that happens -- see _check_gh_available's docstring.
+  _check_gh_available || exit 1
+
   if ! pr_info="$(parse_pr_url "$pr_arg")"; then
     printf 'run.sh: unable to resolve the PR from %s\n' \
       "${pr_arg:-the current branch (no PR link given, and no PR is associated with it)}" >&2
@@ -1134,6 +1329,12 @@ main() {
   done
 
   contract_path="$(resolve_contract_path)" || exit 1
+
+  # Must run before resolve_base_ref: that function's own `git fetch`
+  # mutates a remote-tracking ref, and doing that before confirming the
+  # cwd's origin is actually this PR's own repo would leave that mutation
+  # in place even on a run that's about to be rejected anyway.
+  _check_origin_matches "$owner" "$repo" || exit 1
 
   base_ref="$(resolve_base_ref "$owner" "$repo" "$number")" || {
     printf 'run.sh: unable to resolve the PR base ref\n' >&2
@@ -1201,6 +1402,35 @@ main() {
     pids+=("$pid")
     printf '%s\n' "$pid" > "$logs_dir/$cli.pid"
   done
+
+  # logs_dir gets the same read-only treatment as the worktree, applied
+  # only now that every reviewer has actually been launched (every
+  # redirect into <cli>.log/<cli>.log.stderr is through a file descriptor
+  # already opened before this point -- chmod does not revoke an
+  # already-open fd's ability to keep writing, only new open() calls from
+  # here on are blocked by the permission bits). This closes a real gap
+  # the worktree-only chmod left open: a reviewer that can still write
+  # despite its own CLI's sandbox/permission flags (see launch_reviewer's
+  # docstring on why those aren't the actual guarantee) could otherwise
+  # reach logs_dir just as easily as the worktree -- the worktree's own
+  # absolute path is right there in its prompt, and logs_dir is a
+  # constant sibling directory one level up -- and overwrite another
+  # reviewer's log (impersonating that CLI's review) or write arbitrary
+  # content, e.g. a credentials file, wrapped in the contract's own
+  # markers into any log; spawn_supervisor trusts whatever it finds
+  # between the markers and would post it verbatim. The worktree's own
+  # git-status comparison is blind to this path entirely, since logs_dir
+  # lives outside the worktree.
+  #
+  # Unlike the worktree chmod above, a failure here is not treated as a
+  # hard-abort precondition: every reviewer is already running by this
+  # point, so aborting would only orphan them (nothing would ever
+  # supervise them to completion or write a summary line for them) while
+  # not actually making the exposure this closes any worse than it
+  # already was before this line ever ran. Best-effort, logged loudly.
+  if ! chmod -R a-w "$logs_dir" 2>/dev/null; then
+    printf 'run.sh: WARNING: failed to make the logs directory read-only; logs remain writable for the duration of this run\n' >&2
+  fi
 
   spawn_supervisor "$worktree_dir" "$summary_file" "$owner" "$repo" "$number" "${pids[@]}"
 
