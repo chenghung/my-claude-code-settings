@@ -773,6 +773,35 @@ _git_status_snapshot() {
 # above, now confirmed to actually match a real invocation rather than
 # merely look plausible on the page.
 #
+# `curl*`/`wget*`/`nc*` close the gap a follow-up security review found in
+# this same list: nothing here matched a generic outbound HTTP/TCP command,
+# so the same exfiltration path `WebFetch` closed for claude (see
+# launch_reviewer's docstring) was still wide open for opencode, which has
+# no equivalent named fetch tool to remove -- every path out is a `bash`
+# command instead, and this list is the only enforcement point available.
+# `nc*` also covers `ncat` invocations (`ncat` itself starts with the
+# literal prefix "nc", which this glob suffix-matches), so no separate
+# `ncat*` entry is needed. Confirmed empirically against a real
+# `opencode run --auto` invocation with these three entries present: asked
+# to run a plain `curl -s http://127.0.0.1:<port>/...` against a listener
+# on loopback, the Bash tool call was refused before execution, with
+# opencode's own denial message quoting `{"permission":"bash","pattern":
+# "curl*","action":"deny"}` as the matching rule, and the listener recorded
+# no hit; the same was independently confirmed for `wget*` and `nc*`. As
+# with the `rm`/`mv`/`chmod` entries above, this is a named list of the
+# specific tools a code reviewer could plausibly be steered into running,
+# not an exhaustive enumeration of every way a shell command can reach the
+# network (a Python one-liner using `urllib`, `/dev/tcp` redirection, `ssh`,
+# `openssl s_client`, DNS exfiltration via `dig`/`nslookup`, etc. are all
+# still unlisted and still fall through to --auto's default-allow) -- the
+# same bounded-list limitation already noted above for local writes applies
+# here with no OS-level backstop equivalent to the worktree's chmod, since
+# there is no filesystem permission that can restrict outbound network
+# access the way `chmod -R a-w` restricts writes. This residual gap is
+# recorded, not closed: no mechanism this script has access to enforces it
+# further without adding infrastructure (e.g. network-namespace isolation)
+# well outside this list's existing pattern.
+#
 # Rules are static and contain no interpolated content, so a plain quoted
 # heredoc (no variable/command expansion) is safe here, unlike
 # build_prompt's contract text which is untrusted external content
@@ -800,6 +829,9 @@ _write_opencode_permission_config() {
       "mv *": "deny",
       "chmod *": "deny",
       "sudo*": "deny",
+      "curl*": "deny",
+      "wget*": "deny",
+      "nc*": "deny",
       "gh api -X POST*": "deny",
       "gh api -X PUT*": "deny",
       "gh api -X PATCH*": "deny",
@@ -967,6 +999,45 @@ JSON
 #     this script does anything to isolate the reviewer from. Recorded
 #     here rather than silently worked around, since no fix was in scope
 #     for the change that surfaced it.
+#
+#     Follow-up security review, this round: confirmed the gap above is
+#     not specific to `gh` -- it is the general exfiltration path removing
+#     `WebFetch` was meant to close, still open through Bash. A real run
+#     with this function's exact flags, asked to run a plain
+#     `curl -s http://127.0.0.1:<port>/...` against a local listener, had
+#     the request actually reach the listener; no `WebFetch` tool was ever
+#     invoked or needed. Four permission shapes were tried against the
+#     same probe, all with a real claude binary, all reaching the
+#     listener: (1) this function's actual flags (no Bash pattern anywhere);
+#     (2) `--permission-mode auto` with `Bash(git diff:*)` added to
+#     --allowedTools (testing whether naming one Bash pattern switches Bash
+#     to allowlist-only -- it does not: an unrelated `curl` call was still
+#     let through by the same carve-out); (3) `--permission-mode manual`
+#     with the same addition (same result); (4) `--disallowedTools` with an
+#     explicit `Bash(curl:*)` entry added (same non-effect already
+#     documented above for `Bash(gh pr comment:*)`, now confirmed for a
+#     different command too, so this is the carve-out's general behavior,
+#     not a `gh`-specific quirk). The only flag combination that did stop
+#     it was disallowing the whole `Bash` tool with no pattern at all
+#     (`--disallowedTools "... Bash"`) -- confirmed separately with a
+#     `touch` probe, which the carve-out does *not* let through (it only
+#     appears to cover commands with no local filesystem write, network
+#     requests included), so the carve-out is closer to "no local write"
+#     than "read-only" in the ordinary sense. But a whole-tool `Bash` deny
+#     also blocks the contract's own pinned `git -C <worktree> diff
+#     <base-ref>...HEAD` (see reviewer-contract.md's "真相來源" section) --
+#     confirmed by the same probe failing identically for that command --
+#     which this reviewer has no other way to run: build_prompt does not
+#     embed the diff itself, so claude needs Bash for that one command to
+#     function at all. Closing this gap for claude would require either a
+#     mechanism this script's flags do not have (scoping Bash to exactly
+#     one command, which the four attempts above rule out) or moving diff
+#     computation out of the reviewer's own Bash call and into the caller,
+#     which is a reviewer-contract.md change outside this script's own
+#     scope. Left open and recorded here rather than papered over: this
+#     reviewer's Bash access, while restricted to no local writes, is not
+#     restricted to no outbound network access, and nothing in this
+#     function closes that.
 #   - codex: `-s read-only`, the most restrictive of codex's three sandbox
 #     modes (the other two, `workspace-write` and
 #     `--dangerously-bypass-approvals-and-sandbox`, grant filesystem writes
@@ -981,7 +1052,17 @@ JSON
 #     alone turned out not to fully enforce that filesystem restriction in
 #     `codex exec`'s non-interactive mode; this flag is kept anyway as a
 #     first line of defense, on top of the chmod backstop that now carries
-#     the real guarantee.)
+#     the real guarantee.) This round's follow-up review reconfirmed the
+#     network side directly rather than only by inference from the `gh`
+#     finding above: a real `codex exec -s read-only` run, asked to run a
+#     plain `curl -s http://127.0.0.1:<port>/...` against a local listener,
+#     had the request reach it. `codex exec` has no flag this script can
+#     add to restrict outbound network access independently of the
+#     filesystem sandbox -- `-s read-only` is already the most restrictive
+#     of the three modes, and none of them are network-scoped. Left open
+#     and recorded here, same as claude's Bash gap above: this is the same
+#     exfiltration path, just reached through codex's shell tool instead of
+#     a fetch tool.
 #   - opencode: no CLI-level permission flag exists, so the restriction
 #     lives in a scratch, run-specific config file (see
 #     _write_opencode_permission_config) pointed at via the OPENCODE_CONFIG

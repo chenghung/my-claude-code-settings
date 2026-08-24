@@ -1017,6 +1017,27 @@ case "$oc_config_content" in
   *) bad opencode-permission-config-denies-git-fetch ;;
 esac
 
+# A follow-up security review found opencode's deny list had nothing
+# matching a generic outbound HTTP/TCP command -- the same exfiltration
+# path `WebFetch` closes for claude (see launch_reviewer's docstring) was
+# still open here via a plain `curl`/`wget`/`nc` call, with no named fetch
+# tool to remove. See _write_opencode_permission_config's own docstring
+# for the real-binary confirmation that these three patterns actually
+# match and deny a live invocation, the same way `git fetch*` was verified
+# above.
+case "$oc_config_content" in
+  *'"curl*": "deny"'*) pass opencode-permission-config-denies-curl ;;
+  *) bad opencode-permission-config-denies-curl ;;
+esac
+case "$oc_config_content" in
+  *'"wget*": "deny"'*) pass opencode-permission-config-denies-wget ;;
+  *) bad opencode-permission-config-denies-wget ;;
+esac
+case "$oc_config_content" in
+  *'"nc*": "deny"'*) pass opencode-permission-config-denies-nc ;;
+  *) bad opencode-permission-config-denies-nc ;;
+esac
+
 # `gh issue*`/`gh api*` must NOT appear as blanket deny keys -- a blanket
 # deny there would also block the read-only issue/API queries the
 # reviewer contract's requirements-conformance axis needs (issue content
