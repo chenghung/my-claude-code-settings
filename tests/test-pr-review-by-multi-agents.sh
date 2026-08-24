@@ -1008,6 +1008,14 @@ case "$oc_config_content" in
   *'"git push*": "deny"'*) pass opencode-permission-config-denies-git-push ;;
   *) bad opencode-permission-config-denies-git-push ;;
 esac
+# The contract forbids fetch by name alongside commit/push -- it updates
+# a local remote-tracking ref and leaves a persistent trace even though
+# it reads from the remote rather than writing to it (see
+# _write_opencode_permission_config's own docstring).
+case "$oc_config_content" in
+  *'"git fetch*": "deny"'*) pass opencode-permission-config-denies-git-fetch ;;
+  *) bad opencode-permission-config-denies-git-fetch ;;
+esac
 
 # `gh issue*`/`gh api*` must NOT appear as blanket deny keys -- a blanket
 # deny there would also block the read-only issue/API queries the
@@ -1232,11 +1240,15 @@ mapfile -t claude_argv < "$LAUNCH_RECORD_DIR/claude.argv"
 write_wrongly_allowed=0
 write_disallowed=0
 edit_notebookedit_disallowed=0
+webfetch_wrongly_allowed=0
 for idx in "${!claude_argv[@]}"; do
   case "${claude_argv[$idx]}" in
     --allowedTools)
       case "${claude_argv[$((idx + 1))]:-}" in
         *Write*) write_wrongly_allowed=1 ;;
+      esac
+      case "${claude_argv[$((idx + 1))]:-}" in
+        *WebFetch*) webfetch_wrongly_allowed=1 ;;
       esac
       ;;
     --disallowedTools)
@@ -1255,6 +1267,12 @@ done
 [ "$write_disallowed" -eq 1 ] && pass launch-reviewer-claude-disallows-write || bad launch-reviewer-claude-disallows-write
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$edit_notebookedit_disallowed" -eq 1 ] && pass launch-reviewer-claude-disallows-edit-notebookedit || bad launch-reviewer-claude-disallows-edit-notebookedit
+# WebFetch must not be on --allowedTools: the contract forbids reaching
+# GitHub or anywhere else by any means, and every material the reviewer
+# needs is already embedded in its own prompt (see launch_reviewer's
+# docstring, claude bullet, on why this grant was removed).
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$webfetch_wrongly_allowed" -eq 0 ] && pass launch-reviewer-claude-webfetch-not-allowed || bad launch-reviewer-claude-webfetch-not-allowed
 
 # --- unknown CLI name -> non-zero, no PID printed ---
 

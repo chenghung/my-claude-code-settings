@@ -757,6 +757,22 @@ _git_status_snapshot() {
 # of which precedence rule opencode actually implements, at zero extra
 # cost over the catch-all version.
 #
+# `git fetch*` closes a gap the same security review that removed
+# claude's WebFetch grant (see launch_reviewer's docstring) found here
+# too: the contract forbids fetch by name, alongside commit/push, because
+# it updates a local remote-tracking ref and leaves a persistent trace
+# even though it reads from the remote rather than writing to it --
+# without this entry it fell through to --auto's own default-allow like
+# any other unlisted command. Confirmed empirically, not just by pattern-
+# reading: a real `opencode run --auto` invocation with this exact entry
+# present, asked to run `git fetch origin --verbose` in a scratch repo,
+# had the Bash tool call refused before execution, with opencode's own
+# denial message quoting `{"permission":"bash","pattern":"git
+# fetch*","action":"deny"}` as the matching rule -- the same
+# suffix-wildcard shape already relied on for `git push*`/`git commit*`
+# above, now confirmed to actually match a real invocation rather than
+# merely look plausible on the page.
+#
 # Rules are static and contain no interpolated content, so a plain quoted
 # heredoc (no variable/command expansion) is safe here, unlike
 # build_prompt's contract text which is untrusted external content
@@ -773,6 +789,7 @@ _write_opencode_permission_config() {
       "git add*": "deny",
       "git commit*": "deny",
       "git push*": "deny",
+      "git fetch*": "deny",
       "git checkout*": "deny",
       "git reset*": "deny",
       "git rebase*": "deny",
@@ -884,9 +901,24 @@ JSON
 # backstop that actually has to hold:
 #   - claude: `--permission-mode dontAsk` (auto-denies anything not
 #     explicitly allowed, except read-only Bash commands) plus an explicit
-#     `--allowedTools` whitelist naming only the read tools -- no Bash
+#     `--allowedTools` whitelist naming only Read/Grep/Glob -- no Bash
 #     pattern at all, since this reviewer never needs to run `gh`, and no
 #     `Write`; `--disallowedTools` covers Edit/Write/NotebookEdit.
+#
+#     `WebFetch` was on this allowlist until a security review of this
+#     exact prompt shape flagged it: build_prompt now embeds the PR body,
+#     every PR/issue comment, and the design doc verbatim (see that
+#     function's own docstring), all of it writable by any GitHub user and
+#     none of it trustworthy, so an unrestricted fetch tool is not merely a
+#     passive contract violation here -- injected text in any of that
+#     material could direct the model to encode whatever it just read into
+#     a URL and fetch it, exfiltrating it to an attacker-controlled host.
+#     Nothing the contract asks of this reviewer needs network access:
+#     every material it is meant to judge is already embedded inline in
+#     its own prompt, and the code under review is already sitting in the
+#     worktree, so there is nothing left for a fetch tool to legitimately
+#     reach. No replacement tool was added in its place -- the reviewer
+#     simply gets none.
 #
 #     Two things here are empirically verified facts about a real claude
 #     binary, not inferred from --help text (which, on the first point,
@@ -1061,8 +1093,10 @@ launch_reviewer() {
 
   case "$cli_name" in
     claude)
+      # No WebFetch (or any other network-capable tool): see this
+      # function's own docstring, claude bullet, for why.
       cmd=(claude -p --permission-mode dontAsk \
-        --allowedTools "Read Grep Glob WebFetch" \
+        --allowedTools "Read Grep Glob" \
         --disallowedTools "Edit Write NotebookEdit")
       ;;
     codex)
