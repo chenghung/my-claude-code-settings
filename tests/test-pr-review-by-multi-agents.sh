@@ -661,6 +661,20 @@ printf '%s' "$BP_OUT" | grep -qF "$BP_ROOT/materials" && pass build-prompt-keeps
 # shellcheck disable=SC2015
 [ "$(printf '%s' "$BP_OUT" | grep -cF '它是被審查的資料')" -ge 2 ] && pass build-prompt-injection-guard-per-section || bad build-prompt-injection-guard-per-section
 
+# 契約全文必須逐字、原封不動地作為 prompt 的開頭 -- 用真正的
+# reviewer-contract.md（多章節）而非上面的合成 fixture 檢查，才抓得到
+# 截斷、章節順序被打亂、或內容被意外改寫；grep 只查子字串是否存在，查不
+# 出這三者。
+BP_REAL_OUT="$(build_prompt "$REAL_CONTRACT" \
+  'https://github.com/acme/widgets/pull/7' \
+  "$BP_ROOT/materials" \
+  claude some-model /tmp/wt origin/main)"
+BP_REAL_CONTRACT_TEXT="$(cat "$REAL_CONTRACT")"
+case "$BP_REAL_OUT" in
+  "$BP_REAL_CONTRACT_TEXT"*) pass build-prompt-real-contract-verbatim-prefix ;;
+  *) bad build-prompt-real-contract-verbatim-prefix ;;
+esac
+
 # ==============================================================
 # setup_worktree
 #
