@@ -2266,4 +2266,39 @@ else
 fi
 chmod -R u+w "$CHMODE2E_BASE_DIR" 2>/dev/null || true
 
+# --- main(): jq 前置檢查、print_summary 印出執行目錄 ---
+
+# jq 缺席時 check_prerequisites 必須在動到使用者 repo 之前拒絕執行。gh 的
+# 可用性、認證與 PR 存在性都以既有的 gh stub 保證成立（其預設值
+# GH_STUB_AUTH_OK=1、GH_STUB_PR_EXISTS=1），讓失敗唯一可能的原因只剩 jq
+# 缺席。PATH 不能單純指向 STUB_BIN 本身：stub gh 的 shebang 是
+# `#!/usr/bin/env bash`，PATH 中若沒有目錄能解析出 bash，連 stub 都執行
+# 不了，會用「gh 沒有通過認證」這種假訊號蓋過真正要測的 jq 缺席 -- 因此
+# 這裡另外準備一個只含 gh（連到既有 stub）與 bash（連到真正的 bash）兩個
+# symlink 的乾淨目錄，不含 jq，也不含 git（check_prerequisites 用不到）。
+JQ_MISSING_BIN="$T/jq-missing-bin"
+mkdir -p "$JQ_MISSING_BIN"
+ln -s "$STUB_BIN/gh" "$JQ_MISSING_BIN/gh"
+ln -s "$(command -v bash)" "$JQ_MISSING_BIN/bash"
+export PATH="$JQ_MISSING_BIN"
+if _check_gh_available >/dev/null 2>&1 && check_prerequisites acme widgets 7 >/dev/null 2>&1; then
+  bad prereq-jq-missing
+else
+  pass prereq-jq-missing
+fi
+export PATH="$saved_path"
+
+# print_summary 要印出執行目錄與 summary.txt 的絕對路徑，讓呼叫端不必從
+# log 路徑往上推兩層。用完整標籤字串比對（而非只比對 $PS_ROOT 本身），
+# 因為既有的 dispatched log 那一行本來就已經以 $PS_ROOT 開頭，光比對
+# $PS_ROOT 子字串不能真正證明是新加的那兩行執行目錄／摘要檔輸出。
+PS_ROOT="$T/print-summary-paths"
+mkdir -p "$PS_ROOT/logs"
+printf '111\n' > "$PS_ROOT/logs/claude.pid"
+PS_OUT="$(print_summary "$PS_ROOT/logs" claude --skipped codex opencode)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$PS_OUT" | grep -qF "$PS_ROOT/summary.txt" && pass print-summary-shows-summary-path || bad print-summary-shows-summary-path
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$PS_OUT" | grep -qF "本次執行目錄：$PS_ROOT" && pass print-summary-shows-run-dir || bad print-summary-shows-run-dir
+
 exit $fail

@@ -290,12 +290,18 @@ _check_gh_available() {
 # check_prerequisites <owner> <repo> <number>
 #
 # Verifies gh is installed, gh is authenticated (see _check_gh_available),
-# and the target PR exists. Returns 0 when all three hold. On the first
-# failure, prints the reason to stderr and returns non-zero.
+# jq is installed, and the target PR exists. Returns 0 when all four
+# hold. On the first failure, prints the reason to stderr and returns
+# non-zero.
 check_prerequisites() {
   local owner="$1" repo="$2" number="$3"
 
   _check_gh_available || return 1
+
+  if ! command -v jq >/dev/null 2>&1; then
+    printf 'check_prerequisites: jq not found in PATH\n' >&2
+    return 1
+  fi
 
   if ! gh pr view "$number" --repo "$owner/$repo" >/dev/null 2>&1; then
     printf 'check_prerequisites: PR %s/%s#%s not found\n' "$owner" "$repo" "$number" >&2
@@ -1366,14 +1372,14 @@ spawn_supervisor() {
 # exactly this <cli>.log -- see launch_reviewer's docstring on why stdout
 # and stderr are captured to separate files), wrapped in the contract's
 # BEGIN/END markers, and spawn_supervisor -- not this function -- is what
-# actually reads that log back and posts it (via a separate <cli>.log
+# actually reads that log back and records it (via a separate <cli>.log
 # path launch_reviewer records for spawn_supervisor's own use, in
 # base_dir's `.log-<pid>` file; see launch_reviewer's and
-# spawn_supervisor's docstrings). This function's own log path is still
-# worth getting right -- it is what a human uses to go find a
-# reviewer's log by hand, e.g. after a summary_file line reports
-# post_status=post-failed -- it just no longer gates anything else in
-# this pipeline the way it once did.
+# spawn_supervisor's docstrings); nothing in this script posts it any
+# more. This function's own log path is still worth getting right -- it
+# is what a human uses to go find a reviewer's log by hand, e.g. after a
+# summary_file line reports content_status=withheld -- it just no longer
+# gates anything else in this pipeline the way it once did.
 print_summary() {
   local logs_dir="$1"
   shift
@@ -1391,6 +1397,12 @@ print_summary() {
       skipped+=("$arg")
     fi
   done
+
+  local base_dir
+  base_dir="$(dirname "$logs_dir")"
+
+  printf '本次執行目錄：%s\n' "$base_dir"
+  printf '摘要檔：%s\n\n' "$base_dir/summary.txt"
 
   printf '已派出的 reviewer：\n'
   if [ "${#dispatched[@]}" -eq 0 ]; then
