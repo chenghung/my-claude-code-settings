@@ -1180,38 +1180,6 @@ _extract_review_content() {
   printf '%s\n' "$content"
 }
 
-# _post_review_comment <owner> <repo> <number> <content_file>
-#
-# Posts the content already sitting in <content_file> (the caller is
-# responsible for having extracted and written it there -- see
-# _extract_review_content) to the PR via `gh pr comment <number> --repo
-# <owner>/<repo> --body-file <content_file>`, retrying once (two attempts
-# total) on failure. <content_file> is created by the caller, not the
-# reviewer, so the reviewer contract's read-only constraint (which binds
-# the reviewer CLI's own behavior, not this script's) does not apply to
-# it; the caller is responsible for pointing it somewhere outside the
-# worktree (spawn_supervisor uses base_dir, the run's own scratch/log
-# area). Prints exactly one of "posted" or "post-failed" to stdout and
-# always returns 0 -- callers branch on the printed word, not the exit
-# code, the same never-abort contract resolve_model uses, so a caller
-# processing several reviewers in a loop can't have one reviewer's
-# posting outcome accidentally abort the whole loop under set -e.
-_post_review_comment() {
-  local owner="$1" repo="$2" number="$3" content_file="$4"
-  local attempt=1
-
-  while [ "$attempt" -le 2 ]; do
-    if gh pr comment "$number" --repo "$owner/$repo" --body-file "$content_file" >/dev/null 2>&1; then
-      printf 'posted\n'
-      return 0
-    fi
-    attempt=$((attempt + 1))
-  done
-
-  printf 'post-failed\n'
-  return 0
-}
-
 # _record_reviewer_result <pid> <base_dir> <worktree_dir> <summary_file>
 #
 # Records one finished reviewer: reads its exit code, compares the
@@ -1289,67 +1257,37 @@ _record_reviewer_result() {
     >> "$summary_file"
 }
 
-# spawn_supervisor <worktree_dir> <summary_file> <owner> <repo> <number> <pid>...
+# spawn_supervisor <worktree_dir> <summary_file> <pid>...
 #
 # Backgrounds itself and returns immediately (the caller, main(), does not
-# wait for it). For each given PID, waits for that reviewer to finish,
-# compares the worktree's git state against the snapshot launch_reviewer
-# took right before starting it (see _git_status_snapshot), extracts that
-# reviewer's review from its log (using the log file path launch_reviewer
-# recorded for this PID -- see its own docstring; see _extract_review_
-# content for what counts as a valid extraction), and -- only when that
-# reviewer's own exit code was 0 AND the git-state comparison came back
-# "ok" -- posts it via _post_review_comment. Either way, appends one line
-# to <summary_file> recording the PID, exit code, end time, the git-state
-# comparison's result, and the posting outcome (post_status; see below for
-# its possible values). Once every PID has been recorded, removes the
-# worktree -- only after every reviewer has been through this step, not
-# right after the last one finishes running, since the worktree isn't what
-# this step reads from anyway (the log files it needs live in base_dir,
-# alongside the worktree, not inside it) but posting must still fully
-# finish first. The number of PIDs handled is exactly the number given --
-# nothing here assumes three.
+# wait for it). Writes <base_dir>/.supervisor.pid (base_dir being
+# <worktree_dir>'s parent) with this subshell's own PID -- via $BASHPID,
+# not $$, since $$ inside a `(...)&` subshell still names the parent
+# shell, not this subshell. The caller's heartbeat check needs a way to
+# tell "every reviewer is still running" apart from "the supervisor
+# itself died and no further summary line will ever appear"; without this
+# file those two states look identical from outside (a summary file that
+# has simply stopped growing), and the caller would wait out its full
+# deadline on a run that had already failed.
 #
-# post_status is one of:
-#   - "posted": extraction succeeded, exit code was 0, git state was "ok",
-#     and gh actually posted the comment.
-#   - "no-content": extraction failed (see _extract_review_content) --
-#     nothing to post regardless of exit code or git state.
-#   - "withheld": extraction succeeded, but the exit code was non-zero or
-#     the git state came back "invalidated", so this was never even
-#     attempted. A non-zero exit or an invalidated worktree both mean this
-#     review has lost its factual grounding -- the diff it read may not be
-#     the diff still on the PR by the time posting would happen, or the
-#     process may have crashed partway through producing it -- and posting
-#     a review that might not reflect reality onto a public PR is worse
-#     than not posting at all. The extracted content is still written to
-#     the same content_file "posted" would have used, so a human can look
-#     at what would have been posted and decide by hand.
+# Polls the given PIDs and, for each one as soon as it finishes -- not in
+# the order the PIDs were given -- delegates to _record_reviewer_result
+# (see its own docstring for what "finished" means per PID, what gets
+# extracted, and content_status's three values) to append that reviewer's
+# summary line. This is the entire reason this function polls a pending
+# set rather than waiting on PIDs in a fixed order: a reviewer that
+# finishes early must get its summary line written before a slower one
+# dispatched ahead of it, not sit unrecorded behind it. Posting is no
+# longer any part of this -- it moved to the caller (see SKILL.md) -- so
+# this function's own job is now pure bookkeeping: track who has
+# finished, hand each one to _record_reviewer_result, and clean up once
+# every PID is accounted for.
 #
-#     This does sharpen an already-known, already-accepted tradeoff (see
-#     this function's own note further down on sequential PID processing
-#     against one shared worktree): before this gate existed, a reviewer
-#     falsely flagged "invalidated" by that limitation still got posted,
-#     just with the caveat visible only in the summary_file after the
-#     fact. Now it does not get posted at all. Kept this way anyway --
-#     posting a review that has lost its evidentiary basis is a worse
-#     outcome than silently withholding an innocent one, given the
-#     alternative (positing on every git-status difference) already only
-#     ever produces false positives, never false negatives, on real
-#     tampering.
-#   - "post-failed": extraction succeeded and the exit code/git state gate
-#     passed, but both `gh pr comment` attempts failed.
-#
-# <owner>/<repo>/<number> identify the PR every posted comment goes to;
-# this is the one place in this script that actually posts anything to
-# GitHub, by design (see launch_reviewer's docstring on why the reviewer
-# CLIs themselves are never given any write capability at all): this
-# function is a plain shell subprocess this script forked, running a
-# fixed `gh` invocation with content this script itself extracted by a
-# byte-exact marker match -- not an AI agent acting on a prompt that PR
-# diff/issue content (both attacker-controllable) could have steered, the
-# same category of risk that motivated removing the reviewers' write
-# capability in the first place.
+# Once every PID has been recorded, removes the worktree -- only after
+# every reviewer has been through this step, not right after the last one
+# finishes running, since a still-pending PID's own _record_reviewer_
+# result call may still need to read it. The number of PIDs handled is
+# exactly the number given -- nothing here assumes three.
 #
 # Why this polls for a per-PID exit-code file instead of using `wait`: bash
 # can only `wait` on an actual child of the *current* process. By the time
@@ -1364,20 +1302,6 @@ _record_reviewer_result() {
 # own exit code to a file when it finishes, which needs no parent-child
 # relationship to observe from here.
 #
-# Known limitation from processing PIDs sequentially in the order given,
-# combined with all of them sharing one worktree (a separate, already-
-# accepted tradeoff of the shared-worktree design itself, not something
-# introduced here): the "after" snapshot for an earlier PID in the list is
-# only taken once this loop gets around to it, which can be *after* a
-# still-running later reviewer has already written something. In that
-# window, an innocent earlier reviewer can be marked "invalidated" for a
-# change it didn't make. This is a conservative failure mode, not a
-# detection gap -- it can only ever cause a false "invalidated" on an
-# innocent run, never a false "ok" on a run that actually tampered with
-# the worktree, since every real tamper still gets caught by whichever
-# PID's window it actually fell inside. Accepted as-is rather than
-# reworked into concurrent/interleaved polling, given that direction.
-#
 # `trap '' HUP` right below, before anything else runs in the backgrounded
 # subshell, is not redundant with the `disown` after it: `disown` only
 # stops *this shell* from sending SIGHUP to the job when the shell itself
@@ -1391,71 +1315,36 @@ _record_reviewer_result() {
 # script's own future runs (which only prune worktrees whose directory is
 # already gone) nor a normal branch cleanup ever reaches it again.
 spawn_supervisor() {
-  local worktree_dir="$1" summary_file="$2" owner="$3" repo="$4" number="$5"
-  shift 5
+  local worktree_dir="$1" summary_file="$2"
+  shift 2
   local -a pids=("$@")
 
   (
     trap '' HUP
-    local pid rc end_time before after status exit_file base_dir
-    local log_file content_file post_status content
+    local pid exit_file base_dir
+    local -a pending=() still=()
     base_dir="$(dirname "$worktree_dir")"
+    # See this function's own docstring above on why this file exists.
+    printf '%s\n' "$BASHPID" > "$base_dir/.supervisor.pid"
     : > "$summary_file"
 
-    for pid in "${pids[@]}"; do
-      exit_file="$base_dir/.exit-$pid"
-      # Also breaks out if the process is simply gone (e.g. killed by a
-      # signal the wrapper couldn't trap) so this can't poll forever.
-      until [ -f "$exit_file" ] || ! kill -0 "$pid" 2>/dev/null; do
-        sleep 1
-      done
-
-      rc="$(cat "$exit_file" 2>/dev/null)" || rc=""
-      # The exit file's own mtime is this reviewer's real completion time;
-      # `date` at this point in the loop would instead read whenever this
-      # sequential loop happened to get around to checking it, which lags
-      # further behind for whichever PID is checked later.
-      end_time="$(date -u -r "$exit_file" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" || end_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-
-      before="$(cat "$base_dir/.git-status-before-$pid" 2>/dev/null)" || before=""
-      after="$(_git_status_snapshot "$worktree_dir")"
-      if [ "$before" = "$after" ]; then
-        status="ok"
-      else
-        status="invalidated"
-      fi
-
-      # The content file this writes to lives in base_dir -- next to the
-      # log files, outside the worktree -- and is created by this script,
-      # not the reviewer, so it isn't subject to the reviewer contract's
-      # read-only constraint (see _post_review_comment's own docstring).
-      log_file="$(cat "$base_dir/.log-$pid" 2>/dev/null)" || log_file=""
-      content_file="$base_dir/.comment-body-$pid.md"
-      if [ -n "$log_file" ] && content="$(_extract_review_content "$log_file")"; then
-        printf '%s' "$content" > "$content_file"
-        if [ "$rc" = "0" ] && [ "$status" = "ok" ]; then
-          post_status="$(_post_review_comment "$owner" "$repo" "$number" "$content_file")" || post_status="post-failed"
+    pending=("${pids[@]}")
+    while [ "${#pending[@]}" -gt 0 ]; do
+      still=()
+      for pid in "${pending[@]}"; do
+        exit_file="$base_dir/.exit-$pid"
+        if [ -f "$exit_file" ] || ! kill -0 "$pid" 2>/dev/null; then
+          _record_reviewer_result "$pid" "$base_dir" "$worktree_dir" "$summary_file"
         else
-          # See this function's docstring on "withheld": content exists
-          # (kept in content_file above for manual inspection) but this
-          # review has lost its factual grounding, so it is never posted.
-          post_status="withheld"
+          still+=("$pid")
         fi
-      else
-        post_status="no-content"
-      fi
-
-      printf 'pid=%s exit=%s ended_at=%s worktree_status=%s post_status=%s\n' \
-        "$pid" "${rc:-unknown}" "$end_time" "$status" "${post_status:-post-failed}" >> "$summary_file"
+      done
+      pending=("${still[@]+"${still[@]}"}")
+      [ "${#pending[@]}" -eq 0 ] || sleep 1
     done
 
-    # Undo main()'s `chmod -R a-w` (see main()'s own comment) before
-    # removing -- `git worktree remove` needs write access to actually
-    # delete the tree, and a still-read-only tree makes it fail outright.
-    # This runs after every reviewer's extract-and-post step above has
-    # finished, not right after the last one's process exits -- posting
-    # doesn't read anything from the worktree, but it must still fully
-    # finish before the worktree (and the run) is considered done.
+    # Undo main()'s `chmod -R a-w` before removing -- `git worktree
+    # remove` needs write access to actually delete the tree.
     chmod -R u+w "$worktree_dir" 2>/dev/null || true
     git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
   ) &
@@ -1743,7 +1632,7 @@ main() {
     printf 'run.sh: WARNING: failed to make the logs directory read-only; logs remain writable for the duration of this run\n' >&2
   fi
 
-  spawn_supervisor "$worktree_dir" "$summary_file" "$owner" "$repo" "$number" "${pids[@]}"
+  spawn_supervisor "$worktree_dir" "$summary_file" "${pids[@]}"
 
   print_summary "$logs_dir" "${all_reviewers[@]}" --skipped "${skipped[@]+"${skipped[@]}"}"
 }
