@@ -25,6 +25,47 @@ set -euo pipefail
 # instead of overriding IFS at file scope, e.g. `while IFS= read -r line;
 # do ...; done < <(cmd)` or `local IFS=$'\n\t'` inside just that function.
 
+# 本 skill 自己張貼的 comment 一律以這一行不可見標記開頭。它有兩個用途：
+# 抓取 PR 討論串時據此濾掉自己上一輪的產出（否則同一個 PR 跑第二次會把
+# 前一輪的三則 AI review 當成需求材料餵回給 reviewer，形成回音室），
+# 以及讓使用者一眼認出 PR 上哪些 comment 是這個 skill 貼的。標記由監督
+# 行程寫入內容檔，不交給 reviewer 自己加——reviewer 讀的是外部可控的
+# diff 與 comments，它加不加、加成什麼樣子都不可信。
+readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
+
+# _fetch_pr_material <owner> <repo> <number> <out_file>
+#
+# Writes the PR's title, body, conversation comments and review summary
+# bodies into <out_file> as plain markdown, dropping any comment or review
+# body carrying ECHO_GUARD_MARKER (this skill's own earlier output).
+# Returns non-zero, leaving <out_file> in whatever state the failed write
+# left it, when gh fails or returns nothing -- callers treat that as a
+# hard precondition failure, since a reviewer with no PR material has no
+# way to judge requirement conformance and (per the contract) is forbidden
+# from going to GitHub for it itself.
+_fetch_pr_material() {
+  local owner="$1" repo="$2" number="$3" out_file="$4"
+  local json
+
+  json="$(gh pr view "$number" --repo "$owner/$repo" \
+    --json title,body,comments,reviews 2>/dev/null)" || return 1
+  [ -n "$json" ] || return 1
+
+  printf '%s' "$json" | jq -r --arg marker "$ECHO_GUARD_MARKER" '
+    def clean: map(select((.body // "") != "")) | map(select(((.body // "") | contains($marker)) | not));
+    "# PR 標題\n\n" + (.title // "") + "\n\n"
+    + "# PR 內文\n\n" + (.body // "") + "\n\n"
+    + "# PR 討論串\n\n"
+    + (((.comments // []) | clean
+        | map("## " + (.author.login // "unknown") + "（" + (.createdAt // "") + "）\n\n" + .body)
+        | join("\n\n")))
+    + "\n\n# PR review 總結\n\n"
+    + (((.reviews // []) | clean
+        | map("## " + (.author.login // "unknown") + "（" + (.state // "") + "）\n\n" + .body)
+        | join("\n\n")))
+  ' > "$out_file" || return 1
+}
+
 # parse_pr_url <input>
 #
 # Accepts a full PR URL (https://github.com/<owner>/<repo>/pull/<N>), the

@@ -456,6 +456,58 @@ fi
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-claude-type-mismatch || bad resolve-model-claude-type-mismatch
 
+# --- _fetch_pr_material: PR 材料抓取與回音室過濾 ---
+PRMAT_ROOT="$T/prmat"
+mkdir -p "$PRMAT_ROOT/bin"
+cat > "$PRMAT_ROOT/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+cat "$GH_PR_JSON_FIXTURE"
+STUB
+chmod +x "$PRMAT_ROOT/bin/gh"
+
+cat > "$PRMAT_ROOT/pr.json" <<'JSON'
+{
+  "title": "修正 worktree 清理",
+  "body": "本 PR 修正 worktree 殘留。\n\nCloses #42",
+  "comments": [
+    {"author": {"login": "alice"}, "createdAt": "2026-08-01T00:00:00Z", "body": "第一則人類留言"},
+    {"author": {"login": "bob"}, "createdAt": "2026-08-02T00:00:00Z", "body": "<!-- pr-review-by-multi-agents -->\n\n這是上一輪 AI review"}
+  ],
+  "reviews": [
+    {"author": {"login": "carol"}, "state": "CHANGES_REQUESTED", "body": "review 總結內文"},
+    {"author": {"login": "dave"}, "state": "APPROVED", "body": ""}
+  ]
+}
+JSON
+
+export PATH="$PRMAT_ROOT/bin:$saved_path"
+export GH_PR_JSON_FIXTURE="$PRMAT_ROOT/pr.json"
+
+if _fetch_pr_material acme widgets 7 "$PRMAT_ROOT/pr.md"; then
+  pass fetch-pr-material-returns-zero
+else
+  bad fetch-pr-material-returns-zero
+fi
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF '修正 worktree 清理' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-has-title || bad fetch-pr-material-has-title
+# shellcheck disable=SC2015
+grep -qF 'Closes #42' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-has-body || bad fetch-pr-material-has-body
+# shellcheck disable=SC2015
+grep -qF '第一則人類留言' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-has-human-comment || bad fetch-pr-material-has-human-comment
+# shellcheck disable=SC2015
+grep -qF 'review 總結內文' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-has-review-body || bad fetch-pr-material-has-review-body
+
+# 回音室過濾：帶標記的那一則整段不得出現
+if grep -qF '這是上一輪 AI review' "$PRMAT_ROOT/pr.md"; then
+  bad fetch-pr-material-filters-own-comment
+else
+  pass fetch-pr-material-filters-own-comment
+fi
+
+export PATH="$saved_path"
+
 # ==============================================================
 # build_prompt
 # ==============================================================
