@@ -1212,6 +1212,83 @@ _post_review_comment() {
   return 0
 }
 
+# _record_reviewer_result <pid> <base_dir> <worktree_dir> <summary_file>
+#
+# Records one finished reviewer: reads its exit code, compares the
+# worktree's git state against the snapshot launch_reviewer took before
+# starting it, extracts its review from its log, writes that review to
+# this run's own content file, and appends one summary line.
+#
+# It does not post anything. Posting moved to the caller (see SKILL.md):
+# the supervisor cannot report progress to a human, and a run whose three
+# reviews land forty minutes apart with no signal in between is what this
+# whole change exists to fix. What stays here is everything a shell can
+# decide without reading the review: whether the content is trustworthy
+# enough to post at all.
+#
+# content_status is one of:
+#   - "ready": markers paired, content extracted, exit code 0, worktree
+#     state unchanged. Safe to post.
+#   - "withheld": content extracted, but the exit code was non-zero or the
+#     worktree state came back invalidated. A non-zero exit means the
+#     reviewer may not have finished producing its review; an invalidated
+#     worktree means the code it read may not be the code on the PR.
+#     Either way the review has lost its factual grounding, and posting it
+#     to a public PR is worse than not posting. The content file is still
+#     written, so a human can read what would have been posted and decide
+#     by hand -- which matters because the invalidation check is known to
+#     produce false positives under concurrency (see SKILL.md's known
+#     limitations).
+#   - "no-content": the markers were missing, out of order, or empty. No
+#     content file is written and content_file is left empty.
+_record_reviewer_result() {
+  local pid="$1" base_dir="$2" worktree_dir="$3" summary_file="$4"
+  local exit_file rc end_time before after status
+  local log_file cli_name content content_file content_status
+
+  exit_file="$base_dir/.exit-$pid"
+  rc="$(cat "$exit_file" 2>/dev/null)" || rc=""
+
+  # The exit file's own mtime is this reviewer's real completion time;
+  # `date` at this point would instead read whenever the polling loop
+  # happened to get around to it.
+  end_time="$(date -u -r "$exit_file" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" \
+    || end_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+  before="$(cat "$base_dir/.git-status-before-$pid" 2>/dev/null)" || before=""
+  after="$(_git_status_snapshot "$worktree_dir")"
+  if [ "$before" = "$after" ]; then
+    status="ok"
+  else
+    status="invalidated"
+  fi
+
+  log_file="$(cat "$base_dir/.log-$pid" 2>/dev/null)" || log_file=""
+  cli_name="$(basename "${log_file:-unknown.log}" .log)"
+  content_file="$base_dir/.comment-body-$pid.md"
+
+  if [ -n "$log_file" ] && content="$(_extract_review_content "$log_file")"; then
+    # The echo-guard marker goes on first, ahead of the reviewer's own
+    # disclosure paragraph. It renders as nothing on GitHub, so the
+    # disclosure is still the first thing a reader sees, and it is what
+    # _fetch_pr_material matches on to keep this skill's own past output
+    # from being fed back in as requirements on the next run.
+    { printf '%s\n\n' "$ECHO_GUARD_MARKER"; printf '%s' "$content"; } > "$content_file"
+    if [ "$rc" = "0" ] && [ "$status" = "ok" ]; then
+      content_status="ready"
+    else
+      content_status="withheld"
+    fi
+  else
+    content_status="no-content"
+    content_file=""
+  fi
+
+  printf 'cli=%s pid=%s exit=%s ended_at=%s worktree_status=%s content_status=%s content_file=%s\n' \
+    "$cli_name" "$pid" "${rc:-unknown}" "$end_time" "$status" "$content_status" "$content_file" \
+    >> "$summary_file"
+}
+
 # spawn_supervisor <worktree_dir> <summary_file> <owner> <repo> <number> <pid>...
 #
 # Backgrounds itself and returns immediately (the caller, main(), does not

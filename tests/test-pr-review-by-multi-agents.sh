@@ -1319,6 +1319,78 @@ esac
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$LOGSPLIT_LOGS/codex.log.stderr" ] && grep -qF 'diagnostic noise one' "$LOGSPLIT_LOGS/codex.log.stderr" 2>/dev/null && pass launch-reviewer-stderr-captured-separately || bad launch-reviewer-stderr-captured-separately
 
+# --- 摘要七欄位、content_status 三值、回音室標記、.supervisor.pid ---
+REC_ROOT="$T/record-result"
+mkdir -p "$REC_ROOT/logs"
+REC_WT="$REC_ROOT/worktree"
+mkdir -p "$REC_WT"
+git -C "$REC_WT" init -q
+# GIT_CONFIG_GLOBAL/SYSTEM are pointed at /dev/null earlier in this file
+# (see the _git_status_snapshot section), so every repo fixture created
+# from here on needs its own local identity before it can commit -- same
+# idiom _make_worktree_fixture below already uses.
+git -C "$REC_WT" config user.email t@t.com
+git -C "$REC_WT" config user.name t
+git -C "$REC_WT" commit -q --allow-empty -m init
+
+_rec_fixture() {
+  local label="$1" rc="$2" body="$3"
+  local pid="90000$4"
+  local log="$REC_ROOT/logs/$label.log"
+  printf '%s' "$body" > "$log"
+  printf '%s\n' "$log" > "$REC_ROOT/.log-$pid"
+  printf '%s' "$rc" > "$REC_ROOT/.exit-$pid"
+  printf '%s\n' "$(_git_status_snapshot "$REC_WT")" > "$REC_ROOT/.git-status-before-$pid"
+  printf '%s\n' "$pid"
+}
+
+REC_GOOD_BODY='===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===
+這是完整的 review 內容
+===PR-REVIEW-BY-MULTI-AGENTS-END==='
+
+REC_READY_PID="$(_rec_fixture claude 0 "$REC_GOOD_BODY" 1)"
+REC_WITHHELD_PID="$(_rec_fixture codex 1 "$REC_GOOD_BODY" 2)"
+REC_NOCONTENT_PID="$(_rec_fixture opencode 0 'CLI 崩潰了，沒有標記' 3)"
+
+: > "$REC_ROOT/summary.txt"
+_record_reviewer_result "$REC_READY_PID" "$REC_ROOT" "$REC_WT" "$REC_ROOT/summary.txt"
+_record_reviewer_result "$REC_WITHHELD_PID" "$REC_ROOT" "$REC_WT" "$REC_ROOT/summary.txt"
+_record_reviewer_result "$REC_NOCONTENT_PID" "$REC_ROOT" "$REC_WT" "$REC_ROOT/summary.txt"
+
+REC_L1="$(sed -n 1p "$REC_ROOT/summary.txt")"
+REC_L2="$(sed -n 2p "$REC_ROOT/summary.txt")"
+REC_L3="$(sed -n 3p "$REC_ROOT/summary.txt")"
+
+# 七個欄位，順序固定
+# shellcheck disable=SC2015
+printf '%s' "$REC_L1" | grep -qE '^cli=[^ ]+ pid=[0-9]+ exit=[^ ]+ ended_at=[^ ]+ worktree_status=[^ ]+ content_status=[^ ]+ content_file=' \
+  && pass record-summary-seven-fields || bad record-summary-seven-fields
+# cli 欄位從 log 檔名推得，不必回頭對另一份摘要
+# shellcheck disable=SC2015
+printf '%s' "$REC_L1" | grep -qF 'cli=claude' && pass record-summary-names-cli || bad record-summary-names-cli
+# shellcheck disable=SC2015
+printf '%s' "$REC_L1" | grep -qF 'content_status=ready' && pass record-status-ready || bad record-status-ready
+# 結束碼非零 -> withheld，內容檔仍要留下供人工判斷
+# shellcheck disable=SC2015
+printf '%s' "$REC_L2" | grep -qF 'content_status=withheld' && pass record-status-withheld || bad record-status-withheld
+# shellcheck disable=SC2015
+[ -f "$REC_ROOT/.comment-body-$REC_WITHHELD_PID.md" ] && pass record-withheld-keeps-content-file || bad record-withheld-keeps-content-file
+# 標記不成對 -> no-content，不產生內容檔，content_file 欄位留空
+# shellcheck disable=SC2015
+printf '%s' "$REC_L3" | grep -qF 'content_status=no-content' && pass record-status-no-content || bad record-status-no-content
+# shellcheck disable=SC2015
+printf '%s' "$REC_L3" | grep -qE 'content_file=$' && pass record-no-content-empty-file-field || bad record-no-content-empty-file-field
+# shellcheck disable=SC2015
+[ ! -e "$REC_ROOT/.comment-body-$REC_NOCONTENT_PID.md" ] && pass record-no-content-writes-no-file || bad record-no-content-writes-no-file
+
+# 內容檔第一行是回音室標記，第二段才是 review 本文
+# shellcheck disable=SC2015
+[ "$(head -1 "$REC_ROOT/.comment-body-$REC_READY_PID.md")" = '<!-- pr-review-by-multi-agents -->' ] \
+  && pass record-content-file-echo-guard-first-line || bad record-content-file-echo-guard-first-line
+# shellcheck disable=SC2015
+grep -qF '這是完整的 review 內容' "$REC_ROOT/.comment-body-$REC_READY_PID.md" \
+  && pass record-content-file-keeps-review || bad record-content-file-keeps-review
+
 # ==============================================================
 # spawn_supervisor
 #
