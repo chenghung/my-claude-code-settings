@@ -1391,6 +1391,61 @@ printf '%s' "$REC_L3" | grep -qE 'content_file=$' && pass record-no-content-empt
 grep -qF '這是完整的 review 內容' "$REC_ROOT/.comment-body-$REC_READY_PID.md" \
   && pass record-content-file-keeps-review || bad record-content-file-keeps-review
 
+# --- worktree tampered with (not just a non-zero exit) also produces
+# content_status=withheld: _record_reviewer_result's gate is
+# `rc=0 AND worktree_status=ok`, and the three fixtures above only ever
+# falsify the rc half (REC_WITHHELD_PID) or leave both true (REC_READY_
+# PID). This falsifies the worktree half instead -- exit 0 and valid
+# markers throughout -- so the invalidated-worktree branch is proven to
+# land in the same withheld outcome rather than being read as
+# unconditionally "ready" just because the exit code was clean. Restored
+# after being dropped by the wholesale spawn_supervisor section
+# replacement further down; see the deleted spawn-supervisor-withholds-
+# on-invalidated-worktree / spawn-supervisor-withheld-still-saves-
+# content-invalidated tests at commit 2845159 for the pre-refactor
+# version of this same property. ---
+REC_TAMPER_ROOT="$T/record-result-tampered"
+mkdir -p "$REC_TAMPER_ROOT/logs"
+REC_TAMPER_WT="$REC_TAMPER_ROOT/worktree"
+mkdir -p "$REC_TAMPER_WT"
+git -C "$REC_TAMPER_WT" init -q
+# Same local-identity requirement as every other fresh repo fixture in
+# this file (GIT_CONFIG_GLOBAL/SYSTEM point at /dev/null).
+git -C "$REC_TAMPER_WT" config user.email t@t.com
+git -C "$REC_TAMPER_WT" config user.name t
+git -C "$REC_TAMPER_WT" commit -q --allow-empty -m init
+
+REC_TAMPER_PID=900004
+REC_TAMPER_LOG="$REC_TAMPER_ROOT/logs/codex.log"
+{
+  printf '===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===\n'
+  printf '因為 worktree 遭竄改而不可信的 review\n'
+  printf '===PR-REVIEW-BY-MULTI-AGENTS-END===\n'
+} > "$REC_TAMPER_LOG"
+printf '%s\n' "$REC_TAMPER_LOG" > "$REC_TAMPER_ROOT/.log-$REC_TAMPER_PID"
+printf '0' > "$REC_TAMPER_ROOT/.exit-$REC_TAMPER_PID"
+printf '%s\n' "$(_git_status_snapshot "$REC_TAMPER_WT")" > "$REC_TAMPER_ROOT/.git-status-before-$REC_TAMPER_PID"
+# Tamper *after* the before-snapshot is recorded, exactly like a reviewer
+# violating the read-only contract would -- exit code stays 0 throughout,
+# so only the worktree-state half of the gate can be what withholds this.
+printf 'dirty\n' > "$REC_TAMPER_WT/INJECTED-BY-TEST.txt"
+
+: > "$REC_TAMPER_ROOT/summary.txt"
+_record_reviewer_result "$REC_TAMPER_PID" "$REC_TAMPER_ROOT" "$REC_TAMPER_WT" "$REC_TAMPER_ROOT/summary.txt"
+REC_TAMPER_LINE="$(cat "$REC_TAMPER_ROOT/summary.txt")"
+
+case "$REC_TAMPER_LINE" in
+  *'worktree_status=invalidated'*) pass record-status-invalidated-on-tampered-worktree ;;
+  *) bad record-status-invalidated-on-tampered-worktree ;;
+esac
+case "$REC_TAMPER_LINE" in
+  *'content_status=withheld'*) pass record-status-withheld-on-invalidated-worktree ;;
+  *) bad record-status-withheld-on-invalidated-worktree ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF '竄改而不可信' "$REC_TAMPER_ROOT/.comment-body-$REC_TAMPER_PID.md" 2>/dev/null \
+  && pass record-withheld-keeps-content-file-on-invalidated-worktree || bad record-withheld-keeps-content-file-on-invalidated-worktree
+
 # --- 監督行程：摘要行順序等於完成順序，不是派出順序 ---
 ORDER_ROOT="$T/supervisor-order"
 mkdir -p "$ORDER_ROOT/logs"
@@ -1452,6 +1507,129 @@ if declare -F _post_review_comment >/dev/null 2>&1; then
 else
   pass record-post-function-removed
 fi
+
+# ==============================================================
+# spawn_supervisor -- logs_dir survival, the .supervisor.pid interface,
+# and SIGHUP hardening
+#
+# Restored after being dropped by the wholesale section replacement
+# above (see commit 2845159 for the pre-refactor spawn-supervisor-
+# preserves-logs-dir / spawn-supervisor-survives-sighup / spawn-
+# supervisor-removes-worktree-after-sighup tests this adapts from) plus
+# one genuinely new scenario for .supervisor.pid, which did not exist
+# before this task. None of the three scenarios below depend on exit
+# code or worktree tampering, so one shared "clean" opencode stub covers
+# all of them.
+# ==============================================================
+
+SV_STUB_BIN="$T/supervisor-stub-bin"
+mkdir -p "$SV_STUB_BIN"
+cat > "$SV_STUB_BIN/opencode" <<'STUB'
+#!/usr/bin/env bash
+sleep 0.1
+exit 0
+STUB
+chmod +x "$SV_STUB_BIN/opencode"
+export PATH="$SV_STUB_BIN:$saved_path"
+
+# --- logs_dir survives spawn_supervisor removing its sibling worktree --
+# `git worktree remove --force` only ever touches the worktree path it is
+# given; logs_dir is a separate sibling directory under base_dir and is
+# the only post-mortem evidence a human has when a review never shows up,
+# so its survival through that removal step is worth pinning down
+# directly rather than trusting "the two are different directories" by
+# inspection alone. ---
+
+SVLOGS_ROOT="$T/supervisor-logs-fixture"
+SVLOGS_WT="$(_make_worktree_fixture "$SVLOGS_ROOT")"
+mkdir -p "$SVLOGS_ROOT/logs"
+printf 'p' > "$SVLOGS_ROOT/logs/opencode.prompt"
+svlogs_pid="$(launch_reviewer opencode "$SVLOGS_WT" "$SVLOGS_ROOT/logs/opencode.log" < "$SVLOGS_ROOT/logs/opencode.prompt")"
+SVLOGS_SUMMARY="$SVLOGS_ROOT/summary.txt"
+(cd "$SVLOGS_ROOT/work" && spawn_supervisor "$SVLOGS_WT" "$SVLOGS_SUMMARY" "$svlogs_pid")
+
+i=0
+until [ ! -e "$SVLOGS_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$SVLOGS_WT" ] && [ -d "$SVLOGS_ROOT/logs" ] && pass spawn-supervisor-preserves-logs-dir || bad spawn-supervisor-preserves-logs-dir
+
+# --- .supervisor.pid holds the backgrounded supervisor subshell's own
+# PID (via $BASHPID inside it), not the PID of whichever shell happened
+# to call spawn_supervisor -- Task 7's liveness check needs to `kill -0`
+# the process that is actually still running, not the caller. $! is
+# captured from *inside* the same subshell that calls spawn_supervisor
+# (into a file, since $! itself does not survive that subshell exiting),
+# the same technique the SIGHUP scenario below uses -- see its own
+# comment for why that is what makes $! refer to spawn_supervisor's own
+# internal `(...)&` job rather than anything else. ---
+
+SVPID_ROOT="$T/supervisor-pidfile-fixture"
+SVPID_WT="$(_make_worktree_fixture "$SVPID_ROOT")"
+mkdir -p "$SVPID_ROOT/logs"
+printf 'p' > "$SVPID_ROOT/logs/opencode.prompt"
+svpid_pid="$(launch_reviewer opencode "$SVPID_WT" "$SVPID_ROOT/logs/opencode.log" < "$SVPID_ROOT/logs/opencode.prompt")"
+SVPID_SUMMARY="$SVPID_ROOT/summary.txt"
+SVPID_BANG_FILE="$T/svpid-bang.txt"
+(
+  cd "$SVPID_ROOT/work" || exit 1
+  spawn_supervisor "$SVPID_WT" "$SVPID_SUMMARY" "$svpid_pid"
+  printf '%s' "$!" > "$SVPID_BANG_FILE"
+)
+svpid_bang="$(cat "$SVPID_BANG_FILE" 2>/dev/null)"
+
+i=0
+until [ -s "$SVPID_ROOT/.supervisor.pid" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$SVPID_ROOT/.supervisor.pid" ] && pass spawn-supervisor-writes-pid-file || bad spawn-supervisor-writes-pid-file
+
+svpid_recorded="$(cat "$SVPID_ROOT/.supervisor.pid" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$svpid_bang" ] && [ "$svpid_recorded" = "$svpid_bang" ] && pass spawn-supervisor-pid-file-is-supervisor-subshell || bad spawn-supervisor-pid-file-is-supervisor-subshell
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$svpid_recorded" ] && [ "$svpid_recorded" != "$$" ] && pass spawn-supervisor-pid-file-is-not-caller || bad spawn-supervisor-pid-file-is-not-caller
+
+i=0
+until [ ! -e "$SVPID_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+
+# --- the backgrounded subshell survives a real SIGHUP delivered directly
+# to it, not just `disown` (which only stops *this shell* from sending
+# SIGHUP on its own exit -- it does nothing about the kernel delivering
+# one some other way, e.g. a closed controlling terminal). $! is captured
+# from *inside* the same subshell that calls spawn_supervisor (into a
+# file, since $! itself does not survive that subshell exiting) --
+# spawn_supervisor's own internal `(...)&` is what $! refers to right
+# after the call, per bash's normal $!-after-a-backgrounded-job semantics,
+# even though that job gets disowned immediately after. ---
+
+SV4_ROOT="$T/supervisor-fixture-sighup"
+SV4_WT="$(_make_worktree_fixture "$SV4_ROOT")"
+mkdir -p "$SV4_ROOT/logs"
+printf 'p' > "$SV4_ROOT/logs/opencode.prompt"
+sv4_pid="$(launch_reviewer opencode "$SV4_WT" "$SV4_ROOT/logs/opencode.log" < "$SV4_ROOT/logs/opencode.prompt")"
+SV4_SUMMARY="$SV4_ROOT/summary.txt"
+SV4_PID_FILE="$T/sv4-supervisor-pid.txt"
+(
+  cd "$SV4_ROOT/work" || exit 1
+  spawn_supervisor "$SV4_WT" "$SV4_SUMMARY" "$sv4_pid"
+  printf '%s' "$!" > "$SV4_PID_FILE"
+)
+sv4_supervisor_pid="$(cat "$SV4_PID_FILE" 2>/dev/null)"
+# A real, unignored SIGHUP would kill a plain backgrounded subshell
+# instantly; giving it a moment first makes sure this is actually
+# targeting a live process, not racing its own already-fast completion.
+sleep 0.2
+kill -HUP "$sv4_supervisor_pid" 2>/dev/null || true
+
+i=0
+until [ -s "$SV4_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$SV4_SUMMARY" ] && pass spawn-supervisor-survives-sighup || bad spawn-supervisor-survives-sighup
+i=0
+until [ ! -e "$SV4_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$SV4_WT" ] && pass spawn-supervisor-removes-worktree-after-sighup || bad spawn-supervisor-removes-worktree-after-sighup
+
+export PATH="$saved_path"
 
 # ==============================================================
 # _reap_stale_run_dirs
