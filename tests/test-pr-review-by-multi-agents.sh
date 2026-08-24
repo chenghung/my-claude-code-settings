@@ -540,6 +540,76 @@ DERIVE_OUT="$(_derive_issue_number 'just a plain body mentioning #42' acme widge
 # shellcheck disable=SC2015
 [ "$DERIVE_RC" = 1 ] && [ -z "$DERIVE_OUT" ] && pass derive-issue-no-keyword-returns-nonzero || bad derive-issue-no-keyword-returns-nonzero
 
+# --- fetch_review_materials: 三份材料、缺料降級、materials 唯讀 ---
+MAT_ROOT="$T/materials-e2e"
+mkdir -p "$MAT_ROOT/bin" "$MAT_ROOT/run"
+cat > "$MAT_ROOT/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-} ${2:-}" in
+"pr view") cat "$GH_PR_JSON_FIXTURE" ;;
+"issue view")
+  [ -n "${GH_ISSUE_JSON_FIXTURE:-}" ] || exit 1
+  cat "$GH_ISSUE_JSON_FIXTURE" ;;
+*) exit 1 ;;
+esac
+STUB
+chmod +x "$MAT_ROOT/bin/gh"
+
+cat > "$MAT_ROOT/pr.json" <<'JSON'
+{"title":"T","body":"Closes #42","comments":[],"reviews":[]}
+JSON
+cat > "$MAT_ROOT/issue.json" <<'JSON'
+{"title":"需求標題","body":"需求內文","comments":[{"author":{"login":"alice"},"createdAt":"2026-08-01T00:00:00Z","body":"補充需求"}]}
+JSON
+printf '設計文件內容\n' > "$MAT_ROOT/design-doc.md"
+
+export PATH="$MAT_ROOT/bin:$saved_path"
+export GH_PR_JSON_FIXTURE="$MAT_ROOT/pr.json"
+export GH_ISSUE_JSON_FIXTURE="$MAT_ROOT/issue.json"
+
+# shellcheck disable=SC2015
+MAT_DIR="$(fetch_review_materials acme widgets 7 '' "$MAT_ROOT/design-doc.md" "$MAT_ROOT/run")" \
+  && pass fetch-materials-returns-zero || bad fetch-materials-returns-zero
+
+# shellcheck disable=SC2015
+[ "$MAT_DIR" = "$MAT_ROOT/run/materials" ] && pass fetch-materials-prints-dir || bad fetch-materials-prints-dir
+# shellcheck disable=SC2015
+[ -f "$MAT_DIR/pr.md" ] && pass fetch-materials-writes-pr || bad fetch-materials-writes-pr
+# issue 編號由 PR 內文的 Closes #42 推導而來，第四個參數是空字串
+# shellcheck disable=SC2015
+grep -qF '需求內文' "$MAT_DIR/issue.md" && pass fetch-materials-derives-issue || bad fetch-materials-derives-issue
+# shellcheck disable=SC2015
+grep -qF '補充需求' "$MAT_DIR/issue.md" && pass fetch-materials-issue-comments || bad fetch-materials-issue-comments
+# shellcheck disable=SC2015
+grep -qF '設計文件內容' "$MAT_DIR/design.md" && pass fetch-materials-copies-design || bad fetch-materials-copies-design
+
+# materials 目錄與其中的檔案都不可寫
+if ( : > "$MAT_DIR/should-not-be-writable.txt" ) 2>/dev/null; then
+  bad fetch-materials-dir-read-only
+else
+  pass fetch-materials-dir-read-only
+fi
+
+chmod -R u+w "$MAT_ROOT/run" 2>/dev/null || true
+
+# issue 抓不到、design document 未提供時：不產生對應檔，但仍成功返回
+MAT_DIR2_ROOT="$MAT_ROOT/run2"
+mkdir -p "$MAT_DIR2_ROOT"
+unset GH_ISSUE_JSON_FIXTURE
+# shellcheck disable=SC2015
+MAT_DIR2="$(fetch_review_materials acme widgets 7 '' '' "$MAT_DIR2_ROOT")" \
+  && pass fetch-materials-degrades-returns-zero || bad fetch-materials-degrades-returns-zero
+# shellcheck disable=SC2015
+[ -f "$MAT_DIR2/pr.md" ] && pass fetch-materials-degrades-keeps-pr || bad fetch-materials-degrades-keeps-pr
+# shellcheck disable=SC2015
+[ ! -e "$MAT_DIR2/issue.md" ] && pass fetch-materials-degrades-no-issue-file || bad fetch-materials-degrades-no-issue-file
+# shellcheck disable=SC2015
+[ ! -e "$MAT_DIR2/design.md" ] && pass fetch-materials-degrades-no-design-file || bad fetch-materials-degrades-no-design-file
+
+chmod -R u+w "$MAT_DIR2_ROOT" 2>/dev/null || true
+export PATH="$saved_path"
+
 # ==============================================================
 # build_prompt
 # ==============================================================

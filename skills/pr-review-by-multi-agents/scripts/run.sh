@@ -149,6 +149,81 @@ _derive_issue_number() {
   printf '%s\n' "$number"
 }
 
+# _fetch_issue_material <owner> <repo> <number> <out_file>
+#
+# Same shape as _fetch_pr_material, for the issue this PR declares. No
+# echo-guard filtering here: this skill never comments on issues, so an
+# issue thread cannot contain its own earlier output.
+_fetch_issue_material() {
+  local owner="$1" repo="$2" number="$3" out_file="$4"
+  local json
+
+  json="$(gh issue view "$number" --repo "$owner/$repo" \
+    --json title,body,comments 2>/dev/null)" || return 1
+  [ -n "$json" ] || return 1
+
+  printf '%s' "$json" | jq -r '
+    "# Issue 標題\n\n" + (.title // "") + "\n\n"
+    + "# Issue 內文\n\n" + (.body // "") + "\n\n"
+    + "# Issue 討論串\n\n"
+    + (((.comments // []) | map(select((.body // "") != ""))
+        | map("## " + (.author.login // "unknown") + "（" + (.createdAt // "") + "）\n\n" + .body)
+        | join("\n\n")))
+  ' > "$out_file" || return 1
+}
+
+# fetch_review_materials <owner> <repo> <number> <issue_arg> <design_doc_path> <base_dir>
+#
+# Writes this run's three review materials into <base_dir>/materials and
+# prints that directory's absolute path to stdout. pr.md is a hard
+# precondition -- without the PR's own text there is no requirement axis
+# left to review against, and the contract forbids the reviewer from
+# fetching it itself -- so a failure there returns non-zero. issue.md and
+# design.md are best-effort: a missing one is simply not written, and
+# build_prompt renders that section as explicitly absent, which is what
+# the contract's own "materials not provided" path expects.
+#
+# <issue_arg> is the caller's explicit override. When empty, the issue is
+# derived from the closing keyword in the PR body just fetched -- which is
+# why this runs after pr.md is written, not before.
+#
+# The final `chmod -R a-w` is the same second-layer defense main() already
+# applies to the worktree and logs dir: a reviewer CLI that writes despite
+# its own sandbox flags (see launch_reviewer's docstring on why those are
+# not the guarantee) could otherwise rewrite the very requirements it is
+# being judged against, and every later reviewer in the same run would read
+# the tampered version with nothing recording that it changed.
+fetch_review_materials() {
+  local owner="$1" repo="$2" number="$3" issue_arg="$4"
+  local design_doc_path="$5" base_dir="$6"
+  local materials_dir pr_body issue_number=""
+
+  materials_dir="$base_dir/materials"
+  mkdir -p "$materials_dir" || return 1
+
+  _fetch_pr_material "$owner" "$repo" "$number" "$materials_dir/pr.md" || return 1
+
+  if [ -n "$issue_arg" ]; then
+    issue_number="$(_parse_issue_ref "$issue_arg" "$owner" "$repo")" || issue_number=""
+  else
+    pr_body="$(cat "$materials_dir/pr.md" 2>/dev/null)" || pr_body=""
+    issue_number="$(_derive_issue_number "$pr_body" "$owner" "$repo")" || issue_number=""
+  fi
+
+  if [ -n "$issue_number" ]; then
+    _fetch_issue_material "$owner" "$repo" "$issue_number" "$materials_dir/issue.md" \
+      || rm -f "$materials_dir/issue.md"
+  fi
+
+  if [ -n "$design_doc_path" ] && [ -r "$design_doc_path" ]; then
+    cp "$design_doc_path" "$materials_dir/design.md" || rm -f "$materials_dir/design.md"
+  fi
+
+  chmod -R a-w "$materials_dir" 2>/dev/null || true
+
+  printf '%s\n' "$materials_dir"
+}
+
 # parse_pr_url <input>
 #
 # Accepts a full PR URL (https://github.com/<owner>/<repo>/pull/<N>), the
