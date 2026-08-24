@@ -508,6 +508,38 @@ fi
 
 export PATH="$saved_path"
 
+# --- _parse_issue_ref / _derive_issue_number ---
+# 明示的 issue 參照：完整 URL、owner/repo#N、純 #N、純數字
+# shellcheck disable=SC2015
+[ "$(_parse_issue_ref 'https://github.com/acme/widgets/issues/42' acme widgets)" = 42 ] && pass parse-issue-ref-url || bad parse-issue-ref-url
+# shellcheck disable=SC2015
+[ "$(_parse_issue_ref 'acme/widgets#42' acme widgets)" = 42 ] && pass parse-issue-ref-shorthand || bad parse-issue-ref-shorthand
+# shellcheck disable=SC2015
+[ "$(_parse_issue_ref '#42' acme widgets)" = 42 ] && pass parse-issue-ref-hash || bad parse-issue-ref-hash
+# shellcheck disable=SC2015
+[ "$(_parse_issue_ref '42' acme widgets)" = 42 ] && pass parse-issue-ref-bare-number || bad parse-issue-ref-bare-number
+
+# 別的 repo 的 issue 不接受
+if _parse_issue_ref 'https://github.com/other/repo/issues/42' acme widgets >/dev/null 2>&1; then
+  bad parse-issue-ref-rejects-cross-repo
+else
+  pass parse-issue-ref-rejects-cross-repo
+fi
+
+# 從 PR 內文的 closing keyword 推導，大小寫不敏感
+# shellcheck disable=SC2015
+[ "$(_derive_issue_number 'blah
+Closes #42' acme widgets)" = 42 ] && pass derive-issue-closes-hash || bad derive-issue-closes-hash
+# shellcheck disable=SC2015
+[ "$(_derive_issue_number 'fixes https://github.com/acme/widgets/issues/7' acme widgets)" = 7 ] && pass derive-issue-fixes-url || bad derive-issue-fixes-url
+# shellcheck disable=SC2015
+[ "$(_derive_issue_number 'RESOLVED acme/widgets#9' acme widgets)" = 9 ] && pass derive-issue-resolved-shorthand || bad derive-issue-resolved-shorthand
+
+# 沒有 closing keyword 時回非零，且不得印出任何東西
+DERIVE_OUT="$(_derive_issue_number 'just a plain body mentioning #42' acme widgets 2>/dev/null)" && DERIVE_RC=0 || DERIVE_RC=1
+# shellcheck disable=SC2015
+[ "$DERIVE_RC" = 1 ] && [ -z "$DERIVE_OUT" ] && pass derive-issue-no-keyword-returns-nonzero || bad derive-issue-no-keyword-returns-nonzero
+
 # ==============================================================
 # build_prompt
 # ==============================================================

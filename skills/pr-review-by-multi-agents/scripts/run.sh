@@ -66,6 +66,89 @@ _fetch_pr_material() {
   ' > "$out_file" || return 1
 }
 
+# _parse_issue_ref <input> <owner> <repo>
+#
+# Turns an explicitly-given issue reference into a bare issue number on
+# stdout. Accepts the full URL form, the "<owner>/<repo>#<N>" shorthand,
+# "#<N>", and a bare number. Cross-repository references are rejected
+# (non-zero, nothing printed) rather than silently fetched: this script
+# only ever calls `gh issue view --repo <owner>/<repo>` against the PR's
+# own repo, so accepting another repo's number here would fetch the
+# *wrong issue that happens to share that number* -- a failure with no
+# visible symptom, which is the exact class of silent mis-grounding this
+# skill exists to avoid.
+_parse_issue_ref() {
+  local input="$1" owner="$2" repo="$3"
+
+  if [[ "$input" =~ ^https://github\.com/([^/[:space:]]+)/([^/[:space:]]+)/issues/([0-9]+)([/?#].*)?$ ]]; then
+    [ "${BASH_REMATCH[1]}" = "$owner" ] && [ "${BASH_REMATCH[2]}" = "$repo" ] || return 1
+    printf '%s\n' "${BASH_REMATCH[3]}"
+    return 0
+  fi
+
+  if [[ "$input" =~ ^([^/[:space:]]+)/([^#[:space:]]+)#([0-9]+)$ ]]; then
+    [ "${BASH_REMATCH[1]}" = "$owner" ] && [ "${BASH_REMATCH[2]}" = "$repo" ] || return 1
+    printf '%s\n' "${BASH_REMATCH[3]}"
+    return 0
+  fi
+
+  if [[ "$input" =~ ^#?([0-9]+)$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  return 1
+}
+
+# _derive_issue_number <pr_body> <owner> <repo>
+#
+# Scans the PR body for GitHub's own closing keywords (close/closes/closed,
+# fix/fixes/fixed, resolve/resolves/resolved) followed by an issue
+# reference, and prints that issue's number to stdout. Returns non-zero,
+# printing nothing, when the body carries no such reference -- callers
+# treat that as "this PR declares no issue", not as an error.
+#
+# Matching is case-insensitive via `nocasematch`, whose previous setting is
+# captured with `shopt -p` and restored on every exit path: this function
+# is `source`d into a test script that runs many other case statements and
+# `[[ =~ ]]` matches, and leaving nocasematch on would silently change
+# their behavior long after this function returned.
+#
+# A bare "#42" with no keyword in front is deliberately NOT matched. GitHub
+# only closes an issue for the keyword forms, so treating a passing mention
+# as this PR's requirement source would ground every reviewer in an issue
+# the PR never claimed to implement.
+_derive_issue_number() {
+  local body="$1" owner="$2" repo="$3"
+  local number="" saved_nocasematch
+  local kw='(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]*'
+
+  saved_nocasematch="$(shopt -p nocasematch)"
+  shopt -s nocasematch
+
+  # The dot is deliberately unescaped here even though it is inside single
+  # quotes: bash's `=~` treats a quoted backslash as a literal backslash
+  # character, not a regex escape, so a quoted '\.' would require a literal
+  # "\." in $body and never match a real "github.com" -- quoting alone
+  # already makes this dot match only itself.
+  if [[ "$body" =~ $kw'https://github.com/'([^/[:space:]]+)/([^/[:space:]]+)'/issues/'([0-9]+) ]]; then
+    if [ "${BASH_REMATCH[3]}" = "$owner" ] && [ "${BASH_REMATCH[4]}" = "$repo" ]; then
+      number="${BASH_REMATCH[5]}"
+    fi
+  elif [[ "$body" =~ $kw([^/[:space:]]+)/([^#[:space:]]+)'#'([0-9]+) ]]; then
+    if [ "${BASH_REMATCH[3]}" = "$owner" ] && [ "${BASH_REMATCH[4]}" = "$repo" ]; then
+      number="${BASH_REMATCH[5]}"
+    fi
+  elif [[ "$body" =~ $kw'#'([0-9]+) ]]; then
+    number="${BASH_REMATCH[3]}"
+  fi
+
+  eval "$saved_nocasematch"
+
+  [ -n "$number" ] || return 1
+  printf '%s\n' "$number"
+}
+
 # parse_pr_url <input>
 #
 # Accepts a full PR URL (https://github.com/<owner>/<repo>/pull/<N>), the
