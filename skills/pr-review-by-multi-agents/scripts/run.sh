@@ -3,9 +3,14 @@
 #
 # Command line: run.sh <pr-link> <issue-link> <design-doc-path>. All three
 # positional arguments may be the empty string -- an empty PR link derives
-# the PR from the current branch (see parse_pr_url); an empty issue link or
-# design doc path is passed straight through to build_prompt, which renders
-# it as an explicit "not provided" statement for the reviewer contract.
+# the PR from the current branch (see parse_pr_url); an empty issue link
+# makes fetch_review_materials derive the issue number itself from the
+# PR's own body instead (see _derive_issue_number); an empty, or
+# unreadable, design doc path simply never gets written into materials_dir.
+# build_prompt never sees these raw arguments at all -- it only sees
+# materials_dir, and a material that fetch_review_materials never wrote
+# there renders as an explicit "not provided" statement for the reviewer
+# contract (see _emit_material_section).
 #
 # This file defines, in order: whether to run at all and how many reviewer
 # CLIs are available (input parsing and preflight checks); the code
@@ -33,26 +38,46 @@ set -euo pipefail
 # diff 與 comments，它加不加、加成什麼樣子都不可信。
 readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 
-# _fetch_pr_material <owner> <repo> <number> <out_file>
+# _fetch_pr_material <owner> <repo> <number> <out_file> <raw_body_file>
 #
 # Writes the PR's title, body, conversation comments and review summary
 # bodies into <out_file> as plain markdown, dropping any comment or review
-# body carrying ECHO_GUARD_MARKER (this skill's own earlier output).
-# Returns non-zero, leaving <out_file> in whatever state the failed write
-# left it, when gh fails or returns nothing -- callers treat that as a
-# hard precondition failure, since a reviewer with no PR material has no
-# way to judge requirement conformance and (per the contract) is forbidden
-# from going to GitHub for it itself.
+# whose body starts with ECHO_GUARD_MARKER (this skill's own earlier
+# output), leading whitespace aside. Also writes the PR's raw body --
+# exactly gh's own "body" field, nothing concatenated onto it -- into
+# <raw_body_file>, so a caller that needs to scan the PR's own text (e.g.
+# _derive_issue_number) never has to re-derive it from <out_file>'s
+# rendered markdown. That distinction matters: <out_file> also contains
+# the comment thread and review summaries, both writable by any GitHub
+# user, so scanning it for anything security-relevant would let a
+# comment's content compete with the PR body itself for a match.
+# Returns non-zero, leaving <out_file> and <raw_body_file> in whatever
+# state the failed write left them, when gh fails or returns nothing --
+# callers treat that as a hard precondition failure, since a reviewer with
+# no PR material has no way to judge requirement conformance and (per the
+# contract) is forbidden from going to GitHub for it itself.
 _fetch_pr_material() {
-  local owner="$1" repo="$2" number="$3" out_file="$4"
+  local owner="$1" repo="$2" number="$3" out_file="$4" raw_body_file="$5"
   local json
 
   json="$(gh pr view "$number" --repo "$owner/$repo" \
     --json title,body,comments,reviews 2>/dev/null)" || return 1
   [ -n "$json" ] || return 1
 
+  printf '%s' "$json" | jq -r '.body // ""' > "$raw_body_file" || return 1
+
+  # own_echo matches only at the start of the body (leading whitespace
+  # skipped first, since GitHub's API may or may not preserve it): this
+  # skill always writes the marker as its own posted comments' first
+  # line, so a start-anchored match loses nothing of that. The previous
+  # `contains` form dropped ANY comment merely mentioning the marker text
+  # anywhere -- forgeable by an attacker wanting their own comment made
+  # invisible to every reviewer, and a real false positive against a
+  # human comment (in this very repo) that quotes or discusses the marker
+  # constant.
   printf '%s' "$json" | jq -r --arg marker "$ECHO_GUARD_MARKER" '
-    def clean: map(select((.body // "") != "")) | map(select(((.body // "") | contains($marker)) | not));
+    def own_echo: ((.body // "") | sub("^[ \t\r\n]*"; "")) | startswith($marker);
+    def clean: map(select((.body // "") != "")) | map(select(own_echo | not));
     "# PR 標題\n\n" + (.title // "") + "\n\n"
     + "# PR 內文\n\n" + (.body // "") + "\n\n"
     + "# PR 討論串\n\n"
@@ -184,8 +209,21 @@ _fetch_issue_material() {
 # the contract's own "materials not provided" path expects.
 #
 # <issue_arg> is the caller's explicit override. When empty, the issue is
-# derived from the closing keyword in the PR body just fetched -- which is
-# why this runs after pr.md is written, not before.
+# derived from the closing keyword in the PR's own raw body -- the
+# <raw_body_file> _fetch_pr_material writes alongside pr.md, never pr.md
+# itself. pr.md is the *rendered* material (title, body, comment thread,
+# and review summaries all concatenated), and deriving from that would let
+# the leftmost closing-keyword match anywhere in the file win, including
+# one sitting in a comment -- comment threads are writable by any GitHub
+# user, so that would let a commenter choose which issue every reviewer is
+# grounded in, silently, whenever the PR body itself carries no keyword.
+#
+# This also records, in <base_dir>/.materials-status, which materials this
+# run actually collected and how (issue: not-declared / derived / explicit
+# / failed; design: not-provided / provided / unreadable) -- print_summary
+# reads this back to report it to the human, since a silently-skipped axis
+# used to have no visible symptom beyond three reviewers separately noting
+# the material was missing.
 #
 # The final `chmod -R a-w` is the same second-layer defense main() already
 # applies to the worktree and logs dir: a reviewer CLI that writes despite
@@ -196,30 +234,55 @@ _fetch_issue_material() {
 fetch_review_materials() {
   local owner="$1" repo="$2" number="$3" issue_arg="$4"
   local design_doc_path="$5" base_dir="$6"
-  local materials_dir pr_body issue_number=""
+  local materials_dir raw_body_file pr_body status_file
+  local issue_number="" issue_status design_status
 
   materials_dir="$base_dir/materials"
   mkdir -p "$materials_dir" || return 1
 
-  _fetch_pr_material "$owner" "$repo" "$number" "$materials_dir/pr.md" || return 1
+  raw_body_file="$base_dir/.pr-body-raw"
+  _fetch_pr_material "$owner" "$repo" "$number" "$materials_dir/pr.md" "$raw_body_file" || return 1
 
   if [ -n "$issue_arg" ]; then
-    issue_number="$(_parse_issue_ref "$issue_arg" "$owner" "$repo")" || issue_number=""
+    if issue_number="$(_parse_issue_ref "$issue_arg" "$owner" "$repo")"; then
+      issue_status="explicit"
+    else
+      issue_number=""
+      issue_status="failed"
+    fi
   else
-    pr_body="$(cat "$materials_dir/pr.md" 2>/dev/null)" || pr_body=""
-    issue_number="$(_derive_issue_number "$pr_body" "$owner" "$repo")" || issue_number=""
+    pr_body="$(cat "$raw_body_file" 2>/dev/null)" || pr_body=""
+    if issue_number="$(_derive_issue_number "$pr_body" "$owner" "$repo")"; then
+      issue_status="derived"
+    else
+      issue_number=""
+      issue_status="not-declared"
+    fi
   fi
 
-  if [ -n "$issue_number" ]; then
-    _fetch_issue_material "$owner" "$repo" "$issue_number" "$materials_dir/issue.md" \
-      || rm -f "$materials_dir/issue.md"
+  if [ -n "$issue_number" ] \
+    && ! _fetch_issue_material "$owner" "$repo" "$issue_number" "$materials_dir/issue.md"; then
+    rm -f "$materials_dir/issue.md"
+    issue_status="failed"
   fi
 
-  if [ -n "$design_doc_path" ] && [ -r "$design_doc_path" ]; then
-    cp "$design_doc_path" "$materials_dir/design.md" || rm -f "$materials_dir/design.md"
+  if [ -z "$design_doc_path" ]; then
+    design_status="not-provided"
+  elif [ -r "$design_doc_path" ] && cp "$design_doc_path" "$materials_dir/design.md"; then
+    design_status="provided"
+  else
+    rm -f "$materials_dir/design.md"
+    design_status="unreadable"
   fi
 
   chmod -R a-w "$materials_dir" 2>/dev/null || true
+
+  status_file="$base_dir/.materials-status"
+  {
+    printf 'issue_status=%s\n' "$issue_status"
+    printf 'issue_number=%s\n' "$issue_number"
+    printf 'design_status=%s\n' "$design_status"
+  } > "$status_file"
 
   printf '%s\n' "$materials_dir"
 }
@@ -1481,6 +1544,17 @@ spawn_supervisor() {
 # When exactly one reviewer was dispatched, adds a line calling out that
 # cross-validation across independent reviewers does not hold for this run.
 #
+# Also reports what fetch_review_materials collected, by reading back
+# <base_dir>/.materials-status (silently omitting this section when that
+# file doesn't exist, e.g. a caller that calls this function directly
+# without ever having run fetch_review_materials first). Before this, a
+# best-effort material that was never collected -- most commonly a PR with
+# no closing keyword and no explicit issue link, which is common, not an
+# edge case -- had no visible symptom until every dispatched reviewer
+# separately reported that axis as skipped for want of material; this
+# section is that missing signal, stated once, up front, in the one place
+# a human is guaranteed to read regardless of how the reviewers behave.
+#
 # Each dispatched reviewer's log path here is a diagnostic aid for a
 # human, not a functional dependency of the posting pipeline itself any
 # more: the reviewer prints its full review to stdout (captured in
@@ -1536,6 +1610,43 @@ print_summary() {
     for cli in "${skipped[@]+"${skipped[@]}"}"; do
       printf -- '- %s（原因：未安裝）\n' "$cli"
     done
+  fi
+
+  local status_file="$base_dir/.materials-status"
+  if [ -f "$status_file" ]; then
+    local key value issue_status="" issue_number="" design_status="" issue_msg design_msg
+    while IFS='=' read -r key value; do
+      case "$key" in
+        issue_status) issue_status="$value" ;;
+        issue_number) issue_number="$value" ;;
+        design_status) design_status="$value" ;;
+      esac
+    done < "$status_file"
+
+    case "$issue_status" in
+      derived) issue_msg="已取得（issue 編號由 PR 本文的 closing keyword 推導：#$issue_number）" ;;
+      explicit) issue_msg="已取得（呼叫端明確指定：#$issue_number）" ;;
+      not-declared) issue_msg="未提供（PR 本文未宣告 closing 的 issue）" ;;
+      failed)
+        if [ -n "$issue_number" ]; then
+          issue_msg="嘗試取得但失敗（issue 編號：#$issue_number，可能是 issue 不存在或無權限）"
+        else
+          issue_msg="嘗試取得但失敗（呼叫端提供的 issue 參照無法解析）"
+        fi
+        ;;
+      *) issue_msg="未知" ;;
+    esac
+
+    case "$design_status" in
+      provided) design_msg="已提供" ;;
+      not-provided) design_msg="未提供" ;;
+      unreadable) design_msg="呼叫端提供了路徑，但檔案不可讀" ;;
+      *) design_msg="未知" ;;
+    esac
+
+    printf '\n本次收集到的審查材料：\n'
+    printf -- '- issue 內文與討論串：%s\n' "$issue_msg"
+    printf -- '- design document：%s\n' "$design_msg"
   fi
 
   if [ "${#dispatched[@]}" -eq 1 ]; then

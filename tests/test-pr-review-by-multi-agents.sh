@@ -491,7 +491,8 @@ cat > "$PRMAT_ROOT/pr.json" <<'JSON'
   "body": "本 PR 修正 worktree 殘留。\n\nCloses #42",
   "comments": [
     {"author": {"login": "alice"}, "createdAt": "2026-08-01T00:00:00Z", "body": "第一則人類留言"},
-    {"author": {"login": "bob"}, "createdAt": "2026-08-02T00:00:00Z", "body": "<!-- pr-review-by-multi-agents -->\n\n這是上一輪 AI review"}
+    {"author": {"login": "bob"}, "createdAt": "2026-08-02T00:00:00Z", "body": "  \n<!-- pr-review-by-multi-agents -->\n\n這是上一輪 AI review"},
+    {"author": {"login": "erin"}, "createdAt": "2026-08-03T00:00:00Z", "body": "我們在留言中間提到這個標記字串 <!-- pr-review-by-multi-agents --> 只是討論標記本身，不是回音。"}
   ],
   "reviews": [
     {"author": {"login": "carol"}, "state": "CHANGES_REQUESTED", "body": "review 總結內文"},
@@ -503,7 +504,7 @@ JSON
 export PATH="$PRMAT_ROOT/bin:$saved_path"
 export GH_PR_JSON_FIXTURE="$PRMAT_ROOT/pr.json"
 
-if _fetch_pr_material acme widgets 7 "$PRMAT_ROOT/pr.md"; then
+if _fetch_pr_material acme widgets 7 "$PRMAT_ROOT/pr.md" "$PRMAT_ROOT/pr-body-raw.md"; then
   pass fetch-pr-material-returns-zero
 else
   bad fetch-pr-material-returns-zero
@@ -518,11 +519,28 @@ grep -qF '第一則人類留言' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-h
 # shellcheck disable=SC2015
 grep -qF 'review 總結內文' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-has-review-body || bad fetch-pr-material-has-review-body
 
-# 回音室過濾：帶標記的那一則整段不得出現
+# 回音室過濾：標記在留言最開頭（即使前面帶著空白／換行）的那一則整段不得
+# 出現，驗證濾網對開頭空白要有容忍度
 if grep -qF '這是上一輪 AI review' "$PRMAT_ROOT/pr.md"; then
   bad fetch-pr-material-filters-own-comment
 else
   pass fetch-pr-material-filters-own-comment
+fi
+
+# 標記只是出現在留言「中間」（不是開頭）時不算回音，不得被濾掉 -- 濾網只
+# 比對開頭，一個提到標記字串本身的人類留言不應該因此消失
+# shellcheck disable=SC2015
+grep -qF '我們在留言中間提到這個標記字串' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-keeps-mid-body-marker-mention || bad fetch-pr-material-keeps-mid-body-marker-mention
+
+# raw body file 只該是 gh 回傳的 PR body 本身，不得包含討論串或 review 的
+# 任何內容 -- _derive_issue_number 依賴這個檔案而非渲染後的 pr.md，才不會
+# 被留言裡的 closing keyword 誤導
+# shellcheck disable=SC2015
+grep -qF 'Closes #42' "$PRMAT_ROOT/pr-body-raw.md" && pass fetch-pr-material-raw-body-has-pr-body || bad fetch-pr-material-raw-body-has-pr-body
+if grep -qF '第一則人類留言' "$PRMAT_ROOT/pr-body-raw.md"; then
+  bad fetch-pr-material-raw-body-excludes-comments
+else
+  pass fetch-pr-material-raw-body-excludes-comments
 fi
 
 export PATH="$saved_path"
@@ -603,6 +621,16 @@ grep -qF '補充需求' "$MAT_DIR/issue.md" && pass fetch-materials-issue-commen
 # shellcheck disable=SC2015
 grep -qF '設計文件內容' "$MAT_DIR/design.md" && pass fetch-materials-copies-design || bad fetch-materials-copies-design
 
+# .materials-status 要記錄這次是「由 PR 內文推導」issue、design document
+# 「已提供」-- print_summary 靠這個檔案回報收集狀況給人看
+MAT_STATUS="$MAT_ROOT/run/.materials-status"
+# shellcheck disable=SC2015
+grep -qxF 'issue_status=derived' "$MAT_STATUS" && pass fetch-materials-status-issue-derived || bad fetch-materials-status-issue-derived
+# shellcheck disable=SC2015
+grep -qxF 'issue_number=42' "$MAT_STATUS" && pass fetch-materials-status-issue-number || bad fetch-materials-status-issue-number
+# shellcheck disable=SC2015
+grep -qxF 'design_status=provided' "$MAT_STATUS" && pass fetch-materials-status-design-provided || bad fetch-materials-status-design-provided
+
 # materials 目錄與其中的檔案都不可寫
 if ( : > "$MAT_DIR/should-not-be-writable.txt" ) 2>/dev/null; then
   bad fetch-materials-dir-read-only
@@ -626,7 +654,79 @@ MAT_DIR2="$(fetch_review_materials acme widgets 7 '' '' "$MAT_DIR2_ROOT")" \
 # shellcheck disable=SC2015
 [ ! -e "$MAT_DIR2/design.md" ] && pass fetch-materials-degrades-no-design-file || bad fetch-materials-degrades-no-design-file
 
+# .materials-status 要能分辨「issue 有被推導出來、但抓不到」跟「design
+# document 根本沒給」這兩種不同狀態 -- 這是使用者能不能自己動手修的關鍵
+# 差異，見 print_summary 的回報邏輯
+MAT_STATUS2="$MAT_DIR2_ROOT/.materials-status"
+# shellcheck disable=SC2015
+grep -qxF 'issue_status=failed' "$MAT_STATUS2" && pass fetch-materials-status-issue-failed || bad fetch-materials-status-issue-failed
+# shellcheck disable=SC2015
+grep -qxF 'design_status=not-provided' "$MAT_STATUS2" && pass fetch-materials-status-design-not-provided || bad fetch-materials-status-design-not-provided
+
 chmod -R u+w "$MAT_DIR2_ROOT" 2>/dev/null || true
+
+# --- fetch_review_materials: 呼叫端明確指定 issue（而非推導），
+# .materials-status 要能跟「推導」分開回報 ---
+MAT_DIR3_ROOT="$MAT_ROOT/run3"
+mkdir -p "$MAT_DIR3_ROOT"
+export GH_ISSUE_JSON_FIXTURE="$MAT_ROOT/issue.json"
+# shellcheck disable=SC2015
+MAT_DIR3="$(fetch_review_materials acme widgets 7 '99' '' "$MAT_DIR3_ROOT")" \
+  && pass fetch-materials-explicit-issue-returns-zero || bad fetch-materials-explicit-issue-returns-zero
+# shellcheck disable=SC2015
+[ -f "$MAT_DIR3/issue.md" ] && pass fetch-materials-explicit-issue-writes-issue-file || bad fetch-materials-explicit-issue-writes-issue-file
+MAT_STATUS3="$MAT_DIR3_ROOT/.materials-status"
+# shellcheck disable=SC2015
+grep -qxF 'issue_status=explicit' "$MAT_STATUS3" && pass fetch-materials-status-issue-explicit || bad fetch-materials-status-issue-explicit
+# shellcheck disable=SC2015
+grep -qxF 'issue_number=99' "$MAT_STATUS3" && pass fetch-materials-status-issue-explicit-number || bad fetch-materials-status-issue-explicit-number
+chmod -R u+w "$MAT_DIR3_ROOT" 2>/dev/null || true
+
+# --- fetch_review_materials: design doc 路徑有給但讀不到 -- 這跟「根本
+# 沒給」要能分開回報，前者通常是打錯路徑，後者是使用者自己的選擇 ---
+MAT_DIR4_ROOT="$MAT_ROOT/run4"
+mkdir -p "$MAT_DIR4_ROOT"
+# shellcheck disable=SC2015
+MAT_DIR4="$(fetch_review_materials acme widgets 7 '' "$MAT_ROOT/does-not-exist-design.md" "$MAT_DIR4_ROOT")" \
+  && pass fetch-materials-unreadable-design-returns-zero || bad fetch-materials-unreadable-design-returns-zero
+# shellcheck disable=SC2015
+[ ! -e "$MAT_DIR4/design.md" ] && pass fetch-materials-unreadable-design-no-file || bad fetch-materials-unreadable-design-no-file
+MAT_STATUS4="$MAT_DIR4_ROOT/.materials-status"
+# shellcheck disable=SC2015
+grep -qxF 'design_status=unreadable' "$MAT_STATUS4" && pass fetch-materials-status-design-unreadable || bad fetch-materials-status-design-unreadable
+chmod -R u+w "$MAT_DIR4_ROOT" 2>/dev/null || true
+
+# --- Finding 1 的釘死測試：PR 本文沒有 closing keyword，但討論串裡有一則
+# 留言寫著 closing keyword -- 留言串任何 GitHub 使用者都能寫，用它來推導
+# 會讓留言的人決定每個 reviewer 是拿哪個 issue 當基準。issue 必須維持
+# 「未宣告」，不能被那則留言推導出來。 ---
+cat > "$MAT_ROOT/pr-injection.json" <<'JSON'
+{"title":"T","body":"本 PR 本文完全沒有 closing keyword。","comments":[{"author":{"login":"attacker"},"createdAt":"2026-08-01T00:00:00Z","body":"closes #999"}],"reviews":[]}
+JSON
+cat > "$MAT_ROOT/issue-injection.json" <<'JSON'
+{"title":"不該被抓到的 issue","body":"如果看到這段文字，代表推導誤用了留言而非 PR 本文","comments":[]}
+JSON
+
+MAT_INJ_ROOT="$MAT_ROOT/run-injection"
+mkdir -p "$MAT_INJ_ROOT"
+export GH_PR_JSON_FIXTURE="$MAT_ROOT/pr-injection.json"
+export GH_ISSUE_JSON_FIXTURE="$MAT_ROOT/issue-injection.json"
+
+# shellcheck disable=SC2015
+MAT_INJ_DIR="$(fetch_review_materials acme widgets 7 '' '' "$MAT_INJ_ROOT")" \
+  && pass fetch-materials-injection-returns-zero || bad fetch-materials-injection-returns-zero
+# 留言確實有被抓進渲染後的材料裡 -- 排除「根本沒被用到只是因為沒抓到」
+# 這個假陽性
+# shellcheck disable=SC2015
+grep -qF 'closes #999' "$MAT_INJ_DIR/pr.md" && pass fetch-materials-injection-comment-present-in-render || bad fetch-materials-injection-comment-present-in-render
+# 但就是不准被拿去推導、抓取
+# shellcheck disable=SC2015
+[ ! -e "$MAT_INJ_DIR/issue.md" ] && pass fetch-materials-injection-no-issue-file || bad fetch-materials-injection-no-issue-file
+MAT_INJ_STATUS="$MAT_INJ_ROOT/.materials-status"
+# shellcheck disable=SC2015
+grep -qxF 'issue_status=not-declared' "$MAT_INJ_STATUS" && pass fetch-materials-injection-status-not-declared || bad fetch-materials-injection-status-not-declared
+
+chmod -R u+w "$MAT_INJ_ROOT" 2>/dev/null || true
 export PATH="$saved_path"
 
 # ==============================================================
@@ -1528,7 +1628,14 @@ ORDER_FAST_PID="$(_order_launch fastcli 1)"
 spawn_supervisor "$ORDER_WT" "$ORDER_ROOT/summary.txt" "$ORDER_SLOW_PID" "$ORDER_FAST_PID"
 
 ORDER_WAITED=0
-while [ "$ORDER_WAITED" -lt 40 ] && [ "$(wc -l < "$ORDER_ROOT/summary.txt" 2>/dev/null || echo 0)" -lt 2 ]; do
+# `2>/dev/null` must precede `< file`: redirections apply left to right, so
+# putting it after the input redirect leaves fd 2 unredirected at the
+# moment `< file` itself fails to open a not-yet-created summary.txt --
+# bash reports that open failure straight to the real stderr regardless of
+# a `2>/dev/null` still to come, which fired on every run of this test
+# (deterministically, before spawn_supervisor's subshell got around to
+# creating the file), not just on some retry path.
+while [ "$ORDER_WAITED" -lt 40 ] && [ "$(wc -l 2>/dev/null < "$ORDER_ROOT/summary.txt" || echo 0)" -lt 2 ]; do
   sleep 1
   ORDER_WAITED=$((ORDER_WAITED + 1))
 done
@@ -1867,6 +1974,103 @@ case "$ps_out_none_skipped" in
   *) bad print-summary-none-skipped-marker ;;
 esac
 
+# --- print_summary: 讀回 fetch_review_materials 寫下的 .materials-status，
+# 回報這次到底收集到了什麼材料 -- 沒有這節之前，缺料是完全沒有訊號的，
+# 直到三個 reviewer 各自回報同一件事 ---
+
+# 沒有 .materials-status 時（例如直接呼叫 print_summary，從沒跑過
+# fetch_review_materials）完全不印這節，也不能報錯；PS_LOGS 的 base_dir 是
+# 這個測試檔共用的 $T，本來就沒有 .materials-status。
+case "$ps_out" in
+  *'審查材料'*) bad print-summary-omits-materials-section-when-absent ;;
+  *) pass print-summary-omits-materials-section-when-absent ;;
+esac
+
+# issue 由 PR 內文推導、design document 已提供
+PS_MAT_A="$T/print-summary-materials-a"
+mkdir -p "$PS_MAT_A/logs"
+cat > "$PS_MAT_A/.materials-status" <<'STATUS'
+issue_status=derived
+issue_number=123
+design_status=provided
+STATUS
+ps_out_mat_a="$(print_summary "$PS_MAT_A/logs" claude --skipped codex opencode)"
+case "$ps_out_mat_a" in
+  *'issue 內文與討論串：已取得（issue 編號由 PR 本文的 closing keyword 推導：#123）'*) pass print-summary-issue-derived-message ;;
+  *) bad print-summary-issue-derived-message ;;
+esac
+case "$ps_out_mat_a" in
+  *'design document：已提供'*) pass print-summary-design-provided-message ;;
+  *) bad print-summary-design-provided-message ;;
+esac
+
+# issue 由呼叫端明確指定、design document 未提供
+PS_MAT_B="$T/print-summary-materials-b"
+mkdir -p "$PS_MAT_B/logs"
+cat > "$PS_MAT_B/.materials-status" <<'STATUS'
+issue_status=explicit
+issue_number=7
+design_status=not-provided
+STATUS
+ps_out_mat_b="$(print_summary "$PS_MAT_B/logs" claude --skipped codex opencode)"
+case "$ps_out_mat_b" in
+  *'issue 內文與討論串：已取得（呼叫端明確指定：#7）'*) pass print-summary-issue-explicit-message ;;
+  *) bad print-summary-issue-explicit-message ;;
+esac
+case "$ps_out_mat_b" in
+  *'design document：未提供'*) pass print-summary-design-not-provided-message ;;
+  *) bad print-summary-design-not-provided-message ;;
+esac
+
+# issue 未宣告（PR 本文無 closing keyword、呼叫端也沒給）、design document
+# 有給路徑但讀不到 -- 「未提供」跟「不可讀」是不同訊號，前者是使用者的
+# 選擇，後者通常是打錯路徑
+PS_MAT_C="$T/print-summary-materials-c"
+mkdir -p "$PS_MAT_C/logs"
+cat > "$PS_MAT_C/.materials-status" <<'STATUS'
+issue_status=not-declared
+issue_number=
+design_status=unreadable
+STATUS
+ps_out_mat_c="$(print_summary "$PS_MAT_C/logs" claude --skipped codex opencode)"
+case "$ps_out_mat_c" in
+  *'issue 內文與討論串：未提供（PR 本文未宣告 closing 的 issue）'*) pass print-summary-issue-not-declared-message ;;
+  *) bad print-summary-issue-not-declared-message ;;
+esac
+case "$ps_out_mat_c" in
+  *'design document：呼叫端提供了路徑，但檔案不可讀'*) pass print-summary-design-unreadable-message ;;
+  *) bad print-summary-design-unreadable-message ;;
+esac
+
+# issue 有編號（不論推導或明確指定）但抓取失敗，訊息要帶上那個編號
+PS_MAT_D="$T/print-summary-materials-d"
+mkdir -p "$PS_MAT_D/logs"
+cat > "$PS_MAT_D/.materials-status" <<'STATUS'
+issue_status=failed
+issue_number=55
+design_status=provided
+STATUS
+ps_out_mat_d="$(print_summary "$PS_MAT_D/logs" claude --skipped codex opencode)"
+case "$ps_out_mat_d" in
+  *'issue 內文與討論串：嘗試取得但失敗（issue 編號：#55'*) pass print-summary-issue-failed-with-number-message ;;
+  *) bad print-summary-issue-failed-with-number-message ;;
+esac
+
+# 呼叫端給的 issue 參照本身就解析不出編號，訊息要說清楚是參照解析失敗，
+# 不能印出一個空的 "#"
+PS_MAT_E="$T/print-summary-materials-e"
+mkdir -p "$PS_MAT_E/logs"
+cat > "$PS_MAT_E/.materials-status" <<'STATUS'
+issue_status=failed
+issue_number=
+design_status=provided
+STATUS
+ps_out_mat_e="$(print_summary "$PS_MAT_E/logs" claude --skipped codex opencode)"
+case "$ps_out_mat_e" in
+  *'issue 內文與討論串：嘗試取得但失敗（呼叫端提供的 issue 參照無法解析）'*) pass print-summary-issue-failed-no-number-message ;;
+  *) bad print-summary-issue-failed-no-number-message ;;
+esac
+
 # ==============================================================
 # resolve_base_ref
 # ==============================================================
@@ -2174,6 +2378,20 @@ case "$out" in
   *) bad main-e2e-summary-output-lists-log-path ;;
 esac
 
+# This run's own issue_arg ("777") was explicit and its design doc path was
+# readable -- confirming print_summary's materials section reflects that
+# correctly end to end (real main() -> fetch_review_materials ->
+# .materials-status -> print_summary), not just against a hand-written
+# .materials-status fixture the way the print_summary section above does.
+case "$out" in
+  *'issue 內文與討論串：已取得（呼叫端明確指定：#777）'*) pass main-e2e-summary-output-shows-explicit-issue ;;
+  *) bad main-e2e-summary-output-shows-explicit-issue ;;
+esac
+case "$out" in
+  *'design document：已提供'*) pass main-e2e-summary-output-shows-design-provided ;;
+  *) bad main-e2e-summary-output-shows-design-provided ;;
+esac
+
 # --- spawn_supervisor's summary_file (base_dir/summary.txt, i.e. two
 # directories up from any <cli>.log path -- the exact derivation SKILL.md
 # uses to find it) eventually exists and converges to exactly one line per
@@ -2210,6 +2428,19 @@ fi
 E2E_LOGS_DIR2="$(find "$E2E_HOME2/.tmp" -type d -name logs 2>/dev/null | head -1)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -n "$E2E_LOGS_DIR2" ] && grep -qF '未提供' "$E2E_LOGS_DIR2/codex.prompt" 2>/dev/null && pass main-e2e-empty-args-render-not-provided || bad main-e2e-empty-args-render-not-provided
+
+# print_summary's own materials section must say the same thing in plain
+# language: no issue was declared (the stub PR body carries no closing
+# keyword and no issue link was given), and no design doc was given
+# either -- $out here still holds this second run's own stdout.
+case "$out" in
+  *'issue 內文與討論串：未提供（PR 本文未宣告 closing 的 issue）'*) pass main-e2e-empty-args-summary-shows-issue-not-declared ;;
+  *) bad main-e2e-empty-args-summary-shows-issue-not-declared ;;
+esac
+case "$out" in
+  *'design document：未提供'*) pass main-e2e-empty-args-summary-shows-design-not-provided ;;
+  *) bad main-e2e-empty-args-summary-shows-design-not-provided ;;
+esac
 
 # --- main() actually applies its own worktree/logs_dir read-only chmod,
 # not just "chmod behaves this way when I do it myself in a fixture"
