@@ -29,9 +29,9 @@ saved_path="$PATH"
 
 # ------------------------------------------------------------
 # Stub gh: a single stand-in covering every gh invocation this script makes
-# (derive-URL lookup, auth check, PR-existence check), toggled entirely by
-# env vars so each test case controls exactly one outcome. Never touches
-# the real GitHub API.
+# (derive-URL lookup, auth check, PR-existence check, PR/issue material
+# fetch), toggled entirely by env vars so each test case controls exactly
+# one outcome. Never touches the real GitHub API.
 # ------------------------------------------------------------
 cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -60,9 +60,28 @@ pr)
         printf '%s\n' "${GH_STUB_BASE_REF_NAME-main}"
         exit 0
         ;;
+      *' --json title,body,comments,reviews '*)
+        # fetch_review_materials -> _fetch_pr_material's call: gh pr view
+        # NUMBER --repo OWNER/REPO --json title,body,comments,reviews
+        printf '{"title":"stub-pr-title","body":"stub-pr-body","comments":[],"reviews":[]}'
+        exit 0
+        ;;
     esac
     # check_prerequisites' PR-existence call: gh pr view NUMBER --repo OWNER/REPO
     [ "${GH_STUB_PR_EXISTS:-1}" = "1" ] && exit 0 || exit 1
+  fi
+  exit 1
+  ;;
+issue)
+  if [ "${2:-}" = "view" ]; then
+    case " $* " in
+      *' --json title,body,comments '*)
+        # fetch_review_materials -> _fetch_issue_material's call: gh issue
+        # view NUMBER --repo OWNER/REPO --json title,body,comments
+        printf '{"title":"stub-issue-title","body":"e2e-distinctive-issue-body-marker","comments":[]}'
+        exit 0
+        ;;
+    esac
   fi
   exit 1
   ;;
@@ -456,72 +475,305 @@ fi
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-claude-type-mismatch || bad resolve-model-claude-type-mismatch
 
+# --- _fetch_pr_material: PR 材料抓取與回音室過濾 ---
+PRMAT_ROOT="$T/prmat"
+mkdir -p "$PRMAT_ROOT/bin"
+cat > "$PRMAT_ROOT/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+cat "$GH_PR_JSON_FIXTURE"
+STUB
+chmod +x "$PRMAT_ROOT/bin/gh"
+
+cat > "$PRMAT_ROOT/pr.json" <<'JSON'
+{
+  "title": "修正 worktree 清理",
+  "body": "本 PR 修正 worktree 殘留。\n\nCloses #42",
+  "comments": [
+    {"author": {"login": "alice"}, "createdAt": "2026-08-01T00:00:00Z", "body": "第一則人類留言"},
+    {"author": {"login": "bob"}, "createdAt": "2026-08-02T00:00:00Z", "body": "  \n<!-- pr-review-by-multi-agents -->\n\n這是上一輪 AI review"},
+    {"author": {"login": "erin"}, "createdAt": "2026-08-03T00:00:00Z", "body": "我們在留言中間提到這個標記字串 <!-- pr-review-by-multi-agents --> 只是討論標記本身，不是回音。"}
+  ],
+  "reviews": [
+    {"author": {"login": "carol"}, "state": "CHANGES_REQUESTED", "body": "review 總結內文"},
+    {"author": {"login": "dave"}, "state": "APPROVED", "body": ""}
+  ]
+}
+JSON
+
+export PATH="$PRMAT_ROOT/bin:$saved_path"
+export GH_PR_JSON_FIXTURE="$PRMAT_ROOT/pr.json"
+
+if _fetch_pr_material acme widgets 7 "$PRMAT_ROOT/pr.md" "$PRMAT_ROOT/pr-body-raw.md"; then
+  pass fetch-pr-material-returns-zero
+else
+  bad fetch-pr-material-returns-zero
+fi
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF '修正 worktree 清理' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-has-title || bad fetch-pr-material-has-title
+# shellcheck disable=SC2015
+grep -qF 'Closes #42' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-has-body || bad fetch-pr-material-has-body
+# shellcheck disable=SC2015
+grep -qF '第一則人類留言' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-has-human-comment || bad fetch-pr-material-has-human-comment
+# shellcheck disable=SC2015
+grep -qF 'review 總結內文' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-has-review-body || bad fetch-pr-material-has-review-body
+
+# 回音室過濾：標記在留言最開頭（即使前面帶著空白／換行）的那一則整段不得
+# 出現，驗證濾網對開頭空白要有容忍度
+if grep -qF '這是上一輪 AI review' "$PRMAT_ROOT/pr.md"; then
+  bad fetch-pr-material-filters-own-comment
+else
+  pass fetch-pr-material-filters-own-comment
+fi
+
+# 標記只是出現在留言「中間」（不是開頭）時不算回音，不得被濾掉 -- 濾網只
+# 比對開頭，一個提到標記字串本身的人類留言不應該因此消失
+# shellcheck disable=SC2015
+grep -qF '我們在留言中間提到這個標記字串' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-keeps-mid-body-marker-mention || bad fetch-pr-material-keeps-mid-body-marker-mention
+
+# raw body file 只該是 gh 回傳的 PR body 本身，不得包含討論串或 review 的
+# 任何內容 -- _derive_issue_number 依賴這個檔案而非渲染後的 pr.md，才不會
+# 被留言裡的 closing keyword 誤導
+# shellcheck disable=SC2015
+grep -qF 'Closes #42' "$PRMAT_ROOT/pr-body-raw.md" && pass fetch-pr-material-raw-body-has-pr-body || bad fetch-pr-material-raw-body-has-pr-body
+if grep -qF '第一則人類留言' "$PRMAT_ROOT/pr-body-raw.md"; then
+  bad fetch-pr-material-raw-body-excludes-comments
+else
+  pass fetch-pr-material-raw-body-excludes-comments
+fi
+
+export PATH="$saved_path"
+
+# --- _parse_issue_ref / _derive_issue_number ---
+# 明示的 issue 參照：完整 URL、owner/repo#N、純 #N、純數字
+# shellcheck disable=SC2015
+[ "$(_parse_issue_ref 'https://github.com/acme/widgets/issues/42' acme widgets)" = 42 ] && pass parse-issue-ref-url || bad parse-issue-ref-url
+# shellcheck disable=SC2015
+[ "$(_parse_issue_ref 'acme/widgets#42' acme widgets)" = 42 ] && pass parse-issue-ref-shorthand || bad parse-issue-ref-shorthand
+# shellcheck disable=SC2015
+[ "$(_parse_issue_ref '#42' acme widgets)" = 42 ] && pass parse-issue-ref-hash || bad parse-issue-ref-hash
+# shellcheck disable=SC2015
+[ "$(_parse_issue_ref '42' acme widgets)" = 42 ] && pass parse-issue-ref-bare-number || bad parse-issue-ref-bare-number
+
+# 別的 repo 的 issue 不接受
+if _parse_issue_ref 'https://github.com/other/repo/issues/42' acme widgets >/dev/null 2>&1; then
+  bad parse-issue-ref-rejects-cross-repo
+else
+  pass parse-issue-ref-rejects-cross-repo
+fi
+
+# 從 PR 內文的 closing keyword 推導，大小寫不敏感
+# shellcheck disable=SC2015
+[ "$(_derive_issue_number 'blah
+Closes #42' acme widgets)" = 42 ] && pass derive-issue-closes-hash || bad derive-issue-closes-hash
+# shellcheck disable=SC2015
+[ "$(_derive_issue_number 'fixes https://github.com/acme/widgets/issues/7' acme widgets)" = 7 ] && pass derive-issue-fixes-url || bad derive-issue-fixes-url
+# shellcheck disable=SC2015
+[ "$(_derive_issue_number 'RESOLVED acme/widgets#9' acme widgets)" = 9 ] && pass derive-issue-resolved-shorthand || bad derive-issue-resolved-shorthand
+
+# 沒有 closing keyword 時回非零，且不得印出任何東西
+DERIVE_OUT="$(_derive_issue_number 'just a plain body mentioning #42' acme widgets 2>/dev/null)" && DERIVE_RC=0 || DERIVE_RC=1
+# shellcheck disable=SC2015
+[ "$DERIVE_RC" = 1 ] && [ -z "$DERIVE_OUT" ] && pass derive-issue-no-keyword-returns-nonzero || bad derive-issue-no-keyword-returns-nonzero
+
+# --- fetch_review_materials: 三份材料、缺料降級、materials 唯讀 ---
+MAT_ROOT="$T/materials-e2e"
+mkdir -p "$MAT_ROOT/bin" "$MAT_ROOT/run"
+cat > "$MAT_ROOT/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-} ${2:-}" in
+"pr view") cat "$GH_PR_JSON_FIXTURE" ;;
+"issue view")
+  [ -n "${GH_ISSUE_JSON_FIXTURE:-}" ] || exit 1
+  cat "$GH_ISSUE_JSON_FIXTURE" ;;
+*) exit 1 ;;
+esac
+STUB
+chmod +x "$MAT_ROOT/bin/gh"
+
+cat > "$MAT_ROOT/pr.json" <<'JSON'
+{"title":"T","body":"Closes #42","comments":[],"reviews":[]}
+JSON
+cat > "$MAT_ROOT/issue.json" <<'JSON'
+{"title":"需求標題","body":"需求內文","comments":[{"author":{"login":"alice"},"createdAt":"2026-08-01T00:00:00Z","body":"補充需求"}]}
+JSON
+printf '設計文件內容\n' > "$MAT_ROOT/design-doc.md"
+
+export PATH="$MAT_ROOT/bin:$saved_path"
+export GH_PR_JSON_FIXTURE="$MAT_ROOT/pr.json"
+export GH_ISSUE_JSON_FIXTURE="$MAT_ROOT/issue.json"
+
+# shellcheck disable=SC2015
+MAT_DIR="$(fetch_review_materials acme widgets 7 '' "$MAT_ROOT/design-doc.md" "$MAT_ROOT/run")" \
+  && pass fetch-materials-returns-zero || bad fetch-materials-returns-zero
+
+# shellcheck disable=SC2015
+[ "$MAT_DIR" = "$MAT_ROOT/run/materials" ] && pass fetch-materials-prints-dir || bad fetch-materials-prints-dir
+# shellcheck disable=SC2015
+[ -f "$MAT_DIR/pr.md" ] && pass fetch-materials-writes-pr || bad fetch-materials-writes-pr
+# issue 編號由 PR 內文的 Closes #42 推導而來，第四個參數是空字串
+# shellcheck disable=SC2015
+grep -qF '需求內文' "$MAT_DIR/issue.md" && pass fetch-materials-derives-issue || bad fetch-materials-derives-issue
+# shellcheck disable=SC2015
+grep -qF '補充需求' "$MAT_DIR/issue.md" && pass fetch-materials-issue-comments || bad fetch-materials-issue-comments
+# shellcheck disable=SC2015
+grep -qF '設計文件內容' "$MAT_DIR/design.md" && pass fetch-materials-copies-design || bad fetch-materials-copies-design
+
+# .materials-status 要記錄這次是「由 PR 內文推導」issue、design document
+# 「已提供」-- print_summary 靠這個檔案回報收集狀況給人看
+MAT_STATUS="$MAT_ROOT/run/.materials-status"
+# shellcheck disable=SC2015
+grep -qxF 'issue_status=derived' "$MAT_STATUS" && pass fetch-materials-status-issue-derived || bad fetch-materials-status-issue-derived
+# shellcheck disable=SC2015
+grep -qxF 'issue_number=42' "$MAT_STATUS" && pass fetch-materials-status-issue-number || bad fetch-materials-status-issue-number
+# shellcheck disable=SC2015
+grep -qxF 'design_status=provided' "$MAT_STATUS" && pass fetch-materials-status-design-provided || bad fetch-materials-status-design-provided
+
+# materials 目錄與其中的檔案都不可寫
+if ( : > "$MAT_DIR/should-not-be-writable.txt" ) 2>/dev/null; then
+  bad fetch-materials-dir-read-only
+else
+  pass fetch-materials-dir-read-only
+fi
+
+chmod -R u+w "$MAT_ROOT/run" 2>/dev/null || true
+
+# issue 抓不到、design document 未提供時：不產生對應檔，但仍成功返回
+MAT_DIR2_ROOT="$MAT_ROOT/run2"
+mkdir -p "$MAT_DIR2_ROOT"
+unset GH_ISSUE_JSON_FIXTURE
+# shellcheck disable=SC2015
+MAT_DIR2="$(fetch_review_materials acme widgets 7 '' '' "$MAT_DIR2_ROOT")" \
+  && pass fetch-materials-degrades-returns-zero || bad fetch-materials-degrades-returns-zero
+# shellcheck disable=SC2015
+[ -f "$MAT_DIR2/pr.md" ] && pass fetch-materials-degrades-keeps-pr || bad fetch-materials-degrades-keeps-pr
+# shellcheck disable=SC2015
+[ ! -e "$MAT_DIR2/issue.md" ] && pass fetch-materials-degrades-no-issue-file || bad fetch-materials-degrades-no-issue-file
+# shellcheck disable=SC2015
+[ ! -e "$MAT_DIR2/design.md" ] && pass fetch-materials-degrades-no-design-file || bad fetch-materials-degrades-no-design-file
+
+# .materials-status 要能分辨「issue 有被推導出來、但抓不到」跟「design
+# document 根本沒給」這兩種不同狀態 -- 這是使用者能不能自己動手修的關鍵
+# 差異，見 print_summary 的回報邏輯
+MAT_STATUS2="$MAT_DIR2_ROOT/.materials-status"
+# shellcheck disable=SC2015
+grep -qxF 'issue_status=failed' "$MAT_STATUS2" && pass fetch-materials-status-issue-failed || bad fetch-materials-status-issue-failed
+# shellcheck disable=SC2015
+grep -qxF 'design_status=not-provided' "$MAT_STATUS2" && pass fetch-materials-status-design-not-provided || bad fetch-materials-status-design-not-provided
+
+chmod -R u+w "$MAT_DIR2_ROOT" 2>/dev/null || true
+
+# --- fetch_review_materials: 呼叫端明確指定 issue（而非推導），
+# .materials-status 要能跟「推導」分開回報 ---
+MAT_DIR3_ROOT="$MAT_ROOT/run3"
+mkdir -p "$MAT_DIR3_ROOT"
+export GH_ISSUE_JSON_FIXTURE="$MAT_ROOT/issue.json"
+# shellcheck disable=SC2015
+MAT_DIR3="$(fetch_review_materials acme widgets 7 '99' '' "$MAT_DIR3_ROOT")" \
+  && pass fetch-materials-explicit-issue-returns-zero || bad fetch-materials-explicit-issue-returns-zero
+# shellcheck disable=SC2015
+[ -f "$MAT_DIR3/issue.md" ] && pass fetch-materials-explicit-issue-writes-issue-file || bad fetch-materials-explicit-issue-writes-issue-file
+MAT_STATUS3="$MAT_DIR3_ROOT/.materials-status"
+# shellcheck disable=SC2015
+grep -qxF 'issue_status=explicit' "$MAT_STATUS3" && pass fetch-materials-status-issue-explicit || bad fetch-materials-status-issue-explicit
+# shellcheck disable=SC2015
+grep -qxF 'issue_number=99' "$MAT_STATUS3" && pass fetch-materials-status-issue-explicit-number || bad fetch-materials-status-issue-explicit-number
+chmod -R u+w "$MAT_DIR3_ROOT" 2>/dev/null || true
+
+# --- fetch_review_materials: design doc 路徑有給但讀不到 -- 這跟「根本
+# 沒給」要能分開回報，前者通常是打錯路徑，後者是使用者自己的選擇 ---
+MAT_DIR4_ROOT="$MAT_ROOT/run4"
+mkdir -p "$MAT_DIR4_ROOT"
+# shellcheck disable=SC2015
+MAT_DIR4="$(fetch_review_materials acme widgets 7 '' "$MAT_ROOT/does-not-exist-design.md" "$MAT_DIR4_ROOT")" \
+  && pass fetch-materials-unreadable-design-returns-zero || bad fetch-materials-unreadable-design-returns-zero
+# shellcheck disable=SC2015
+[ ! -e "$MAT_DIR4/design.md" ] && pass fetch-materials-unreadable-design-no-file || bad fetch-materials-unreadable-design-no-file
+MAT_STATUS4="$MAT_DIR4_ROOT/.materials-status"
+# shellcheck disable=SC2015
+grep -qxF 'design_status=unreadable' "$MAT_STATUS4" && pass fetch-materials-status-design-unreadable || bad fetch-materials-status-design-unreadable
+chmod -R u+w "$MAT_DIR4_ROOT" 2>/dev/null || true
+
+# --- Finding 1 的釘死測試：PR 本文沒有 closing keyword，但討論串裡有一則
+# 留言寫著 closing keyword -- 留言串任何 GitHub 使用者都能寫，用它來推導
+# 會讓留言的人決定每個 reviewer 是拿哪個 issue 當基準。issue 必須維持
+# 「未宣告」，不能被那則留言推導出來。 ---
+cat > "$MAT_ROOT/pr-injection.json" <<'JSON'
+{"title":"T","body":"本 PR 本文完全沒有 closing keyword。","comments":[{"author":{"login":"attacker"},"createdAt":"2026-08-01T00:00:00Z","body":"closes #999"}],"reviews":[]}
+JSON
+cat > "$MAT_ROOT/issue-injection.json" <<'JSON'
+{"title":"不該被抓到的 issue","body":"如果看到這段文字，代表推導誤用了留言而非 PR 本文","comments":[]}
+JSON
+
+MAT_INJ_ROOT="$MAT_ROOT/run-injection"
+mkdir -p "$MAT_INJ_ROOT"
+export GH_PR_JSON_FIXTURE="$MAT_ROOT/pr-injection.json"
+export GH_ISSUE_JSON_FIXTURE="$MAT_ROOT/issue-injection.json"
+
+# shellcheck disable=SC2015
+MAT_INJ_DIR="$(fetch_review_materials acme widgets 7 '' '' "$MAT_INJ_ROOT")" \
+  && pass fetch-materials-injection-returns-zero || bad fetch-materials-injection-returns-zero
+# 留言確實有被抓進渲染後的材料裡 -- 排除「根本沒被用到只是因為沒抓到」
+# 這個假陽性
+# shellcheck disable=SC2015
+grep -qF 'closes #999' "$MAT_INJ_DIR/pr.md" && pass fetch-materials-injection-comment-present-in-render || bad fetch-materials-injection-comment-present-in-render
+# 但就是不准被拿去推導、抓取
+# shellcheck disable=SC2015
+[ ! -e "$MAT_INJ_DIR/issue.md" ] && pass fetch-materials-injection-no-issue-file || bad fetch-materials-injection-no-issue-file
+MAT_INJ_STATUS="$MAT_INJ_ROOT/.materials-status"
+# shellcheck disable=SC2015
+grep -qxF 'issue_status=not-declared' "$MAT_INJ_STATUS" && pass fetch-materials-injection-status-not-declared || bad fetch-materials-injection-status-not-declared
+
+chmod -R u+w "$MAT_INJ_ROOT" 2>/dev/null || true
+export PATH="$saved_path"
+
 # ==============================================================
 # build_prompt
 # ==============================================================
 
-BP_PR_URL="https://github.com/acme/widgets/pull/42"
-BP_ISSUE_URL="https://github.com/acme/widgets/issues/7"
-BP_DESIGN_DOC="docs/design/foo-design.md"
-BP_CLI="codex"
-BP_MODEL="gpt-codex-test"
-BP_WORKTREE="/fake/worktree/path"
-BP_BASE_REF="origin/main"
+# --- build_prompt: 材料以內文嵌入，缺料渲染成明確不存在 ---
+BP_ROOT="$T/build-prompt-materials"
+mkdir -p "$BP_ROOT/materials"
+printf 'CONTRACT-BODY\n' > "$BP_ROOT/contract.md"
+printf '# PR 標題\n\nPR-MATERIAL-BODY\n' > "$BP_ROOT/materials/pr.md"
+printf '# Issue 標題\n\nISSUE-MATERIAL-BODY\n' > "$BP_ROOT/materials/issue.md"
 
-prompt="$(build_prompt "$REAL_CONTRACT" "$BP_PR_URL" "$BP_ISSUE_URL" "$BP_DESIGN_DOC" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF")"
-contract_text="$(cat "$REAL_CONTRACT")"
+BP_OUT="$(build_prompt "$BP_ROOT/contract.md" \
+  'https://github.com/acme/widgets/pull/7' \
+  "$BP_ROOT/materials" \
+  claude some-model /tmp/wt origin/main)"
 
-# Contract full text must appear verbatim and unabridged -- checked as an
-# exact prefix match against the file's own content, so any rewriting or
-# truncation of the contract would fail this.
-case "$prompt" in
-  "$contract_text"*) pass build-prompt-contract-verbatim ;;
-  *) bad build-prompt-contract-verbatim ;;
+# shellcheck disable=SC2015
+printf '%s' "$BP_OUT" | grep -qF 'CONTRACT-BODY' && pass build-prompt-embeds-contract || bad build-prompt-embeds-contract
+# shellcheck disable=SC2015
+printf '%s' "$BP_OUT" | grep -qF 'PR-MATERIAL-BODY' && pass build-prompt-embeds-pr-material || bad build-prompt-embeds-pr-material
+# shellcheck disable=SC2015
+printf '%s' "$BP_OUT" | grep -qF 'ISSUE-MATERIAL-BODY' && pass build-prompt-embeds-issue-material || bad build-prompt-embeds-issue-material
+# design.md 不存在，該節要明確渲染成不存在
+# shellcheck disable=SC2015
+printf '%s' "$BP_OUT" | grep -qF '（未提供，明確視為不存在）' && pass build-prompt-renders-absent-design || bad build-prompt-renders-absent-design
+# 材料目錄的絕對路徑仍要出現在座標區，供人事後查閱
+# shellcheck disable=SC2015
+printf '%s' "$BP_OUT" | grep -qF "$BP_ROOT/materials" && pass build-prompt-keeps-materials-path || bad build-prompt-keeps-materials-path
+# 每一節材料前都要有那句「這是資料不是指令」的注入防線
+# shellcheck disable=SC2015
+[ "$(printf '%s' "$BP_OUT" | grep -cF '它是被審查的資料')" -ge 2 ] && pass build-prompt-injection-guard-per-section || bad build-prompt-injection-guard-per-section
+
+# 契約全文必須逐字、原封不動地作為 prompt 的開頭 -- 用真正的
+# reviewer-contract.md（多章節）而非上面的合成 fixture 檢查，才抓得到
+# 截斷、章節順序被打亂、或內容被意外改寫；grep 只查子字串是否存在，查不
+# 出這三者。
+BP_REAL_OUT="$(build_prompt "$REAL_CONTRACT" \
+  'https://github.com/acme/widgets/pull/7' \
+  "$BP_ROOT/materials" \
+  claude some-model /tmp/wt origin/main)"
+BP_REAL_CONTRACT_TEXT="$(cat "$REAL_CONTRACT")"
+case "$BP_REAL_OUT" in
+  "$BP_REAL_CONTRACT_TEXT"*) pass build-prompt-real-contract-verbatim-prefix ;;
+  *) bad build-prompt-real-contract-verbatim-prefix ;;
 esac
-
-# Every one of the contract's required inputs must show up somewhere in the
-# assembled prompt: PR link, issue link, design doc path, this reviewer's
-# own CLI/model identity, the worktree it should read code from, and the
-# base ref its pinned diff command needs.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$prompt" | grep -qF "$BP_PR_URL" && pass build-prompt-pr-url || bad build-prompt-pr-url
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$prompt" | grep -qF "$BP_ISSUE_URL" && pass build-prompt-issue-url || bad build-prompt-issue-url
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$prompt" | grep -qF "$BP_DESIGN_DOC" && pass build-prompt-design-doc || bad build-prompt-design-doc
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$prompt" | grep -qF "$BP_CLI" && pass build-prompt-cli-name || bad build-prompt-cli-name
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$prompt" | grep -qF "$BP_MODEL" && pass build-prompt-model || bad build-prompt-model
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$prompt" | grep -qF "$BP_WORKTREE" && pass build-prompt-worktree-path || bad build-prompt-worktree-path
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$prompt" | grep -qF "$BP_BASE_REF" && pass build-prompt-base-ref || bad build-prompt-base-ref
-
-# The reviewer no longer writes a comment-body file anywhere (it prints
-# its review to stdout instead, wrapped in markers the contract defines),
-# so build_prompt no longer takes or renders a scratch-directory
-# coordinate at all -- confirm that label is genuinely gone from the
-# prompt, not just pointed at an empty/different value.
-case "$prompt" in
-  *'暫存目錄'*) bad build-prompt-no-scratch-dir-coordinate ;;
-  *) pass build-prompt-no-scratch-dir-coordinate ;;
-esac
-
-# Each of the three SKILL.md-gathered coordinates (PR link, issue link,
-# design doc path) may individually come in as an empty string -- must
-# still produce a non-empty, well-formed prompt rather than aborting.
-out="$(build_prompt "$REAL_CONTRACT" "" "$BP_ISSUE_URL" "$BP_DESIGN_DOC" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$out" ] && pass build-prompt-empty-pr-url || bad build-prompt-empty-pr-url
-
-out="$(build_prompt "$REAL_CONTRACT" "$BP_PR_URL" "" "$BP_DESIGN_DOC" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$out" ] && printf '%s' "$out" | grep -qF '未提供' && pass build-prompt-empty-issue-url || bad build-prompt-empty-issue-url
-
-out="$(build_prompt "$REAL_CONTRACT" "$BP_PR_URL" "$BP_ISSUE_URL" "" "$BP_CLI" "$BP_MODEL" "$BP_WORKTREE" "$BP_BASE_REF")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$out" ] && printf '%s' "$out" | grep -qF '未提供' && pass build-prompt-empty-design-doc || bad build-prompt-empty-design-doc
 
 # ==============================================================
 # setup_worktree
@@ -856,6 +1108,35 @@ case "$oc_config_content" in
   *'"git push*": "deny"'*) pass opencode-permission-config-denies-git-push ;;
   *) bad opencode-permission-config-denies-git-push ;;
 esac
+# The contract forbids fetch by name alongside commit/push -- it updates
+# a local remote-tracking ref and leaves a persistent trace even though
+# it reads from the remote rather than writing to it (see
+# _write_opencode_permission_config's own docstring).
+case "$oc_config_content" in
+  *'"git fetch*": "deny"'*) pass opencode-permission-config-denies-git-fetch ;;
+  *) bad opencode-permission-config-denies-git-fetch ;;
+esac
+
+# A follow-up security review found opencode's deny list had nothing
+# matching a generic outbound HTTP/TCP command -- the same exfiltration
+# path `WebFetch` closes for claude (see launch_reviewer's docstring) was
+# still open here via a plain `curl`/`wget`/`nc` call, with no named fetch
+# tool to remove. See _write_opencode_permission_config's own docstring
+# for the real-binary confirmation that these three patterns actually
+# match and deny a live invocation, the same way `git fetch*` was verified
+# above.
+case "$oc_config_content" in
+  *'"curl*": "deny"'*) pass opencode-permission-config-denies-curl ;;
+  *) bad opencode-permission-config-denies-curl ;;
+esac
+case "$oc_config_content" in
+  *'"wget*": "deny"'*) pass opencode-permission-config-denies-wget ;;
+  *) bad opencode-permission-config-denies-wget ;;
+esac
+case "$oc_config_content" in
+  *'"nc*": "deny"'*) pass opencode-permission-config-denies-nc ;;
+  *) bad opencode-permission-config-denies-nc ;;
+esac
 
 # `gh issue*`/`gh api*` must NOT appear as blanket deny keys -- a blanket
 # deny there would also block the read-only issue/API queries the
@@ -997,7 +1278,7 @@ esac
 # this property by combining two separate tests; this one exercises the
 # real handoff between the two functions directly. ---
 
-bp_direct_prompt="$(build_prompt "$REAL_CONTRACT" "https://github.com/acme/widgets/pull/1" "" "" \
+bp_direct_prompt="$(build_prompt "$REAL_CONTRACT" "https://github.com/acme/widgets/pull/1" "$LAUNCH_ROOT" \
   codex "direct-pairing-model-marker" "$LAUNCH_WT" "origin/main")"
 printf '%s' "$bp_direct_prompt" > "$LAUNCH_LOGS/codex-direct.prompt"
 pid_codex_direct="$(launch_reviewer codex "$LAUNCH_WT" "$LAUNCH_LOGS/codex-direct.log" < "$LAUNCH_LOGS/codex-direct.prompt")"
@@ -1080,11 +1361,15 @@ mapfile -t claude_argv < "$LAUNCH_RECORD_DIR/claude.argv"
 write_wrongly_allowed=0
 write_disallowed=0
 edit_notebookedit_disallowed=0
+webfetch_wrongly_allowed=0
 for idx in "${!claude_argv[@]}"; do
   case "${claude_argv[$idx]}" in
     --allowedTools)
       case "${claude_argv[$((idx + 1))]:-}" in
         *Write*) write_wrongly_allowed=1 ;;
+      esac
+      case "${claude_argv[$((idx + 1))]:-}" in
+        *WebFetch*) webfetch_wrongly_allowed=1 ;;
       esac
       ;;
     --disallowedTools)
@@ -1103,6 +1388,12 @@ done
 [ "$write_disallowed" -eq 1 ] && pass launch-reviewer-claude-disallows-write || bad launch-reviewer-claude-disallows-write
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$edit_notebookedit_disallowed" -eq 1 ] && pass launch-reviewer-claude-disallows-edit-notebookedit || bad launch-reviewer-claude-disallows-edit-notebookedit
+# WebFetch must not be on --allowedTools: the contract forbids reaching
+# GitHub or anywhere else by any means, and every material the reviewer
+# needs is already embedded in its own prompt (see launch_reviewer's
+# docstring, claude bullet, on why this grant was removed).
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$webfetch_wrongly_allowed" -eq 0 ] && pass launch-reviewer-claude-webfetch-not-allowed || bad launch-reviewer-claude-webfetch-not-allowed
 
 # --- unknown CLI name -> non-zero, no PID printed ---
 
@@ -1167,129 +1458,284 @@ esac
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$LOGSPLIT_LOGS/codex.log.stderr" ] && grep -qF 'diagnostic noise one' "$LOGSPLIT_LOGS/codex.log.stderr" 2>/dev/null && pass launch-reviewer-stderr-captured-separately || bad launch-reviewer-stderr-captured-separately
 
+# --- 摘要七欄位、content_status 三值、回音室標記、.supervisor.pid ---
+REC_ROOT="$T/record-result"
+mkdir -p "$REC_ROOT/logs"
+REC_WT="$REC_ROOT/worktree"
+mkdir -p "$REC_WT"
+git -C "$REC_WT" init -q
+# GIT_CONFIG_GLOBAL/SYSTEM are pointed at /dev/null earlier in this file
+# (see the _git_status_snapshot section), so every repo fixture created
+# from here on needs its own local identity before it can commit -- same
+# idiom _make_worktree_fixture below already uses.
+git -C "$REC_WT" config user.email t@t.com
+git -C "$REC_WT" config user.name t
+git -C "$REC_WT" commit -q --allow-empty -m init
+
+_rec_fixture() {
+  local label="$1" rc="$2" body="$3"
+  local pid="90000$4"
+  local log="$REC_ROOT/logs/$label.log"
+  printf '%s' "$body" > "$log"
+  printf '%s\n' "$log" > "$REC_ROOT/.log-$pid"
+  printf '%s' "$rc" > "$REC_ROOT/.exit-$pid"
+  printf '%s\n' "$(_git_status_snapshot "$REC_WT")" > "$REC_ROOT/.git-status-before-$pid"
+  printf '%s\n' "$pid"
+}
+
+REC_GOOD_BODY='===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===
+這是完整的 review 內容
+===PR-REVIEW-BY-MULTI-AGENTS-END==='
+
+REC_READY_PID="$(_rec_fixture claude 0 "$REC_GOOD_BODY" 1)"
+REC_WITHHELD_PID="$(_rec_fixture codex 1 "$REC_GOOD_BODY" 2)"
+REC_NOCONTENT_PID="$(_rec_fixture opencode 0 'CLI 崩潰了，沒有標記' 3)"
+
+: > "$REC_ROOT/summary.txt"
+_record_reviewer_result "$REC_READY_PID" "$REC_ROOT" "$REC_WT" "$REC_ROOT/summary.txt"
+_record_reviewer_result "$REC_WITHHELD_PID" "$REC_ROOT" "$REC_WT" "$REC_ROOT/summary.txt"
+_record_reviewer_result "$REC_NOCONTENT_PID" "$REC_ROOT" "$REC_WT" "$REC_ROOT/summary.txt"
+
+REC_L1="$(sed -n 1p "$REC_ROOT/summary.txt")"
+REC_L2="$(sed -n 2p "$REC_ROOT/summary.txt")"
+REC_L3="$(sed -n 3p "$REC_ROOT/summary.txt")"
+
+# 七個欄位，順序固定
+# shellcheck disable=SC2015
+printf '%s' "$REC_L1" | grep -qE '^cli=[^ ]+ pid=[0-9]+ exit=[^ ]+ ended_at=[^ ]+ worktree_status=[^ ]+ content_status=[^ ]+ content_file=' \
+  && pass record-summary-seven-fields || bad record-summary-seven-fields
+# cli 欄位從 log 檔名推得，不必回頭對另一份摘要
+# shellcheck disable=SC2015
+printf '%s' "$REC_L1" | grep -qF 'cli=claude' && pass record-summary-names-cli || bad record-summary-names-cli
+# shellcheck disable=SC2015
+printf '%s' "$REC_L1" | grep -qF 'content_status=ready' && pass record-status-ready || bad record-status-ready
+# 結束碼非零 -> withheld，內容檔仍要留下供人工判斷
+# shellcheck disable=SC2015
+printf '%s' "$REC_L2" | grep -qF 'content_status=withheld' && pass record-status-withheld || bad record-status-withheld
+# shellcheck disable=SC2015
+[ -f "$REC_ROOT/.comment-body-$REC_WITHHELD_PID.md" ] && pass record-withheld-keeps-content-file || bad record-withheld-keeps-content-file
+# 標記不成對 -> no-content，不產生內容檔，content_file 欄位留空
+# shellcheck disable=SC2015
+printf '%s' "$REC_L3" | grep -qF 'content_status=no-content' && pass record-status-no-content || bad record-status-no-content
+# shellcheck disable=SC2015
+printf '%s' "$REC_L3" | grep -qE 'content_file=$' && pass record-no-content-empty-file-field || bad record-no-content-empty-file-field
+# shellcheck disable=SC2015
+[ ! -e "$REC_ROOT/.comment-body-$REC_NOCONTENT_PID.md" ] && pass record-no-content-writes-no-file || bad record-no-content-writes-no-file
+
+# 內容檔第一行是回音室標記，第二段才是 review 本文
+# shellcheck disable=SC2015
+[ "$(head -1 "$REC_ROOT/.comment-body-$REC_READY_PID.md")" = '<!-- pr-review-by-multi-agents -->' ] \
+  && pass record-content-file-echo-guard-first-line || bad record-content-file-echo-guard-first-line
+# shellcheck disable=SC2015
+grep -qF '這是完整的 review 內容' "$REC_ROOT/.comment-body-$REC_READY_PID.md" \
+  && pass record-content-file-keeps-review || bad record-content-file-keeps-review
+
+# --- worktree tampered with (not just a non-zero exit) also produces
+# content_status=withheld: _record_reviewer_result's gate is
+# `rc=0 AND worktree_status=ok`, and the three fixtures above only ever
+# falsify the rc half (REC_WITHHELD_PID) or leave both true (REC_READY_
+# PID). This falsifies the worktree half instead -- exit 0 and valid
+# markers throughout -- so the invalidated-worktree branch is proven to
+# land in the same withheld outcome rather than being read as
+# unconditionally "ready" just because the exit code was clean. Restored
+# after being dropped by the wholesale spawn_supervisor section
+# replacement further down; see the deleted spawn-supervisor-withholds-
+# on-invalidated-worktree / spawn-supervisor-withheld-still-saves-
+# content-invalidated tests at commit 2845159 for the pre-refactor
+# version of this same property. ---
+REC_TAMPER_ROOT="$T/record-result-tampered"
+mkdir -p "$REC_TAMPER_ROOT/logs"
+REC_TAMPER_WT="$REC_TAMPER_ROOT/worktree"
+mkdir -p "$REC_TAMPER_WT"
+git -C "$REC_TAMPER_WT" init -q
+# Same local-identity requirement as every other fresh repo fixture in
+# this file (GIT_CONFIG_GLOBAL/SYSTEM point at /dev/null).
+git -C "$REC_TAMPER_WT" config user.email t@t.com
+git -C "$REC_TAMPER_WT" config user.name t
+git -C "$REC_TAMPER_WT" commit -q --allow-empty -m init
+
+REC_TAMPER_PID=900004
+REC_TAMPER_LOG="$REC_TAMPER_ROOT/logs/codex.log"
+{
+  printf '===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===\n'
+  printf '因為 worktree 遭竄改而不可信的 review\n'
+  printf '===PR-REVIEW-BY-MULTI-AGENTS-END===\n'
+} > "$REC_TAMPER_LOG"
+printf '%s\n' "$REC_TAMPER_LOG" > "$REC_TAMPER_ROOT/.log-$REC_TAMPER_PID"
+printf '0' > "$REC_TAMPER_ROOT/.exit-$REC_TAMPER_PID"
+printf '%s\n' "$(_git_status_snapshot "$REC_TAMPER_WT")" > "$REC_TAMPER_ROOT/.git-status-before-$REC_TAMPER_PID"
+# Tamper *after* the before-snapshot is recorded, exactly like a reviewer
+# violating the read-only contract would -- exit code stays 0 throughout,
+# so only the worktree-state half of the gate can be what withholds this.
+printf 'dirty\n' > "$REC_TAMPER_WT/INJECTED-BY-TEST.txt"
+
+: > "$REC_TAMPER_ROOT/summary.txt"
+_record_reviewer_result "$REC_TAMPER_PID" "$REC_TAMPER_ROOT" "$REC_TAMPER_WT" "$REC_TAMPER_ROOT/summary.txt"
+REC_TAMPER_LINE="$(cat "$REC_TAMPER_ROOT/summary.txt")"
+
+case "$REC_TAMPER_LINE" in
+  *'worktree_status=invalidated'*) pass record-status-invalidated-on-tampered-worktree ;;
+  *) bad record-status-invalidated-on-tampered-worktree ;;
+esac
+case "$REC_TAMPER_LINE" in
+  *'content_status=withheld'*) pass record-status-withheld-on-invalidated-worktree ;;
+  *) bad record-status-withheld-on-invalidated-worktree ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF '竄改而不可信' "$REC_TAMPER_ROOT/.comment-body-$REC_TAMPER_PID.md" 2>/dev/null \
+  && pass record-withheld-keeps-content-file-on-invalidated-worktree || bad record-withheld-keeps-content-file-on-invalidated-worktree
+
+# --- 監督行程：摘要行順序等於完成順序，不是派出順序 ---
+ORDER_ROOT="$T/supervisor-order"
+mkdir -p "$ORDER_ROOT/logs"
+ORDER_WT="$ORDER_ROOT/worktree"
+mkdir -p "$ORDER_WT"
+git -C "$ORDER_WT" init -q
+# GIT_CONFIG_GLOBAL/SYSTEM are pointed at /dev/null earlier in this file
+# (see the _git_status_snapshot section), so every repo fixture created
+# from here on needs its own local identity before it can commit -- same
+# idiom _make_worktree_fixture below already uses.
+git -C "$ORDER_WT" config user.email t@t.com
+git -C "$ORDER_WT" config user.name t
+git -C "$ORDER_WT" commit -q --allow-empty -m init
+
+# 先派出的睡久、後派出的立刻結束：若監督行程仍是循序等待，
+# 摘要第一行會是慢的那個；改成輪詢待處理清單後才會是快的那個。
+_order_launch() {
+  local label="$1" delay="$2"
+  local log="$ORDER_ROOT/logs/$label.log"
+  {
+    printf '===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===\n'
+    printf '%s 的 review 內容\n' "$label"
+    printf '===PR-REVIEW-BY-MULTI-AGENTS-END===\n'
+  } > "$log"
+  # shellcheck disable=SC2016 # single quotes are intentional: $1/$2/$$ must
+  # expand inside the nested bash -c, not in this outer shell.
+  nohup bash -c '
+    base_dir="$1"; delay="$2"
+    sleep "$delay"
+    printf "0" > "$base_dir/.exit-$$"
+  ' _ "$ORDER_ROOT" "$delay" >/dev/null 2>&1 &
+  local pid=$!
+  printf '%s\n' "$log" > "$ORDER_ROOT/.log-$pid"
+  printf '%s\n' "$(_git_status_snapshot "$ORDER_WT")" > "$ORDER_ROOT/.git-status-before-$pid"
+  printf '%s\n' "$pid"
+}
+
+ORDER_SLOW_PID="$(_order_launch slowcli 6)"
+ORDER_FAST_PID="$(_order_launch fastcli 1)"
+
+spawn_supervisor "$ORDER_WT" "$ORDER_ROOT/summary.txt" "$ORDER_SLOW_PID" "$ORDER_FAST_PID"
+
+ORDER_WAITED=0
+# `2>/dev/null` must precede `< file`: redirections apply left to right, so
+# putting it after the input redirect leaves fd 2 unredirected at the
+# moment `< file` itself fails to open a not-yet-created summary.txt --
+# bash reports that open failure straight to the real stderr regardless of
+# a `2>/dev/null` still to come, which fired on every run of this test
+# (deterministically, before spawn_supervisor's subshell got around to
+# creating the file), not just on some retry path.
+while [ "$ORDER_WAITED" -lt 40 ] && [ "$(wc -l 2>/dev/null < "$ORDER_ROOT/summary.txt" || echo 0)" -lt 2 ]; do
+  sleep 1
+  ORDER_WAITED=$((ORDER_WAITED + 1))
+done
+
+# shellcheck disable=SC2015
+[ "$(wc -l < "$ORDER_ROOT/summary.txt")" = 2 ] && pass supervisor-order-writes-two-lines || bad supervisor-order-writes-two-lines
+# shellcheck disable=SC2015
+head -1 "$ORDER_ROOT/summary.txt" | grep -qF "pid=$ORDER_FAST_PID" && pass supervisor-order-fast-first || bad supervisor-order-fast-first
+# shellcheck disable=SC2015
+tail -1 "$ORDER_ROOT/summary.txt" | grep -qF "pid=$ORDER_SLOW_PID" && pass supervisor-order-slow-last || bad supervisor-order-slow-last
+
+# 監督行程不得再呼叫 gh：_post_review_comment 這個函式必須已被移除
+if declare -F _post_review_comment >/dev/null 2>&1; then
+  bad record-post-function-removed
+else
+  pass record-post-function-removed
+fi
+
 # ==============================================================
-# spawn_supervisor
+# spawn_supervisor -- logs_dir survival, the .supervisor.pid interface,
+# and SIGHUP hardening
 #
-# Each scenario below gets its own fresh worktree fixture, so the
-# git-status invalidation checks stay unambiguous rather than depending on
-# how a shared worktree happened to interleave across concurrently
-# launched reviewers. spawn_supervisor's own docstring documents that
-# interleaving as a known, accepted limitation of processing PIDs
-# sequentially against one shared worktree (conservative: it can only
-# false-flag an innocent reviewer as invalidated, never miss a real
-# tamper) -- these tests isolate around it entirely rather than exercising
-# it, so they stay deterministic instead of depending on a particular
-# ordering of concurrently launched reviewers.
-#
-# None of the stub reviewers below print the contract's BEGIN/END
-# markers, so every posting outcome in this section is "no-content" --
-# that is expected and correct here (these tests are about exit-code
-# capture, invalidation detection, PID convergence, and SIGHUP survival,
-# not about the extract-and-post mechanism itself, which gets its own
-# dedicated section below with stubs that do print markers). No `gh` stub
-# is needed on PATH for any of this section either: _post_review_comment
-# never calls `gh` at all when extraction fails first.
+# Restored after being dropped by the wholesale section replacement
+# above (see commit 2845159 for the pre-refactor spawn-supervisor-
+# preserves-logs-dir / spawn-supervisor-survives-sighup / spawn-
+# supervisor-removes-worktree-after-sighup tests this adapts from) plus
+# one genuinely new scenario for .supervisor.pid, which did not exist
+# before this task. None of the three scenarios below depend on exit
+# code or worktree tampering, so one shared "clean" opencode stub covers
+# all of them.
 # ==============================================================
 
 SV_STUB_BIN="$T/supervisor-stub-bin"
 mkdir -p "$SV_STUB_BIN"
-
-# A "dirty" reviewer: writes a file into the worktree it's given via -C,
-# then exits with a distinct non-zero code so both the exit-code capture
-# and the invalidation detection can be asserted in the same run.
-cat > "$SV_STUB_BIN/codex" <<'STUB'
-#!/usr/bin/env bash
-prev=""
-for a in "$@"; do
-  if [ "$prev" = "-C" ]; then
-    printf 'dirty\n' > "$a/INJECTED-BY-TEST.txt"
-  fi
-  prev="$a"
-done
-exit "${LAUNCH_STUB_EXIT_CODE:-5}"
-STUB
-chmod +x "$SV_STUB_BIN/codex"
-
-# A "clean" reviewer: touches nothing, exits 0.
 cat > "$SV_STUB_BIN/opencode" <<'STUB'
 #!/usr/bin/env bash
 sleep 0.1
 exit 0
 STUB
 chmod +x "$SV_STUB_BIN/opencode"
-
 export PATH="$SV_STUB_BIN:$saved_path"
 
-# --- single PID, dirty: worktree_status=invalidated, worktree still removed ---
+# --- logs_dir survives spawn_supervisor removing its sibling worktree --
+# `git worktree remove --force` only ever touches the worktree path it is
+# given; logs_dir is a separate sibling directory under base_dir and is
+# the only post-mortem evidence a human has when a review never shows up,
+# so its survival through that removal step is worth pinning down
+# directly rather than trusting "the two are different directories" by
+# inspection alone. ---
 
-SV1_ROOT="$T/supervisor-fixture-invalidated"
-SV1_WT="$(_make_worktree_fixture "$SV1_ROOT")"
-mkdir -p "$SV1_ROOT/logs"
-printf 'p' > "$SV1_ROOT/logs/codex.prompt"
-sv1_pid="$(launch_reviewer codex "$SV1_WT" "$SV1_ROOT/logs/codex.log" < "$SV1_ROOT/logs/codex.prompt")"
-SV1_SUMMARY="$SV1_ROOT/summary.txt"
-# `git worktree remove` (which spawn_supervisor's background subshell runs
-# at the end) needs a cwd inside the repo it's removing a worktree from --
-# same precondition setup_worktree's own tests rely on cwd for. Running
-# the call itself inside a `(cd ... && ...)` subshell scopes that cd to
-# just this call, including the backgrounded subshell it forks internally
-# (which inherits whatever cwd was active when spawn_supervisor was
-# invoked), without disturbing this test script's own cwd afterward.
-(cd "$SV1_ROOT/work" && spawn_supervisor "$SV1_WT" "$SV1_SUMMARY" acme widgets 1 "$sv1_pid")
-
-i=0
-until [ -s "$SV1_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-
-sv1_line="$(cat "$SV1_SUMMARY" 2>/dev/null)"
-case "$sv1_line" in
-  "pid=$sv1_pid exit=5"*'worktree_status=invalidated'*'post_status=no-content') pass spawn-supervisor-records-exit-code-and-invalidation ;;
-  *) bad spawn-supervisor-records-exit-code-and-invalidation ;;
-esac
+SVLOGS_ROOT="$T/supervisor-logs-fixture"
+SVLOGS_WT="$(_make_worktree_fixture "$SVLOGS_ROOT")"
+mkdir -p "$SVLOGS_ROOT/logs"
+printf 'p' > "$SVLOGS_ROOT/logs/opencode.prompt"
+svlogs_pid="$(launch_reviewer opencode "$SVLOGS_WT" "$SVLOGS_ROOT/logs/opencode.log" < "$SVLOGS_ROOT/logs/opencode.prompt")"
+SVLOGS_SUMMARY="$SVLOGS_ROOT/summary.txt"
+(cd "$SVLOGS_ROOT/work" && spawn_supervisor "$SVLOGS_WT" "$SVLOGS_SUMMARY" "$svlogs_pid")
 
 i=0
-until [ ! -e "$SV1_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+until [ ! -e "$SVLOGS_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$SV1_WT" ] && pass spawn-supervisor-removes-worktree || bad spawn-supervisor-removes-worktree
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -d "$SV1_ROOT/logs" ] && pass spawn-supervisor-preserves-logs-dir || bad spawn-supervisor-preserves-logs-dir
+[ ! -e "$SVLOGS_WT" ] && [ -d "$SVLOGS_ROOT/logs" ] && pass spawn-supervisor-preserves-logs-dir || bad spawn-supervisor-preserves-logs-dir
 
-# --- single PID, clean: worktree_status=ok ---
+# --- .supervisor.pid holds the backgrounded supervisor subshell's own
+# PID (via $BASHPID inside it), not the PID of whichever shell happened
+# to call spawn_supervisor -- Task 7's liveness check needs to `kill -0`
+# the process that is actually still running, not the caller. $! is
+# captured from *inside* the same subshell that calls spawn_supervisor
+# (into a file, since $! itself does not survive that subshell exiting),
+# the same technique the SIGHUP scenario below uses -- see its own
+# comment for why that is what makes $! refer to spawn_supervisor's own
+# internal `(...)&` job rather than anything else. ---
 
-SV2_ROOT="$T/supervisor-fixture-ok"
-SV2_WT="$(_make_worktree_fixture "$SV2_ROOT")"
-mkdir -p "$SV2_ROOT/logs"
-printf 'p' > "$SV2_ROOT/logs/opencode.prompt"
-sv2_pid="$(launch_reviewer opencode "$SV2_WT" "$SV2_ROOT/logs/opencode.log" < "$SV2_ROOT/logs/opencode.prompt")"
-SV2_SUMMARY="$SV2_ROOT/summary.txt"
-(cd "$SV2_ROOT/work" && spawn_supervisor "$SV2_WT" "$SV2_SUMMARY" acme widgets 2 "$sv2_pid")
+SVPID_ROOT="$T/supervisor-pidfile-fixture"
+SVPID_WT="$(_make_worktree_fixture "$SVPID_ROOT")"
+mkdir -p "$SVPID_ROOT/logs"
+printf 'p' > "$SVPID_ROOT/logs/opencode.prompt"
+svpid_pid="$(launch_reviewer opencode "$SVPID_WT" "$SVPID_ROOT/logs/opencode.log" < "$SVPID_ROOT/logs/opencode.prompt")"
+SVPID_SUMMARY="$SVPID_ROOT/summary.txt"
+SVPID_BANG_FILE="$T/svpid-bang.txt"
+(
+  cd "$SVPID_ROOT/work" || exit 1
+  spawn_supervisor "$SVPID_WT" "$SVPID_SUMMARY" "$svpid_pid"
+  printf '%s' "$!" > "$SVPID_BANG_FILE"
+)
+svpid_bang="$(cat "$SVPID_BANG_FILE" 2>/dev/null)"
 
 i=0
-until [ -s "$SV2_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+until [ -s "$SVPID_ROOT/.supervisor.pid" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$SVPID_ROOT/.supervisor.pid" ] && pass spawn-supervisor-writes-pid-file || bad spawn-supervisor-writes-pid-file
 
-case "$(cat "$SV2_SUMMARY" 2>/dev/null)" in
-  "pid=$sv2_pid exit=0"*'worktree_status=ok'*'post_status=no-content') pass spawn-supervisor-ok-when-unmodified ;;
-  *) bad spawn-supervisor-ok-when-unmodified ;;
-esac
-
-# --- multiple PIDs converge without being hardcoded to three ---
-
-SV3_ROOT="$T/supervisor-fixture-multi"
-SV3_WT="$(_make_worktree_fixture "$SV3_ROOT")"
-mkdir -p "$SV3_ROOT/logs"
-printf 'p' > "$SV3_ROOT/logs/opencode-a.prompt"
-printf 'p' > "$SV3_ROOT/logs/opencode-b.prompt"
-sv3_pid_a="$(launch_reviewer opencode "$SV3_WT" "$SV3_ROOT/logs/opencode-a.log" < "$SV3_ROOT/logs/opencode-a.prompt")"
-sv3_pid_b="$(launch_reviewer opencode "$SV3_WT" "$SV3_ROOT/logs/opencode-b.log" < "$SV3_ROOT/logs/opencode-b.prompt")"
-SV3_SUMMARY="$SV3_ROOT/summary.txt"
-(cd "$SV3_ROOT/work" && spawn_supervisor "$SV3_WT" "$SV3_SUMMARY" acme widgets 3 "$sv3_pid_a" "$sv3_pid_b")
+svpid_recorded="$(cat "$SVPID_ROOT/.supervisor.pid" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$svpid_bang" ] && [ "$svpid_recorded" = "$svpid_bang" ] && pass spawn-supervisor-pid-file-is-supervisor-subshell || bad spawn-supervisor-pid-file-is-supervisor-subshell
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$svpid_recorded" ] && [ "$svpid_recorded" != "$$" ] && pass spawn-supervisor-pid-file-is-not-caller || bad spawn-supervisor-pid-file-is-not-caller
 
 i=0
-until { [ -f "$SV3_SUMMARY" ] && [ "$(wc -l < "$SV3_SUMMARY")" -eq 2 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(wc -l < "$SV3_SUMMARY")" -eq 2 ] && pass spawn-supervisor-converges-on-actual-pid-count || bad spawn-supervisor-converges-on-actual-pid-count
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q "^pid=$sv3_pid_a " "$SV3_SUMMARY" && grep -q "^pid=$sv3_pid_b " "$SV3_SUMMARY" && pass spawn-supervisor-records-every-given-pid || bad spawn-supervisor-records-every-given-pid
+until [ ! -e "$SVPID_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 
 # --- the backgrounded subshell survives a real SIGHUP delivered directly
 # to it, not just `disown` (which only stops *this shell* from sending
@@ -1310,7 +1756,7 @@ SV4_SUMMARY="$SV4_ROOT/summary.txt"
 SV4_PID_FILE="$T/sv4-supervisor-pid.txt"
 (
   cd "$SV4_ROOT/work" || exit 1
-  spawn_supervisor "$SV4_WT" "$SV4_SUMMARY" acme widgets 4 "$sv4_pid"
+  spawn_supervisor "$SV4_WT" "$SV4_SUMMARY" "$sv4_pid"
   printf '%s' "$!" > "$SV4_PID_FILE"
 )
 sv4_supervisor_pid="$(cat "$SV4_PID_FILE" 2>/dev/null)"
@@ -1489,259 +1935,6 @@ case "$out" in
 esac
 
 # ==============================================================
-# _post_review_comment
-#
-# A stub gh that records every invocation to a call-count file, so
-# "gh was never even attempted" (the no-content case) can be told apart
-# from "gh was attempted and failed".
-# ==============================================================
-
-POST_STUB_BIN="$T/post-stub-bin"
-mkdir -p "$POST_STUB_BIN"
-cat > "$POST_STUB_BIN/gh" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$GH_CALL_LOG"
-exit "${GH_STUB_EXIT:-0}"
-STUB
-chmod +x "$POST_STUB_BIN/gh"
-
-export PATH="$POST_STUB_BIN:$saved_path"
-
-# _post_review_comment no longer does extraction itself (spawn_supervisor
-# now decides whether to call it *after* checking exit code/worktree
-# status, which needs the extracted content either way -- see its own
-# docstring on "withheld"), so these tests extract via
-# _extract_review_content directly first, exactly like spawn_supervisor's
-# own loop now does, then call _post_review_comment with the already-
-# written content file.
-
-# --- success: gh called once with the right args, the content file it
-# was pointed at contains exactly the extracted text ---
-
-POST_ROOT="$T/post-fixture"
-mkdir -p "$POST_ROOT"
-export GH_CALL_LOG="$POST_ROOT/gh-calls-success.log"
-: > "$GH_CALL_LOG"
-export GH_STUB_EXIT=0
-post_content="$(_extract_review_content "$EXTRACT_FIXTURE_DIR/good.log")"
-printf '%s' "$post_content" > "$POST_ROOT/content-success.md"
-post_status="$(_post_review_comment acme widgets 42 "$POST_ROOT/content-success.md")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$post_status" = "posted" ] && pass post-review-comment-success-status || bad post-review-comment-success-status
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(wc -l < "$GH_CALL_LOG")" -eq 1 ] && pass post-review-comment-success-calls-gh-once || bad post-review-comment-success-calls-gh-once
-case "$(cat "$GH_CALL_LOG")" in
-  'pr comment 42 --repo acme/widgets --body-file '*) pass post-review-comment-success-correct-args ;;
-  *) bad post-review-comment-success-correct-args ;;
-esac
-out="$(cat "$POST_ROOT/content-success.md" 2>/dev/null)"
-expected=$'line one of the review\nline two of the review'
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "$expected" ] && pass post-review-comment-content-file-correct || bad post-review-comment-content-file-correct
-
-# --- failure: retried exactly once (two attempts total), status recorded
-# as post-failed, content file kept (not deleted) so the review isn't lost ---
-
-: > "$GH_CALL_LOG"
-export GH_STUB_EXIT=1
-printf '%s' "$post_content" > "$POST_ROOT/content-failed.md"
-post_status="$(_post_review_comment acme widgets 42 "$POST_ROOT/content-failed.md")"
-export GH_STUB_EXIT=0
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$post_status" = "post-failed" ] && pass post-review-comment-failure-status || bad post-review-comment-failure-status
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(wc -l < "$GH_CALL_LOG")" -eq 2 ] && pass post-review-comment-failure-retries-once || bad post-review-comment-failure-retries-once
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$POST_ROOT/content-failed.md" ] && pass post-review-comment-failure-keeps-content-file || bad post-review-comment-failure-keeps-content-file
-
-unset GH_CALL_LOG GH_STUB_EXIT
-export PATH="$saved_path"
-
-# ==============================================================
-# spawn_supervisor -- end-to-end posting through a real reviewer process
-#
-# A stub codex that actually prints the BEGIN/END markers (unlike the
-# stubs in the spawn_supervisor section above, which exist to test
-# exit-code/invalidation/PID-convergence and never print any markers) and
-# a stub gh that records calls, wired through launch_reviewer and
-# spawn_supervisor together end to end -- not just calling
-# _post_review_comment directly -- confirming the summary_file's new
-# post_status field reflects a real posting outcome for a real reviewer
-# run, and that spawn_supervisor picks the right log file for the right
-# PID via the .log-<pid> file launch_reviewer writes.
-# ==============================================================
-
-POSTE2E_ROOT="$T/post-e2e-fixture"
-POSTE2E_WT="$(_make_worktree_fixture "$POSTE2E_ROOT")"
-mkdir -p "$POSTE2E_ROOT/logs"
-
-POSTE2E_STUB_BIN="$T/post-e2e-stub-bin"
-mkdir -p "$POSTE2E_STUB_BIN"
-cat > "$POSTE2E_STUB_BIN/codex" <<'STUB'
-#!/usr/bin/env bash
-echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
-echo "nothing critical found"
-echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
-exit 0
-STUB
-chmod +x "$POSTE2E_STUB_BIN/codex"
-cp "$POST_STUB_BIN/gh" "$POSTE2E_STUB_BIN/gh"
-
-export PATH="$POSTE2E_STUB_BIN:$saved_path"
-export GH_CALL_LOG="$POSTE2E_ROOT/gh-calls.log"
-: > "$GH_CALL_LOG"
-export GH_STUB_EXIT=0
-
-printf 'p' > "$POSTE2E_ROOT/logs/codex.prompt"
-poste2e_pid="$(launch_reviewer codex "$POSTE2E_WT" "$POSTE2E_ROOT/logs/codex.log" < "$POSTE2E_ROOT/logs/codex.prompt")"
-POSTE2E_SUMMARY="$POSTE2E_ROOT/summary.txt"
-(cd "$POSTE2E_ROOT/work" && spawn_supervisor "$POSTE2E_WT" "$POSTE2E_SUMMARY" acme widgets 99 "$poste2e_pid")
-
-i=0
-until [ -s "$POSTE2E_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-
-case "$(cat "$POSTE2E_SUMMARY" 2>/dev/null)" in
-  "pid=$poste2e_pid exit=0"*'post_status=posted') pass spawn-supervisor-e2e-posts-successfully ;;
-  *) bad spawn-supervisor-e2e-posts-successfully ;;
-esac
-case "$(cat "$GH_CALL_LOG" 2>/dev/null)" in
-  'pr comment 99 --repo acme/widgets --body-file '*) pass spawn-supervisor-e2e-gh-called-with-correct-pr ;;
-  *) bad spawn-supervisor-e2e-gh-called-with-correct-pr ;;
-esac
-
-unset GH_CALL_LOG GH_STUB_EXIT
-export PATH="$saved_path"
-
-# --- same real reviewer + spawn_supervisor pipeline, but gh always fails
-# -- summary_file must show post_status=post-failed (not just tested at
-# the _post_review_comment function level above, but end to end through
-# a real spawn_supervisor run) ---
-
-POSTFAIL_ROOT="$T/post-e2e-fail-fixture"
-POSTFAIL_WT="$(_make_worktree_fixture "$POSTFAIL_ROOT")"
-mkdir -p "$POSTFAIL_ROOT/logs"
-
-export PATH="$POSTE2E_STUB_BIN:$saved_path"
-export GH_CALL_LOG="$POSTFAIL_ROOT/gh-calls.log"
-: > "$GH_CALL_LOG"
-export GH_STUB_EXIT=1
-
-printf 'p' > "$POSTFAIL_ROOT/logs/codex.prompt"
-postfail_pid="$(launch_reviewer codex "$POSTFAIL_WT" "$POSTFAIL_ROOT/logs/codex.log" < "$POSTFAIL_ROOT/logs/codex.prompt")"
-POSTFAIL_SUMMARY="$POSTFAIL_ROOT/summary.txt"
-(cd "$POSTFAIL_ROOT/work" && spawn_supervisor "$POSTFAIL_WT" "$POSTFAIL_SUMMARY" acme widgets 100 "$postfail_pid")
-
-i=0
-until [ -s "$POSTFAIL_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-
-case "$(cat "$POSTFAIL_SUMMARY" 2>/dev/null)" in
-  "pid=$postfail_pid exit=0"*'post_status=post-failed') pass spawn-supervisor-e2e-records-post-failure ;;
-  *) bad spawn-supervisor-e2e-records-post-failure ;;
-esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(wc -l < "$GH_CALL_LOG")" -eq 2 ] && pass spawn-supervisor-e2e-post-failure-retried-once || bad spawn-supervisor-e2e-post-failure-retried-once
-
-unset GH_CALL_LOG GH_STUB_EXIT
-export PATH="$saved_path"
-
-# --- posting is gated on exit code 0 AND worktree_status=ok -- a reviewer
-# that produces a perfectly valid, marker-wrapped review but exits
-# non-zero, or one whose worktree got tampered with during its run, must
-# never be posted (post_status=withheld), while the extracted content is
-# still saved to the same content_file a successful post would have used,
-# so a human can still look at it. Both scenarios use a real marker-
-# printing stub through the full launch_reviewer + spawn_supervisor
-# pipeline, not a direct call to the lower-level helpers, since what's
-# being pinned down here is spawn_supervisor's own gating decision. ---
-
-WITHHOLD_STUB_BIN="$T/withhold-stub-bin"
-mkdir -p "$WITHHOLD_STUB_BIN"
-cp "$POST_STUB_BIN/gh" "$WITHHOLD_STUB_BIN/gh"
-
-# Non-zero exit, otherwise a perfectly valid review.
-cat > "$WITHHOLD_STUB_BIN/codex" <<'STUB'
-#!/usr/bin/env bash
-echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
-echo "found a real issue, but then the process crashed"
-echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
-exit 3
-STUB
-chmod +x "$WITHHOLD_STUB_BIN/codex"
-
-WITHHOLD_EXIT_ROOT="$T/withhold-exit-fixture"
-WITHHOLD_EXIT_WT="$(_make_worktree_fixture "$WITHHOLD_EXIT_ROOT")"
-mkdir -p "$WITHHOLD_EXIT_ROOT/logs"
-export PATH="$WITHHOLD_STUB_BIN:$saved_path"
-export GH_CALL_LOG="$WITHHOLD_EXIT_ROOT/gh-calls.log"
-: > "$GH_CALL_LOG"
-export GH_STUB_EXIT=0
-printf 'p' > "$WITHHOLD_EXIT_ROOT/logs/codex.prompt"
-withhold_exit_pid="$(launch_reviewer codex "$WITHHOLD_EXIT_WT" "$WITHHOLD_EXIT_ROOT/logs/codex.log" < "$WITHHOLD_EXIT_ROOT/logs/codex.prompt")"
-WITHHOLD_EXIT_SUMMARY="$WITHHOLD_EXIT_ROOT/summary.txt"
-(cd "$WITHHOLD_EXIT_ROOT/work" && spawn_supervisor "$WITHHOLD_EXIT_WT" "$WITHHOLD_EXIT_SUMMARY" acme widgets 200 "$withhold_exit_pid")
-
-i=0
-until [ -s "$WITHHOLD_EXIT_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-
-case "$(cat "$WITHHOLD_EXIT_SUMMARY" 2>/dev/null)" in
-  "pid=$withhold_exit_pid exit=3"*'post_status=withheld') pass spawn-supervisor-withholds-on-nonzero-exit ;;
-  *) bad spawn-supervisor-withholds-on-nonzero-exit ;;
-esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$GH_CALL_LOG" ] && pass spawn-supervisor-withheld-never-calls-gh-nonzero-exit || bad spawn-supervisor-withheld-never-calls-gh-nonzero-exit
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'found a real issue' "$WITHHOLD_EXIT_ROOT/.comment-body-$withhold_exit_pid.md" 2>/dev/null && pass spawn-supervisor-withheld-still-saves-content-nonzero-exit || bad spawn-supervisor-withheld-still-saves-content-nonzero-exit
-
-unset GH_CALL_LOG GH_STUB_EXIT
-export PATH="$saved_path"
-
-# Exit 0, but the reviewer also wrote into the worktree it was given via
-# -C (a contract violation the git-status comparison is specifically
-# there to catch), producing a real invalidated result, not a contrived
-# one.
-cat > "$WITHHOLD_STUB_BIN/codex" <<'STUB'
-#!/usr/bin/env bash
-prev=""
-for a in "$@"; do
-  if [ "$prev" = "-C" ]; then
-    printf 'dirty\n' > "$a/INJECTED-BY-WITHHOLD-TEST.txt"
-  fi
-  prev="$a"
-done
-echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
-echo "a review the worktree tampering means we can no longer trust"
-echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
-exit 0
-STUB
-chmod +x "$WITHHOLD_STUB_BIN/codex"
-
-WITHHOLD_INVALID_ROOT="$T/withhold-invalidated-fixture"
-WITHHOLD_INVALID_WT="$(_make_worktree_fixture "$WITHHOLD_INVALID_ROOT")"
-mkdir -p "$WITHHOLD_INVALID_ROOT/logs"
-export PATH="$WITHHOLD_STUB_BIN:$saved_path"
-export GH_CALL_LOG="$WITHHOLD_INVALID_ROOT/gh-calls.log"
-: > "$GH_CALL_LOG"
-printf 'p' > "$WITHHOLD_INVALID_ROOT/logs/codex.prompt"
-withhold_invalid_pid="$(launch_reviewer codex "$WITHHOLD_INVALID_WT" "$WITHHOLD_INVALID_ROOT/logs/codex.log" < "$WITHHOLD_INVALID_ROOT/logs/codex.prompt")"
-WITHHOLD_INVALID_SUMMARY="$WITHHOLD_INVALID_ROOT/summary.txt"
-(cd "$WITHHOLD_INVALID_ROOT/work" && spawn_supervisor "$WITHHOLD_INVALID_WT" "$WITHHOLD_INVALID_SUMMARY" acme widgets 201 "$withhold_invalid_pid")
-
-i=0
-until [ -s "$WITHHOLD_INVALID_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-
-case "$(cat "$WITHHOLD_INVALID_SUMMARY" 2>/dev/null)" in
-  "pid=$withhold_invalid_pid exit=0"*'worktree_status=invalidated'*'post_status=withheld') pass spawn-supervisor-withholds-on-invalidated-worktree ;;
-  *) bad spawn-supervisor-withholds-on-invalidated-worktree ;;
-esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$GH_CALL_LOG" ] && pass spawn-supervisor-withheld-never-calls-gh-invalidated || bad spawn-supervisor-withheld-never-calls-gh-invalidated
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'tampering means' "$WITHHOLD_INVALID_ROOT/.comment-body-$withhold_invalid_pid.md" 2>/dev/null && pass spawn-supervisor-withheld-still-saves-content-invalidated || bad spawn-supervisor-withheld-still-saves-content-invalidated
-
-unset GH_CALL_LOG
-export PATH="$saved_path"
-
-# ==============================================================
 # print_summary
 # ==============================================================
 
@@ -1779,6 +1972,103 @@ ps_out_none_skipped="$(print_summary "$PS_LOGS" claude codex opencode --skipped)
 case "$ps_out_none_skipped" in
   *'（無）'*) pass print-summary-none-skipped-marker ;;
   *) bad print-summary-none-skipped-marker ;;
+esac
+
+# --- print_summary: 讀回 fetch_review_materials 寫下的 .materials-status，
+# 回報這次到底收集到了什麼材料 -- 沒有這節之前，缺料是完全沒有訊號的，
+# 直到三個 reviewer 各自回報同一件事 ---
+
+# 沒有 .materials-status 時（例如直接呼叫 print_summary，從沒跑過
+# fetch_review_materials）完全不印這節，也不能報錯；PS_LOGS 的 base_dir 是
+# 這個測試檔共用的 $T，本來就沒有 .materials-status。
+case "$ps_out" in
+  *'審查材料'*) bad print-summary-omits-materials-section-when-absent ;;
+  *) pass print-summary-omits-materials-section-when-absent ;;
+esac
+
+# issue 由 PR 內文推導、design document 已提供
+PS_MAT_A="$T/print-summary-materials-a"
+mkdir -p "$PS_MAT_A/logs"
+cat > "$PS_MAT_A/.materials-status" <<'STATUS'
+issue_status=derived
+issue_number=123
+design_status=provided
+STATUS
+ps_out_mat_a="$(print_summary "$PS_MAT_A/logs" claude --skipped codex opencode)"
+case "$ps_out_mat_a" in
+  *'issue 內文與討論串：已取得（issue 編號由 PR 本文的 closing keyword 推導：#123）'*) pass print-summary-issue-derived-message ;;
+  *) bad print-summary-issue-derived-message ;;
+esac
+case "$ps_out_mat_a" in
+  *'design document：已提供'*) pass print-summary-design-provided-message ;;
+  *) bad print-summary-design-provided-message ;;
+esac
+
+# issue 由呼叫端明確指定、design document 未提供
+PS_MAT_B="$T/print-summary-materials-b"
+mkdir -p "$PS_MAT_B/logs"
+cat > "$PS_MAT_B/.materials-status" <<'STATUS'
+issue_status=explicit
+issue_number=7
+design_status=not-provided
+STATUS
+ps_out_mat_b="$(print_summary "$PS_MAT_B/logs" claude --skipped codex opencode)"
+case "$ps_out_mat_b" in
+  *'issue 內文與討論串：已取得（呼叫端明確指定：#7）'*) pass print-summary-issue-explicit-message ;;
+  *) bad print-summary-issue-explicit-message ;;
+esac
+case "$ps_out_mat_b" in
+  *'design document：未提供'*) pass print-summary-design-not-provided-message ;;
+  *) bad print-summary-design-not-provided-message ;;
+esac
+
+# issue 未宣告（PR 本文無 closing keyword、呼叫端也沒給）、design document
+# 有給路徑但讀不到 -- 「未提供」跟「不可讀」是不同訊號，前者是使用者的
+# 選擇，後者通常是打錯路徑
+PS_MAT_C="$T/print-summary-materials-c"
+mkdir -p "$PS_MAT_C/logs"
+cat > "$PS_MAT_C/.materials-status" <<'STATUS'
+issue_status=not-declared
+issue_number=
+design_status=unreadable
+STATUS
+ps_out_mat_c="$(print_summary "$PS_MAT_C/logs" claude --skipped codex opencode)"
+case "$ps_out_mat_c" in
+  *'issue 內文與討論串：未提供（PR 本文未宣告 closing 的 issue）'*) pass print-summary-issue-not-declared-message ;;
+  *) bad print-summary-issue-not-declared-message ;;
+esac
+case "$ps_out_mat_c" in
+  *'design document：呼叫端提供了路徑，但檔案不可讀'*) pass print-summary-design-unreadable-message ;;
+  *) bad print-summary-design-unreadable-message ;;
+esac
+
+# issue 有編號（不論推導或明確指定）但抓取失敗，訊息要帶上那個編號
+PS_MAT_D="$T/print-summary-materials-d"
+mkdir -p "$PS_MAT_D/logs"
+cat > "$PS_MAT_D/.materials-status" <<'STATUS'
+issue_status=failed
+issue_number=55
+design_status=provided
+STATUS
+ps_out_mat_d="$(print_summary "$PS_MAT_D/logs" claude --skipped codex opencode)"
+case "$ps_out_mat_d" in
+  *'issue 內文與討論串：嘗試取得但失敗（issue 編號：#55'*) pass print-summary-issue-failed-with-number-message ;;
+  *) bad print-summary-issue-failed-with-number-message ;;
+esac
+
+# 呼叫端給的 issue 參照本身就解析不出編號，訊息要說清楚是參照解析失敗，
+# 不能印出一個空的 "#"
+PS_MAT_E="$T/print-summary-materials-e"
+mkdir -p "$PS_MAT_E/logs"
+cat > "$PS_MAT_E/.materials-status" <<'STATUS'
+issue_status=failed
+issue_number=
+design_status=provided
+STATUS
+ps_out_mat_e="$(print_summary "$PS_MAT_E/logs" claude --skipped codex opencode)"
+case "$ps_out_mat_e" in
+  *'issue 內文與討論串：嘗試取得但失敗（呼叫端提供的 issue 參照無法解析）'*) pass print-summary-issue-failed-no-number-message ;;
+  *) bad print-summary-issue-failed-no-number-message ;;
 esac
 
 # ==============================================================
@@ -1933,16 +2223,21 @@ esac
 # ==============================================================
 # main() end-to-end
 #
-# The most load-bearing test in this section: build_prompt takes 8
+# The most load-bearing test in this section: build_prompt takes 7
 # positional parameters, and a caller that transposes two of them (e.g.
-# swaps issue_url and design_doc_path, or worktree_path and base_ref)
-# produces a syntactically valid but semantically wrong prompt with no
-# error anywhere -- set -u only catches a missing argument, never a
-# misordered one. Every value below is deliberately distinct from every
-# other, and each assertion below checks that value against *its own*
-# labeled line in the prompt file main() actually wrote to disk, not just
-# that the value appears somewhere in it (which would pass even if two
-# labels' values were swapped).
+# swaps worktree_path and base_ref) produces a syntactically valid but
+# semantically wrong prompt with no error anywhere -- set -u only catches
+# a missing argument, never a misordered one. Every coordinate value
+# below is deliberately distinct from every other, and each coordinate
+# assertion checks that value against *its own* labeled line in the
+# prompt file main() actually wrote to disk, not just that the value
+# appears somewhere in it (which would pass even if two labels' values
+# were swapped). The issue and design-doc materials, unlike the
+# coordinates, are no longer handed to build_prompt directly -- main()
+# resolves them into materials_dir via fetch_review_materials first -- so
+# those two are instead checked by their own distinctive embedded
+# content, the same way build_prompt's own section elsewhere in this file
+# does.
 #
 # This also exercises run.sh's command-line contract end to end (task 5's
 # own addition, not specified by the earlier tasks): three positional
@@ -1984,10 +2279,20 @@ E2E_HOME="$T/main-e2e-home"
 mkdir -p "$E2E_HOME/.codex"
 printf 'model = "e2e-distinctive-model"\n' > "$E2E_HOME/.codex/config.toml"
 
+# design_doc_path is resolved relative to main()'s own cwd (see
+# fetch_review_materials), so this needs a real file on disk at the exact
+# relative path handed to run.sh below, not just a distinctive string --
+# an empty issue/design section renders as explicitly absent instead
+# (see the fetch-materials-degrades-* tests above), so a nonexistent path
+# here would silently exercise that path instead of the one this test
+# means to cover.
+mkdir -p "$E2E_FIXTURE/work/docs"
+printf 'e2e-distinctive-design-doc-marker-content\n' > "$E2E_FIXTURE/work/docs/distinctive-design-doc-marker.md"
+
 if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" \
   bash "$RUN_SH" \
     "https://github.com/acme9pr/widgets9pr/pull/321" \
-    "https://example.com/distinctive-issue-marker" \
+    "777" \
     "docs/distinctive-design-doc-marker.md" 2>&1)"; then
   pass main-e2e-succeeds
 else
@@ -2007,10 +2312,17 @@ grep -qxF -- '- PR：https://github.com/acme9pr/widgets9pr/pull/321' "$E2E_PROMP
 grep -qxF -- "- git worktree 絕對路徑：$E2E_BASE_DIR/worktree" "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-worktree-path-in-place || bad main-e2e-prompt-worktree-path-in-place
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qxF -- '- base ref：origin/e2e-distinctive-base' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-base-ref-in-place || bad main-e2e-prompt-base-ref-in-place
+# issue_arg "777" resolves via _parse_issue_ref straight through
+# fetch_review_materials to a real (stubbed) `gh issue view` call; its
+# body is embedded into the prompt as material, not placed on its own
+# coordinate line the way it was before build_prompt took materials_dir
+# instead of issue_url.
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF -- '- issue：https://example.com/distinctive-issue-marker' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-issue-url-in-place || bad main-e2e-prompt-issue-url-in-place
+grep -qF 'e2e-distinctive-issue-body-marker' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-issue-material-embedded || bad main-e2e-prompt-issue-material-embedded
+# Same shift for the design doc: its full text is embedded as material
+# instead of its path being placed on its own coordinate line.
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF -- '- design document 路徑：docs/distinctive-design-doc-marker.md' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-design-doc-in-place || bad main-e2e-prompt-design-doc-in-place
+grep -qF 'e2e-distinctive-design-doc-marker-content' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-design-material-embedded || bad main-e2e-prompt-design-material-embedded
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qxF -- '- 產出這則 review 的 CLI 名稱：codex' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-cli-name-in-place || bad main-e2e-prompt-cli-name-in-place
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -2066,6 +2378,20 @@ case "$out" in
   *) bad main-e2e-summary-output-lists-log-path ;;
 esac
 
+# This run's own issue_arg ("777") was explicit and its design doc path was
+# readable -- confirming print_summary's materials section reflects that
+# correctly end to end (real main() -> fetch_review_materials ->
+# .materials-status -> print_summary), not just against a hand-written
+# .materials-status fixture the way the print_summary section above does.
+case "$out" in
+  *'issue 內文與討論串：已取得（呼叫端明確指定：#777）'*) pass main-e2e-summary-output-shows-explicit-issue ;;
+  *) bad main-e2e-summary-output-shows-explicit-issue ;;
+esac
+case "$out" in
+  *'design document：已提供'*) pass main-e2e-summary-output-shows-design-provided ;;
+  *) bad main-e2e-summary-output-shows-design-provided ;;
+esac
+
 # --- spawn_supervisor's summary_file (base_dir/summary.txt, i.e. two
 # directories up from any <cli>.log path -- the exact derivation SKILL.md
 # uses to find it) eventually exists and converges to exactly one line per
@@ -2102,6 +2428,19 @@ fi
 E2E_LOGS_DIR2="$(find "$E2E_HOME2/.tmp" -type d -name logs 2>/dev/null | head -1)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -n "$E2E_LOGS_DIR2" ] && grep -qF '未提供' "$E2E_LOGS_DIR2/codex.prompt" 2>/dev/null && pass main-e2e-empty-args-render-not-provided || bad main-e2e-empty-args-render-not-provided
+
+# print_summary's own materials section must say the same thing in plain
+# language: no issue was declared (the stub PR body carries no closing
+# keyword and no issue link was given), and no design doc was given
+# either -- $out here still holds this second run's own stdout.
+case "$out" in
+  *'issue 內文與討論串：未提供（PR 本文未宣告 closing 的 issue）'*) pass main-e2e-empty-args-summary-shows-issue-not-declared ;;
+  *) bad main-e2e-empty-args-summary-shows-issue-not-declared ;;
+esac
+case "$out" in
+  *'design document：未提供'*) pass main-e2e-empty-args-summary-shows-design-not-provided ;;
+  *) bad main-e2e-empty-args-summary-shows-design-not-provided ;;
+esac
 
 # --- main() actually applies its own worktree/logs_dir read-only chmod,
 # not just "chmod behaves this way when I do it myself in a fixture"
@@ -2196,5 +2535,40 @@ else
   pass main-e2e-logs-dir-write-actually-denied
 fi
 chmod -R u+w "$CHMODE2E_BASE_DIR" 2>/dev/null || true
+
+# --- main(): jq 前置檢查、print_summary 印出執行目錄 ---
+
+# jq 缺席時 check_prerequisites 必須在動到使用者 repo 之前拒絕執行。gh 的
+# 可用性、認證與 PR 存在性都以既有的 gh stub 保證成立（其預設值
+# GH_STUB_AUTH_OK=1、GH_STUB_PR_EXISTS=1），讓失敗唯一可能的原因只剩 jq
+# 缺席。PATH 不能單純指向 STUB_BIN 本身：stub gh 的 shebang 是
+# `#!/usr/bin/env bash`，PATH 中若沒有目錄能解析出 bash，連 stub 都執行
+# 不了，會用「gh 沒有通過認證」這種假訊號蓋過真正要測的 jq 缺席 -- 因此
+# 這裡另外準備一個只含 gh（連到既有 stub）與 bash（連到真正的 bash）兩個
+# symlink 的乾淨目錄，不含 jq，也不含 git（check_prerequisites 用不到）。
+JQ_MISSING_BIN="$T/jq-missing-bin"
+mkdir -p "$JQ_MISSING_BIN"
+ln -s "$STUB_BIN/gh" "$JQ_MISSING_BIN/gh"
+ln -s "$(command -v bash)" "$JQ_MISSING_BIN/bash"
+export PATH="$JQ_MISSING_BIN"
+if _check_gh_available >/dev/null 2>&1 && check_prerequisites acme widgets 7 >/dev/null 2>&1; then
+  bad prereq-jq-missing
+else
+  pass prereq-jq-missing
+fi
+export PATH="$saved_path"
+
+# print_summary 要印出執行目錄與 summary.txt 的絕對路徑，讓呼叫端不必從
+# log 路徑往上推兩層。用完整標籤字串比對（而非只比對 $PS_ROOT 本身），
+# 因為既有的 dispatched log 那一行本來就已經以 $PS_ROOT 開頭，光比對
+# $PS_ROOT 子字串不能真正證明是新加的那兩行執行目錄／摘要檔輸出。
+PS_ROOT="$T/print-summary-paths"
+mkdir -p "$PS_ROOT/logs"
+printf '111\n' > "$PS_ROOT/logs/claude.pid"
+PS_OUT="$(print_summary "$PS_ROOT/logs" claude --skipped codex opencode)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$PS_OUT" | grep -qF "$PS_ROOT/summary.txt" && pass print-summary-shows-summary-path || bad print-summary-shows-summary-path
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$PS_OUT" | grep -qF "本次執行目錄：$PS_ROOT" && pass print-summary-shows-run-dir || bad print-summary-shows-run-dir
 
 exit $fail
