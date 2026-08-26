@@ -204,4 +204,61 @@ for d in projects session-env file-history tasks; do
   diff -r "$CONFLICT_SNAPSHOT/$d" "$CLAUDE_PERSONAL_CONFIG_DIR/$d" > /dev/null 2>&1 && pass "personal-$d-not-destroyed" || bad "personal-$d-not-destroyed"
 done
 
+# ---- --all covers BOTH Claude Code config dirs ----
+# The default and personal dirs are two permanent targets on this machine, so
+# "all" must mean both. Before this was wired up, --all silently skipped the
+# personal dir and it went stale without any signal. All four payload
+# categories are asserted in both dirs: agents/ and hooks/ are whole-dir
+# symlinks (link_directory), skills/ and commands/ are per-item symlinks
+# (link_items) — a regression in either mode would strand one category.
+export CLAUDE_CONFIG_DIR="$T/all-default"
+export CLAUDE_PERSONAL_CONFIG_DIR="$T/all-personal"
+export CODEX_HOME="$T/all-codex"
+export OPENCODE_CONFIG_DIR="$T/all-opencode"
+CLAUDE_STUB_LOG="$T/claude-stub-all.log"
+: > "$CLAUDE_STUB_LOG"
+( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --all --no-external > "$T/log_all" 2>&1 )
+
+for label in default:"$CLAUDE_CONFIG_DIR" personal:"$CLAUDE_PERSONAL_CONFIG_DIR"; do
+  name="${label%%:*}"
+  dir="${label#*:}"
+  test -L "$dir/agents" && pass "all-$name-agents" || bad "all-$name-agents"
+  test -L "$dir/hooks" && pass "all-$name-hooks" || bad "all-$name-hooks"
+  test -L "$dir/rules" && pass "all-$name-rules" || bad "all-$name-rules"
+  test -L "$dir/skills/deep-thinking" && pass "all-$name-skills" || bad "all-$name-skills"
+  test -L "$dir/commands/solution-survey.md" && pass "all-$name-commands" || bad "all-$name-commands"
+  test -L "$dir/settings.json" && pass "all-$name-settings" || bad "all-$name-settings"
+  test -L "$dir/CLAUDE.md" && pass "all-$name-claude-md" || bad "all-$name-claude-md"
+done
+
+# --all must still reach the other two platforms.
+test -L "$CODEX_HOME/prompts/solution-survey.md" && pass all-codex-prompts || bad all-codex-prompts
+test -L "$OPENCODE_CONFIG_DIR/commands/solution-survey.md" && pass all-opencode-commands || bad all-opencode-commands
+
+# ---- the equality guard is pre-flight: it aborts before ANY deploy ----
+# The guard used to live inside deploy_claude_personal, which runs last. Once
+# --all implies --claude-personal, that placement would deploy three platforms
+# and only then exit 1, leaving a half-finished install and no summary. The
+# check must therefore run before the first deploy, so the run is all-or-
+# nothing: nothing is written anywhere, and the operator is told to re-run
+# from a plain shell.
+FAILFAST_DIR="$T/failfast-selfref"
+mkdir -p "$FAILFAST_DIR"
+export CLAUDE_CONFIG_DIR="$FAILFAST_DIR"
+export CLAUDE_PERSONAL_CONFIG_DIR="$FAILFAST_DIR"
+export CODEX_HOME="$T/failfast-codex"
+export OPENCODE_CONFIG_DIR="$T/failfast-opencode"
+export AGENTS_HOME="$T/failfast-agents"
+CLAUDE_STUB_LOG="$T/claude-stub-failfast.log"
+: > "$CLAUDE_STUB_LOG"
+failfast_status=0
+( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --all --no-external > "$T/log_failfast" 2>&1 ) || failfast_status=$?
+
+[ "$failfast_status" -ne 0 ] && pass failfast-aborts || bad failfast-aborts
+grep -qF 'CLAUDE_CONFIG_DIR and CLAUDE_PERSONAL_CONFIG_DIR both resolve to' "$T/log_failfast" && pass failfast-message || bad failfast-message
+[ -z "$(ls -A "$FAILFAST_DIR")" ] && pass failfast-claude-untouched || bad failfast-claude-untouched
+test ! -e "$CODEX_HOME" && pass failfast-codex-untouched || bad failfast-codex-untouched
+test ! -e "$OPENCODE_CONFIG_DIR" && pass failfast-opencode-untouched || bad failfast-opencode-untouched
+test ! -e "$AGENTS_HOME" && pass failfast-agents-untouched || bad failfast-agents-untouched
+
 exit $fail

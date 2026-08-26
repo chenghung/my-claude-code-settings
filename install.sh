@@ -281,21 +281,12 @@ deploy_claude_personal() {
   local default_dir="$CLAUDE_CONFIG_DIR"
   local personal_dir="$CLAUDE_PERSONAL_CONFIG_DIR"
 
-  # Guard: if both dirs already resolve to the same path, every link_one call
-  # below would link a path to itself, silently breaking session sharing (see
-  # the note above). The common trigger is running install.sh from inside a
-  # Claude Code session started by the personal-subscription launcher, which
-  # exports CLAUDE_CONFIG_DIR into the session — every child process
-  # (including this script) inherits it, so it collides with
-  # CLAUDE_PERSONAL_CONFIG_DIR's own default.
-  if [ "$default_dir" = "$personal_dir" ]; then
-    printf 'Error: CLAUDE_CONFIG_DIR and CLAUDE_PERSONAL_CONFIG_DIR both resolve to %s.\n' "$default_dir" >&2
-    printf 'This usually means install.sh is running inside a Claude Code session\n' >&2
-    printf 'that already has CLAUDE_CONFIG_DIR set (e.g. the personal-subscription\n' >&2
-    printf 'launcher). Re-run install.sh from a plain shell instead.\n' >&2
-    printf 'Aborting --claude-personal deploy — no changes made.\n' >&2
-    exit 1
-  fi
+  # The two dirs are guaranteed distinct by the time this runs: the pre-flight
+  # check near the bottom of this script aborts the whole run when they
+  # collide, precisely so the link_one calls below can never link a path to
+  # itself. That check lives there rather than here because --all implies
+  # --claude-personal and this function runs last — aborting from inside it
+  # would leave a half-finished install behind.
 
   printf 'Deploying to Claude Code (personal subscription)\n  target: %s\n\n' "$personal_dir"
   CLAUDE_CONFIG_DIR="$personal_dir" deploy_claude
@@ -630,7 +621,7 @@ for arg in "$@"; do
     --claude-personal) want_claude_personal=1 ;;
     --codex)  want_codex=1 ;;
     --opencode) want_opencode=1 ;;
-    --all)    want_claude=1; want_codex=1; want_opencode=1 ;;
+    --all)    want_claude=1; want_claude_personal=1; want_codex=1; want_opencode=1 ;;
     --no-external) skip_external=1 ;;
     --force-config) force_config=1 ;;
     -h|--help)
@@ -638,6 +629,10 @@ for arg in "$@"; do
       printf '  --claude-personal  deploy the full repo config to a second, personal-\n'
       printf '                     subscription-only Claude Code config dir (shares\n'
       printf '                     session state with --claude).\n'
+      printf '  --all           every platform, including --claude-personal. Both Claude\n'
+      printf '                  Code config dirs are permanent targets on a machine that\n'
+      printf '                  has two subscriptions, so leaving one out of "all" is what\n'
+      printf '                  lets it silently go stale.\n'
       printf '  --force-config  re-seed an already-seeded Codex config.toml from the repo\n'
       printf '                  template (backs up the existing file first). Codex-only;\n'
       printf '                  no effect on Claude Code or opencode.\n'
@@ -661,6 +656,7 @@ if [ -z "$want_claude" ] && [ -z "$want_claude_personal" ] && [ -z "$want_codex"
     case "$reply" in [nN]*) return 1 ;; *) return 0 ;; esac
   }
   ask_yn "Install for Claude Code?" && want_claude=1
+  ask_yn "Install for Claude Code (personal subscription)?" && want_claude_personal=1
   ask_yn "Install for Codex?" && want_codex=1
   ask_yn "Install for opencode?" && want_opencode=1
 fi
@@ -689,6 +685,31 @@ if { [ -n "$want_claude" ] || [ -n "$want_claude_personal" ]; } \
   printf 'Deploy target: %s (default would be: %s)\n' "$CLAUDE_CONFIG_DIR" "${HOME}/.claude" >&2
   printf 'This usually means install.sh is running inside a session that already\n' >&2
   printf 'has CLAUDE_CONFIG_DIR set (e.g. the personal-subscription launcher).\n\n' >&2
+fi
+
+# ---------------------------------------------------------------------------
+# Pre-flight: the two Claude Code config dirs must be distinct. If they are
+# not, every session-state link_one call in deploy_claude_personal would link
+# a path to itself, silently defeating session sharing (see the note in that
+# function). The common trigger is running install.sh from inside a Claude
+# Code session started by the personal-subscription launcher, which exports
+# CLAUDE_CONFIG_DIR into the session — every child process (including this
+# script) inherits it, so it collides with CLAUDE_PERSONAL_CONFIG_DIR's own
+# default.
+#
+# This is checked here, before the CLI tools bootstrap and before the first
+# deploy, rather than inside deploy_claude_personal where it used to live:
+# --all implies --claude-personal and deploy_claude_personal runs last, so an
+# in-function abort would deploy three platforms, skip the personal dir, and
+# exit before the summary. Checking up front makes the run all-or-nothing.
+# ---------------------------------------------------------------------------
+if [ -n "$want_claude_personal" ] && [ "$CLAUDE_CONFIG_DIR" = "$CLAUDE_PERSONAL_CONFIG_DIR" ]; then
+  printf 'Error: CLAUDE_CONFIG_DIR and CLAUDE_PERSONAL_CONFIG_DIR both resolve to %s.\n' "$CLAUDE_CONFIG_DIR" >&2
+  printf 'This usually means install.sh is running inside a Claude Code session\n' >&2
+  printf 'that already has CLAUDE_CONFIG_DIR set (e.g. the personal-subscription\n' >&2
+  printf 'launcher). Re-run install.sh from a plain shell instead.\n' >&2
+  printf 'Aborting before any deploy — no changes made.\n' >&2
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
