@@ -2794,4 +2794,25 @@ else
   bad "build_prompt 未嵌入契約新內容"
 fi
 
+# ==============================================================
+# resolve_synthesis_contract_path / synthesis-contract.md
+# ==============================================================
+
+# ---- 合流契約可被解析到 ----
+if out="$(resolve_synthesis_contract_path)" && [ -f "$out" ]; then
+  pass "resolve_synthesis_contract_path 指到存在的檔案"
+else
+  bad "resolve_synthesis_contract_path 失敗: $out"
+fi
+
+# ---- 合流契約含必要段落 ----
+sc="$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md"
+for kw in "矛盾" "platform/model" "重新計算" "摺疊區" "揭露"; do
+  if grep -q "$kw" "$sc"; then
+    pass "合流契約含: $kw"
+  else
+    bad "合流契約缺: $kw"
+  fi
+done
+
 exit $fail

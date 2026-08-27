@@ -515,6 +515,26 @@ resolve_contract_path() {
   printf '%s\n' "$contract_path"
 }
 
+# resolve_synthesis_contract_path
+#
+# Same resolution strategy as resolve_contract_path (see its docstring for
+# why the symlink walk is needed), for references/synthesis-contract.md.
+resolve_synthesis_contract_path() {
+  local script_path script_dir skill_root contract_path
+
+  script_path="$(readlink -f "${BASH_SOURCE[0]}")" || return 1
+  script_dir="$(cd "$(dirname "$script_path")" && pwd)" || return 1
+  skill_root="$(cd "$script_dir/.." && pwd)" || return 1
+  contract_path="$skill_root/references/synthesis-contract.md"
+
+  if [ ! -f "$contract_path" ]; then
+    printf 'resolve_synthesis_contract_path: contract file not found at %s\n' "$contract_path" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$contract_path"
+}
+
 # _origin_matches_owner_repo <origin_url> <owner> <repo>
 #
 # True (exit 0) when origin_url is a github.com HTTPS or SSH remote URL
