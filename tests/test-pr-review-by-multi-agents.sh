@@ -2,7 +2,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
-RUN_SH="$REPO/skills/pr-review-by-multi-agents/scripts/run.sh"
+RUN_SH="$REPO/skills/pr-review-by-multi-agents/scripts/run-review.sh"
 fail=0
 pass() { printf 'PASS %s\n' "$1"; }
 bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
@@ -245,14 +245,14 @@ export PATH="$saved_path"
 
 REAL_CONTRACT="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
 
-# Direct case: resolve from run.sh's own real, un-symlinked location.
+# Direct case: resolve from run-review.sh's own real, un-symlinked location.
 out="$(resolve_contract_path)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$out" = "$REAL_CONTRACT" ] && pass contract-path-direct || bad contract-path-direct
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$out" ] && pass contract-path-direct-readable || bad contract-path-direct-readable
 
-# Symlink case: this fixture symlinks only run.sh itself, not the whole
+# Symlink case: this fixture symlinks only run-review.sh itself, not the whole
 # skill directory the way install.sh actually deploys it (a single symlink
 # for the whole tree under ~/.claude/skills or ~/.agents/skills) -- but
 # readlink resolves BASH_SOURCE[0] the same way regardless of which level
@@ -261,8 +261,8 @@ out="$(resolve_contract_path)"
 # depends on.
 SYMLINKED_SKILL="$T/symlinked-skill"
 mkdir -p "$SYMLINKED_SKILL/scripts"
-ln -s "$RUN_SH" "$SYMLINKED_SKILL/scripts/run.sh"
-out="$(bash -c "source '$SYMLINKED_SKILL/scripts/run.sh'; resolve_contract_path")"
+ln -s "$RUN_SH" "$SYMLINKED_SKILL/scripts/run-review.sh"
+out="$(bash -c "source '$SYMLINKED_SKILL/scripts/run-review.sh'; resolve_contract_path")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$out" = "$REAL_CONTRACT" ] && pass contract-path-symlink || bad contract-path-symlink
 
@@ -270,8 +270,8 @@ out="$(bash -c "source '$SYMLINKED_SKILL/scripts/run.sh'; resolve_contract_path"
 # non-zero, no stdout. Must not be confused with the two cases above.
 NO_CONTRACT_SKILL="$T/no-contract-skill"
 mkdir -p "$NO_CONTRACT_SKILL/scripts"
-cp "$RUN_SH" "$NO_CONTRACT_SKILL/scripts/run.sh"
-if out="$(bash -c "source '$NO_CONTRACT_SKILL/scripts/run.sh'; resolve_contract_path" 2>/dev/null)"; then
+cp "$RUN_SH" "$NO_CONTRACT_SKILL/scripts/run-review.sh"
+if out="$(bash -c "source '$NO_CONTRACT_SKILL/scripts/run-review.sh'; resolve_contract_path" 2>/dev/null)"; then
   bad contract-path-missing
 else
   pass contract-path-missing
@@ -347,7 +347,7 @@ rc=$?
 
 # --- claude: $CLAUDE_CONFIG_DIR/settings.json (falling back to
 # ~/.claude/settings.json), .model. CLAUDE_CONFIG_DIR is explicitly
-# cleared (set to empty, which run.sh's own `${CLAUDE_CONFIG_DIR:-...}`
+# cleared (set to empty, which run-review.sh's own `${CLAUDE_CONFIG_DIR:-...}`
 # fallback treats the same as unset) on every call below: this test
 # process may itself be running under a real CLAUDE_CONFIG_DIR set in the
 # environment it was launched from, and without clearing it here,
@@ -2196,7 +2196,7 @@ esac
 # _dispatch_failed_cleanup
 #
 # Direct unit tests for the helper main()'s reviewer-dispatch loop calls
-# on a partial failure (see its own docstring in run.sh): it must report
+# on a partial failure (see its own docstring in run-review.sh): it must report
 # any already-launched, now-unsupervised PIDs to stderr and remove the
 # worktree, and must not claim a PID was launched when none was.
 # ==============================================================
@@ -2239,10 +2239,10 @@ esac
 # content, the same way build_prompt's own section elsewhere in this file
 # does.
 #
-# This also exercises run.sh's command-line contract end to end (task 5's
+# This also exercises run-review.sh's command-line contract end to end (task 5's
 # own addition, not specified by the earlier tasks): three positional
 # arguments -- PR link, issue link, design doc path -- invoked exactly as
-# a real caller would, via `bash run.sh ...`, not by sourcing and calling
+# a real caller would, via `bash run-review.sh ...`, not by sourcing and calling
 # main() directly (main() calls `exit` on its failure paths, which would
 # kill this whole test script if called in-process instead of as a real
 # subprocess).
@@ -2281,7 +2281,7 @@ printf 'model = "e2e-distinctive-model"\n' > "$E2E_HOME/.codex/config.toml"
 
 # design_doc_path is resolved relative to main()'s own cwd (see
 # fetch_review_materials), so this needs a real file on disk at the exact
-# relative path handed to run.sh below, not just a distinctive string --
+# relative path handed to run-review.sh below, not just a distinctive string --
 # an empty issue/design section renders as explicitly absent instead
 # (see the fetch-materials-degrades-* tests above), so a nonexistent path
 # here would silently exercise that path instead of the one this test

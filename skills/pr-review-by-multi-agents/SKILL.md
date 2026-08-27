@@ -17,13 +17,13 @@ description: >
 
 reviewer 自己不張貼、也不寫任何檔案，是刻意的：被審查的 diff 與 issue 內容是外部可控、會原樣進入模型 context 的提示注入管道，而這個倉庫審查的正是使用者的 AI 工具設定檔；給 reviewer 寫入能力沒有辦法只給一個目錄，等於把整個帳號權限範圍交出去。切內容、判斷可不可信這一步留在監督行程，因為它是 shell 子行程而不是 AI agent，跑的是固定指令、沒有注入風險。真正決定要不要貼、要不要委派張貼的雖然是 main agent 這個 AI agent，但它讀的只是摘要檔裡的結構化欄位（結束碼、worktree 狀態、`content_status` 這類事實），review 內容本身連同其中可能夾帶的注入文字，從頭到尾不會進入 main agent 的 context——委派 `github-manager` 張貼時交出去的是內容檔的絕對路徑，並要求以檔案張貼、不讀進來重打。這項要求降低了、但沒有消滅注入面：`github-manager` 本身具備 Read 工具，沒有任何權限機制阻止它把這個檔案讀進自己的 context，這道防線目前只靠委派時的這句自然語言指示撐著。
 
-實際工作大半在 `scripts/run.sh` 裡：材料抓取、worktree 建立、prompt 組裝、CLI 行程啟動、監督與收尾清理都由它負責。張貼與進度回報則是 main agent 自己的工作——呼叫腳本、輪詢摘要檔、逐則委派張貼、判斷收尾條件。不另行以 subagent 或自己組 prompt 的方式重做審查本身：審查契約全文由腳本原文嵌入每個 reviewer 的 prompt，改成由模型轉述後，四個嚴重度等級的界線會在轉述中糊掉，數份 review 也就失去可比性。
+實際工作大半在 `scripts/run-review.sh` 裡：材料抓取、worktree 建立、prompt 組裝、CLI 行程啟動、監督與收尾清理都由它負責。張貼與進度回報則是 main agent 自己的工作——呼叫腳本、輪詢摘要檔、逐則委派張貼、判斷收尾條件。不另行以 subagent 或自己組 prompt 的方式重做審查本身：審查契約全文由腳本原文嵌入每個 reviewer 的 prompt，改成由模型轉述後，四個嚴重度等級的界線會在轉述中糊掉，數份 review 也就失去可比性。
 
 ## Reference 載入時機
 
 | Reference | 載入時機 |
 | --- | --- |
-| `references/reviewer-contract.md` | 本 skill 自己不載入。它是各 reviewer CLI 共吃的審查契約全文，由 `scripts/run.sh` 依自身路徑定位後原文嵌入每個 reviewer 的 prompt；只有要修改審查標準本身時才需要打開它 |
+| `references/reviewer-contract.md` | 本 skill 自己不載入。它是各 reviewer CLI 共吃的審查契約全文，由 `scripts/run-review.sh` 依自身路徑定位後原文嵌入每個 reviewer 的 prompt；只有要修改審查標準本身時才需要打開它 |
 
 ## 蒐集三項輸入
 
@@ -41,17 +41,17 @@ design document 傳絕對路徑不是風格偏好：這個路徑只在 `main()` 
 
 ## 呼叫腳本
 
-腳本是本 skill 目錄下的 `scripts/run.sh`。執行環境有告知本 skill 的 base directory 時直接據此組出路徑；取不到時依序測試下列兩條安裝路徑，取第一個存在的：
+腳本是本 skill 目錄下的 `scripts/run-review.sh`。執行環境有告知本 skill 的 base directory 時直接據此組出路徑；取不到時依序測試下列兩條安裝路徑，取第一個存在的：
 
-1. Claude Code：`$CLAUDE_CONFIG_DIR/skills/pr-review-by-multi-agents/scripts/run.sh`，該環境變數未設時以 `~/.claude` 代入。倉庫的安裝腳本用同一個變數決定部署根目錄，personal 訂閱那套部署會把它指向另一個設定目錄，路徑寫死成 `~/.claude` 會在那套部署下找不到檔案。
-1. codex 與 opencode：`$AGENTS_HOME/skills/pr-review-by-multi-agents/scripts/run.sh`，該環境變數未設時以 `~/.agents` 代入。兩者共用這一條，而安裝腳本同樣允許以這個變數覆寫該目錄。
+1. Claude Code：`$CLAUDE_CONFIG_DIR/skills/pr-review-by-multi-agents/scripts/run-review.sh`，該環境變數未設時以 `~/.claude` 代入。倉庫的安裝腳本用同一個變數決定部署根目錄，personal 訂閱那套部署會把它指向另一個設定目錄，路徑寫死成 `~/.claude` 會在那套部署下找不到檔案。
+1. codex 與 opencode：`$AGENTS_HOME/skills/pr-review-by-multi-agents/scripts/run-review.sh`，該環境變數未設時以 `~/.agents` 代入。兩者共用這一條，而安裝腳本同樣允許以這個變數覆寫該目錄。
 
 兩條都不存在時停下回報，不自行改用其他途徑——不改跑倉庫工作副本裡的那一份，也不改以 subagent 重做審查。找不到腳本代表本 skill 沒有被正確安裝，繞道會讓這件事被一次看似成功的執行蓋過去。
 
 呼叫形式是三個位置參數，順序固定不可調換，三者皆可為空字串——腳本只認位置不認名稱，順序錯了會把 issue 連結當成 PR 連結，而多數情況下這只會表現為一次難以追查的解析失敗：
 
 ```bash
-<run.sh 路徑> "<PR 連結>" "<issue 連結>" "<design document 路徑>"
+<run-review.sh 路徑> "<PR 連結>" "<issue 連結>" "<design document 路徑>"
 ```
 
 執行時的工作目錄要落在目標 PR 所屬 repo 的工作副本內：腳本以當前工作目錄的 `origin` remote 驗證是否為同一個 repo，不符即拒絕執行。

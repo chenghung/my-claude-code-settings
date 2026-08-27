@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Orchestrates parallel PR code review by claude, codex, and opencode CLIs.
 #
-# Command line: run.sh <pr-link> <issue-link> <design-doc-path>. All three
+# Command line: run-review.sh <pr-link> <issue-link> <design-doc-path>. All three
 # positional arguments may be the empty string -- an empty PR link derives
 # the PR from the current branch (see parse_pr_url); an empty issue link
 # makes fetch_review_materials derive the issue number itself from the
@@ -338,12 +338,12 @@ parse_pr_url() {
 # environment one.
 _check_gh_available() {
   if ! command -v gh >/dev/null 2>&1; then
-    printf 'run.sh: gh CLI not found in PATH\n' >&2
+    printf 'run-review.sh: gh CLI not found in PATH\n' >&2
     return 1
   fi
 
   if ! gh auth status >/dev/null 2>&1; then
-    printf 'run.sh: gh is not authenticated (run: gh auth login)\n' >&2
+    printf 'run-review.sh: gh is not authenticated (run: gh auth login)\n' >&2
     return 1
   fi
 
@@ -1491,7 +1491,7 @@ _record_reviewer_result() {
 # stops *this shell* from sending SIGHUP to the job when the shell itself
 # exits; it does nothing about the kernel sending SIGHUP to the whole
 # foreground process group when the controlling terminal goes away (e.g.
-# the terminal this whole run.sh invocation was started from gets closed).
+# the terminal this whole run-review.sh invocation was started from gets closed).
 # Without also ignoring that signal, this subshell dying is not a minor
 # inconvenience: it is the only thing that ever removes the worktree or
 # completes the summary file, so its death leaves the worktree (still
@@ -1701,9 +1701,9 @@ _dispatch_failed_cleanup() {
   shift
 
   if [ "$#" -gt 0 ]; then
-    printf 'run.sh: reviewer dispatch failed partway through; PID(s) already launched and now unsupervised: %s\n' "$*" >&2
+    printf 'run-review.sh: reviewer dispatch failed partway through; PID(s) already launched and now unsupervised: %s\n' "$*" >&2
   else
-    printf 'run.sh: reviewer dispatch failed before any reviewer was launched\n' >&2
+    printf 'run-review.sh: reviewer dispatch failed before any reviewer was launched\n' >&2
   fi
 
   # Undo main()'s `chmod -R a-w` before removing -- see spawn_supervisor's
@@ -1737,7 +1737,7 @@ main() {
   _check_gh_available || exit 1
 
   if ! pr_info="$(parse_pr_url "$pr_arg")"; then
-    printf 'run.sh: unable to resolve the PR from %s\n' \
+    printf 'run-review.sh: unable to resolve the PR from %s\n' \
       "${pr_arg:-the current branch (no PR link given, and no PR is associated with it)}" >&2
     exit 1
   fi
@@ -1747,7 +1747,7 @@ main() {
 
   mapfile -t all_reviewers < <(detect_reviewers)
   if [ "${#all_reviewers[@]}" -eq 0 ]; then
-    printf 'run.sh: none of claude, codex, opencode are installed\n' >&2
+    printf 'run-review.sh: none of claude, codex, opencode are installed\n' >&2
     exit 1
   fi
 
@@ -1768,12 +1768,12 @@ main() {
   _check_origin_matches "$owner" "$repo" || exit 1
 
   base_ref="$(resolve_base_ref "$owner" "$repo" "$number")" || {
-    printf 'run.sh: unable to resolve the PR base ref\n' >&2
+    printf 'run-review.sh: unable to resolve the PR base ref\n' >&2
     exit 1
   }
 
   project_root="$(git rev-parse --show-toplevel)" || {
-    printf 'run.sh: not inside a git repository\n' >&2
+    printf 'run-review.sh: not inside a git repository\n' >&2
     exit 1
   }
   project_hash="$(printf '%s' "$project_root" | sha256sum | cut -c1-8)"
@@ -1788,7 +1788,7 @@ main() {
   mkdir -p "$logs_dir"
 
   worktree_dir="$(setup_worktree "$owner" "$repo" "$number" "$base_dir")" || {
-    printf 'run.sh: failed to set up the review worktree\n' >&2
+    printf 'run-review.sh: failed to set up the review worktree\n' >&2
     exit 1
   }
 
@@ -1800,7 +1800,7 @@ main() {
   # before any reviewer is launched; spawn_supervisor and
   # _dispatch_failed_cleanup both restore write access before removing it.
   if ! chmod -R a-w "$worktree_dir"; then
-    printf 'run.sh: failed to make the review worktree read-only\n' >&2
+    printf 'run-review.sh: failed to make the review worktree read-only\n' >&2
     # chmod -R can fail partway through a tree (e.g. one entry hits a
     # permission error) and still have already flipped some entries to
     # read-only before that -- restore write access the same way the
@@ -1813,7 +1813,7 @@ main() {
 
   materials_dir="$(fetch_review_materials "$owner" "$repo" "$number" \
     "$issue_arg" "$design_doc_path" "$base_dir")" || {
-    printf 'run.sh: failed to collect the review materials\n' >&2
+    printf 'run-review.sh: failed to collect the review materials\n' >&2
     _dispatch_failed_cleanup "$worktree_dir"
     exit 1
   }
@@ -1867,7 +1867,7 @@ main() {
   # not actually making the exposure this closes any worse than it
   # already was before this line ever ran. Best-effort, logged loudly.
   if ! chmod -R a-w "$logs_dir" 2>/dev/null; then
-    printf 'run.sh: WARNING: failed to make the logs directory read-only; logs remain writable for the duration of this run\n' >&2
+    printf 'run-review.sh: WARNING: failed to make the logs directory read-only; logs remain writable for the duration of this run\n' >&2
   fi
 
   spawn_supervisor "$worktree_dir" "$summary_file" "${pids[@]}"
