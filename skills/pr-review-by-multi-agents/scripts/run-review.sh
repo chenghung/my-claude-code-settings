@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # Orchestrates parallel PR code review by claude, codex, and opencode CLIs.
 #
-# Command line: run-review.sh <pr-link> <issue-link> <design-doc-path>. All three
-# positional arguments may be the empty string -- an empty PR link derives
-# the PR from the current branch (see parse_pr_url); an empty issue link
-# makes fetch_review_materials derive the issue number itself from the
-# PR's own body instead (see _derive_issue_number); an empty, or
-# unreadable, design doc path simply never gets written into materials_dir.
-# build_prompt never sees these raw arguments at all -- it only sees
-# materials_dir, and a material that fetch_review_materials never wrote
-# there renders as an explicit "not provided" statement for the reviewer
-# contract (see _emit_material_section).
+# Command line: run-review.sh --pr <link> [--issue <ref>] [--design <path>]
+# --claude|--codex|--opencode|--agy (one or more; see parse_args). --pr,
+# --issue and --design may be omitted or empty -- an empty/omitted PR link
+# derives the PR from the current branch (see parse_pr_url); an empty issue
+# link makes fetch_review_materials derive the issue number itself from the
+# PR's own body instead (see _derive_issue_number); an empty, or unreadable,
+# design doc path simply never gets written into materials_dir. build_prompt
+# never sees these raw values at all -- it only sees materials_dir, and a
+# material fetch_review_materials never wrote there renders as an explicit
+# "not provided" statement for the reviewer contract (see
+# _emit_material_section). A `--check-clis` mode reports which of the four
+# platform CLIs are on PATH and exits before any other check runs (see
+# check_clis); agy is recognized there and as a platform flag today, but
+# launch_reviewer has no dispatch case for it yet -- that lands later.
 #
 # This file defines, in order: whether to run at all and how many reviewer
 # CLIs are available (input parsing and preflight checks); the code
@@ -374,32 +378,14 @@ check_prerequisites() {
   return 0
 }
 
-# detect_reviewers
-#
-# Prints the installed reviewer CLI names to stdout, one per line, in the
-# fixed order claude, codex, opencode. A CLI that is not on PATH is silently
-# skipped (graceful degradation) rather than treated as an error. Returns
-# non-zero only when none of the three are installed.
-detect_reviewers() {
-  local cli found=0
-
-  for cli in claude codex opencode; do
-    if command -v "$cli" >/dev/null 2>&1; then
-      printf '%s\n' "$cli"
-      found=1
-    fi
-  done
-
-  [ "$found" -eq 1 ] || return 1
-}
-
 # check_clis
 #
 # Prints one line per supported reviewer CLI -- `<cli> available` or
 # `<cli> missing` -- and always returns 0. This is the preflight the skill
 # calls before showing its combination menu, so it must report on every
-# CLI including the absent ones; detect_reviewers deliberately prints only
-# the present ones and cannot serve this purpose.
+# CLI including the absent ones -- reporting only the present ones, which
+# is all the flag-driven dispatch loop below ever needs, cannot serve this
+# purpose.
 check_clis() {
   local cli
   for cli in claude codex opencode agy; do
@@ -437,6 +423,18 @@ parse_args() {
           printf 'run-review.sh: %s requires a value\n' "$1" >&2
           return 2
         fi
+        # This function hands its result to the caller as four printf'd
+        # lines (pr=/issue=/design=/clis=), which main() re-parses line by
+        # line. A newline embedded in a value would let it forge one of
+        # those lines -- e.g. a --design value crafted to inject its own
+        # "clis=" line and silently swap which platforms main() dispatches
+        # -- so it is rejected here, before it ever reaches that output.
+        case "$2" in
+          *$'\n'*)
+            printf 'run-review.sh: %s value must not contain a newline\n' "$1" >&2
+            return 2
+            ;;
+        esac
         case "$1" in
           --pr) pr="$2" ;;
           --issue) issue="$2" ;;
@@ -1855,6 +1853,13 @@ main() {
   done <<< "$parsed"
   read -r -a all_reviewers <<< "$clis_line"
 
+  # Must run before _check_gh_available and everything after it: choosing a
+  # platform that isn't installed is a caller mistake detectable with zero
+  # network calls and zero side effects on the user's repo, so it should be
+  # rejected before this script spends a single gh round-trip or touches
+  # anything else on a run that's about to be rejected anyway.
+  verify_selection "${all_reviewers[@]}" || exit 3
+
   # Before parse_pr_url: an empty pr_arg makes that function call gh
   # itself to derive the PR from the current branch (see its own
   # docstring), so gh's own availability/auth must already be confirmed
@@ -1869,8 +1874,6 @@ main() {
   read -r owner repo number <<< "$pr_info"
 
   check_prerequisites "$owner" "$repo" "$number" || exit 1
-
-  verify_selection "${all_reviewers[@]}" || exit 3
 
   # skipped is now always empty: the selection is explicit and verified
   # above, so there is no such thing as a silently-degraded run any more.

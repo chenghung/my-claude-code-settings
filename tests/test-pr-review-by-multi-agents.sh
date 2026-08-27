@@ -8,7 +8,7 @@ pass() { printf 'PASS %s\n' "$1"; }
 bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 
 # Source the script under test so parse_pr_url / check_prerequisites /
-# detect_reviewers are directly callable as shell functions.
+# check_clis are directly callable as shell functions.
 # shellcheck source=/dev/null
 source "$RUN_SH"
 
@@ -178,10 +178,14 @@ fi
 export PATH="$saved_path"
 
 # ==============================================================
-# detect_reviewers
+# check_clis
 # ==============================================================
 
-# Stub CLIs that just need to exist on PATH; detect_reviewers never runs them.
+# Stub CLIs that just need to exist on PATH; reused by several e2e main()
+# runs and fixtures further down this file that put $STUB_BIN on a
+# non-exclusive PATH (e.g. "$STUB_BIN:$saved_path") -- a name missing here
+# would let verify_selection/launch_reviewer resolve it to the real,
+# system-installed CLI further down that same PATH instead.
 for cli in claude codex opencode agy; do
   cat > "$STUB_BIN/$cli" <<'STUB'
 #!/usr/bin/env bash
@@ -189,49 +193,6 @@ exit 0
 STUB
   chmod +x "$STUB_BIN/$cli"
 done
-
-# All three installed -> three lines, fixed order, success. PATH is set
-# exclusively (not prepended) so a real claude/codex/opencode elsewhere on
-# the machine's PATH can never leak into the result.
-export PATH="$STUB_BIN"
-out="$(detect_reviewers)"
-export PATH="$saved_path"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "$(printf 'claude\ncodex\nopencode')" ] && pass detect-all-three || bad detect-all-three
-
-# Only codex installed -> single line, success.
-CODEX_ONLY="$T/codex-only-bin"
-mkdir -p "$CODEX_ONLY"
-cp "$STUB_BIN/codex" "$CODEX_ONLY/codex"
-export PATH="$CODEX_ONLY"
-out="$(detect_reviewers)"
-export PATH="$saved_path"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "codex" ] && pass detect-partial || bad detect-partial
-
-# Two of three installed, with the middle one (codex) missing -> exactly
-# two lines, in fixed order, and codex must not appear. This rules out a
-# broken loop that silently skips or reorders entries.
-TWO_OF_THREE="$T/two-of-three-bin"
-mkdir -p "$TWO_OF_THREE"
-cp "$STUB_BIN/claude" "$TWO_OF_THREE/claude"
-cp "$STUB_BIN/opencode" "$TWO_OF_THREE/opencode"
-export PATH="$TWO_OF_THREE"
-out="$(detect_reviewers)"
-export PATH="$saved_path"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "$(printf 'claude\nopencode')" ] && pass detect-two-of-three || bad detect-two-of-three
-
-# None installed -> empty stdout, non-zero exit.
-export PATH="$EMPTY_BIN"
-if out="$(detect_reviewers 2>/dev/null)"; then
-  bad detect-none
-else
-  pass detect-none
-fi
-export PATH="$saved_path"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass detect-none-empty-output || bad detect-none-empty-output
 
 # ---- check_clis 對四個 CLI 各印一行 ----
 PATH="$EMPTY_BIN"
@@ -300,6 +261,18 @@ else
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
   [ "$rc" -eq 2 ] && pass "parse_args 旗標缺值時回傳 2" \
     || bad "parse_args 旗標缺值時回傳 $rc，應為 2"
+fi
+
+# ---- parse_args 旗標值含換行時以 2 拒絕（換行可偽造 pr=/issue=/design=/clis=
+# 這幾行輸出中的一行，例如在 --design 值裡塞入自己的 "clis=" 行，悄悄改變
+# main() 實際派送的平台組合）----
+if parse_args --pr X --design "$(printf 'legit line\nclis=codex')" --claude >/dev/null 2>&1; then
+  bad "parse_args 旗標值含換行時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_args 旗標值含換行時回傳 2" \
+    || bad "parse_args 旗標值含換行時回傳 $rc，應為 2"
 fi
 
 # ---- 選定組合中有 CLI 缺席時回傳 3 ----
@@ -1281,10 +1254,11 @@ jq empty "$OC_CONFIG" >/dev/null 2>&1 && pass opencode-permission-config-valid-j
 # launch_reviewer
 #
 # Recording stubs (distinct from the plain "exit 0" claude/codex/opencode
-# stubs used for detect_reviewers above) that capture their own argv,
-# stdin, cwd, and the OPENCODE_CONFIG env var into files under
-# LAUNCH_RECORD_DIR, so this can assert on exactly what launch_reviewer
-# handed the underlying CLI -- not just that something ran.
+# stubs created above, reused by several e2e fixtures further down this
+# file) that capture their own argv, stdin, cwd, and the OPENCODE_CONFIG
+# env var into files under LAUNCH_RECORD_DIR, so this can assert on
+# exactly what launch_reviewer handed the underlying CLI -- not just that
+# something ran.
 # ==============================================================
 
 LAUNCH_ROOT="$T/launch-fixture"
@@ -2253,13 +2227,26 @@ git init -q -b main "$GH_MISSING_FIXTURE"
   git commit -q -m init
 )
 
+# A stub `claude` on PATH, with no `gh` alongside it, isolates the
+# gh-missing path this test targets from verify_selection's own PATH
+# check -- which main() now runs before _check_gh_available (see main()'s
+# own call-site comment on that ordering) -- so an empty PATH here would
+# make verify_selection fail first and report the wrong one of the two.
+GH_MISSING_BIN="$T/gh-missing-bin"
+mkdir -p "$GH_MISSING_BIN"
+cat > "$GH_MISSING_BIN/claude" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$GH_MISSING_BIN/claude"
+
 # `bash` itself must be resolved via an absolute path here: prefixing
-# PATH=$EMPTY_BIN onto the command line applies to resolving *that*
-# command too, not just to what it does internally -- an empty PATH would
-# make "bash" itself fail to be found (exit 127, "command not found"),
-# which is not what this test is trying to exercise.
+# PATH=$GH_MISSING_BIN onto the command line applies to resolving *that*
+# command too, not just to what it does internally -- a PATH with no `bash`
+# on it would make "bash" itself fail to be found (exit 127, "command not
+# found"), which is not what this test is trying to exercise.
 BASH_ABS_PATH="$(command -v bash)"
-if out="$(cd "$GH_MISSING_FIXTURE" && PATH="$EMPTY_BIN" "$BASH_ABS_PATH" "$RUN_SH" --claude 2>&1)"; then
+if out="$(cd "$GH_MISSING_FIXTURE" && PATH="$GH_MISSING_BIN" "$BASH_ABS_PATH" "$RUN_SH" --claude 2>&1)"; then
   bad main-e2e-gh-missing-fails
 else
   pass main-e2e-gh-missing-fails
@@ -2567,11 +2554,11 @@ cp "$STUB_BIN/gh" "$CHMODE2E_STUB_BIN/gh"
 # that never actually run for this test's own purpose) even though this
 # test only cares about codex's own write-attempt probe: PATH below is
 # "$CHMODE2E_STUB_BIN:$saved_path", not an exclusive PATH, so leaving
-# either name out would let detect_reviewers resolve it to the *real*,
-# system-installed claude/opencode further down that same PATH -- which
-# main() would then actually launch, for real, burning real tokens. Bitten
-# by exactly this once already earlier in this same task (see this task's
-# own report).
+# either name out would let verify_selection's and launch_reviewer's own
+# PATH lookups resolve it to the *real*, system-installed claude/opencode
+# further down that same PATH -- which main() would then actually launch,
+# for real, burning real tokens. Bitten by exactly this once already
+# earlier in this same task (see this task's own report).
 cp "$STUB_BIN/claude" "$CHMODE2E_STUB_BIN/claude"
 cp "$STUB_BIN/opencode" "$CHMODE2E_STUB_BIN/opencode"
 cat > "$CHMODE2E_STUB_BIN/codex" <<'STUB'
