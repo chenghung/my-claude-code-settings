@@ -2770,4 +2770,28 @@ printf '%s' "$PS_OUT" | grep -qF "$PS_ROOT/summary.txt" && pass print-summary-sh
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 printf '%s' "$PS_OUT" | grep -qF "本次執行目錄：$PS_ROOT" && pass print-summary-shows-run-dir || bad print-summary-shows-run-dir
 
+# ==============================================================
+# 審查契約強化：失敗情境、高風險變更、信心等級、摺疊區
+# ==============================================================
+
+# ---- 契約含三項新規定 ----
+mkdir -p "$T/materials-empty" "$T/wt"
+contract="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
+for kw in "失敗情境" "高風險變更" "信心" "<details>"; do
+  if grep -q "$kw" "$contract"; then
+    pass "契約含關鍵段落: $kw"
+  else
+    bad "契約缺少關鍵段落: $kw"
+  fi
+done
+
+# ---- build_prompt 把契約原文嵌入 ----
+prompt_out="$(build_prompt "$contract" "https://github.com/a/b/pull/1" \
+  "$T/materials-empty" "claude" "opus-5" "$T/wt" "origin/main" 2>/dev/null)" || prompt_out=""
+if printf '%s' "$prompt_out" | grep -q "高風險變更"; then
+  pass "build_prompt 嵌入了高風險變更清單"
+else
+  bad "build_prompt 未嵌入契約新內容"
+fi
+
 exit $fail
