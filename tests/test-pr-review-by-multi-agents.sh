@@ -2815,4 +2815,31 @@ for kw in "矛盾" "platform/model" "重新計算" "摺疊區" "揭露"; do
   fi
 done
 
+# Symlink case: mirrors resolve_contract_path's symlink case above -- this
+# fixture symlinks only run-review.sh itself, not the whole skill directory
+# the way install.sh actually deploys it, but readlink resolves
+# BASH_SOURCE[0] the same way regardless of which level of the path is the
+# symlink, so this still exercises the exact resolution step
+# (readlink -f "${BASH_SOURCE[0]}") that install.sh's real deployment
+# depends on.
+SYNTHESIS_SYMLINKED_SKILL="$T/synthesis-symlinked-skill"
+mkdir -p "$SYNTHESIS_SYMLINKED_SKILL/scripts"
+ln -s "$RUN_SH" "$SYNTHESIS_SYMLINKED_SKILL/scripts/run-review.sh"
+out="$(bash -c "source '$SYNTHESIS_SYMLINKED_SKILL/scripts/run-review.sh'; resolve_synthesis_contract_path")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$out" = "$sc" ] && pass synthesis-contract-path-symlink || bad synthesis-contract-path-symlink
+
+# Missing case: a scripts/ directory with no sibling references/ at all ->
+# non-zero, no stdout. Must not be confused with the symlink case above.
+SYNTHESIS_NO_CONTRACT_SKILL="$T/synthesis-no-contract-skill"
+mkdir -p "$SYNTHESIS_NO_CONTRACT_SKILL/scripts"
+cp "$RUN_SH" "$SYNTHESIS_NO_CONTRACT_SKILL/scripts/run-review.sh"
+if out="$(bash -c "source '$SYNTHESIS_NO_CONTRACT_SKILL/scripts/run-review.sh'; resolve_synthesis_contract_path" 2>/dev/null)"; then
+  bad synthesis-contract-path-missing
+else
+  pass synthesis-contract-path-missing
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$out" ] && pass synthesis-contract-path-missing-no-output || bad synthesis-contract-path-missing-no-output
+
 exit $fail
