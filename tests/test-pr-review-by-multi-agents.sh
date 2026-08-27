@@ -233,6 +233,38 @@ export PATH="$saved_path"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -z "$out" ] && pass detect-none-empty-output || bad detect-none-empty-output
 
+# ---- detect_reviewers 認得 agy ----
+AGY_STUB_BIN="$T/agy-stub-bin"
+mkdir -p "$AGY_STUB_BIN"
+cat > "$AGY_STUB_BIN/agy" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$AGY_STUB_BIN/agy"
+PATH="$AGY_STUB_BIN:$saved_path"
+out="$(detect_reviewers)"
+PATH="$saved_path"
+if printf '%s\n' "$out" | grep -qx 'agy'; then
+  pass "detect_reviewers 列出 agy"
+else
+  bad "detect_reviewers 未列出 agy"
+fi
+
+# ---- check_clis 對四個 CLI 各印一行 ----
+PATH="$EMPTY_BIN"
+out="$(check_clis)"
+rc=$?
+PATH="$saved_path"
+if [ "$rc" -eq 0 ] \
+  && printf '%s\n' "$out" | grep -qx 'claude missing' \
+  && printf '%s\n' "$out" | grep -qx 'codex missing' \
+  && printf '%s\n' "$out" | grep -qx 'opencode missing' \
+  && printf '%s\n' "$out" | grep -qx 'agy missing'; then
+  pass "check_clis 四個 CLI 皆缺席時各印一行 missing 且回傳 0"
+else
+  bad "check_clis 缺席輸出不正確: $out (rc=$rc)"
+fi
+
 # ==============================================================
 # resolve_contract_path
 #

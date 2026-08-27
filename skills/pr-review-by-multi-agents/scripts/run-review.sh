@@ -377,13 +377,13 @@ check_prerequisites() {
 # detect_reviewers
 #
 # Prints the installed reviewer CLI names to stdout, one per line, in the
-# fixed order claude, codex, opencode. A CLI that is not on PATH is silently
-# skipped (graceful degradation) rather than treated as an error. Returns
-# non-zero only when none of the three are installed.
+# fixed order claude, codex, opencode, agy. A CLI that is not on PATH is
+# silently skipped (graceful degradation) rather than treated as an error.
+# Returns non-zero only when none of the four are installed.
 detect_reviewers() {
   local cli found=0
 
-  for cli in claude codex opencode; do
+  for cli in claude codex opencode agy; do
     if command -v "$cli" >/dev/null 2>&1; then
       printf '%s\n' "$cli"
       found=1
@@ -391,6 +391,24 @@ detect_reviewers() {
   done
 
   [ "$found" -eq 1 ] || return 1
+}
+
+# check_clis
+#
+# Prints one line per supported reviewer CLI -- `<cli> available` or
+# `<cli> missing` -- and always returns 0. This is the preflight the skill
+# calls before showing its combination menu, so it must report on every
+# CLI including the absent ones; detect_reviewers deliberately prints only
+# the present ones and cannot serve this purpose.
+check_clis() {
+  local cli
+  for cli in claude codex opencode agy; do
+    if command -v "$cli" >/dev/null 2>&1; then
+      printf '%s available\n' "$cli"
+    else
+      printf '%s missing\n' "$cli"
+    fi
+  done
 }
 
 # resolve_contract_path
@@ -1251,6 +1269,9 @@ launch_reviewer() {
       _write_opencode_permission_config "$config_file"
       cmd=(opencode run --auto --dir "$worktree_dir")
       ;;
+    agy)
+      cmd=(agy -p)
+      ;;
     *)
       printf 'launch_reviewer: unknown reviewer CLI: %s\n' "$cli_name" >&2
       return 1
@@ -1747,11 +1768,11 @@ main() {
 
   mapfile -t all_reviewers < <(detect_reviewers)
   if [ "${#all_reviewers[@]}" -eq 0 ]; then
-    printf 'run-review.sh: none of claude, codex, opencode are installed\n' >&2
+    printf 'run-review.sh: none of claude, codex, opencode, agy are installed\n' >&2
     exit 1
   fi
 
-  for cli in claude codex opencode; do
+  for cli in claude codex opencode agy; do
     found=0
     for d in "${all_reviewers[@]}"; do
       [ "$d" = "$cli" ] && { found=1; break; }
