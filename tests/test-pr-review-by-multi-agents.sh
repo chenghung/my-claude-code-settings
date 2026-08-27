@@ -182,7 +182,7 @@ export PATH="$saved_path"
 # ==============================================================
 
 # Stub CLIs that just need to exist on PATH; detect_reviewers never runs them.
-for cli in claude codex opencode; do
+for cli in claude codex opencode agy; do
   cat > "$STUB_BIN/$cli" <<'STUB'
 #!/usr/bin/env bash
 exit 0
@@ -190,14 +190,14 @@ STUB
   chmod +x "$STUB_BIN/$cli"
 done
 
-# All three installed -> three lines, fixed order, success. PATH is set
-# exclusively (not prepended) so a real claude/codex/opencode elsewhere on
+# All four installed -> four lines, fixed order, success. PATH is set
+# exclusively (not prepended) so a real claude/codex/opencode/agy elsewhere on
 # the machine's PATH can never leak into the result.
 export PATH="$STUB_BIN"
 out="$(detect_reviewers)"
 export PATH="$saved_path"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "$(printf 'claude\ncodex\nopencode')" ] && pass detect-all-three || bad detect-all-three
+[ "$out" = "$(printf 'claude\ncodex\nopencode\nagy')" ] && pass detect-all-three || bad detect-all-three
 
 # Only codex installed -> single line, success.
 CODEX_ONLY="$T/codex-only-bin"
@@ -2433,9 +2433,9 @@ esac
 
 E2E_SUMMARY_FILE="$E2E_BASE_DIR/summary.txt"
 i=0
-until { [ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 3 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+until { [ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 4 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 3 ] && pass main-e2e-summary-file-converges || bad main-e2e-summary-file-converges
+[ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 4 ] && pass main-e2e-summary-file-converges || bad main-e2e-summary-file-converges
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -q 'worktree_status=ok' "$E2E_SUMMARY_FILE" 2>/dev/null && pass main-e2e-summary-file-worktree-status-ok || bad main-e2e-summary-file-worktree-status-ok
 
