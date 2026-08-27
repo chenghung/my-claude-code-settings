@@ -1433,9 +1433,10 @@ case "$(cat "$oc_env_config_path" 2>/dev/null)" in
 esac
 
 # --- agy: --add-dir flag, --print-timeout, hardcoded model, isolated HOME,
-# and (per the empirically-confirmed fallback -- a bare `-p` errors
-# "flag needs an argument: -p" on a real agy binary) the prompt handed as
-# an equals-attached `-p=<prompt>` argument rather than over stdin ---
+# and (per the empirically-confirmed finding that omitting any -p/--print
+# flag entirely makes a real agy binary read its prompt from stdin and run
+# non-interactively) the prompt reaching the process over stdin, exactly
+# like claude/codex/opencode ---
 
 printf 'agy-prompt-content' > "$LAUNCH_LOGS/agy.prompt"
 pid_agy="$(launch_reviewer agy "$LAUNCH_WT" "$LAUNCH_LOGS/agy.log" < "$LAUNCH_LOGS/agy.prompt")"
@@ -1472,13 +1473,31 @@ case "$(cat "$LAUNCH_RECORD_DIR/agy.argv")" in
   *) pass launch-reviewer-agy-no-effort-flag ;;
 esac
 
-# The prompt (this function's own stdin, `cat`-read inside the agy branch)
-# must reach the process as an equals-attached -p= argument, not left on
-# stdin -- a bare, unattached `-p` is what a real agy binary rejects.
-case "$(cat "$LAUNCH_RECORD_DIR/agy.argv")" in
-  *'-p=agy-prompt-content'*) pass launch-reviewer-agy-prompt-via-p-equals ;;
-  *) bad launch-reviewer-agy-prompt-via-p-equals ;;
-esac
+# No -p/--print/--prompt flag at all: a real agy binary errors outright
+# on a bare, unattached `-p` ("flag needs an argument: -p", exit 2), and
+# omitting the flag entirely -- rather than supplying it some other way
+# -- is what makes agy read its prompt from stdin instead (see
+# launch_reviewer's agy branch docstring for the confirming probe).
+# Checked against each argv entry exactly (reusing the array already read
+# above for the --add-dir check), not by substring match against the
+# whole line: `--print-timeout` itself contains the substring `-p` and
+# would otherwise false-positive this check.
+agy_print_flag_found=0
+for a in "${agy_argv[@]}"; do
+  case "$a" in
+    -p|--print|--prompt) agy_print_flag_found=1 ;;
+  esac
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$agy_print_flag_found" -eq 0 ] && pass launch-reviewer-agy-no-print-flag || bad launch-reviewer-agy-no-print-flag
+
+# The prompt must reach the process over stdin, the same mechanism
+# claude/codex/opencode use -- not as any argv entry, which would put the
+# full PR/issue/design text (this reviewer's whole prompt) in a process
+# table readable by other accounts on the same machine, and would be
+# bounded by the kernel's single-argument length limit besides.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$LAUNCH_RECORD_DIR/agy.stdin")" = "agy-prompt-content" ] && pass launch-reviewer-agy-stdin-matches-prompt || bad launch-reviewer-agy-stdin-matches-prompt
 
 # HOME must be the isolated per-run directory _write_agy_home built, not
 # the real user's own $HOME -- this is the whole point of Task 4's

@@ -1113,12 +1113,18 @@ _write_agy_home() {
 # Starts one reviewer CLI as a detached, nohup'd background process whose
 # working directory is <worktree_dir> and whose prompt is this function's
 # own stdin (the caller redirects it in, e.g. `launch_reviewer ... <
-# prompt_file`). All three reviewer CLIs were confirmed during preflight
-# probing to read their prompt from stdin when no positional prompt
-# argument is given: `claude -p`, `codex exec`, and `opencode run` (without
-# a `message` argument) all do this -- that probe result is recorded here
+# prompt_file`). All four reviewer CLIs were confirmed during preflight
+# probing to read their prompt from stdin when given no positional prompt
+# argument: `claude -p`, `codex exec`, and `opencode run` (without a
+# `message` argument) all do this -- that probe result is recorded here
 # rather than only in .tmp/probe-results.md, since that file is gitignored
-# and won't exist for anyone who didn't run the probe themselves. Stdout
+# and won't exist for anyone who didn't run the probe themselves. agy
+# reaches the same place by a differently-shaped route: it has no
+# positional prompt argument at all, only a `-p`/`--print` flag, and a
+# bare unattached `-p` errors outright rather than falling through to
+# stdin -- so its own branch below simply never passes that flag, which
+# is what makes it read from stdin here (see that branch's own comment
+# for the confirming probe). Stdout
 # goes to <log_file> (the reviewer's full review text, wrapped in the
 # contract's own BEGIN/END markers -- spawn_supervisor's own extract-and-
 # post step, not any AI-driven layer, parses this file by those markers);
@@ -1425,24 +1431,24 @@ launch_reviewer() {
       # No --effort: reasoning effort is already encoded in the model id's
       # -high suffix (see resolve_model's agy branch).
       #
-      # The prompt is read from this function's own stdin here, rather
-      # than left for the shared nohup line below to hand to the process
-      # over its stdin the way claude/codex/opencode get it: a real agy
-      # binary was probed with a bare, unattached `-p` (the same shape
-      # that works for the other three CLIs) and rejected it outright --
-      # "flag needs an argument: -p", exit 2 -- so it never even reached
-      # the point of reading stdin. The documented fallback is an
-      # equals-attached `-p=<prompt>` argument instead, confirmed
-      # separately to work against the real binary. This does mean the
-      # whole prompt has to fit in one argv entry: main() writes it to
-      # <logs_dir>/agy.prompt first, and a representative prompt built
-      # from the real reviewer contract plus a comment-heavy synthetic PR
-      # (66KB of PR/issue material) measured ~113KB total, well under the
-      # ~2MB `getconf ARG_MAX` on this machine -- verified, not assumed.
-      local agy_prompt
-      agy_prompt="$(cat)" || return 1
+      # No -p/--print flag at all, on purpose: a bare, unattached `-p`
+      # errors outright on a real agy binary ("flag needs an argument:
+      # -p", exit 2) -- but omitting the print flag entirely, rather than
+      # supplying it with no value, makes agy read its prompt from stdin
+      # and run non-interactively, exactly like claude/codex/opencode do
+      # via the shared nohup line's stdin redirect below. Confirmed
+      # against the real binary with this exact flag combination
+      # (--add-dir, --print-timeout, --model, prompt fed from a real file
+      # redirect rather than a pipe, matching how this script actually
+      # invokes it): exit 0, correct response. Delivering the prompt this
+      # way, rather than as a single argv entry (an earlier version of
+      # this branch did that, via an equals-attached `-p=<prompt>`),
+      # avoids two problems that shape has no bound on: a long PR thread
+      # can grow past the kernel's per-argument length limit, and argv is
+      # readable by other accounts on the same machine via the process
+      # table, which stdin is not.
       cmd=(agy --add-dir "$worktree_dir" --print-timeout 120m \
-        --model gemini-3.7-flash-high "-p=$agy_prompt")
+        --model gemini-3.7-flash-high)
       ;;
     *)
       printf 'launch_reviewer: unknown reviewer CLI: %s\n' "$cli_name" >&2
