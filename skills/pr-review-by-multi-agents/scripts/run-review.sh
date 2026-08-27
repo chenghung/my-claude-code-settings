@@ -1687,11 +1687,58 @@ _count_ready() {
 
 # _first_ready_cli <summary_file>
 #
-# Prints the cli name of the first ready line. That CLI is used to run the
-# synthesis: it has already proven it can start and finish on this machine
-# this run, so it is the lowest-risk choice available.
+# Prints the cli name of the first ready line: whichever ready review
+# happens to come first in dispatch order. _select_synthesis_cli is the
+# only caller now, and only as its fallback -- once no ready review came
+# from a CLI that launch_synthesis can lock down to zero tools (see
+# _select_synthesis_cli's own docstring), this is what decides among
+# whatever is left.
 _first_ready_cli() {
   sed -n 's/^cli=\([^ ]*\) .* content_status=ready .*$/\1/p' "$1" 2>/dev/null | head -n 1
+}
+
+# _select_synthesis_cli <summary_file>
+#
+# Picks which CLI runs the synthesis pass. Prefers the first ready review
+# that came from claude or agy -- the two launch_synthesis branches that
+# actually reach zero tools (claude: Bash disallowed outright, empty allow
+# list; agy: permission allow list written empty) -- falling back to
+# _first_ready_cli's plain dispatch-order pick only when neither of those
+# two produced a ready review this run.
+#
+# This exists because dispatch order alone is not a safe tiebreaker here.
+# The synthesis is the one step in this whole pipeline that reads the full
+# text of every trustworthy review end to end, and that text is derived
+# from the PR diff and its comment threads -- content any GitHub user can
+# write (see build_synthesis_prompt) -- making it the highest-value
+# prompt-injection target in the pipeline. codex's branch still runs under
+# `-s read-only`, and this file's own launch_reviewer docstring already
+# recorded, from real testing, that this sandbox mode restricts local
+# filesystem writes only: outbound network still reaches, codex exec's
+# shell tool is still usable underneath it, and there is no further codex
+# flag available to close that. opencode's branch denies the `edit` and
+# `bash` tools outright, which is real progress over the per-pattern
+# blacklist launch_reviewer's own opencode config needs, but it is a deny
+# list naming two specific tools, not the empty allow list claude and agy
+# get -- whatever else opencode's tool surface offers beyond those two
+# stays reachable. So on a combination that happens to contain codex or
+# opencode, taking whichever ready review simply printed first could hand
+# the synthesis to the one CLI still holding a shell and a network path,
+# even when a CLI sitting in the very same run could have been locked to
+# nothing at all. This function is what makes that not happen.
+_select_synthesis_cli() {
+  local summary_file="$1" cli
+
+  while read -r cli; do
+    case "$cli" in
+      claude | agy)
+        printf '%s\n' "$cli"
+        return 0
+        ;;
+    esac
+  done < <(sed -n 's/^cli=\([^ ]*\) .* content_status=ready .*$/\1/p' "$summary_file" 2>/dev/null)
+
+  _first_ready_cli "$summary_file"
 }
 
 # _ready_content_files <summary_file>
@@ -2086,7 +2133,7 @@ spawn_supervisor() {
     local ready_count synth_cli synth_model synth_log synth_pid synth_contract
     ready_count="$(_count_ready "$summary_file")"
     if [ "$ready_count" -ge 2 ]; then
-      synth_cli="$(_first_ready_cli "$summary_file")"
+      synth_cli="$(_select_synthesis_cli "$summary_file")"
       synth_model="$(resolve_model "$synth_cli")"
       synth_log="$(_synthesis_log_path "$base_dir")"
       if synth_contract="$(resolve_synthesis_contract_path)"; then

@@ -2927,6 +2927,35 @@ c="$(_first_ready_cli "$T/synth/summary.txt")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$c" = "claude" ] && pass "_first_ready_cli 回傳 claude" || bad "_first_ready_cli 回傳 $c"
 
+# ---- _select_synthesis_cli 偏好可被鎖到零工具的 CLI，即使它不是第一個
+# ready -- codex 的 read-only sandbox 只擋本地檔案寫入，shell 與網路仍
+# 可用；claude 的允許清單為空、shell 工具整個被禁用，屬於能被鎖到底的
+# 那一種。故意讓 codex 先於 claude 完成，驗證挑選依據不是單純的
+# dispatch 順序 ----
+mkdir -p "$T/synth-lockable"
+cat > "$T/synth-lockable/summary.txt" <<'SUM'
+cli=codex pid=555 exit=0 ended_at=2026-08-27T00:00:00Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-lockable/.comment-body-555.md
+cli=claude pid=666 exit=0 ended_at=2026-08-27T00:00:01Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-lockable/.comment-body-666.md
+SUM
+sed -i "s#T_PLACEHOLDER#$T#g" "$T/synth-lockable/summary.txt"
+lc="$(_select_synthesis_cli "$T/synth-lockable/summary.txt")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lc" = "claude" ] && pass "_select_synthesis_cli 偏好可鎖定的 claude 而非先完成的 codex" || bad "_select_synthesis_cli 回傳 $lc"
+
+# ---- _select_synthesis_cli 當 ready 的都是不可被鎖到零工具的 CLI 時，
+# 仍要退回選出一個，不能因為找不到可鎖定的選項就選不出任何 CLI ----
+mkdir -p "$T/synth-no-lockable"
+cat > "$T/synth-no-lockable/summary.txt" <<'SUM'
+cli=opencode pid=777 exit=0 ended_at=2026-08-27T00:00:00Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-no-lockable/.comment-body-777.md
+cli=codex pid=888 exit=0 ended_at=2026-08-27T00:00:01Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-no-lockable/.comment-body-888.md
+SUM
+sed -i "s#T_PLACEHOLDER#$T#g" "$T/synth-no-lockable/summary.txt"
+nlc="$(_select_synthesis_cli "$T/synth-no-lockable/summary.txt")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$nlc" ] && pass "_select_synthesis_cli 沒有可鎖定選項時仍選出一個 CLI" || bad "_select_synthesis_cli 沒有可鎖定選項時選不出任何 CLI"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$nlc" = "opencode" ] && pass "_select_synthesis_cli 沒有可鎖定選項時退回第一個完成者" || bad "_select_synthesis_cli 回傳 $nlc"
+
 # ---- _ready_content_files 只列出 ready 的兩行，且對應內容檔路徑正確 ----
 rcf_out="$(_ready_content_files "$T/synth/summary.txt")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
