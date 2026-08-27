@@ -28,6 +28,40 @@ mkdir -p "$STUB_BIN" "$EMPTY_BIN"
 saved_path="$PATH"
 
 # ------------------------------------------------------------
+# assert_cli_stub_only: PATH-leak guard.
+#
+# Every end-to-end section below builds PATH by prepending a stub directory
+# onto the real system PATH (not replacing it), so gh and this test's own
+# stubs keep resolving. That means a stub this test forgot to create -- or
+# that a later edit accidentally deletes -- does not fail loudly: the name
+# resolves onward to whatever real, system-installed claude/codex/opencode/
+# agy sits further down that same PATH, and the test then launches a real
+# AI CLI for real, burning real tokens and reaching the network. This has
+# already happened twice while developing this suite.
+#
+# Call this once, right after establishing a stub-prefixed PATH and before
+# the first launch_reviewer / launch_synthesis / `bash "$RUN_SH"` call that
+# runs under it -- passing the exact PATH value that call will see, the
+# stub directory supposed to win the lookup, and the CLI names that
+# directory actually provides. A section that deliberately stubs only a
+# subset of the four names (because that section only ever invokes that
+# subset) must pass just that subset here: passing a name absent from that
+# section's own stub directory would fail the section for the very reason
+# this guard exists, over a name the section never actually invokes.
+# ------------------------------------------------------------
+assert_cli_stub_only() {
+  local check_path="$1" stub_dir="$2"
+  shift 2
+  local name resolved
+  for name in "$@"; do
+    resolved="$(PATH="$check_path" command -v "$name" 2>/dev/null)" || resolved=""
+    if [ -n "$resolved" ] && [ "$resolved" != "$stub_dir/$name" ]; then
+      bad "PATH guard: $name resolved to '$resolved' instead of the stub at '$stub_dir/$name' -- this run would have launched the real $name CLI"
+    fi
+  done
+}
+
+# ------------------------------------------------------------
 # Stub gh: a single stand-in covering every gh invocation this script makes
 # (derive-URL lookup, auth check, PR-existence check, PR/issue material
 # fetch), toggled entirely by env vars so each test case controls exactly
@@ -1342,6 +1376,7 @@ cp "$LAUNCH_STUB_BIN/claude" "$LAUNCH_STUB_BIN/agy"
 
 export PATH="$LAUNCH_STUB_BIN:$saved_path"
 export LAUNCH_RECORD_DIR
+assert_cli_stub_only "$PATH" "$LAUNCH_STUB_BIN" claude codex opencode agy
 
 printf 'codex-prompt-content' > "$LAUNCH_LOGS/codex.prompt"
 pid_codex="$(launch_reviewer codex "$LAUNCH_WT" "$LAUNCH_LOGS/codex.log" < "$LAUNCH_LOGS/codex.prompt")"
@@ -1624,6 +1659,9 @@ STUB
 chmod +x "$LOGSPLIT_STUB_BIN/codex"
 
 export PATH="$LOGSPLIT_STUB_BIN:$saved_path"
+# Only codex is stubbed here on purpose: this section exercises codex's own
+# stdout/stderr split exclusively, so only codex is checked.
+assert_cli_stub_only "$PATH" "$LOGSPLIT_STUB_BIN" codex
 printf 'p' > "$LOGSPLIT_LOGS/codex.prompt"
 logsplit_pid="$(launch_reviewer codex "$LOGSPLIT_WT" "$LOGSPLIT_LOGS/codex.log" < "$LOGSPLIT_LOGS/codex.prompt")"
 i=0
@@ -1862,6 +1900,9 @@ exit 0
 STUB
 chmod +x "$SV_STUB_BIN/opencode"
 export PATH="$SV_STUB_BIN:$saved_path"
+# Only opencode is stubbed here on purpose: none of this section's three
+# scenarios dispatch any other CLI, so only opencode is checked.
+assert_cli_stub_only "$PATH" "$SV_STUB_BIN" opencode
 
 # --- logs_dir survives spawn_supervisor removing its sibling worktree --
 # `git worktree remove --force` only ever touches the worktree path it is
@@ -2337,6 +2378,7 @@ git init -q -b main "$ORIGIN_ORDER_FIXTURE/work"
   git update-ref -d refs/remotes/origin/origin-order-base-branch
 )
 
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
 if out="$(cd "$ORIGIN_ORDER_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="origin-order-base-branch" \
   HOME="$T/origin-order-home" PATH="$STUB_BIN:$saved_path" \
   bash "$RUN_SH" --pr "https://github.com/wrong-owner/wrong-repo/pull/1" --claude 2>&1)"; then
@@ -2495,6 +2537,7 @@ printf 'model = "e2e-distinctive-model"\n' > "$E2E_HOME/.codex/config.toml"
 mkdir -p "$E2E_FIXTURE/work/docs"
 printf 'e2e-distinctive-design-doc-marker-content\n' > "$E2E_FIXTURE/work/docs/distinctive-design-doc-marker.md"
 
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
 if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" \
   bash "$RUN_SH" \
     --pr "https://github.com/acme9pr/widgets9pr/pull/321" \
@@ -2641,6 +2684,7 @@ until [ ! -e "$E2E_WORKTREE_DIR" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1
 # render as "not provided" rather than blocking the run ---
 
 E2E_HOME2="$T/main-e2e-home2"
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
 if out="$(cd "$E2E_FIXTURE/work" \
   && CLAUDE_CONFIG_DIR="" GH_STUB_DERIVE_OK=1 GH_STUB_DERIVED_URL="https://github.com/acme9pr/widgets9pr/pull/321" \
      GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME2" PATH="$STUB_BIN:$saved_path" \
@@ -2738,6 +2782,9 @@ STUB
 chmod +x "$CHMODE2E_STUB_BIN/codex"
 
 CHMODE2E_HOME="$T/chmod-e2e-home"
+# agy is deliberately absent from CHMODE2E_STUB_BIN (this run never passes
+# --agy), so only the three names it actually provides are checked.
+assert_cli_stub_only "$CHMODE2E_STUB_BIN:$saved_path" "$CHMODE2E_STUB_BIN" claude codex opencode
 if out="$(cd "$CHMODE2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME=main HOME="$CHMODE2E_HOME" PATH="$CHMODE2E_STUB_BIN:$saved_path" \
   bash "$RUN_SH" --pr "https://github.com/acme/widgets/pull/50" --claude --codex --opencode 2>&1)"; then
   pass main-e2e-chmod-run-succeeds
@@ -3145,6 +3192,7 @@ chmod +x "$SYNTH_LAUNCH_STUB_BIN/agy"
 
 export PATH="$SYNTH_LAUNCH_STUB_BIN:$saved_path"
 export SYNTH_LAUNCH_RECORD_DIR
+assert_cli_stub_only "$PATH" "$SYNTH_LAUNCH_STUB_BIN" claude codex opencode agy
 
 # ---- claude：--allowedTools 的值是空字串，--disallowedTools 涵蓋
 # Edit/Write/NotebookEdit，prompt 確實透過 stdin 完整送達 ----
@@ -3399,6 +3447,7 @@ STUB
 chmod +x "$SPWSYN_STUB_BIN/codex"
 
 export PATH="$SPWSYN_STUB_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$SPWSYN_STUB_BIN" claude codex opencode agy
 
 printf 'claude review body\n' > "$SPWSYN_ROOT/logs/claude.prompt"
 printf 'agy review body\n' > "$SPWSYN_ROOT/logs/agy.prompt"
