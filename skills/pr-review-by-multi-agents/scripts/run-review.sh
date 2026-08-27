@@ -13,8 +13,8 @@
 # "not provided" statement for the reviewer contract (see
 # _emit_material_section). A `--check-clis` mode reports which of the four
 # platform CLIs are on PATH and exits before any other check runs (see
-# check_clis); agy is recognized there and as a platform flag today, but
-# launch_reviewer has no dispatch case for it yet -- that lands later.
+# check_clis); agy is recognized there, as a platform flag, and by
+# launch_reviewer's own dispatch case, same as the other three.
 #
 # This file defines, in order: whether to run at all and how many reviewer
 # CLIs are available (input parsing and preflight checks); the code
@@ -760,6 +760,17 @@ resolve_model() {
         value="$(jq -r '.model // empty' "$config_file" 2>/dev/null)" || value=""
       fi
       ;;
+    agy)
+      # agy exposes no way to read back its own default model -- `agy
+      # models` lists what is available without marking a default, the
+      # json output carries no model field, and nothing is recorded in
+      # its state files (all verified). The comment table this skill now
+      # posts requires a real platform/model value per finding, so agy is
+      # the one deliberate exception to this script's "never hardcode a
+      # model" rule. The `-high` suffix is agy's own encoding of reasoning
+      # effort, which is why launch_reviewer passes no --effort flag.
+      value="gemini-3.7-flash-high"
+      ;;
     *)
       ;;
   esac
@@ -1046,6 +1057,57 @@ _write_opencode_permission_config() {
 JSON
 }
 
+# _write_agy_home <dir>
+#
+# Builds an isolated home directory for one agy reviewer process and
+# prints nothing; the caller passes <dir> as HOME when launching agy.
+#
+# agy has no config-path flag of its own (unlike opencode's
+# OPENCODE_CONFIG), so overriding HOME is the only way to give it a
+# controlled configuration -- verified empirically, along with the fact
+# that authentication survives when the credential files are symlinked
+# rather than copied, which keeps this from duplicating OAuth material
+# onto disk.
+#
+# Two separate settings files are written because agy reads two:
+# ~/.gemini/settings.json is the Gemini CLI's (agy reads only the auth
+# type from it here) and ~/.gemini/antigravity-cli/settings.json is agy's
+# own, which is where permissions.allow actually takes effect. Writing the
+# permission rule into the former has no effect at all -- verified.
+#
+# The allow list holds exactly one rule. In headless mode agy default-
+# denies every tool in the command, read_url and unsandboxed classes, so
+# whatever is not listed here cannot run: that single rule is what closes
+# this reviewer's shell and network surface, and adding anything else to
+# it reopens exactly as much as it names.
+_write_agy_home() {
+  local dir="$1"
+  local real_gemini="$HOME/.gemini"
+  local f auth_type
+
+  mkdir -p "$dir/.gemini/antigravity-cli" || return 1
+
+  for f in oauth_creds.json google_accounts.json google_account_id \
+           installation_id gemini-credentials.json extension_integrity.json; do
+    if [ -e "$real_gemini/$f" ]; then
+      ln -sf "$real_gemini/$f" "$dir/.gemini/$f" || return 1
+    fi
+  done
+
+  auth_type=""
+  if [ -f "$real_gemini/settings.json" ] && command -v jq >/dev/null 2>&1; then
+    auth_type="$(jq -r '.security.auth.selectedType // empty' \
+      "$real_gemini/settings.json" 2>/dev/null)" || auth_type=""
+  fi
+
+  jq -n --arg at "$auth_type" \
+    '{security: {auth: {selectedType: $at}}}' \
+    > "$dir/.gemini/settings.json" || return 1
+
+  jq -n '{permissions: {allow: ["command(git diff)"]}}' \
+    > "$dir/.gemini/antigravity-cli/settings.json" || return 1
+}
+
 # launch_reviewer <cli_name> <worktree_dir> <log_file>
 #
 # Starts one reviewer CLI as a detached, nohup'd background process whose
@@ -1312,7 +1374,7 @@ JSON
 launch_reviewer() {
   local cli_name="$1" worktree_dir="$2" log_file="$3"
   local -a cmd=()
-  local base_dir before_snapshot starting_dir config_file pid stderr_file
+  local base_dir before_snapshot starting_dir config_file pid stderr_file agy_home
 
   base_dir="$(dirname "$worktree_dir")"
   # Stdout and stderr are captured to two separate files, not one shared
@@ -1348,6 +1410,40 @@ launch_reviewer() {
       _write_opencode_permission_config "$config_file"
       cmd=(opencode run --auto --dir "$worktree_dir")
       ;;
+    agy)
+      agy_home="$(dirname "$log_file")/agy-home"
+      _write_agy_home "$agy_home" || {
+        printf 'launch_reviewer: failed to build the isolated agy home\n' >&2
+        return 1
+      }
+      # --add-dir, not cwd: agy's tools run in agy's own state directory
+      # regardless of where the process was started, so the cd-into-the-
+      # worktree approach used for claude does nothing here (verified).
+      # --print-timeout must be set explicitly: agy is the only one of the
+      # four CLIs with a self-imposed timeout, and its default of five
+      # minutes would kill every real review.
+      # No --effort: reasoning effort is already encoded in the model id's
+      # -high suffix (see resolve_model's agy branch).
+      #
+      # The prompt is read from this function's own stdin here, rather
+      # than left for the shared nohup line below to hand to the process
+      # over its stdin the way claude/codex/opencode get it: a real agy
+      # binary was probed with a bare, unattached `-p` (the same shape
+      # that works for the other three CLIs) and rejected it outright --
+      # "flag needs an argument: -p", exit 2 -- so it never even reached
+      # the point of reading stdin. The documented fallback is an
+      # equals-attached `-p=<prompt>` argument instead, confirmed
+      # separately to work against the real binary. This does mean the
+      # whole prompt has to fit in one argv entry: main() writes it to
+      # <logs_dir>/agy.prompt first, and a representative prompt built
+      # from the real reviewer contract plus a comment-heavy synthetic PR
+      # (66KB of PR/issue material) measured ~113KB total, well under the
+      # ~2MB `getconf ARG_MAX` on this machine -- verified, not assumed.
+      local agy_prompt
+      agy_prompt="$(cat)" || return 1
+      cmd=(agy --add-dir "$worktree_dir" --print-timeout 120m \
+        --model gemini-3.7-flash-high "-p=$agy_prompt")
+      ;;
     *)
       printf 'launch_reviewer: unknown reviewer CLI: %s\n' "$cli_name" >&2
       return 1
@@ -1367,14 +1463,18 @@ launch_reviewer() {
   fi
 
   # opencode has no CLI flag for its permission config; it reads the
-  # OPENCODE_CONFIG env var instead, so it's the only CLI needing anything
-  # prefixed onto the launch below. `env` (rather than a bare `VAR=val`
-  # prefix) lets this stay one shared launch line for every CLI: an empty
-  # env_prefix expands to zero words, so the line reduces to plain `nohup
-  # ...` for claude/codex.
+  # OPENCODE_CONFIG env var instead. agy has no config-path flag at all
+  # (see _write_agy_home's docstring), so HOME is what carries its
+  # isolated config through instead. These two are the only CLIs needing
+  # anything prefixed onto the launch below. `env` (rather than a bare
+  # `VAR=val` prefix) lets this stay one shared launch line for every
+  # CLI: an empty env_prefix expands to zero words, so the line reduces to
+  # plain `nohup ...` for claude/codex.
   local -a env_prefix=()
   if [ "$cli_name" = opencode ]; then
     env_prefix=(env "OPENCODE_CONFIG=$config_file")
+  elif [ "$cli_name" = agy ]; then
+    env_prefix=(env "HOME=$agy_home")
   fi
 
   # The `bash -c` wrapper's script body is single-quoted on purpose: `$1`,

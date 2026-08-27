@@ -443,6 +443,17 @@ rc=$?
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$rc" -eq 0 ] && [ "$out" = "env-dir-model" ] && pass resolve-model-claude-honors-config-dir-env-var || bad resolve-model-claude-honors-config-dir-env-var
 
+# --- agy: hardcoded, not read from any config file (see resolve_model's
+# agy branch docstring for why) -- no isolated $HOME needed, the real
+# $HOME's config must never affect this value ---
+
+out="$(resolve_model agy)"
+if [ "$out" = "gemini-3.7-flash-high" ]; then
+  pass "resolve_model agy 回傳 gemini-3.7-flash-high"
+else
+  bad "resolve_model agy 回傳 $out"
+fi
+
 # ==============================================================
 # resolve_model -- malformed/anomalous config content
 #
@@ -1251,6 +1262,47 @@ esac
 jq empty "$OC_CONFIG" >/dev/null 2>&1 && pass opencode-permission-config-valid-json || bad opencode-permission-config-valid-json
 
 # ==============================================================
+# _write_agy_home
+#
+# Uses the real $HOME (not an isolated fixture, unlike resolve_model's
+# codex/opencode/claude cases above): this function's whole job is to read
+# a slice of the real ~/.gemini and rebuild an isolated copy elsewhere, so
+# it has nothing to build from without it. Only credential files get
+# symlinked (never copied -- see the function's own docstring), and only
+# one field (.security.auth.selectedType) is ever read out of the real
+# settings.json, so nothing sensitive from a real config crosses into the
+# assertions below.
+# ==============================================================
+
+agy_home="$T/agy-home"
+if _write_agy_home "$agy_home"; then
+  s="$agy_home/.gemini/antigravity-cli/settings.json"
+  if [ -f "$s" ] \
+    && jq -e '.permissions.allow | index("command(git diff)")' "$s" >/dev/null \
+    && jq -e '.permissions.allow | length == 1' "$s" >/dev/null; then
+    pass "_write_agy_home 寫出只含一條 git diff 規則的權限設定"
+  else
+    bad "_write_agy_home 權限設定不正確: $(cat "$s" 2>/dev/null)"
+  fi
+else
+  bad "_write_agy_home 回傳非零"
+fi
+
+# _write_agy_home 不含 mcpServers（避免載入外部工具）
+if jq -e 'has("mcpServers") | not' "$agy_home/.gemini/settings.json" >/dev/null 2>&1; then
+  pass "_write_agy_home 的 Gemini 設定不含 mcpServers"
+else
+  bad "_write_agy_home 的 Gemini 設定含有 mcpServers"
+fi
+
+# Two isolated homes built for two different reviewer processes must not
+# collide or leak into each other's settings.
+agy_home2="$T/agy-home-2"
+_write_agy_home "$agy_home2" || bad "_write_agy_home 第二次呼叫回傳非零"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$agy_home2/.gemini/antigravity-cli/settings.json" ] && [ "$agy_home2" != "$agy_home" ] && pass _write_agy_home-independent-instances || bad _write_agy_home-independent-instances
+
+# ==============================================================
 # launch_reviewer
 #
 # Recording stubs (distinct from the plain "exit 0" claude/codex/opencode
@@ -1278,6 +1330,7 @@ for a in "$@"; do printf '%s\n' "$a" >> "$LAUNCH_RECORD_DIR/$name.argv"; done
 pwd > "$LAUNCH_RECORD_DIR/$name.pwd"
 cat > "$LAUNCH_RECORD_DIR/$name.stdin"
 printf '%s' "${OPENCODE_CONFIG:-}" > "$LAUNCH_RECORD_DIR/$name.env-opencode-config"
+printf '%s' "${HOME:-}" > "$LAUNCH_RECORD_DIR/$name.env-home"
 echo "stub $name ran"
 sleep 0.1
 exit "${LAUNCH_STUB_EXIT_CODE:-0}"
@@ -1285,6 +1338,7 @@ STUB
 chmod +x "$LAUNCH_STUB_BIN/claude"
 cp "$LAUNCH_STUB_BIN/claude" "$LAUNCH_STUB_BIN/codex"
 cp "$LAUNCH_STUB_BIN/claude" "$LAUNCH_STUB_BIN/opencode"
+cp "$LAUNCH_STUB_BIN/claude" "$LAUNCH_STUB_BIN/agy"
 
 export PATH="$LAUNCH_STUB_BIN:$saved_path"
 export LAUNCH_RECORD_DIR
@@ -1377,6 +1431,63 @@ case "$(cat "$oc_env_config_path" 2>/dev/null)" in
   *'"edit": "deny"'*) pass launch-reviewer-opencode-config-content ;;
   *) bad launch-reviewer-opencode-config-content ;;
 esac
+
+# --- agy: --add-dir flag, --print-timeout, hardcoded model, isolated HOME,
+# and (per the empirically-confirmed fallback -- a bare `-p` errors
+# "flag needs an argument: -p" on a real agy binary) the prompt handed as
+# an equals-attached `-p=<prompt>` argument rather than over stdin ---
+
+printf 'agy-prompt-content' > "$LAUNCH_LOGS/agy.prompt"
+pid_agy="$(launch_reviewer agy "$LAUNCH_WT" "$LAUNCH_LOGS/agy.log" < "$LAUNCH_LOGS/agy.prompt")"
+i=0
+until [ -f "$LAUNCH_ROOT/.exit-$pid_agy" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+
+mapfile -t agy_argv < "$LAUNCH_RECORD_DIR/agy.argv"
+found=0
+for idx in "${!agy_argv[@]}"; do
+  if [ "${agy_argv[$idx]}" = "--add-dir" ] && [ "${agy_argv[$((idx + 1))]:-}" = "$LAUNCH_WT" ]; then
+    found=1
+  fi
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$found" -eq 1 ] && pass launch-reviewer-agy-add-dir-flag || bad launch-reviewer-agy-add-dir-flag
+
+# agy's own default print-mode timeout is five minutes (see launch_reviewer's
+# docstring) -- far too short for a real review, so this must be overridden
+# explicitly rather than left at the default.
+case "$(cat "$LAUNCH_RECORD_DIR/agy.argv")" in
+  *'--print-timeout'*'120m'*) pass launch-reviewer-agy-print-timeout-flag ;;
+  *) bad launch-reviewer-agy-print-timeout-flag ;;
+esac
+
+case "$(cat "$LAUNCH_RECORD_DIR/agy.argv")" in
+  *'--model'*'gemini-3.7-flash-high'*) pass launch-reviewer-agy-model-flag ;;
+  *) bad launch-reviewer-agy-model-flag ;;
+esac
+
+# No --effort: reasoning effort is already encoded in the model id's -high
+# suffix (see resolve_model's agy branch docstring).
+case "$(cat "$LAUNCH_RECORD_DIR/agy.argv")" in
+  *'--effort'*) bad launch-reviewer-agy-no-effort-flag ;;
+  *) pass launch-reviewer-agy-no-effort-flag ;;
+esac
+
+# The prompt (this function's own stdin, `cat`-read inside the agy branch)
+# must reach the process as an equals-attached -p= argument, not left on
+# stdin -- a bare, unattached `-p` is what a real agy binary rejects.
+case "$(cat "$LAUNCH_RECORD_DIR/agy.argv")" in
+  *'-p=agy-prompt-content'*) pass launch-reviewer-agy-prompt-via-p-equals ;;
+  *) bad launch-reviewer-agy-prompt-via-p-equals ;;
+esac
+
+# HOME must be the isolated per-run directory _write_agy_home built, not
+# the real user's own $HOME -- this is the whole point of Task 4's
+# isolation.
+agy_env_home="$(cat "$LAUNCH_RECORD_DIR/agy.env-home")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$agy_env_home" ] && [ "$agy_env_home" != "$HOME" ] && pass launch-reviewer-agy-home-isolated || bad launch-reviewer-agy-home-isolated
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$agy_env_home/.gemini/antigravity-cli/settings.json" ] && pass launch-reviewer-agy-home-has-permission-config || bad launch-reviewer-agy-home-has-permission-config
 
 # --- claude: no -C/--dir flag; instead the process's own cwd is the worktree ---
 
