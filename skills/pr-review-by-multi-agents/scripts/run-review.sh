@@ -411,6 +411,87 @@ check_clis() {
   done
 }
 
+# parse_args <arg>...
+#
+# Parses the named-flag command line and prints four lines: pr=, issue=,
+# design=, clis=. Values may be empty; the clis= list is normalised to the
+# canonical order claude codex opencode agy regardless of the order the
+# flags appeared in, so downstream dispatch order never depends on how the
+# caller happened to type them. Returns 2 on any usage error -- unknown
+# flag, a value-taking flag with no value, or no platform selected at all
+# -- printing the reason to stderr. Named flags replaced the previous three
+# positional arguments specifically to remove the class of failure where a
+# misordered call silently reviewed the wrong PR.
+parse_args() {
+  local pr="" issue="" design=""
+  local want_claude=0 want_codex=0 want_opencode=0 want_agy=0
+  local -a selected=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --pr|--issue|--design)
+        # A following token that itself starts with `--` means the value
+        # was omitted; treating it as the value would silently review
+        # whatever that flag name happened to parse as.
+        if [ "$#" -lt 2 ] || [ "${2#--}" != "$2" ]; then
+          printf 'run-review.sh: %s requires a value\n' "$1" >&2
+          return 2
+        fi
+        case "$1" in
+          --pr) pr="$2" ;;
+          --issue) issue="$2" ;;
+          --design) design="$2" ;;
+        esac
+        shift 2
+        ;;
+      --claude) want_claude=1; shift ;;
+      --codex) want_codex=1; shift ;;
+      --opencode) want_opencode=1; shift ;;
+      --agy) want_agy=1; shift ;;
+      *)
+        printf 'run-review.sh: unknown argument: %s\n' "$1" >&2
+        return 2
+        ;;
+    esac
+  done
+
+  [ "$want_claude" -eq 1 ] && selected+=(claude)
+  [ "$want_codex" -eq 1 ] && selected+=(codex)
+  [ "$want_opencode" -eq 1 ] && selected+=(opencode)
+  [ "$want_agy" -eq 1 ] && selected+=(agy)
+
+  if [ "${#selected[@]}" -eq 0 ]; then
+    printf 'run-review.sh: no reviewer platform selected (pass at least one of --claude --codex --opencode --agy)\n' >&2
+    return 2
+  fi
+
+  printf 'pr=%s\n' "$pr"
+  printf 'issue=%s\n' "$issue"
+  printf 'design=%s\n' "$design"
+  printf 'clis=%s\n' "${selected[*]}"
+}
+
+# verify_selection <cli>...
+#
+# Confirms every selected CLI is actually on PATH. Returns 3 -- a code
+# reserved for exactly this failure, so the caller can tell it apart from
+# a general precondition failure and offer the user a re-pick -- listing
+# the missing ones on stderr. Deliberately does NOT degrade to running the
+# present subset: the menu round is where the user already chose between
+# "skip the missing one" and "pick another combination", so silently
+# deciding that here would override a choice the user has already made.
+verify_selection() {
+  local cli
+  local -a missing=()
+  for cli in "$@"; do
+    command -v "$cli" >/dev/null 2>&1 || missing+=("$cli")
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    printf 'run-review.sh: selected but not installed: %s\n' "${missing[*]}" >&2
+    return 3
+  fi
+}
+
 # resolve_contract_path
 #
 # Locates references/reviewer-contract.md relative to this script's own
@@ -1741,12 +1822,38 @@ _dispatch_failed_cleanup() {
 # before anything is launched -- see each called function's own docstring
 # for what it reports on failure.
 main() {
-  local pr_arg="${1:-}" issue_arg="${2:-}" design_doc_path="${3:-}"
+  local pr_arg="" issue_arg="" design_doc_path="" clis_line=""
   local pr_info owner repo number contract_path base_ref pr_url
   local project_root project_hash project_folder
   local base_dir logs_dir summary_file worktree_dir materials_dir
-  local cli d found model prompt pid
+  local cli model prompt pid parsed parsed_line
   local -a all_reviewers=() skipped=() pids=()
+
+  # --check-clis is a standalone preflight mode: it must not run any other
+  # precondition check and must not create anything, because the skill
+  # calls it before the user has even chosen a combination.
+  if [ "${1:-}" = "--check-clis" ] && [ "$#" -eq 1 ]; then
+    check_clis
+    return 0
+  fi
+
+  # Parsed with pure shell builtins (case/parameter-expansion, a here-string
+  # loop), not an external filter like sed: this runs before
+  # _check_gh_available below, and that check's own docstring explains why
+  # main() must not depend on any external tool's presence before it
+  # actually confirms one -- an unrelated missing tool here would surface as
+  # the wrong failure entirely instead of the "gh CLI not found" message
+  # that check exists to guarantee.
+  parsed="$(parse_args "$@")" || exit $?
+  while IFS= read -r parsed_line; do
+    case "$parsed_line" in
+      pr=*) pr_arg="${parsed_line#pr=}" ;;
+      issue=*) issue_arg="${parsed_line#issue=}" ;;
+      design=*) design_doc_path="${parsed_line#design=}" ;;
+      clis=*) clis_line="${parsed_line#clis=}" ;;
+    esac
+  done <<< "$parsed"
+  read -r -a all_reviewers <<< "$clis_line"
 
   # Before parse_pr_url: an empty pr_arg makes that function call gh
   # itself to derive the PR from the current branch (see its own
@@ -1763,19 +1870,13 @@ main() {
 
   check_prerequisites "$owner" "$repo" "$number" || exit 1
 
-  mapfile -t all_reviewers < <(detect_reviewers)
-  if [ "${#all_reviewers[@]}" -eq 0 ]; then
-    printf 'run-review.sh: none of claude, codex, opencode are installed\n' >&2
-    exit 1
-  fi
+  verify_selection "${all_reviewers[@]}" || exit 3
 
-  for cli in claude codex opencode; do
-    found=0
-    for d in "${all_reviewers[@]}"; do
-      [ "$d" = "$cli" ] && { found=1; break; }
-    done
-    [ "$found" -eq 1 ] || skipped+=("$cli")
-  done
+  # skipped is now always empty: the selection is explicit and verified
+  # above, so there is no such thing as a silently-degraded run any more.
+  # print_summary's --skipped section is kept for compatibility with its
+  # existing signature and simply receives nothing.
+  skipped=()
 
   contract_path="$(resolve_contract_path)" || exit 1
 

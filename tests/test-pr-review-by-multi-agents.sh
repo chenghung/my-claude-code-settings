@@ -249,6 +249,72 @@ else
 fi
 
 # ==============================================================
+# parse_args / verify_selection
+# ==============================================================
+
+# ---- parse_args 解析四種旗標 ----
+out="$(parse_args --pr https://github.com/a/b/pull/1 --issue https://github.com/a/b/issues/2 \
+       --design /tmp/d.md --claude --agy)"
+if printf '%s\n' "$out" | grep -qx 'pr=https://github.com/a/b/pull/1' \
+  && printf '%s\n' "$out" | grep -qx 'issue=https://github.com/a/b/issues/2' \
+  && printf '%s\n' "$out" | grep -qx 'design=/tmp/d.md' \
+  && printf '%s\n' "$out" | grep -qx 'clis=claude agy'; then
+  pass "parse_args 解析四種旗標"
+else
+  bad "parse_args 解析結果不正確: $out"
+fi
+
+# ---- parse_args 平台順序固定，不依命令列出現順序 ----
+out="$(parse_args --pr X --agy --claude)"
+if printf '%s\n' "$out" | grep -qx 'clis=claude agy'; then
+  pass "parse_args 平台順序固定為 claude codex opencode agy"
+else
+  bad "parse_args 平台順序未正規化: $out"
+fi
+
+# ---- parse_args 未選平台時以 2 拒絕 ----
+if parse_args --pr X >/dev/null 2>&1; then
+  bad "parse_args 未選平台時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_args 未選平台時回傳 2" \
+    || bad "parse_args 未選平台時回傳 $rc，應為 2"
+fi
+
+# ---- parse_args 未知旗標時以 2 拒絕 ----
+if parse_args --pr X --claude --bogus >/dev/null 2>&1; then
+  bad "parse_args 未知旗標時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_args 未知旗標時回傳 2" \
+    || bad "parse_args 未知旗標時回傳 $rc，應為 2"
+fi
+
+# ---- parse_args 旗標缺值時以 2 拒絕 ----
+if parse_args --pr --claude >/dev/null 2>&1; then
+  bad "parse_args --pr 缺值時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_args 旗標缺值時回傳 2" \
+    || bad "parse_args 旗標缺值時回傳 $rc，應為 2"
+fi
+
+# ---- 選定組合中有 CLI 缺席時回傳 3 ----
+PATH="$EMPTY_BIN"
+if verify_selection claude agy >/dev/null 2>&1; then
+  bad "verify_selection 全部缺席時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 3 ] && pass "verify_selection 缺席時回傳 3" \
+    || bad "verify_selection 缺席時回傳 $rc，應為 3"
+fi
+PATH="$saved_path"
+
+# ==============================================================
 # resolve_contract_path
 #
 # The most load-bearing test in this file: if the script can't find its own
@@ -2161,7 +2227,7 @@ git init -q -b main "$ORIGIN_ORDER_FIXTURE/work"
 
 if out="$(cd "$ORIGIN_ORDER_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="origin-order-base-branch" \
   HOME="$T/origin-order-home" PATH="$STUB_BIN:$saved_path" \
-  bash "$RUN_SH" "https://github.com/wrong-owner/wrong-repo/pull/1" "" "" 2>&1)"; then
+  bash "$RUN_SH" --pr "https://github.com/wrong-owner/wrong-repo/pull/1" --claude 2>&1)"; then
   bad main-e2e-origin-check-rejects-wrong-owner
 else
   pass main-e2e-origin-check-rejects-wrong-owner
@@ -2193,7 +2259,7 @@ git init -q -b main "$GH_MISSING_FIXTURE"
 # make "bash" itself fail to be found (exit 127, "command not found"),
 # which is not what this test is trying to exercise.
 BASH_ABS_PATH="$(command -v bash)"
-if out="$(cd "$GH_MISSING_FIXTURE" && PATH="$EMPTY_BIN" "$BASH_ABS_PATH" "$RUN_SH" "" "" "" 2>&1)"; then
+if out="$(cd "$GH_MISSING_FIXTURE" && PATH="$EMPTY_BIN" "$BASH_ABS_PATH" "$RUN_SH" --claude 2>&1)"; then
   bad main-e2e-gh-missing-fails
 else
   pass main-e2e-gh-missing-fails
@@ -2255,12 +2321,12 @@ esac
 # does.
 #
 # This also exercises run-review.sh's command-line contract end to end (task 5's
-# own addition, not specified by the earlier tasks): three positional
-# arguments -- PR link, issue link, design doc path -- invoked exactly as
-# a real caller would, via `bash run-review.sh ...`, not by sourcing and calling
-# main() directly (main() calls `exit` on its failure paths, which would
-# kill this whole test script if called in-process instead of as a real
-# subprocess).
+# own addition, not specified by the earlier tasks): named flags --
+# --pr, --issue, --design, plus one flag per selected reviewer platform --
+# invoked exactly as a real caller would, via `bash run-review.sh ...`, not
+# by sourcing and calling main() directly (main() calls `exit` on its
+# failure paths, which would kill this whole test script if called
+# in-process instead of as a real subprocess).
 #
 # The origin remote is a literal https://github.com/acme9pr/widgets9pr.git
 # URL, matching what _check_origin_matches needs to see in the raw
@@ -2306,9 +2372,10 @@ printf 'e2e-distinctive-design-doc-marker-content\n' > "$E2E_FIXTURE/work/docs/d
 
 if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" \
   bash "$RUN_SH" \
-    "https://github.com/acme9pr/widgets9pr/pull/321" \
-    "777" \
-    "docs/distinctive-design-doc-marker.md" 2>&1)"; then
+    --pr "https://github.com/acme9pr/widgets9pr/pull/321" \
+    --issue "777" \
+    --design "docs/distinctive-design-doc-marker.md" \
+    --claude --codex --opencode 2>&1)"; then
   pass main-e2e-succeeds
 else
   bad main-e2e-succeeds
@@ -2427,14 +2494,14 @@ until [ ! -e "$E2E_WORKTREE_DIR" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ ! -e "$E2E_WORKTREE_DIR" ] && pass main-e2e-worktree-removed-after-completion || bad main-e2e-worktree-removed-after-completion
 
-# --- all three positional args empty: PR derives from branch, issue/design
+# --- --pr/--issue/--design all omitted: PR derives from branch, issue/design
 # render as "not provided" rather than blocking the run ---
 
 E2E_HOME2="$T/main-e2e-home2"
 if out="$(cd "$E2E_FIXTURE/work" \
   && CLAUDE_CONFIG_DIR="" GH_STUB_DERIVE_OK=1 GH_STUB_DERIVED_URL="https://github.com/acme9pr/widgets9pr/pull/321" \
      GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME2" PATH="$STUB_BIN:$saved_path" \
-  bash "$RUN_SH" "" "" "" 2>&1)"; then
+  bash "$RUN_SH" --claude --codex --opencode 2>&1)"; then
   pass main-e2e-empty-args-accepted
 else
   bad main-e2e-empty-args-accepted
@@ -2529,7 +2596,7 @@ chmod +x "$CHMODE2E_STUB_BIN/codex"
 
 CHMODE2E_HOME="$T/chmod-e2e-home"
 if out="$(cd "$CHMODE2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME=main HOME="$CHMODE2E_HOME" PATH="$CHMODE2E_STUB_BIN:$saved_path" \
-  bash "$RUN_SH" "https://github.com/acme/widgets/pull/50" "" "" 2>&1)"; then
+  bash "$RUN_SH" --pr "https://github.com/acme/widgets/pull/50" --claude --codex --opencode 2>&1)"; then
   pass main-e2e-chmod-run-succeeds
 else
   bad main-e2e-chmod-run-succeeds
