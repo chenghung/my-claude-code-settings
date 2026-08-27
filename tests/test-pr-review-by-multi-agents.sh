@@ -190,14 +190,14 @@ STUB
   chmod +x "$STUB_BIN/$cli"
 done
 
-# All four installed -> four lines, fixed order, success. PATH is set
-# exclusively (not prepended) so a real claude/codex/opencode/agy elsewhere on
+# All three installed -> three lines, fixed order, success. PATH is set
+# exclusively (not prepended) so a real claude/codex/opencode elsewhere on
 # the machine's PATH can never leak into the result.
 export PATH="$STUB_BIN"
 out="$(detect_reviewers)"
 export PATH="$saved_path"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "$(printf 'claude\ncodex\nopencode\nagy')" ] && pass detect-all-three || bad detect-all-three
+[ "$out" = "$(printf 'claude\ncodex\nopencode')" ] && pass detect-all-three || bad detect-all-three
 
 # Only codex installed -> single line, success.
 CODEX_ONLY="$T/codex-only-bin"
@@ -232,23 +232,6 @@ fi
 export PATH="$saved_path"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -z "$out" ] && pass detect-none-empty-output || bad detect-none-empty-output
-
-# ---- detect_reviewers 認得 agy ----
-AGY_STUB_BIN="$T/agy-stub-bin"
-mkdir -p "$AGY_STUB_BIN"
-cat > "$AGY_STUB_BIN/agy" <<'STUB'
-#!/usr/bin/env bash
-exit 0
-STUB
-chmod +x "$AGY_STUB_BIN/agy"
-PATH="$AGY_STUB_BIN:$saved_path"
-out="$(detect_reviewers)"
-PATH="$saved_path"
-if printf '%s\n' "$out" | grep -qx 'agy'; then
-  pass "detect_reviewers 列出 agy"
-else
-  bad "detect_reviewers 未列出 agy"
-fi
 
 # ---- check_clis 對四個 CLI 各印一行 ----
 PATH="$EMPTY_BIN"
@@ -2433,9 +2416,9 @@ esac
 
 E2E_SUMMARY_FILE="$E2E_BASE_DIR/summary.txt"
 i=0
-until { [ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 4 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+until { [ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 3 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 4 ] && pass main-e2e-summary-file-converges || bad main-e2e-summary-file-converges
+[ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 3 ] && pass main-e2e-summary-file-converges || bad main-e2e-summary-file-converges
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -q 'worktree_status=ok' "$E2E_SUMMARY_FILE" 2>/dev/null && pass main-e2e-summary-file-worktree-status-ok || bad main-e2e-summary-file-worktree-status-ok
 
