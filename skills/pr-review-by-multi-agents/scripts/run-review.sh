@@ -1735,7 +1735,7 @@ _ready_content_files() {
 build_synthesis_prompt() {
   local contract_path="$1" roster_file="$2" summary_file="$3"
   local synth_cli="$4" synth_model="$5"
-  local cli status content_file
+  local cli status content_file model
 
   cat "$contract_path"
 
@@ -1749,10 +1749,37 @@ build_synthesis_prompt() {
   # model names come from .roster (written at dispatch time -- once a
   # reviewer has finished there is nowhere left to look them up); each
   # reviewer's outcome comes from the summary, which is only settled now.
+  # $cli is interpolated unescaped into the sed pattern below; this is
+  # safe only because the fixed set of real CLI names this script ever
+  # dispatches (claude/codex/opencode/agy) contains no regex
+  # metacharacter -- not because the value is otherwise trusted.
+  #
+  # A roster entry can come back empty when .roster and summary_file
+  # disagree about which CLIs were dispatched (a test fixture bypassing
+  # main()'s own .roster-writing step, for instance). The synthesis
+  # contract requires writing such a gap as an explicit "not provided"
+  # value rather than rendering it as a blank -- the same gap-handling
+  # rule the contract states for a missing CLI/model name elsewhere --
+  # so an empty lookup is rendered as 未提供 instead of an empty string.
+  #
+  # `|| model=""` matters beyond just the empty-vs-未提供 rendering:
+  # this whole function runs inside spawn_supervisor's own `set -e`
+  # subshell, and a plain `var="$(cmd)"` assignment is NOT exempt from
+  # errexit the way a command substitution inside `[ ]` or an `if` is --
+  # a missing/unreadable roster_file makes sed itself exit non-zero
+  # (the `2>/dev/null` above only silences its stderr message, not its
+  # exit code), and without this fallback that would abort this
+  # function, and therefore the entire synthesis attempt, silently: no
+  # error text, no summary line, nothing to show a human what happened.
+  # Confirmed against a real run of the pre-existing supervisor-order-*
+  # fixture, which calls spawn_supervisor directly without ever writing
+  # a .roster file -- before this guard, synthesis for that fixture
+  # silently vanished partway through with no trace at all.
   while read -r cli status; do
+    model="$(sed -n "s/^$cli \\(.*\\) dispatched$/\\1/p" "$roster_file" 2>/dev/null)" || model=""
     printf -- '- %s / %s：%s\n' \
       "$cli" \
-      "$(sed -n "s/^$cli \\(.*\\) dispatched$/\\1/p" "$roster_file" 2>/dev/null)" \
+      "${model:-未提供}" \
       "$status"
   done < <(sed -n 's/^cli=\([^ ]*\) .* content_status=\([^ ]*\) .*$/\1 \2/p' "$summary_file")
 
@@ -1765,6 +1792,39 @@ build_synthesis_prompt() {
     cat "$content_file"
     printf '\n\n'
   done < <(_ready_content_files "$summary_file")
+}
+
+# _write_opencode_synthesis_permission_config <path>
+#
+# Writes opencode's own permission config for the synthesis process
+# specifically -- not the same config _write_opencode_permission_config
+# builds for a reviewer. That one is shaped for a reviewer that still
+# has to run the reviewer contract's pinned `git diff` command, so it
+# can only deny specific risky bash patterns by name and must fall
+# through to --auto's default-allow for everything else, including a
+# plain shell command this config's own docstring already documents as
+# unblockable that way. The synthesis process runs no shell command at
+# all -- it has no contract pinning any command to it, and its own
+# launch_synthesis docstring already states it needs no filesystem
+# access, no shell and no network -- so there is nothing left for a
+# pattern blacklist to legitimately leave open. `bash` is denied as a
+# whole tool here, the same way `edit` already is below: opencode's
+# permission schema accepts a bare "deny" for an entire tool (confirmed
+# by _write_opencode_permission_config's own "edit": "deny" line
+# already relying on this), which is the narrowest grant this CLI
+# offers -- narrower than any bash-pattern blacklist could ever be.
+_write_opencode_synthesis_permission_config() {
+  local path="$1"
+
+  cat > "$path" <<'JSON'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "edit": "deny",
+    "bash": "deny"
+  }
+}
+JSON
 }
 
 # launch_synthesis <cli> <base_dir> <log_file>
@@ -1785,29 +1845,58 @@ launch_synthesis() {
 
   case "$cli" in
     claude)
+      # Bash is disallowed outright here, not merely left off the allow
+      # list the way launch_reviewer's claude branch does it. That
+      # branch's own docstring records the real finding this leans on:
+      # --permission-mode dontAsk's "read-only Bash commands are always
+      # allowed" carve-out is not actually read-only in practice -- a
+      # real run with no Bash pattern on either --allowedTools or
+      # --disallowedTools still let a plain `curl` reach the network,
+      # and naming that exact command on --disallowedTools did not stop
+      # it either; the only flag combination that worked was disallowing
+      # the whole Bash tool with no pattern at all. launch_reviewer can't
+      # take that path because the reviewer contract pins `git diff` as
+      # this reviewer's own source of truth and Bash is its only way to
+      # run that command. The synthesis process has no such requirement
+      # -- see this function's own docstring above -- so it is the one
+      # place that fully-closed form is actually available, and using it
+      # removes this exfiltration path entirely instead of merely
+      # narrowing it. WebFetch is disallowed for the same reason it was
+      # removed from launch_reviewer's own allow list: nothing here has
+      # any legitimate use for it.
       cmd=(claude -p --permission-mode dontAsk \
         --allowedTools "" \
-        --disallowedTools "Edit Write NotebookEdit")
+        --disallowedTools "Edit Write NotebookEdit WebFetch Bash")
       ;;
     codex)
       cmd=(codex exec -s read-only -C "$base_dir")
       ;;
     opencode)
       config_file="$(dirname "$log_file")/opencode-synthesis-permission.json"
-      _write_opencode_permission_config "$config_file"
+      _write_opencode_synthesis_permission_config "$config_file"
       cmd=(opencode run --auto --dir "$base_dir")
       env_prefix=(env "OPENCODE_CONFIG=$config_file")
       ;;
     agy)
       agy_home="$(dirname "$log_file")/agy-synthesis-home"
-      _write_agy_home "$agy_home" || return 1
+      _write_agy_home "$agy_home" || {
+        printf 'launch_synthesis: failed to build the isolated agy home\n' >&2
+        return 1
+      }
       # Empty allow list: unlike a reviewer, the synthesis never needs to
       # run `git diff` or anything else. In headless mode agy default-
       # denies every command/read_url/unsandboxed tool, so an empty list
       # closes the surface entirely.
       jq -n '{permissions: {allow: []}}' \
         > "$agy_home/.gemini/antigravity-cli/settings.json" || return 1
-      cmd=(agy --print-timeout 120m --model gemini-3.7-flash-high -p)
+      # No -p/--print flag at all, on purpose -- the same reasoning and
+      # the same empirical finding launch_reviewer's own agy branch
+      # documents: a bare, unattached -p is rejected outright by the
+      # real agy binary ("flag needs an argument: -p", exit 2), so
+      # omitting the flag entirely (not supplying it with no value) is
+      # what makes agy read the prompt from stdin and run
+      # non-interactively.
+      cmd=(agy --print-timeout 120m --model gemini-3.7-flash-high)
       env_prefix=(env "HOME=$agy_home")
       ;;
     *)
@@ -1828,7 +1917,7 @@ launch_synthesis() {
   printf '%s\n' "$pid"
 }
 
-# _record_synthesis_result <pid> <cli> <base_dir> <summary_file>
+# _record_synthesis_result <pid> <cli> <log_file> <base_dir> <summary_file>
 #
 # Appends the synthesis line to the summary. Uses the same seven-field
 # format as a reviewer line so the skill's own line parser needs no
@@ -1837,11 +1926,17 @@ launch_synthesis() {
 # scanning for the synthesis result can recognise it without also
 # needing to know which CLI won that role), and worktree_status is `n/a`
 # because no worktree was involved.
+#
+# <log_file> is a parameter, not re-derived from <base_dir> here, on
+# purpose: the caller (spawn_supervisor) is the one place that already
+# computed this exact path to hand to launch_synthesis, and having both
+# that call site and this function separately hardcode
+# "$base_dir/synthesis.log" would let the two silently drift apart if
+# either one is ever edited alone.
 _record_synthesis_result() {
-  local pid="$1" cli="$2" base_dir="$3" summary_file="$4"
-  local exit_file rc end_time content content_file content_status log_file
+  local pid="$1" cli="$2" log_file="$3" base_dir="$4" summary_file="$5"
+  local exit_file rc end_time content content_file content_status
 
-  log_file="$base_dir/synthesis.log"
   exit_file="$base_dir/.synthesis-exit-$pid"
   rc="$(cat "$exit_file" 2>/dev/null)" || rc=""
   end_time="$(date -u -r "$exit_file" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" \
@@ -1984,7 +2079,7 @@ spawn_supervisor() {
         if synth_pid="$(launch_synthesis "$synth_cli" "$base_dir" "$synth_log" \
              < "$base_dir/.synthesis-prompt")"; then
           while kill -0 "$synth_pid" 2>/dev/null; do sleep 1; done
-          _record_synthesis_result "$synth_pid" "$synth_cli" "$base_dir" "$summary_file"
+          _record_synthesis_result "$synth_pid" "$synth_cli" "$synth_log" "$base_dir" "$summary_file"
         fi
       fi
     fi
