@@ -1704,6 +1704,22 @@ _ready_content_files() {
   sed -n 's/^cli=\([^ ]*\) .* content_status=ready content_file=\(.*\)$/\1\t\2/p' "$1" 2>/dev/null
 }
 
+# _synthesis_log_path <base_dir>
+#
+# Prints where the synthesis log lives. spawn_supervisor (which starts the
+# synthesis process) and print_summary (which reports this path while
+# synthesis hasn't even been decided yet) both need it, but they are not
+# in a caller/callee relationship -- one runs synchronously at dispatch
+# time, the other later inside spawn_supervisor's own backgrounded
+# subshell -- so passing it down as a parameter, the fix
+# _record_synthesis_result's docstring describes for <log_file> within
+# that one call chain, cannot reach across to here. This shared
+# derivation exists for that same drift reason: a single
+# "$1/synthesis.log" literal instead of two that could silently diverge.
+_synthesis_log_path() {
+  printf '%s/synthesis.log\n' "$1"
+}
+
 # build_synthesis_prompt <contract_path> <roster_file> <summary_file> \
 #                         <synth_cli> <synth_model>
 #
@@ -2072,7 +2088,7 @@ spawn_supervisor() {
     if [ "$ready_count" -ge 2 ]; then
       synth_cli="$(_first_ready_cli "$summary_file")"
       synth_model="$(resolve_model "$synth_cli")"
-      synth_log="$base_dir/synthesis.log"
+      synth_log="$(_synthesis_log_path "$base_dir")"
       if synth_contract="$(resolve_synthesis_contract_path)"; then
         build_synthesis_prompt "$synth_contract" "$base_dir/.roster" "$summary_file" \
           "$synth_cli" "$synth_model" > "$base_dir/.synthesis-prompt"
@@ -2095,8 +2111,11 @@ spawn_supervisor() {
 # file path), and which were skipped because that CLI wasn't installed.
 # When exactly one reviewer was dispatched, adds a line calling out that
 # cross-validation across independent reviewers does not hold for this run.
-# When two or more were dispatched, adds a line pointing at the synthesis
-# pass that will run once they all finish, and its log path.
+# When two or more were dispatched, adds a line noting that a synthesis
+# pass will be attempted once they all finish, and its log path -- hedged,
+# not a promise it will produce anything, because whether it actually
+# runs depends on how many reviews are later judged trustworthy, which
+# isn't known yet at the time this summary prints.
 #
 # Also reports what fetch_review_materials collected, by reading back
 # <base_dir>/.materials-status (silently omitting this section when that
@@ -2207,14 +2226,17 @@ print_summary() {
     printf '\n本次只有一個 reviewer，交叉驗證效果不成立。\n'
   fi
 
-  # Two or more dispatched reviewers means a synthesis pass will run once
-  # they all finish, producing the single comment that actually gets
-  # posted. Saying so here matters because the summary is printed while
-  # the reviewers are still running: without this line the caller has no
-  # way to know one more process is still to come.
+  # Two or more dispatched reviewers means a synthesis pass will be
+  # attempted once they all finish. Saying so here matters because the
+  # summary is printed while the reviewers are still running: without this
+  # line the caller has no way to know one more process is still to come.
+  # Worded as an attempt, not a promise: whether it actually produces the
+  # comment depends on how many reviews are later judged trustworthy,
+  # which isn't decided yet at print_summary time -- dispatched count is
+  # only ever an upper bound on that.
   if [ "${#dispatched[@]}" -ge 2 ]; then
-    printf '\n本次結束後會再跑一次合流，產出唯一一則要張貼的 comment。\n'
-    printf '合流 log：%s\n' "$base_dir/synthesis.log"
+    printf '\n全部 reviewer 結束後會嘗試合流一次，能否產出那則 comment，視屆時可信的 review 份數而定。\n'
+    printf '合流 log：%s\n' "$(_synthesis_log_path "$base_dir")"
   fi
 }
 
