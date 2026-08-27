@@ -2146,11 +2146,19 @@ case "$ps_out" in
   *'交叉驗證'*) bad print-summary-no-cross-validation-note-for-two ;;
   *) pass print-summary-no-cross-validation-note-for-two ;;
 esac
+case "$ps_out" in
+  *"$T/synthesis.log"*) pass print-summary-reports-synthesis-log-path ;;
+  *) bad print-summary-reports-synthesis-log-path ;;
+esac
 
 ps_out_single="$(print_summary "$PS_LOGS" claude --skipped codex opencode)"
 case "$ps_out_single" in
   *'交叉驗證'*) pass print-summary-cross-validation-note-for-one ;;
   *) bad print-summary-cross-validation-note-for-one ;;
+esac
+case "$ps_out_single" in
+  *'synthesis.log'*) bad print-summary-single-reviewer-omits-synthesis-log ;;
+  *) pass print-summary-single-reviewer-omits-synthesis-log ;;
 esac
 
 ps_out_none_skipped="$(print_summary "$PS_LOGS" claude codex opencode --skipped)"

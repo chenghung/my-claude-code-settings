@@ -2095,6 +2095,8 @@ spawn_supervisor() {
 # file path), and which were skipped because that CLI wasn't installed.
 # When exactly one reviewer was dispatched, adds a line calling out that
 # cross-validation across independent reviewers does not hold for this run.
+# When two or more were dispatched, adds a line pointing at the synthesis
+# pass that will run once they all finish, and its log path.
 #
 # Also reports what fetch_review_materials collected, by reading back
 # <base_dir>/.materials-status (silently omitting this section when that
@@ -2203,6 +2205,16 @@ print_summary() {
 
   if [ "${#dispatched[@]}" -eq 1 ]; then
     printf '\n本次只有一個 reviewer，交叉驗證效果不成立。\n'
+  fi
+
+  # Two or more dispatched reviewers means a synthesis pass will run once
+  # they all finish, producing the single comment that actually gets
+  # posted. Saying so here matters because the summary is printed while
+  # the reviewers are still running: without this line the caller has no
+  # way to know one more process is still to come.
+  if [ "${#dispatched[@]}" -ge 2 ]; then
+    printf '\n本次結束後會再跑一次合流，產出唯一一則要張貼的 comment。\n'
+    printf '合流 log：%s\n' "$base_dir/synthesis.log"
   fi
 }
 
