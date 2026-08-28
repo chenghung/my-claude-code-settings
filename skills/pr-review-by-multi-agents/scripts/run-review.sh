@@ -1446,6 +1446,22 @@ launch_reviewer() {
     claude)
       # No WebFetch (or any other network-capable tool): see this
       # function's own docstring, claude bullet, for why.
+      #
+      # --disallowedTools takes a variable number of values: it keeps
+      # consuming whatever bare (non-flag) tokens follow it on the
+      # command line as additional tool names to deny, until it hits the
+      # next `--flag` or the end of argv. The prompt must keep arriving
+      # over stdin (see the shared nohup line below), never as a
+      # positional argument placed after this flag -- a probe run that
+      # did pass it positionally here had the entire prompt swallowed
+      # word by word into new deny rules instead of ever reaching the
+      # model: the output was a wall of "Permission deny rule <word>
+      # matches no known tool" lines, and the process still exited 0. No
+      # error, no non-zero exit -- just an empty, contentless result with
+      # nothing pointing at the cause. Not reachable today (nothing here
+      # ever appends a positional arg after --disallowedTools), but a
+      # future edit that switched the prompt to a positional argument
+      # would hit this silently.
       cmd=(claude -p --permission-mode dontAsk \
         --allowedTools "Read Grep Glob" \
         --disallowedTools "Edit Write NotebookEdit")
@@ -2013,6 +2029,14 @@ launch_synthesis() {
       # narrowing it. WebFetch is disallowed for the same reason it was
       # removed from launch_reviewer's own allow list: nothing here has
       # any legitimate use for it.
+      #
+      # --disallowedTools here is the same variable-length flag
+      # launch_reviewer's own claude branch documents: it swallows a
+      # positional prompt argument word by word into new deny rules and
+      # silently succeeds with an empty result instead of ever running
+      # the prompt. See that branch's comment for the probe that found
+      # it; the prompt here likewise only ever arrives over stdin, never
+      # positionally.
       cmd=(claude -p --permission-mode dontAsk \
         --allowedTools "" \
         --disallowedTools "Edit Write NotebookEdit WebFetch Bash")
