@@ -1571,8 +1571,10 @@ launch_reviewer() {
   printf '%s\n' "$before_snapshot" > "$base_dir/.git-status-before-$pid"
   # spawn_supervisor only ever receives PIDs (see its own docstring on
   # why), so this is how it learns which log file belongs to which PID --
-  # the one place it needs that mapping is to extract and post this
-  # reviewer's review once it finishes.
+  # the one place it needs that mapping is to extract this reviewer's
+  # review into a content file once it finishes (posting itself is no
+  # longer any part of this pipeline; see spawn_supervisor's own
+  # docstring).
   printf '%s\n' "$log_file" > "$base_dir/.log-$pid"
 
   printf '%s\n' "$pid"
@@ -1729,10 +1731,10 @@ _count_ready() {
 # happens to come first in the summary file, i.e. completion order (the
 # order spawn_supervisor's poll loop records each reviewer as it finishes),
 # not the order they were dispatched in. _select_synthesis_cli is the
-# only caller now, and only as its fallback -- once no ready review came
-# from a CLI that launch_synthesis can lock down to zero tools (see
-# _select_synthesis_cli's own docstring), this is what decides among
-# whatever is left.
+# only caller now, and only as its fallback -- once neither of its two
+# preferred CLIs (see its own docstring for what makes them preferred)
+# produced a ready review this run, this is what decides among whatever
+# is left.
 _first_ready_cli() {
   sed -n 's/^cli=\([^ ]*\) .* content_status=ready .*$/\1/p' "$1" 2>/dev/null | head -n 1
 }
@@ -1740,33 +1742,43 @@ _first_ready_cli() {
 # _select_synthesis_cli <summary_file>
 #
 # Picks which CLI runs the synthesis pass. Prefers the first ready review
-# that came from claude or agy -- the two launch_synthesis branches that
-# actually reach zero tools (claude: Bash disallowed outright, empty allow
-# list; agy: permission allow list written empty) -- falling back to
-# _first_ready_cli's plain completion-order pick only when neither of
-# those two produced a ready review this run.
+# that came from claude or agy -- not because both reach zero tools
+# across the board, but because both close the one axis that actually
+# matters for the highest-value prompt-injection target in this pipeline:
+# network access, the only way to exfiltrate the full review text this
+# process reads. claude's Bash tool is disallowed outright, verified
+# against a real binary to leave it with no usable tool at all. agy's
+# empty permission allow list closes off its shell and network surface
+# via headless mode's own default-deny, but NOT file writing -- agy's
+# write tool bypasses this permission layer entirely regardless of what
+# the allow list contains (see launch_synthesis's own agy branch).
+# Unlike a reviewer, synthesis carries no chmod backstop for that
+# remaining gap either: it runs only after the worktree has already been
+# removed, with its cwd at the run directory root, which nothing in this
+# pipeline ever locks down. Falling back to _first_ready_cli's plain
+# completion-order pick only when neither claude nor agy produced a ready
+# review this run.
 #
 # This exists because completion order alone is not a safe tiebreaker
-# here.
-# The synthesis is the one step in this whole pipeline that reads the full
-# text of every trustworthy review end to end, and that text is derived
-# from the PR diff and its comment threads -- content any GitHub user can
-# write (see build_synthesis_prompt) -- making it the highest-value
-# prompt-injection target in the pipeline. codex's branch still runs under
-# `-s read-only`, and this file's own launch_reviewer docstring already
-# recorded, from real testing, that this sandbox mode restricts local
-# filesystem writes only: outbound network still reaches, codex exec's
-# shell tool is still usable underneath it, and there is no further codex
-# flag available to close that. opencode's branch denies the `edit` and
-# `bash` tools outright, which is real progress over the per-pattern
-# blacklist launch_reviewer's own opencode config needs, but it is a deny
-# list naming two specific tools, not the empty allow list claude and agy
-# get -- whatever else opencode's tool surface offers beyond those two
-# stays reachable. So on a combination that happens to contain codex or
-# opencode, taking whichever ready review simply printed first could hand
-# the synthesis to the one CLI still holding a shell and a network path,
-# even when a CLI sitting in the very same run could have been locked to
-# nothing at all. This function is what makes that not happen.
+# here. The synthesis is the one step in this whole pipeline that reads
+# the full text of every trustworthy review end to end, and that text is
+# derived from the PR diff and its comment threads -- content any GitHub
+# user can write (see build_synthesis_prompt) -- making it the highest-
+# value prompt-injection target in the pipeline. codex's branch still
+# runs under `-s read-only`, and this file's own launch_reviewer
+# docstring already recorded, from real testing, that this sandbox mode
+# restricts local filesystem writes only: outbound network still reaches,
+# codex exec's shell tool is still usable underneath it, and there is no
+# further codex flag available to close that. opencode's branch denies
+# the `edit` and `bash` tools outright, which is real progress over the
+# per-pattern blacklist launch_reviewer's own opencode config needs, but
+# it is a deny list naming two specific tools -- whatever else opencode's
+# tool surface offers beyond those two stays reachable, network included.
+# So on a combination that happens to contain codex or opencode, taking
+# whichever ready review simply printed first could hand the synthesis to
+# the one CLI still holding a shell and a network path, even when a CLI
+# sitting in the very same run could have had that same network path
+# closed off. This function is what makes that not happen.
 _select_synthesis_cli() {
   local summary_file="$1" cli
 
@@ -2659,9 +2671,11 @@ main() {
   # reviewer's log (impersonating that CLI's review) or write arbitrary
   # content, e.g. a credentials file, wrapped in the contract's own
   # markers into any log; spawn_supervisor trusts whatever it finds
-  # between the markers and would post it verbatim. The worktree's own
-  # git-status comparison is blind to this path entirely, since logs_dir
-  # lives outside the worktree.
+  # between the markers and would extract it into that reviewer's
+  # content file verbatim, for the calling agent to post exactly as if
+  # it came from the real reviewer. The worktree's own git-status
+  # comparison is blind to this path entirely, since logs_dir lives
+  # outside the worktree.
   #
   # Unlike the worktree chmod above, a failure here is not treated as a
   # hard-abort precondition: every reviewer is already running by this
