@@ -17,7 +17,8 @@ set -euo pipefail
 #   - 透過 pipx 安裝官方 repo 與 AUR 皆無的 python 套件：markitdown[all]
 #   - 透過上游官方安裝腳本（curl）安裝官方 repo 與 AUR 皆無可信對應套件的
 #     工具：codegraph、TokenUsageInsights（其 --service 旗標會另外常駐一個
-#     systemd user 服務，詳見下方第 4 節說明）
+#     systemd user 服務，詳見下方第 4 節說明）、herdr（每次執行本腳本都
+#     檢查並更新）、agy（Antigravity CLI，已存在即略過，不代跑自帶更新器）
 #   - 不再使用 npm 全域安裝任何工具（claude code / codex 已改走 repo 或 AUR）
 #   - 於 ~/.zshrc 內以 sentinel 標記包夾的方式維護（重生）alias 區塊
 # 冪等與衝突防護（重點）：
@@ -220,7 +221,7 @@ fi
 #      systemd user 目錄建立 unit 並執行 systemctl --user enable --now，
 #      使其儀表板常駐監聽 3003 埠。
 # ------------------------------------------------------------
-echo "==> [4/4] 透過上游官方安裝腳本安裝（codegraph 每次檢查並更新，token-usage-insights 已存在即略過）"
+echo "==> [4/4] 透過上游官方安裝腳本安裝（codegraph、herdr 每次檢查並更新，token-usage-insights、agy 已存在即略過）"
 if ! command -v curl >/dev/null 2>&1; then
   echo "    [錯誤] 找不到 curl，請先安裝 curl 後再執行此腳本。" >&2
   exit 1
@@ -241,6 +242,31 @@ if command -v token-usage-insights >/dev/null 2>&1; then
 else
   echo "    [安裝] 未偵測到 'token-usage-insights'，透過官方安裝腳本安裝 ..."
   curl -fsSL https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.sh | bash -s -- --service
+fi
+
+# herdr：官方 repo 與 AUR 皆無，官方管道為上游安裝腳本，裝到 ~/.local/bin。
+# 冪等判斷比照 codegraph：已存在時改跑 `herdr update`，每次執行本腳本都順便
+# 檢查並更新；更新失敗（例如無網路）不應中斷整支腳本，故以 if 包裹取得
+# exit code 並 warn-and-continue。
+if command -v herdr >/dev/null 2>&1; then
+  echo "    [更新] 'herdr' 已存在，執行 'herdr update' 檢查並更新 ..."
+  if ! herdr update; then
+    echo "    [警告] 'herdr update' 失敗，略過更新，繼續執行後續步驟。" >&2
+  fi
+else
+  echo "    [安裝] 未偵測到 'herdr'，透過官方安裝腳本安裝 ..."
+  curl -fsSL https://herdr.dev/install.sh | sh
+fi
+
+# agy（Antigravity CLI）：官方 repo 與 AUR 皆無，官方管道為上游安裝腳本，
+# 裝到 ~/.local/bin。與 herdr、codegraph 不同，已存在時「不」代跑更新——
+# agy 自帶更新器（~/.gemini/antigravity-cli/updater 與 last_check.timestamp），
+# 由本腳本代跑只會與它互相干擾。
+if command -v agy >/dev/null 2>&1; then
+  echo "    [略過] 'agy' 已存在，不代跑更新（agy 自帶更新器）。"
+else
+  echo "    [安裝] 未偵測到 'agy'，透過官方安裝腳本安裝 ..."
+  curl -fsSL https://antigravity.google/cli/install.sh | bash
 fi
 
 # ------------------------------------------------------------

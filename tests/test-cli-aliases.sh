@@ -22,6 +22,16 @@ grep -qF 'https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/sc
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qF 'bash -s -- --service' "$INSTALL_SH" && pass token-usage-insights-service-flag || bad token-usage-insights-service-flag
 
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'https://herdr.dev/install.sh' "$INSTALL_SH" && pass herdr-install-line || bad herdr-install-line
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'herdr update' "$INSTALL_SH" && pass herdr-update-line || bad herdr-update-line
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'https://antigravity.google/cli/install.sh' "$INSTALL_SH" && pass agy-install-line || bad agy-install-line
+# agy ships its own updater; the script must never drive an agy self-update.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qE '^[[:space:]]*agy update' "$INSTALL_SH" && bad agy-no-self-update || pass agy-no-self-update
+
 # Regression guard: `codegraph install` rewrites each agent's config file in
 # place, swapping the symlink this repo's install.sh created for a real file.
 # Checked against both scripts — install.sh is the one that does agent
