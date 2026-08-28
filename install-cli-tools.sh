@@ -176,11 +176,13 @@ else
 fi
 
 # ------------------------------------------------------------
-# 4) 上游官方安裝腳本（curl）：codegraph、TokenUsageInsights
-#    來源依據：兩者官方 repo 與 AUR 皆無可信對應套件，改走上游官方安裝
-#      腳本（優先序第 4 級，低於官方 repo、AUR 與 pipx）。兩者皆安裝到
-#      使用者家目錄下，不需 sudo。
-#    冪等判斷（兩者行為不同，勿混為一談）：
+# 4) 上游官方安裝腳本（curl）：codegraph、TokenUsageInsights、herdr、agy
+#    來源依據：四者官方 repo 與 AUR 皆無可信對應套件，改走上游官方安裝
+#      腳本（優先序第 4 級，低於官方 repo、AUR 與 pipx）。四者皆安裝到
+#      使用者家目錄下，不需 sudo。herdr、agy（Antigravity CLI）與
+#      codegraph、TokenUsageInsights 同樣官方未提供 repo 或 AUR 套件，
+#      只提供官方安裝腳本，故比照收在本節。
+#    冪等判斷（四者行為不盡相同，勿混為一談）：
 #      - codegraph：不是「已存在即略過」。指令已存在時改跑 `codegraph
 #        upgrade`，讓它每次執行本腳本都順便檢查版本並更新到最新；已是
 #        最新版時 upgrade 會印出 "Already up to date" 並以 exit code 0
@@ -189,6 +191,15 @@ fi
 #        即略過，不重跑安裝腳本——因其安裝腳本帶 --service，重跑會連帶
 #        重寫 systemd unit 並重新 enable（見下方「副作用」），不宜每次
 #        自動執行。
+#      - herdr：比照 codegraph，不是「已存在即略過」。指令已存在時改跑
+#        `herdr update`，讓它每次執行本腳本都順便檢查並更新；更新失敗
+#        （例如無網路）以 warn-and-continue 處理，不中斷整支腳本。
+#      - agy（Antigravity CLI）：比照 token-usage-insights，沿用「對應
+#        指令是否已存在」為準，已存在即略過，但略過的理由不同——agy
+#        自帶更新器（~/.gemini/antigravity-cli/updater 與
+#        last_check.timestamp），由本腳本代跑更新只會與它自己的更新
+#        機制互相干擾，故已存在時一律不代跑更新，僅在指令不存在時才
+#        透過安裝腳本安裝。
 #    注意：兩者的安裝腳本都把執行檔裝在 ~/.local/bin，該路徑需已加入 PATH，
 #      command -v 才偵測得到，冪等判斷才會生效；若不在 PATH 中，codegraph
 #      每次重跑都會重新下載並執行安裝腳本（而非改跑 upgrade），
@@ -201,6 +212,10 @@ fi
 #      token-usage-insights->curl -fsSL
 #        https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.sh
 #        | bash -s -- --service
+#      herdr->curl -fsSL https://herdr.dev/install.sh | sh
+#        （已存在時改跑：herdr update）
+#      agy->curl -fsSL https://antigravity.google/cli/install.sh | bash
+#        （已存在時不代跑更新，agy 自帶更新器）
 #    安全防護：本腳本只執行上述安裝指令與 `codegraph upgrade` 取得／更新
 #      二進位，絕不額外呼叫 codegraph 官方 CLI 提供的 install 子指令——
 #      已實測驗證：`codegraph install -t opencode` 會把
