@@ -2859,12 +2859,24 @@ for kw in "失敗情境" "高風險變更" "信心" "<details>"; do
 done
 
 # ---- build_prompt 把契約原文嵌入 ----
-prompt_out="$(build_prompt "$contract" "https://github.com/a/b/pull/1" \
-  "$T/materials-empty" "claude" "opus-5" "$T/wt" "origin/main" 2>/dev/null)" || prompt_out=""
+# 用 `if cmd; then ...; else rc=$?; fi` 接住結束碼與 stderr，不用
+# `out="$(cmd)" || out=""` 那種寫法：後者的 `||` 會把失敗原因整個丟掉——
+# 這條斷言本身在這個分支開發期間曾被三個不同 agent 各自獨立撞見過一次
+# 間歇性失敗，26 次各自獨立重跑都重現不出來，每次撞見時機器都在跑其他
+# 高負載工作，本地資源競爭是目前唯一站得住的假說，但沒人能確認，因為
+# 結束碼與 stderr 當場就被丟了，什麼都留不下來查。
+BUILD_PROMPT_STDERR="$T/build-prompt.stderr"
+if prompt_out="$(build_prompt "$contract" "https://github.com/a/b/pull/1" \
+  "$T/materials-empty" "claude" "opus-5" "$T/wt" "origin/main" 2>"$BUILD_PROMPT_STDERR")"; then
+  prompt_rc=0
+else
+  prompt_rc=$?
+  prompt_out=""
+fi
 if printf '%s' "$prompt_out" | grep -q "高風險變更"; then
   pass "build_prompt 嵌入了高風險變更清單"
 else
-  bad "build_prompt 未嵌入契約新內容"
+  bad "build_prompt 未嵌入契約新內容（exit=$prompt_rc, stderr: $(cat "$BUILD_PROMPT_STDERR" 2>/dev/null)）"
 fi
 
 # ==============================================================
@@ -2923,6 +2935,23 @@ fi
 # and spawn_supervisor's own tail wiring that strings them together once
 # every reviewer has finished and the worktree is gone.
 # ==============================================================
+
+# ---- _disclosure_status_label 把三個 raw content_status 譯成合流契約
+# 要求的詞彙，未知值則明確標示而非偽裝成已知的三者之一 ----
+dsl_out="$(_disclosure_status_label ready)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$dsl_out" = "完成" ] && pass "_disclosure_status_label ready -> 完成" || bad "_disclosure_status_label ready 譯成: $dsl_out"
+dsl_out="$(_disclosure_status_label withheld)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$dsl_out" = "完成但內容被判定為不可信" ] && pass "_disclosure_status_label withheld -> 完成但內容被判定為不可信" || bad "_disclosure_status_label withheld 譯成: $dsl_out"
+dsl_out="$(_disclosure_status_label no-content)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$dsl_out" = "失敗" ] && pass "_disclosure_status_label no-content -> 失敗" || bad "_disclosure_status_label no-content 譯成: $dsl_out"
+dsl_out="$(_disclosure_status_label some-unexpected-value)"
+case "$dsl_out" in
+  *"some-unexpected-value"*) pass "_disclosure_status_label 未知值不偽裝成三者之一" ;;
+  *) bad "_disclosure_status_label 未知值被吃掉或誤判: $dsl_out" ;;
+esac
 
 # ---- build_synthesis_prompt 內嵌契約、名單與各份 review 的固定樣本 ----
 # 四份都各代表不同狀態：claude/agy 是 ready，codex 是「沒有內容」
@@ -3055,11 +3084,37 @@ if printf '%s' "$out" | grep -q 'REVIEW-FROM-OPENCODE-WITHHELD'; then
 else
   pass "build_synthesis_prompt 排除 withheld 的 review 全文"
 fi
-if printf '%s' "$out" | grep -qF 'opencode / qwen3-max：withheld'; then
-  pass "build_synthesis_prompt 名單仍列出 withheld 的 opencode 及其結果"
-else
-  bad "build_synthesis_prompt 名單未列出 withheld 的 opencode"
-fi
+# 名單這一欄印的必須是合流契約要的三個詞之一（完成／失敗／完成但內容被
+# 判定為不可信），不是 content_status 的原始英文值——契約禁止合流過程
+# 自行把 raw token 歸類，所以這個翻譯必須在這裡（呼叫端）就做完。四筆各
+# 代表一種原始值：claude/agy 是 ready、codex 是 no-content、opencode 是
+# withheld。
+case "$out" in
+  *'claude / opus-5：完成'*) pass "build_synthesis_prompt 名單把 claude 的 ready 譯成完成" ;;
+  *) bad "build_synthesis_prompt 名單未把 claude 的 ready 譯成完成" ;;
+esac
+case "$out" in
+  *'agy / gemini-3.7-flash-high：完成'*) pass "build_synthesis_prompt 名單把 agy 的 ready 譯成完成" ;;
+  *) bad "build_synthesis_prompt 名單未把 agy 的 ready 譯成完成" ;;
+esac
+case "$out" in
+  *'codex / unknown-model：失敗'*) pass "build_synthesis_prompt 名單把 codex 的 no-content 譯成失敗" ;;
+  *) bad "build_synthesis_prompt 名單未把 codex 的 no-content 譯成失敗" ;;
+esac
+case "$out" in
+  *'opencode / qwen3-max：完成但內容被判定為不可信'*) pass "build_synthesis_prompt 名單把 opencode 的 withheld 譯成完成但內容被判定為不可信" ;;
+  *) bad "build_synthesis_prompt 名單未把 opencode 的 withheld 譯成契約詞彙" ;;
+esac
+# 原始英文 token 不應該逐字出現在名單這一欄，防止翻譯被移除或繞過時測
+# 試仍然通過。
+case "$out" in
+  *'：ready'*|*'：withheld'*|*'：no-content'*)
+    bad "build_synthesis_prompt 名單仍外洩 content_status 的原始英文值"
+    ;;
+  *)
+    pass "build_synthesis_prompt 名單不外洩 content_status 的原始英文值"
+    ;;
+esac
 
 # ---- 控制端裁決帶入的額外要求：build_synthesis_prompt 必須揭露執行合
 # 流本身的 CLI 與 model，不只是各份 review 自己的身分。用一個與名單裡
@@ -3092,12 +3147,12 @@ printf 'agy some-model dispatched\n' > "$T/synth/roster-gap.txt"
 gap_out="$(build_synthesis_prompt \
   "$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md" \
   "$T/synth/roster-gap.txt" "$ROSTER_GAP_SUMMARY" "claude" "some-synth-model")"
-if printf '%s' "$gap_out" | grep -qF -- '- claude / 未提供：ready'; then
+if printf '%s' "$gap_out" | grep -qF -- '- claude / 未提供：完成'; then
   pass "build_synthesis_prompt 名單缺漏時把 model 寫成未提供"
 else
   bad "build_synthesis_prompt 名單缺漏時未寫成未提供"
 fi
-if printf '%s' "$gap_out" | grep -qF -- '- agy / some-model：ready'; then
+if printf '%s' "$gap_out" | grep -qF -- '- agy / some-model：完成'; then
   pass "build_synthesis_prompt 名單有紀錄的那筆不受缺漏影響"
 else
   bad "build_synthesis_prompt 名單有紀錄的那筆被誤判"
@@ -3121,11 +3176,65 @@ if noroster_out="$(build_synthesis_prompt \
 else
   bad "build_synthesis_prompt 名單檔整個不存在時卻中止: $noroster_out"
 fi
-if printf '%s' "$noroster_out" | grep -qF -- '- claude / 未提供：ready'; then
+if printf '%s' "$noroster_out" | grep -qF -- '- claude / 未提供：完成'; then
   pass "build_synthesis_prompt 名單檔整個不存在時把 model 寫成未提供"
 else
   bad "build_synthesis_prompt 名單檔整個不存在時未寫成未提供"
 fi
+
+# ==============================================================
+# build_synthesis_prompt -- 保護閘：summary 判定 ready 的兩筆，其實際
+# content_file 在函式執行當下卻都讀不到（檔案在 summary 寫完之後被刪
+# 除、變得不可讀，或路徑本身就是假的），不得讓合流吃到一份沒有任何
+# review 全文的 prompt。這是這個分支的審查抓出的兩個真功能缺口之一：
+# 修正前，每個 content_file 是逐檔靜默跳過，即使全部跳光也照樣印出前
+# 面的契約、身分與名單三段並回傳成功，讓 launch_synthesis 拿一份沒有
+# 任何 review 內容的 prompt 去跑，其輸出卻仍會被判定為 ready、成為唯
+# 一貼上 PR 的東西。
+# ==============================================================
+mkdir -p "$T/synth-no-embeddable"
+cat > "$T/synth-no-embeddable/summary.txt" <<'SUM'
+cli=claude pid=901 exit=0 ended_at=2026-08-27T00:00:00Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-no-embeddable/.comment-body-901.md
+cli=agy pid=902 exit=0 ended_at=2026-08-27T00:00:01Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-no-embeddable/.comment-body-902.md
+SUM
+sed -i "s#T_PLACEHOLDER#$T#g" "$T/synth-no-embeddable/summary.txt"
+# 兩份 content_file 都刻意不建立——模擬 summary 已經寫下 ready，但實際
+# 檔案在合流真正跑起來之前就消失或從未落地的情境。
+printf 'claude some-model dispatched\nagy some-model dispatched\n' > "$T/synth-no-embeddable/roster.txt"
+
+NOEMBED_STDERR="$T/synth-no-embeddable/stderr"
+if noembed_out="$(build_synthesis_prompt \
+  "$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md" \
+  "$T/synth-no-embeddable/roster.txt" "$T/synth-no-embeddable/summary.txt" \
+  "claude" "some-synth-model" 2>"$NOEMBED_STDERR")"; then
+  bad "build_synthesis_prompt 在完全嵌不到任何 review 全文時仍回傳成功: $noembed_out"
+else
+  pass "build_synthesis_prompt 在完全嵌不到任何 review 全文時回傳非零"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$NOEMBED_STDERR" ] && pass "build_synthesis_prompt 嵌不到任何內容時在 stderr 留下原因" || bad "build_synthesis_prompt 嵌不到任何內容時 stderr 是空的"
+
+# ---- 對照組：只要至少一份能嵌入，就不該觸發這道保護閘 ----
+mkdir -p "$T/synth-one-embeddable"
+cat > "$T/synth-one-embeddable/summary.txt" <<'SUM'
+cli=claude pid=903 exit=0 ended_at=2026-08-27T00:00:00Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-one-embeddable/.comment-body-903.md
+cli=agy pid=904 exit=0 ended_at=2026-08-27T00:00:01Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-one-embeddable/.comment-body-904.md
+SUM
+sed -i "s#T_PLACEHOLDER#$T#g" "$T/synth-one-embeddable/summary.txt"
+printf 'REVIEW-ONE-EMBEDDABLE\n' > "$T/synth-one-embeddable/.comment-body-903.md"
+# .comment-body-904.md 故意不建立，模擬其中一份消失、另一份還在的情境
+printf 'claude some-model dispatched\nagy some-model dispatched\n' > "$T/synth-one-embeddable/roster.txt"
+
+if oneembed_out="$(build_synthesis_prompt \
+  "$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md" \
+  "$T/synth-one-embeddable/roster.txt" "$T/synth-one-embeddable/summary.txt" \
+  "claude" "some-synth-model")"; then
+  pass "build_synthesis_prompt 只要有一份可嵌入就不觸發保護閘"
+else
+  bad "build_synthesis_prompt 有一份可嵌入卻仍被保護閘擋下"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$oneembed_out" | grep -q 'REVIEW-ONE-EMBEDDABLE' && pass "build_synthesis_prompt 對照組確實嵌入了那唯一一份 review" || bad "build_synthesis_prompt 對照組未嵌入那唯一一份 review"
 
 # ==============================================================
 # launch_synthesis
@@ -3412,10 +3521,12 @@ printf '%s' "$RSYN_L3" | grep -qE 'content_file=$' && pass "_record_synthesis_re
 # spawn_supervisor's poll loop's first iteration ever checks any of the
 # three PIDs (see the existing supervisor-order-* tests above for this
 # same codebase's own precedent for timing-sensitive assertions), so
-# which of claude/agy ends up first in the summary -- and therefore
-# which one _first_ready_cli hands to launch_synthesis -- is not pinned
-# down here; the assertions below accept either winner rather than
-# gamble on an exact ordering.
+# which of claude/agy ends up first in the summary -- and therefore which
+# one _select_synthesis_cli hands to launch_synthesis -- is not pinned
+# down here (both claude and agy match its own preferred-CLI branch
+# directly, so this scenario never even falls through to
+# _first_ready_cli's plain completion-order pick); the assertions below
+# accept either winner rather than gamble on an exact ordering.
 # ==============================================================
 
 SPWSYN_ROOT="$T/spawn-supervisor-synthesis-fixture"
