@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Single source of truth mapping Claude subagent `model` tiers to the model
-each target platform should run. Imported by the Codex (TOML) and opencode
-(markdown) converters; run directly (`python3 scripts/agent_model_map.py`) to
-print the mapping table for quick reference.
+each target platform should run. Imported by the Codex (TOML), opencode
+(markdown), and Antigravity converters; run directly
+(`python3 scripts/agent_model_map.py`) to print the mapping table for quick
+reference.
 """
 import sys
 
@@ -19,6 +20,14 @@ OPENCODE = {
     "haiku": "deepseek-v4-flash",
 }
 OPENCODE_PROVIDER = "opencode-go"
+
+# tier -> Antigravity model. Antigravity only exposes three tiers
+# (inherit/flash/pro), so opus and sonnet both collapse onto pro.
+ANTIGRAVITY = {
+    "opus": "pro",
+    "sonnet": "pro",
+    "haiku": "flash",
+}
 
 # Tiers that mean "inherit the platform default" -> emit no model field.
 INHERIT_TIERS = frozenset({None, "", "inherit"})
@@ -39,6 +48,12 @@ def resolve_opencode(tier):
     return None if model is None else "%s/%s" % (OPENCODE_PROVIDER, model)
 
 
+def resolve_antigravity(tier):
+    """Return the Antigravity model for a known tier, else None (see
+    resolve_codex for the None semantics)."""
+    return ANTIGRAVITY.get(tier)
+
+
 def is_unknown_tier(tier):
     """True when tier is neither a known capability tier nor an
     inherit-the-default sentinel — i.e. a value we cannot map and should
@@ -47,12 +62,13 @@ def is_unknown_tier(tier):
 
 
 def format_table():
-    rows = ["Claude tier | codex | opencode",
-            "----------- | ----- | --------"]
+    rows = ["Claude tier | codex | opencode | antigravity",
+            "----------- | ----- | -------- | -----------"]
     for t in TIERS:
         cm, ce = CODEX[t]
-        rows.append("%s | %s (%s) | %s" % (t, cm, ce, resolve_opencode(t)))
-    rows.append("inherit/absent | (omit) | (omit)")
+        rows.append("%s | %s (%s) | %s | %s"
+                    % (t, cm, ce, resolve_opencode(t), resolve_antigravity(t)))
+    rows.append("inherit/absent | (omit) | (omit) | (omit)")
     return "\n".join(rows)
 
 
