@@ -2,14 +2,14 @@
 set -euo pipefail
 
 # ============================================================
-# 腳本用途：在 Manjaro Linux 上安裝 20 個 CLI 工具，並將指定的
+# 腳本用途：在 Manjaro Linux 上安裝一批 CLI 工具，並將指定的
 #           alias 區塊冪等地寫入 ~/.zshrc。
 # 來源優先序（硬性）：官方 repo > AUR > pipx > 上游官方安裝腳本，且版本不可
 #   過舊；第四級（上游官方安裝腳本）僅用於官方 repo 與 AUR 皆無可信對應
 #   套件的工具。
 # 預期影響：
 #   - 透過 pacman 安裝官方 repo 套件：jq、bat、glow、eza、csvlens、
-#     openai-codex、abduco、lf、markdownlint-cli、tflint、python-pipx、
+#     openai-codex、lf、markdownlint-cli、tflint、python-pipx、
 #     ripgrep（提供 rg 指令）、shellcheck、bats；bats 另帶三個輔助庫
 #     bats-support、bats-assert、bats-file（僅提供 /usr/lib/bats 下的
 #     load.bash，無終端指令，以檔案存在與否判斷冪等）
@@ -78,7 +78,7 @@ ensure_tool() {
 
 # ------------------------------------------------------------
 # 1) 官方 repo 套件（pacman）：
-#    jq bat glow eza csvlens openai-codex abduco lf markdownlint-cli
+#    jq bat glow eza csvlens openai-codex lf markdownlint-cli
 #    tflint python-pipx shellcheck ripgrep
 #    來源依據：以上皆有官方 repo 版本，且版本不過舊（優先序第 1 級）。
 #      - openai-codex 即 OpenAI Codex CLI 官方套件
@@ -93,7 +93,7 @@ ensure_tool() {
 #      故改用 ensure_tool 以「codex 指令是否存在」為準，已存在即略過。
 #    對應：套件名 -> 指令名
 #      jq->jq  bat->bat  glow->glow  eza->eza  csvlens->csvlens
-#      openai-codex->codex  abduco->abduco  lf->lf
+#      openai-codex->codex  lf->lf
 #      markdownlint-cli->markdownlint  tflint->tflint
 #      python-pipx->pipx  shellcheck->shellcheck  ripgrep->rg
 # ------------------------------------------------------------
@@ -105,7 +105,6 @@ ensure_tool glow         glow             "${PACMAN_INSTALL[@]}"
 ensure_tool eza          eza              "${PACMAN_INSTALL[@]}"
 ensure_tool csvlens      csvlens          "${PACMAN_INSTALL[@]}"
 ensure_tool codex        openai-codex     "${PACMAN_INSTALL[@]}"
-ensure_tool abduco       abduco           "${PACMAN_INSTALL[@]}"
 ensure_tool lf           lf               "${PACMAN_INSTALL[@]}"
 ensure_tool markdownlint markdownlint-cli "${PACMAN_INSTALL[@]}"
 ensure_tool tflint       tflint           "${PACMAN_INSTALL[@]}"
@@ -264,7 +263,7 @@ fi
 #      前置空行只屬於「附加」路徑、且永遠落在區塊之外。重生路徑替換的
 #      範圍恰為 BEGIN..END，因此區塊外既有的分隔空行不會被動到，也不會
 #      每次重跑就多長一行。
-#    literal 保留：_cc_prune_dead_sockets / _cc_launch / clw / clre 等含
+#    literal 保留：clw / clre 等含
 #      $() 的函式與行，皆以 quoted heredoc 產生，寫入後字面與來源完全
 #      一致，寫入時不會被本腳本的 shell 展開，留待 ~/.zshrc 載入時
 #      才由 zsh 於執行期展開。
@@ -289,62 +288,20 @@ alias tree="eza --long --tree"
 alias md="glow -lt"
 #alias glow="glow -lt"
 alias csv="csvlens --color-columns --ignore-case --wrap words"
-## aliases for claude code (launched inside abduco for detachable/persistent sessions)
-# 逾期（14 天以上）死 socket 清理：只清 ~/.abduco 下、socket 型別、mtime 超過
-# 14 天、且 session 名稱不在 `abduco -l` 存活清單中的檔案；任何失敗都不得
-# 阻擋後續 claude 啟動，故各步驟以 2>/dev/null 或條件判斷吞掉錯誤。
-_cc_prune_dead_sockets() {
-  local dir="$HOME/.abduco" days=14
-  local candidates
-  candidates="$(find "$dir" -maxdepth 1 -type s -mtime +$days 2>/dev/null)"
-  [ -z "$candidates" ] && return 0
-  local live
-  live="$(abduco -l 2>/dev/null | awk 'NR>1{print $NF}')"
-  local f name
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    name="$(basename "$f")"; name="${name%@*}"
-    grep -qxF -- "$name" <<< "$live" && continue
-    rm -f -- "$f"
-  done <<< "$candidates"
-}
-# 統一啟動器：先清理逾期死 socket，再以「repo 名稱-時間戳」為 session 名稱
-# 透過 abduco 啟動 claude，session 可隨時 detach / 用 cll 或 abduco -a 重連。
-_cc_launch() {
-  _cc_prune_dead_sockets
-  local base tag stamp host room
-  base="$(git rev-parse --show-toplevel 2>/dev/null)"
-  base="$(basename "${base:-$PWD}")"
-  base="${base// /-}"
-  tag="${CC_SESSION_TAG:+${CC_SESSION_TAG}-}"
-  stamp="$(date +%Y%m%d-%H%M%S)"
-  host="$(hostname)"
-  # abduco 綁 AF_UNIX socket 於 $HOME/.abduco/<session>@<hostname>，而
-  # sockaddr_un.sun_path 只有 108 bytes（含結尾 NUL，可用 107）；超過時
-  # abduco 會以「create-session: File name too long」失敗，claude 根本不會
-  # 啟動。故過長時只從尾端截 repo 名稱，保留 tag 與時間戳——時間戳是同一
-  # repo 併行 session 名稱不互撞的唯一依據，不可截。
-  # 固定成本 11 = "/.abduco/"(9) + repo 名與時間戳間的 "-" + 主機名前的 "@"。
-  room=$(( 107 - ${#HOME} - 11 - ${#tag} - ${#stamp} - ${#host} ))
-  # 長度必須寫成 $room：zsh 會把 ${base:0:room} 的 ":r" 當成修飾子而報錯。
-  [ "$room" -gt 0 ] && [ ${#base} -gt "$room" ] && base="${base:0:$room}"
-  abduco -c "${tag}${base}-${stamp}" claude "$@"
-}
-alias cl='_cc_launch'
-alias cla='_cc_launch --permission-mode auto'
-alias clc='_cc_launch --permission-mode auto --continue'
-alias clr='_cc_launch --permission-mode auto --resume'
-alias clw='_cc_launch --permission-mode auto --worktree "$(basename $(git rev-parse --show-toplevel))/wt/$(date +%Y%m%d-%H%M%S)"'
-alias clre='_cc_launch --permission-mode auto --remote-control --name remote-control-onr-notebook-$(date +%Y%m%d-%H%M%S)'
-alias cll='abduco -l'
+## aliases for claude code
+alias cl='claude'
+alias cla='claude --permission-mode auto'
+alias clc='claude --permission-mode auto --continue'
+alias clr='claude --permission-mode auto --resume'
+alias clw='claude --permission-mode auto --worktree "$(basename $(git rev-parse --show-toplevel))/wt/$(date +%Y%m%d-%H%M%S)"'
+alias clre='claude --permission-mode auto --remote-control --name remote-control-onr-notebook-$(date +%Y%m%d-%H%M%S)'
 # personal 訂閱啟動器：把 config dir 指到獨立目錄，讓憑證與 token 額度和預設
-# (onr) 訂閱完全隔離；用 subshell export 確保 CLAUDE_CONFIG_DIR 一路傳到
-# abduco 再傳到 claude 子行程，且不污染互動 shell。
+# (onr) 訂閱完全隔離；用 subshell export 確保 CLAUDE_CONFIG_DIR 傳到 claude
+# 子行程，且不污染互動 shell。
 _ccp_launch() {
   (
     export CLAUDE_CONFIG_DIR="$HOME/.claude-personal"
-    export CC_SESSION_TAG="personal"
-    _cc_launch "$@"
+    claude "$@"
   )
 }
 alias clp='_ccp_launch --permission-mode auto'
