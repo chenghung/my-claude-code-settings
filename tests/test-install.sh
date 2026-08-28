@@ -204,4 +204,12 @@ for d in projects session-env file-history tasks; do
   diff -r "$CONFLICT_SNAPSHOT/$d" "$CLAUDE_PERSONAL_CONFIG_DIR/$d" > /dev/null 2>&1 && pass "personal-$d-not-destroyed" || bad "personal-$d-not-destroyed"
 done
 
+# ---- external skills manifest ----
+# The herdr entry MUST pin the skill name: herdrdev/herdr ships four skills
+# (herdr, herdr-pre-release-audit, herdr-throwaway-repro, triage) and an
+# unpinned entry would install all four into every platform's global dir.
+MANIFEST="$REPO/external-skills.txt"
+grep -qxF 'herdrdev/herdr@herdr' "$MANIFEST" && pass herdr-skill-entry || bad herdr-skill-entry
+grep -qE '^herdrdev/herdr$' "$MANIFEST" && bad herdr-skill-pinned || pass herdr-skill-pinned
+
 exit $fail
