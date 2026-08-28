@@ -200,11 +200,15 @@ fi
 #        last_check.timestamp），由本腳本代跑更新只會與它自己的更新
 #        機制互相干擾，故已存在時一律不代跑更新，僅在指令不存在時才
 #        透過安裝腳本安裝。
-#    注意：兩者的安裝腳本都把執行檔裝在 ~/.local/bin，該路徑需已加入 PATH，
-#      command -v 才偵測得到，冪等判斷才會生效；若不在 PATH 中，codegraph
-#      每次重跑都會重新下載並執行安裝腳本（而非改跑 upgrade），
-#      token-usage-insights 則會重新下載並執行安裝腳本，連帶重跑
-#      --service，重寫 systemd unit 並重新 enable。
+#    注意：四者的安裝腳本都把執行檔裝在 ~/.local/bin，該路徑需已加入 PATH，
+#      command -v 才偵測得到，冪等判斷才會生效；若不在 PATH 中：
+#        - codegraph 每次重跑都會重新下載並執行安裝腳本（而非改跑 upgrade）
+#        - herdr 比照 codegraph，每次重跑都會重新下載並執行安裝腳本
+#          （而非改跑 herdr update）
+#        - token-usage-insights 會重新下載並執行安裝腳本，連帶重跑 --service，
+#          重寫 systemd unit 並重新 enable
+#        - agy 每次重跑都會重新 curl 執行安裝腳本，而這正會與 agy 自帶更新器
+#          互相干擾——即本節開頭特別要避免的情況
 #    對應：指令名 -> 安裝指令
 #      codegraph->curl -fsSL
 #        https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh

@@ -24,8 +24,12 @@ grep -qF 'bash -s -- --service' "$INSTALL_SH" && pass token-usage-insights-servi
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qF 'https://herdr.dev/install.sh' "$INSTALL_SH" && pass herdr-install-line || bad herdr-install-line
+# Anchored to the real invocation line (not just the substring): three
+# comment/echo lines in this file also contain the literal text "herdr
+# update", so an unanchored grep -qF here would stay green even if the real
+# `if ! herdr update; then` line were deleted outright.
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'herdr update' "$INSTALL_SH" && pass herdr-update-line || bad herdr-update-line
+grep -qE '^[[:space:]]*if ! herdr update; then' "$INSTALL_SH" && pass herdr-update-line || bad herdr-update-line
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qF 'https://antigravity.google/cli/install.sh' "$INSTALL_SH" && pass agy-install-line || bad agy-install-line
 # agy ships its own updater; the script must never drive an agy self-update.
