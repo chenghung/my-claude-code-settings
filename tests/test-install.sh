@@ -214,6 +214,30 @@ grep -qxF 'my hand-authored global rules' "$GEMINI_CONFLICT_HOME/GEMINI.md" && p
 grep -qF "CONFLICT ${GEMINI_CONFLICT_HOME}/GEMINI.md" "$T/log_ag_gemini_conflict" && pass ag-gemini-md-conflict-logged || bad ag-gemini-md-conflict-logged
 export GEMINI_HOME="$T/gemini"
 
+# ---- codegraph MCP registration (Antigravity): real behavior, not string match ----
+# Scenario A: codegraph absent -> install.sh must register it.
+export GEMINI_HOME="$T/gemini-mcp-notreg"
+AGY_STUB_LOG="$T/agy-stub-notreg.log"
+: > "$AGY_STUB_LOG"
+( export PATH="$STUB_BIN:$PATH" AGY_STUB_LOG AGY_MCP_HAS_CODEGRAPH=0; "$REPO/install.sh" --antigravity --no-external > "$T/log_ag_mcp1" 2>&1 )
+grep -qxF 'mcp add codegraph -- codegraph serve --mcp' "$AGY_STUB_LOG" && pass ag-mcp-registers-when-absent || bad ag-mcp-registers-when-absent
+
+# Scenario B: codegraph already listed -> install.sh must NOT call `agy mcp add`.
+export GEMINI_HOME="$T/gemini-mcp-reg"
+AGY_STUB_LOG="$T/agy-stub-reg.log"
+: > "$AGY_STUB_LOG"
+( export PATH="$STUB_BIN:$PATH" AGY_STUB_LOG AGY_MCP_HAS_CODEGRAPH=1; "$REPO/install.sh" --antigravity --no-external > "$T/log_ag_mcp2" 2>&1 )
+grep -q '^mcp add' "$AGY_STUB_LOG" && bad ag-mcp-skips-when-registered || pass ag-mcp-skips-when-registered
+
+# The external-skill bridge must symlink agy-scoped external skills into the
+# dir agy actually reads. --no-external skips the install step, so seed the
+# source dir by hand and assert only the bridging behaviour.
+export GEMINI_HOME="$T/gemini-bridge"
+mkdir -p "$T/gemini-bridge/antigravity-cli/skills/herdr"
+printf -- '---\nname: herdr\ndescription: "x"\n---\nbody\n' > "$T/gemini-bridge/antigravity-cli/skills/herdr/SKILL.md"
+( export PATH="$STUB_BIN:$PATH" AGY_STUB_LOG="$T/agy-bridge.log"; : > "$T/agy-bridge.log"; "$REPO/install.sh" --antigravity --no-external > "$T/log_ag_bridge" 2>&1 )
+test -L "$T/gemini-bridge/config/skills/herdr" && pass ag-external-bridge || bad ag-external-bridge
+
 # --all must include antigravity
 grep -qE '^\s*--all\).*want_antigravity=1' "$REPO/install.sh" && pass ag-in-all || bad ag-in-all
 
