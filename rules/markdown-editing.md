@@ -39,7 +39,7 @@ Main agent 只負責提供以下資訊給 subagent：
 
 ## 範圍排除
 
-GitHub issue 與 PR 的標題及內文雖然以 markdown 格式撰寫，但不屬於本 rule 所規範的 markdown 檔案範圍，不應觸發 `markdown-editor` 或 `obsidian-md-editor`。此類內容的撰寫由 `github-issue-pr-authoring` skill 統籌處理。
+GitHub issue 與 PR 的標題及內文雖然以 markdown 格式撰寫，但不屬於本 rule 所規範的 markdown 檔案範圍，不應觸發 `markdown-editor` 或 `obsidian-md-editor`。此類內容改由 `issue-pr-publisher` 處理。
 
 領域驅動設計（DDD）建模流程產出的戰略與戰術模型檔，由該流程中負責建模的 subagent 於任務執行時直接寫入，屬領域專家的結構化產出，同樣排除於本 rule 所規範的 markdown 檔案範圍之外，不應改由 `markdown-editor` 或 `obsidian-md-editor` 代寫。此類產物的撰寫由 `ddd-modeling` skill 統籌處理。
 
