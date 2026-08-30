@@ -9,7 +9,13 @@
 #   - Lines starting with # are treated as comments and ignored.
 #   - Everything else is passed as-is to `npx skills add <entry> ...`.
 #
-# The entries below are commented out by default so a fresh install does
+# The herdr entry below is active by default: herdr is this setup's terminal
+# workspace manager, installed unconditionally by install-cli-tools.sh, so its
+# control skill ships with it. The entry pins @herdr on purpose - herdrdev/herdr
+# also carries three skills used only for developing herdr itself.
+herdrdev/herdr@herdr
+
+# The remaining entries are commented out by default so a fresh install does
 # not pull in any external skill until you opt in. Uncomment the ones you
 # want, or add your own line in the same owner/repo@skill format.
 

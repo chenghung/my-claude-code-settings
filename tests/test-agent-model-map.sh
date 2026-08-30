@@ -14,6 +14,12 @@ bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 [ "$(PY "print(m.resolve_opencode('sonnet'))")" = "opencode-go/deepseek-v4-pro" ] && pass oc-sonnet || bad oc-sonnet
 [ "$(PY "print(m.resolve_opencode('opus'))")" = "opencode-go/glm-5.2" ] && pass oc-opus || bad oc-opus
 
+[ "$(PY "print(m.resolve_antigravity('opus'))")" = "pro" ] && pass ag-opus || bad ag-opus
+[ "$(PY "print(m.resolve_antigravity('sonnet'))")" = "pro" ] && pass ag-sonnet || bad ag-sonnet
+[ "$(PY "print(m.resolve_antigravity('haiku'))")" = "flash" ] && pass ag-haiku || bad ag-haiku
+[ "$(PY "print(m.resolve_antigravity('inherit'))")" = "None" ] && pass ag-inherit || bad ag-inherit
+[ "$(PY "print(m.resolve_antigravity(None))")" = "None" ] && pass ag-none || bad ag-none
+
 # inherit / absent -> None (silent)
 [ "$(PY "print(m.resolve_codex('inherit'))")" = "None" ] && pass codex-inherit || bad codex-inherit
 [ "$(PY "print(m.resolve_opencode(None))")" = "None" ] && pass oc-none || bad oc-none
@@ -27,5 +33,6 @@ bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 out="$(python3 "$MOD")"
 printf '%s\n' "$out" | grep -q 'opencode-go/glm-5.2' && pass table-oc || bad table-oc
 printf '%s\n' "$out" | grep -q 'gpt-5.4-mini' && pass table-codex || bad table-codex
+printf '%s\n' "$out" | grep -q 'flash' && pass table-ag || bad table-ag
 
 exit $fail

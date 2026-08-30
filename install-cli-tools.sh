@@ -2,14 +2,14 @@
 set -euo pipefail
 
 # ============================================================
-# 腳本用途：在 Manjaro Linux 上安裝 20 個 CLI 工具，並將指定的
+# 腳本用途：在 Manjaro Linux 上安裝一批 CLI 工具，並將指定的
 #           alias 區塊冪等地寫入 ~/.zshrc。
 # 來源優先序（硬性）：官方 repo > AUR > pipx > 上游官方安裝腳本，且版本不可
 #   過舊；第四級（上游官方安裝腳本）僅用於官方 repo 與 AUR 皆無可信對應
 #   套件的工具。
 # 預期影響：
 #   - 透過 pacman 安裝官方 repo 套件：jq、bat、glow、eza、csvlens、
-#     openai-codex、abduco、lf、markdownlint-cli、tflint、python-pipx、
+#     openai-codex、lf、markdownlint-cli、tflint、python-pipx、
 #     ripgrep（提供 rg 指令）、shellcheck、bats；bats 另帶三個輔助庫
 #     bats-support、bats-assert、bats-file（僅提供 /usr/lib/bats 下的
 #     load.bash，無終端指令，以檔案存在與否判斷冪等）
@@ -17,7 +17,8 @@ set -euo pipefail
 #   - 透過 pipx 安裝官方 repo 與 AUR 皆無的 python 套件：markitdown[all]
 #   - 透過上游官方安裝腳本（curl）安裝官方 repo 與 AUR 皆無可信對應套件的
 #     工具：codegraph、TokenUsageInsights（其 --service 旗標會另外常駐一個
-#     systemd user 服務，詳見下方第 4 節說明）
+#     systemd user 服務，詳見下方第 4 節說明）、herdr（每次執行本腳本都
+#     檢查並更新）、agy（Antigravity CLI，已存在即略過，不代跑自帶更新器）
 #   - 不再使用 npm 全域安裝任何工具（claude code / codex 已改走 repo 或 AUR）
 #   - 於 ~/.zshrc 內以 sentinel 標記包夾的方式維護（重生）alias 區塊
 # 冪等與衝突防護（重點）：
@@ -78,7 +79,7 @@ ensure_tool() {
 
 # ------------------------------------------------------------
 # 1) 官方 repo 套件（pacman）：
-#    jq bat glow eza csvlens openai-codex abduco lf markdownlint-cli
+#    jq bat glow eza csvlens openai-codex lf markdownlint-cli
 #    tflint python-pipx shellcheck ripgrep
 #    來源依據：以上皆有官方 repo 版本，且版本不過舊（優先序第 1 級）。
 #      - openai-codex 即 OpenAI Codex CLI 官方套件
@@ -93,7 +94,7 @@ ensure_tool() {
 #      故改用 ensure_tool 以「codex 指令是否存在」為準，已存在即略過。
 #    對應：套件名 -> 指令名
 #      jq->jq  bat->bat  glow->glow  eza->eza  csvlens->csvlens
-#      openai-codex->codex  abduco->abduco  lf->lf
+#      openai-codex->codex  lf->lf
 #      markdownlint-cli->markdownlint  tflint->tflint
 #      python-pipx->pipx  shellcheck->shellcheck  ripgrep->rg
 # ------------------------------------------------------------
@@ -105,7 +106,6 @@ ensure_tool glow         glow             "${PACMAN_INSTALL[@]}"
 ensure_tool eza          eza              "${PACMAN_INSTALL[@]}"
 ensure_tool csvlens      csvlens          "${PACMAN_INSTALL[@]}"
 ensure_tool codex        openai-codex     "${PACMAN_INSTALL[@]}"
-ensure_tool abduco       abduco           "${PACMAN_INSTALL[@]}"
 ensure_tool lf           lf               "${PACMAN_INSTALL[@]}"
 ensure_tool markdownlint markdownlint-cli "${PACMAN_INSTALL[@]}"
 ensure_tool tflint       tflint           "${PACMAN_INSTALL[@]}"
@@ -176,11 +176,13 @@ else
 fi
 
 # ------------------------------------------------------------
-# 4) 上游官方安裝腳本（curl）：codegraph、TokenUsageInsights
-#    來源依據：兩者官方 repo 與 AUR 皆無可信對應套件，改走上游官方安裝
-#      腳本（優先序第 4 級，低於官方 repo、AUR 與 pipx）。兩者皆安裝到
-#      使用者家目錄下，不需 sudo。
-#    冪等判斷（兩者行為不同，勿混為一談）：
+# 4) 上游官方安裝腳本（curl）：codegraph、TokenUsageInsights、herdr、agy
+#    來源依據：四者官方 repo 與 AUR 皆無可信對應套件，改走上游官方安裝
+#      腳本（優先序第 4 級，低於官方 repo、AUR 與 pipx）。四者皆安裝到
+#      使用者家目錄下，不需 sudo。herdr、agy（Antigravity CLI）與
+#      codegraph、TokenUsageInsights 同樣官方未提供 repo 或 AUR 套件，
+#      只提供官方安裝腳本，故比照收在本節。
+#    冪等判斷（四者行為不盡相同，勿混為一談）：
 #      - codegraph：不是「已存在即略過」。指令已存在時改跑 `codegraph
 #        upgrade`，讓它每次執行本腳本都順便檢查版本並更新到最新；已是
 #        最新版時 upgrade 會印出 "Already up to date" 並以 exit code 0
@@ -189,11 +191,24 @@ fi
 #        即略過，不重跑安裝腳本——因其安裝腳本帶 --service，重跑會連帶
 #        重寫 systemd unit 並重新 enable（見下方「副作用」），不宜每次
 #        自動執行。
-#    注意：兩者的安裝腳本都把執行檔裝在 ~/.local/bin，該路徑需已加入 PATH，
-#      command -v 才偵測得到，冪等判斷才會生效；若不在 PATH 中，codegraph
-#      每次重跑都會重新下載並執行安裝腳本（而非改跑 upgrade），
-#      token-usage-insights 則會重新下載並執行安裝腳本，連帶重跑
-#      --service，重寫 systemd unit 並重新 enable。
+#      - herdr：比照 codegraph，不是「已存在即略過」。指令已存在時改跑
+#        `herdr update`，讓它每次執行本腳本都順便檢查並更新；更新失敗
+#        （例如無網路）以 warn-and-continue 處理，不中斷整支腳本。
+#      - agy（Antigravity CLI）：比照 token-usage-insights，沿用「對應
+#        指令是否已存在」為準，已存在即略過，但略過的理由不同——agy
+#        自帶更新器（~/.gemini/antigravity-cli/updater 與
+#        last_check.timestamp），由本腳本代跑更新只會與它自己的更新
+#        機制互相干擾，故已存在時一律不代跑更新，僅在指令不存在時才
+#        透過安裝腳本安裝。
+#    注意：四者的安裝腳本都把執行檔裝在 ~/.local/bin，該路徑需已加入 PATH，
+#      command -v 才偵測得到，冪等判斷才會生效；若不在 PATH 中：
+#        - codegraph 每次重跑都會重新下載並執行安裝腳本（而非改跑 upgrade）
+#        - herdr 比照 codegraph，每次重跑都會重新下載並執行安裝腳本
+#          （而非改跑 herdr update）
+#        - token-usage-insights 會重新下載並執行安裝腳本，連帶重跑 --service，
+#          重寫 systemd unit 並重新 enable
+#        - agy 每次重跑都會重新 curl 執行安裝腳本，而這正會與 agy 自帶更新器
+#          互相干擾——即本節開頭特別要避免的情況
 #    對應：指令名 -> 安裝指令
 #      codegraph->curl -fsSL
 #        https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
@@ -201,6 +216,10 @@ fi
 #      token-usage-insights->curl -fsSL
 #        https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.sh
 #        | bash -s -- --service
+#      herdr->curl -fsSL https://herdr.dev/install.sh | sh
+#        （已存在時改跑：herdr update）
+#      agy->curl -fsSL https://antigravity.google/cli/install.sh | bash
+#        （已存在時不代跑更新，agy 自帶更新器）
 #    安全防護：本腳本只執行上述安裝指令與 `codegraph upgrade` 取得／更新
 #      二進位，絕不額外呼叫 codegraph 官方 CLI 提供的 install 子指令——
 #      已實測驗證：`codegraph install -t opencode` 會把
@@ -221,7 +240,7 @@ fi
 #      systemd user 目錄建立 unit 並執行 systemctl --user enable --now，
 #      使其儀表板常駐監聽 3003 埠。
 # ------------------------------------------------------------
-echo "==> [4/4] 透過上游官方安裝腳本安裝（codegraph 每次檢查並更新，token-usage-insights 已存在即略過）"
+echo "==> [4/4] 透過上游官方安裝腳本安裝（codegraph、herdr 每次檢查並更新，token-usage-insights、agy 已存在即略過）"
 if ! command -v curl >/dev/null 2>&1; then
   echo "    [錯誤] 找不到 curl，請先安裝 curl 後再執行此腳本。" >&2
   exit 1
@@ -244,6 +263,31 @@ else
   curl -fsSL https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.sh | bash -s -- --service
 fi
 
+# herdr：官方 repo 與 AUR 皆無，官方管道為上游安裝腳本，裝到 ~/.local/bin。
+# 冪等判斷比照 codegraph：已存在時改跑 `herdr update`，每次執行本腳本都順便
+# 檢查並更新；更新失敗（例如無網路）不應中斷整支腳本，故以 if 包裹取得
+# exit code 並 warn-and-continue。
+if command -v herdr >/dev/null 2>&1; then
+  echo "    [更新] 'herdr' 已存在，執行 'herdr update' 檢查並更新 ..."
+  if ! herdr update; then
+    echo "    [警告] 'herdr update' 失敗，略過更新，繼續執行後續步驟。" >&2
+  fi
+else
+  echo "    [安裝] 未偵測到 'herdr'，透過官方安裝腳本安裝 ..."
+  curl -fsSL https://herdr.dev/install.sh | sh
+fi
+
+# agy（Antigravity CLI）：官方 repo 與 AUR 皆無，官方管道為上游安裝腳本，
+# 裝到 ~/.local/bin。與 herdr、codegraph 不同，已存在時「不」代跑更新——
+# agy 自帶更新器（~/.gemini/antigravity-cli/updater 與 last_check.timestamp），
+# 由本腳本代跑只會與它互相干擾。
+if command -v agy >/dev/null 2>&1; then
+  echo "    [略過] 'agy' 已存在，不代跑更新（agy 自帶更新器）。"
+else
+  echo "    [安裝] 未偵測到 'agy'，透過官方安裝腳本安裝 ..."
+  curl -fsSL https://antigravity.google/cli/install.sh | bash
+fi
+
 # ------------------------------------------------------------
 # 5) 同步 alias 到 ~/.zshrc（重生整個託管區塊）
 #    防重複與同步機制：以 BEGIN/END sentinel 標記包夾整段 alias，視為
@@ -264,7 +308,7 @@ fi
 #      前置空行只屬於「附加」路徑、且永遠落在區塊之外。重生路徑替換的
 #      範圍恰為 BEGIN..END，因此區塊外既有的分隔空行不會被動到，也不會
 #      每次重跑就多長一行。
-#    literal 保留：_cc_prune_dead_sockets / _cc_launch / clw / clre 等含
+#    literal 保留：clw / clre 等含
 #      $() 的函式與行，皆以 quoted heredoc 產生，寫入後字面與來源完全
 #      一致，寫入時不會被本腳本的 shell 展開，留待 ~/.zshrc 載入時
 #      才由 zsh 於執行期展開。
@@ -289,62 +333,20 @@ alias tree="eza --long --tree"
 alias md="glow -lt"
 #alias glow="glow -lt"
 alias csv="csvlens --color-columns --ignore-case --wrap words"
-## aliases for claude code (launched inside abduco for detachable/persistent sessions)
-# 逾期（14 天以上）死 socket 清理：只清 ~/.abduco 下、socket 型別、mtime 超過
-# 14 天、且 session 名稱不在 `abduco -l` 存活清單中的檔案；任何失敗都不得
-# 阻擋後續 claude 啟動，故各步驟以 2>/dev/null 或條件判斷吞掉錯誤。
-_cc_prune_dead_sockets() {
-  local dir="$HOME/.abduco" days=14
-  local candidates
-  candidates="$(find "$dir" -maxdepth 1 -type s -mtime +$days 2>/dev/null)"
-  [ -z "$candidates" ] && return 0
-  local live
-  live="$(abduco -l 2>/dev/null | awk 'NR>1{print $NF}')"
-  local f name
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    name="$(basename "$f")"; name="${name%@*}"
-    grep -qxF -- "$name" <<< "$live" && continue
-    rm -f -- "$f"
-  done <<< "$candidates"
-}
-# 統一啟動器：先清理逾期死 socket，再以「repo 名稱-時間戳」為 session 名稱
-# 透過 abduco 啟動 claude，session 可隨時 detach / 用 cll 或 abduco -a 重連。
-_cc_launch() {
-  _cc_prune_dead_sockets
-  local base tag stamp host room
-  base="$(git rev-parse --show-toplevel 2>/dev/null)"
-  base="$(basename "${base:-$PWD}")"
-  base="${base// /-}"
-  tag="${CC_SESSION_TAG:+${CC_SESSION_TAG}-}"
-  stamp="$(date +%Y%m%d-%H%M%S)"
-  host="$(hostname)"
-  # abduco 綁 AF_UNIX socket 於 $HOME/.abduco/<session>@<hostname>，而
-  # sockaddr_un.sun_path 只有 108 bytes（含結尾 NUL，可用 107）；超過時
-  # abduco 會以「create-session: File name too long」失敗，claude 根本不會
-  # 啟動。故過長時只從尾端截 repo 名稱，保留 tag 與時間戳——時間戳是同一
-  # repo 併行 session 名稱不互撞的唯一依據，不可截。
-  # 固定成本 11 = "/.abduco/"(9) + repo 名與時間戳間的 "-" + 主機名前的 "@"。
-  room=$(( 107 - ${#HOME} - 11 - ${#tag} - ${#stamp} - ${#host} ))
-  # 長度必須寫成 $room：zsh 會把 ${base:0:room} 的 ":r" 當成修飾子而報錯。
-  [ "$room" -gt 0 ] && [ ${#base} -gt "$room" ] && base="${base:0:$room}"
-  abduco -c "${tag}${base}-${stamp}" claude "$@"
-}
-alias cl='_cc_launch'
-alias cla='_cc_launch --permission-mode auto'
-alias clc='_cc_launch --permission-mode auto --continue'
-alias clr='_cc_launch --permission-mode auto --resume'
-alias clw='_cc_launch --permission-mode auto --worktree "$(basename $(git rev-parse --show-toplevel))/wt/$(date +%Y%m%d-%H%M%S)"'
-alias clre='_cc_launch --permission-mode auto --remote-control --name remote-control-onr-notebook-$(date +%Y%m%d-%H%M%S)'
-alias cll='abduco -l'
+## aliases for claude code
+alias cl='claude'
+alias cla='claude --permission-mode auto'
+alias clc='claude --permission-mode auto --continue'
+alias clr='claude --permission-mode auto --resume'
+alias clw='claude --permission-mode auto --worktree "$(basename $(git rev-parse --show-toplevel))/wt/$(date +%Y%m%d-%H%M%S)"'
+alias clre='claude --permission-mode auto --remote-control --name remote-control-onr-notebook-$(date +%Y%m%d-%H%M%S)'
 # personal 訂閱啟動器：把 config dir 指到獨立目錄，讓憑證與 token 額度和預設
-# (onr) 訂閱完全隔離；用 subshell export 確保 CLAUDE_CONFIG_DIR 一路傳到
-# abduco 再傳到 claude 子行程，且不污染互動 shell。
+# (onr) 訂閱完全隔離；用 subshell export 確保 CLAUDE_CONFIG_DIR 傳到 claude
+# 子行程，且不污染互動 shell。
 _ccp_launch() {
   (
     export CLAUDE_CONFIG_DIR="$HOME/.claude-personal"
-    export CC_SESSION_TAG="personal"
-    _cc_launch "$@"
+    claude "$@"
   )
 }
 alias clp='_ccp_launch --permission-mode auto'

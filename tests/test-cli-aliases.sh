@@ -7,6 +7,7 @@ fail=0
 pass() { printf 'PASS %s\n' "$1"; }
 bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qE '^ensure_tool opencode opencode-bin ' "$INSTALL_SH" && pass opencode-install-line || bad opencode-install-line
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -20,6 +21,20 @@ grep -qF 'https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/sc
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qF 'bash -s -- --service' "$INSTALL_SH" && pass token-usage-insights-service-flag || bad token-usage-insights-service-flag
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'https://herdr.dev/install.sh' "$INSTALL_SH" && pass herdr-install-line || bad herdr-install-line
+# Anchored to the real invocation line (not just the substring): three
+# comment/echo lines in this file also contain the literal text "herdr
+# update", so an unanchored grep -qF here would stay green even if the real
+# `if ! herdr update; then` line were deleted outright.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qE '^[[:space:]]*if ! herdr update; then' "$INSTALL_SH" && pass herdr-update-line || bad herdr-update-line
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'https://antigravity.google/cli/install.sh' "$INSTALL_SH" && pass agy-install-line || bad agy-install-line
+# agy ships its own updater; the script must never drive an agy self-update.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qE '^[[:space:]]*agy update' "$INSTALL_SH" && bad agy-no-self-update || pass agy-no-self-update
 
 # Regression guard: `codegraph install` rewrites each agent's config file in
 # place, swapping the symlink this repo's install.sh created for a real file.
@@ -48,216 +63,29 @@ assert_no_codegraph_install "$INSTALL_SH" install-cli-tools
 assert_no_codegraph_install "$REPO/install.sh" install
 
 T="$(mktemp -d)"
-# $TMPDIR -- and therefore $T -- can be arbitrarily long on a given machine.
-# Case set 6 asserts against a hard byte ceiling, so it needs a second scratch
-# dir at a short, TMPDIR-independent path to stand in for $HOME.
-T6="$(mktemp -d /tmp/cc-sunpath-XXXXXX)"
-trap 'rm -rf "$T" "$T6"' EXIT
+trap 'rm -rf "$T"' EXIT
 
 # ------------------------------------------------------------
-# DRY extraction: pull the real _cc_prune_dead_sockets / _cc_launch function
-# bodies straight out of install-cli-tools.sh (they live inside a quoted
-# heredoc there, but are plain lines from awk's point of view) instead of
-# maintaining a copy here that could drift from the shipped code.
-# ------------------------------------------------------------
-awk '/^_cc_prune_dead_sockets\(\) \{/,/^}/' "$INSTALL_SH" > "$T/prune.sh"
-awk '/^_cc_launch\(\) \{/,/^}/' "$INSTALL_SH" > "$T/launch.sh"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-test -s "$T/prune.sh" && pass extract-prune || bad extract-prune
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-test -s "$T/launch.sh" && pass extract-launch || bad extract-launch
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-bash -n "$T/prune.sh" && pass prune-syntax || bad prune-syntax
-
-# Sourced file is generated at runtime (extracted from install-cli-tools.sh);
-# there is no static path for shellcheck to follow.
-# shellcheck source=/dev/null
-source "$T/prune.sh"
-
-# ------------------------------------------------------------
-# Stub bin/abduco: prints a controlled `-l` listing (session names taken
-# from $CC_TEST_LIVE, one per line) and drops a marker file whenever `-l`
-# is actually invoked, so tests can assert the short-circuit path never
-# calls it. `-c NAME CMD ARGS...` exec's into the stubbed command so the
-# optional _cc_launch test can inspect what it was asked to run.
+# Stub bin/claude: echoes back the args and CLAUDE_CONFIG_DIR it was invoked
+# with, so tests can verify what _ccp_launch passed through without actually
+# launching claude.
 # ------------------------------------------------------------
 STUB_BIN="$T/bin"
 mkdir -p "$STUB_BIN"
-cat > "$STUB_BIN/abduco" <<'STUB'
-#!/usr/bin/env bash
-set -euo pipefail
-if [ "${1:-}" = "-l" ]; then
-  : > "${CC_TEST_ABDUCO_L_MARKER:?}"
-  echo "Name Status"
-  if [ -n "${CC_TEST_LIVE:-}" ]; then
-    while IFS= read -r n; do
-      [ -n "$n" ] && printf 'x %s\n' "$n"
-    done <<< "$CC_TEST_LIVE"
-  fi
-  exit 0
-fi
-if [ "${1:-}" = "-c" ]; then
-  echo "SESSION=$2"
-  shift 2
-  exec "$@"
-fi
-exit 0
-STUB
-chmod +x "$STUB_BIN/abduco"
 cat > "$STUB_BIN/claude" <<'STUB'
 #!/usr/bin/env bash
 echo "CLAUDE_ARGS=$*"
 echo "CLAUDE_CFG=${CLAUDE_CONFIG_DIR:-<unset>}"
 STUB
 chmod +x "$STUB_BIN/claude"
-# The real hostname is part of abduco's socket path and varies per machine;
-# stub it so the length budget under test is reproducible. Defaults short so
-# the earlier case sets keep asserting exact, untruncated session names.
-cat > "$STUB_BIN/hostname" <<'STUB'
-#!/usr/bin/env bash
-echo "${CC_TEST_HOSTNAME:-testhost}"
-STUB
-chmod +x "$STUB_BIN/hostname"
-
-# Creates a real AF_UNIX socket file at $1 (bind() leaves the inode behind
-# after close(), which is exactly the artifact _cc_prune_dead_sockets scans
-# for via `find -type s`).
-mk_socket() {
-  python3 - "$1" <<'PY'
-import socket
-import sys
-
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.bind(sys.argv[1])
-s.close()
-PY
-}
 
 # ------------------------------------------------------------
-# Case set 1: the four scenarios the pruning logic must distinguish.
+# Case set 1: _ccp_launch points CLAUDE_CONFIG_DIR at the personal config
+# dir and does not leak it back into the calling shell.
 # ------------------------------------------------------------
-ABDUCO_HOME="$T/home1"
-ABDUCO_DIR="$ABDUCO_HOME/.abduco"
-mkdir -p "$ABDUCO_DIR"
-
-dead_old="$ABDUCO_DIR/dead-old@host1"        # expired, not live      -> removed
-alive_old="$ABDUCO_DIR/alive-old@host1"      # expired, live          -> kept
-dead_new="$ABDUCO_DIR/dead-new@host1"        # not expired, not live  -> kept
-dead_old_file="$ABDUCO_DIR/dead-old-file@host1" # expired, regular file -> kept
-
-mk_socket "$dead_old"
-mk_socket "$alive_old"
-mk_socket "$dead_new"
-: > "$dead_old_file"
-
-touch -d '-20 days' "$dead_old" "$alive_old" "$dead_old_file"
-touch -d '-5 days' "$dead_new"
-
-CC_TEST_LIVE="alive-old"
-CC_TEST_ABDUCO_L_MARKER="$T/marker-set1"
-export CC_TEST_LIVE CC_TEST_ABDUCO_L_MARKER
-
-# HOME/PATH are intentionally scoped to this subshell only, so the rest of
-# the test script keeps running under the real HOME/PATH afterward.
-(
-  # shellcheck disable=SC2030  # intentional: HOME is scoped to this subshell only
-  export HOME="$ABDUCO_HOME"
-  # shellcheck disable=SC2030  # intentional: PATH is scoped to this subshell only
-  export PATH="$STUB_BIN:$PATH"
-  _cc_prune_dead_sockets
-) || true
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-test ! -e "$dead_old"      && pass prune-removes-dead-expired-socket || bad prune-removes-dead-expired-socket
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-test -e "$alive_old"       && pass prune-keeps-live-expired-socket   || bad prune-keeps-live-expired-socket
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-test -e "$dead_new"        && pass prune-keeps-unexpired-socket      || bad prune-keeps-unexpired-socket
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-test -e "$dead_old_file"   && pass prune-keeps-non-socket-file       || bad prune-keeps-non-socket-file
-
-# ------------------------------------------------------------
-# Case set 2: short-circuit — no expired candidates means `abduco -l`
-# must never be invoked at all.
-# ------------------------------------------------------------
-ABDUCO_HOME2="$T/home2"
-ABDUCO_DIR2="$ABDUCO_HOME2/.abduco"
-mkdir -p "$ABDUCO_DIR2"
-fresh="$ABDUCO_DIR2/fresh@host1"
-mk_socket "$fresh"
-touch -d '-1 days' "$fresh"
-
-CC_TEST_ABDUCO_L_MARKER="$T/marker-set2"
-export CC_TEST_ABDUCO_L_MARKER
-rm -f "$CC_TEST_ABDUCO_L_MARKER"
-
-(
-  # shellcheck disable=SC2030,SC2031  # intentional: HOME is scoped to this subshell only
-  export HOME="$ABDUCO_HOME2"
-  # shellcheck disable=SC2030,SC2031  # intentional: PATH is scoped to this subshell only
-  export PATH="$STUB_BIN:$PATH"
-  _cc_prune_dead_sockets
-) || true
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-test ! -e "$CC_TEST_ABDUCO_L_MARKER" && pass prune-skips-abduco-l-when-no-candidates || bad prune-skips-abduco-l-when-no-candidates
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-test -e "$fresh" && pass prune-keeps-fresh-socket-in-shortcircuit-case || bad prune-keeps-fresh-socket-in-shortcircuit-case
-
-# ------------------------------------------------------------
-# Case set 3 (optional/secondary): _cc_launch session naming.
-# Verifies the "<repo-basename>-<timestamp>" pattern passed to `abduco -c`.
-# ------------------------------------------------------------
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-bash -n "$T/launch.sh" && pass launch-syntax || bad launch-syntax
-# shellcheck source=/dev/null
-source "$T/launch.sh"
-
-REPO_DIR="$T/my-test-repo"
-mkdir -p "$REPO_DIR"
-git -C "$REPO_DIR" init -q
-
-LAUNCH_HOME="$T/home3"
+LAUNCH_HOME="$T/launch-home"
 mkdir -p "$LAUNCH_HOME"
-CC_TEST_ABDUCO_L_MARKER="$T/marker-set3"
-export CC_TEST_ABDUCO_L_MARKER
 
-out="$(
-  cd "$REPO_DIR"
-  # shellcheck disable=SC2030,SC2031  # intentional: HOME is scoped to this subshell only
-  export HOME="$LAUNCH_HOME"
-  # shellcheck disable=SC2030,SC2031  # intentional: PATH is scoped to this subshell only
-  export PATH="$STUB_BIN:$PATH"
-  _cc_launch --permission-mode auto
-)"
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-echo "$out" | grep -Eq '^SESSION=my-test-repo-[0-9]{8}-[0-9]{6}$' && pass launch-session-name-pattern || bad launch-session-name-pattern
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-echo "$out" | grep -q '^CLAUDE_ARGS=--permission-mode auto$' && pass launch-forwards-args || bad launch-forwards-args
-
-# ------------------------------------------------------------
-# Case set 4: _cc_launch honours CC_SESSION_TAG as a session-name prefix.
-# ------------------------------------------------------------
-out_tagged="$(
-  cd "$REPO_DIR"
-  # shellcheck disable=SC2030,SC2031  # intentional: HOME is scoped to this subshell only
-  export HOME="$LAUNCH_HOME"
-  # shellcheck disable=SC2030,SC2031  # intentional: PATH is scoped to this subshell only
-  export PATH="$STUB_BIN:$PATH"
-  # shellcheck disable=SC2030  # intentional: scoped to this subshell only; flagged only because case set 6 sets the same variable in its own subshell
-  export CC_SESSION_TAG=personal
-  _cc_launch --permission-mode auto
-)"
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-echo "$out_tagged" | grep -Eq '^SESSION=personal-my-test-repo-[0-9]{8}-[0-9]{6}$' && pass launch-session-name-tagged || bad launch-session-name-tagged
-
-# ------------------------------------------------------------
-# Case set 5: _ccp_launch points CLAUDE_CONFIG_DIR at the personal config dir,
-# tags the session, propagates the env through abduco into claude, and does
-# not leak CLAUDE_CONFIG_DIR back into the calling shell.
-# ------------------------------------------------------------
 awk '/^_ccp_launch\(\) \{/,/^}/' "$INSTALL_SH" > "$T/plaunch.sh"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 test -s "$T/plaunch.sh" && pass extract-ccp-launch || bad extract-ccp-launch
@@ -267,33 +95,14 @@ bash -n "$T/plaunch.sh" && pass ccp-launch-syntax || bad ccp-launch-syntax
 source "$T/plaunch.sh"
 
 # The call to _ccp_launch below must run directly in this shell, with no
-# `$(...)` command substitution or explicit `( ... )` subshell wrapped
-# around it: either wrapper would itself isolate CLAUDE_CONFIG_DIR from this
-# script, regardless of whether _ccp_launch's own internal subshell does the
-# isolating -- which would make the ccp-no-env-leak assertion below
-# structurally unable to fail. So HOME/PATH/cwd are changed directly here
-# for the call and restored by hand afterward, and stdout is captured via
-# redirection to a file instead of command substitution.
-#
-# _cc_launch's first step, _cc_prune_dead_sockets, runs `find "$HOME/.abduco"`
-# under `set -e`; a missing directory makes find exit non-zero. Case sets 3/4
-# never hit this because wrapping the call in `$(...)` incidentally disables
-# errexit inside that subshell (bash's default inherit_errexit=off) -- the
-# same masking effect being removed above. Create the directory so the real
-# call below exercises the intended short-circuit path instead of tripping
-# over an unrelated fixture gap.
-mkdir -p "$LAUNCH_HOME/.abduco"
-
-saved_pwd="$PWD"
-# shellcheck disable=SC2031  # false positive: flagged only because an earlier case set's *subshell* touched HOME; this read is top-level, saving it before the top-level export two lines down
+# `$(...)` command substitution or explicit `( ... )` subshell wrapped around
+# it: either wrapper would itself isolate CLAUDE_CONFIG_DIR from this script,
+# which would make the ccp-no-env-leak assertion structurally unable to fail.
+# So HOME/PATH are changed directly here and restored by hand afterward, and
+# stdout is captured via redirection to a file instead of command substitution.
 saved_home="$HOME"
-# shellcheck disable=SC2031  # false positive: flagged only because an earlier case set's *subshell* touched PATH; this read is top-level, saving it before the top-level export two lines down
 saved_path="$PATH"
-
-cd "$REPO_DIR"
-# shellcheck disable=SC2031  # false positive: flagged only because an earlier case set's *subshell* touched HOME; this export is top-level and restored below, not subshell-scoped
 export HOME="$LAUNCH_HOME"
-# shellcheck disable=SC2031  # false positive: flagged only because an earlier case set's *subshell* touched PATH; this export is top-level and restored below, not subshell-scoped
 export PATH="$STUB_BIN:$PATH"
 
 cfg_before="${CLAUDE_CONFIG_DIR:-<unset>}"
@@ -301,68 +110,33 @@ _ccp_launch --permission-mode auto > "$T/ccp-out.txt"
 cfg_after="${CLAUDE_CONFIG_DIR:-<unset>}"
 out_p="$(cat "$T/ccp-out.txt")"
 
-cd "$saved_pwd"
 export HOME="$saved_home"
 export PATH="$saved_path"
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-echo "$out_p" | grep -Eq '^SESSION=personal-my-test-repo-[0-9]{8}-[0-9]{6}$' && pass ccp-session-name || bad ccp-session-name
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 echo "$out_p" | grep -qF "CLAUDE_CFG=$LAUNCH_HOME/.claude-personal" && pass ccp-config-dir-propagated || bad ccp-config-dir-propagated
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+echo "$out_p" | grep -qF 'CLAUDE_ARGS=--permission-mode auto' && pass ccp-forwards-args || bad ccp-forwards-args
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$cfg_before" = "$cfg_after" ] && pass ccp-no-env-leak || bad ccp-no-env-leak
 
 # ------------------------------------------------------------
-# Case set 6: the session name must keep abduco's socket path inside the
-# AF_UNIX limit. abduco binds $HOME/.abduco/<session>@<hostname>, and
-# sockaddr_un.sun_path is 108 bytes including the NUL -- 107 usable. Past
-# that, abduco exits with "create-session: File name too long" and claude
-# never starts. So an over-long repo basename has to be truncated, while the
-# CC_SESSION_TAG prefix and the timestamp (which is what keeps concurrent
-# session names apart) must survive intact.
-#
-# The fixture reproduces the real failure: a 39-char hostname plus the
-# "personal-" tag left `my-claude-code-settings` one character over budget.
+# Case set 2: abduco is gone for good, and every claude launcher alias calls
+# claude directly rather than routing through a multiplexer wrapper.
 # ------------------------------------------------------------
-SUN_PATH_MAX=107
-LONG_HOST=eddie-hpelitebook84014inchg10notebookpc
-BUDGET_HOME="$T6/h"
-mkdir -p "$BUDGET_HOME/.abduco"
-
-# Echoes just the session name _cc_launch hands to `abduco -c` for a repo
-# whose basename is $1, under the long-hostname budget above.
-launch_session_name() {
-  local repo="$T6/$1"
-  mkdir -p "$repo"
-  git -C "$repo" init -q
-  (
-    cd "$repo"
-    # shellcheck disable=SC2030,SC2031  # intentional: scoped to this subshell only
-    export HOME="$BUDGET_HOME"
-    # shellcheck disable=SC2030,SC2031  # intentional: scoped to this subshell only
-    export PATH="$STUB_BIN:$PATH"
-    # shellcheck disable=SC2030,SC2031  # intentional: scoped to this subshell only
-    export CC_SESSION_TAG=personal
-    export CC_TEST_HOSTNAME="$LONG_HOST"
-    _cc_launch --permission-mode auto
-  ) | sed -n 's/^SESSION=//p'
-}
-
-long_session="$(launch_session_name my-claude-code-settings)"
-long_path="$BUDGET_HOME/.abduco/${long_session}@${LONG_HOST}"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "${#long_path}" -le "$SUN_PATH_MAX" ] && pass launch-session-name-within-sun-path || bad launch-session-name-within-sun-path
-# $BUDGET_HOME is 24 chars, so the ceiling leaves the basename exactly
-# 107 - 24 - 9 ("/.abduco/") - 9 ("personal-") - 1 ("-") - 15 (timestamp)
-# - 1 ("@") - 39 (hostname) = 9 characters: "my-claude".
+grep -qi 'abduco' "$INSTALL_SH" && bad no-abduco-left || pass no-abduco-left
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-echo "$long_session" | grep -Eq '^personal-my-claude-[0-9]{8}-[0-9]{6}$' && pass launch-truncates-basename-only || bad launch-truncates-basename-only
+grep -q '_cc_launch' "$INSTALL_SH" && bad no-cc-launch-left || pass no-cc-launch-left
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q 'CC_SESSION_TAG' "$INSTALL_SH" && bad no-session-tag-left || pass no-session-tag-left
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q "^alias cll=" "$INSTALL_SH" && bad no-cll-alias || pass no-cll-alias
 
-# Guard the other direction: a basename that already fits must come through
-# untouched, so truncation can never silently shorten ordinary session names.
-short_session="$(launch_session_name app)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-echo "$short_session" | grep -Eq '^personal-app-[0-9]{8}-[0-9]{6}$' && pass launch-keeps-short-basename-intact || bad launch-keeps-short-basename-intact
+for a in cl cla clc clr clw clre; do
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  grep -qE "^alias ${a}='claude( |')" "$INSTALL_SH" && pass "alias-${a}-direct" || bad "alias-${a}-direct"
+done
 
 for a in clp clpc clpr clpw clpre; do
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
