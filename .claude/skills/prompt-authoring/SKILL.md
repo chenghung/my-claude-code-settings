@@ -42,7 +42,7 @@ description: >
 - **平行委派三個審查端 subagent**：撰寫完成後，同時委派下列三者，各自取得目標檔案與自身視角的判準；三者不得取得其他審查者的 findings，以維持視角互相盲目：
   - `prompt-compliance-reviewer`：內容軸與措辭軸中，除另兩者負責面向、以及其定義檔 `Out of Scope` 逐節列舉的格式類章節外的全部，含幻覺引用與跨檔案單一來源。
   - `prompt-constraint-auditor`：強制措辭三分類、規則衝突。
-  - `prompt-boundary-auditor`：安全邊界、輸入輸出適當性、驗收模糊性。
+  - `prompt-boundary-auditor`：安全邊界（範圍即其定義檔 `In Scope` 逐條列舉的那幾項，判準檔中主題相近但未列入的章節不歸此處）、輸入輸出適當性、驗收模糊性。
 - **合併去重後交回撰寫端**：三者回傳的 findings 由 main agent 合併，指向同一位置且同一問題的重複 findings 併為一則，再交回 `prompt-author` 處理。
 
 ## Review Flow

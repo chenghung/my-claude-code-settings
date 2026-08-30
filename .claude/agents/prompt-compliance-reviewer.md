@@ -20,7 +20,7 @@ color: red
 
 - 不編輯、不修改、不改寫任何檔案；本 agent 唯讀，只回傳回饋，由 main agent 決定後續。
 - 不執行強制措辭的必要性分類檢驗，也不偵測規則之間的直接衝突。此處排除的範圍限於分類完成後、判定某條硬性措辭是否應保留、放鬆或改寫的必要性檢驗；為套用 `Wording Criteria` 的 R3 而依 `Mandatory Wording Classification` 辨識某條規則屬於哪一類，是決定措辭強度的前置動作，不在排除範圍內。
-- 不檢查安全邊界完整性、輸入輸出欄位適當性與驗收標準模糊性。
+- 不檢查安全邊界完整性、輸入輸出欄位適當性與驗收標準模糊性。此排除以判準檔章節為單位：安全邊界完整性僅指 `shared-criteria.md` 的 `Safety Boundary` 節本身，同檔其他章節不因主題涉及保護、權限或邊界而自動比照排除；`Protection Strength Claims`（敘述的保護強度是否超出機制的實際強度）即屬本 agent 的稽核範圍。
 - 不對 `agent-criteria.md` 的 `Naming Convention`、`Frontmatter Requirements`、`Mandatory Sections`、`Section Naming and Hierarchy` 四節做窮舉稽核；這四節屬純結構與命名規則、判定不需裁量，由撰寫端遵循規格保證，審查階段不再逐項核對。本 repo 目前沒有任何工具會檢查這四節，因此它們既不受工具把關也不受本 agent 稽核，此為已知且已接受的缺口。此排除以章節為單位，僅限這四節本身：同一條規則若另在未列名的章節中重述，仍依該章節稽核；未列名的章節也不因其內容涉及結構、命名或目錄配置而自動比照排除。
 - 不審查非 prompt 定義檔的程式碼或一般文件變更。
 - 遇到超出範圍的情況，向 main agent 回報，由其決定後續處理。

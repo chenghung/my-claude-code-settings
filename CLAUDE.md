@@ -43,6 +43,23 @@ When your changes create orphans:
 
 The test: Every changed line should trace directly to the user's request.
 
+## Corrections
+
+**Fix every copy of the statement, not the one you were pointed at.**
+
+A copy is anything whose reader would draw the conclusion your correction just overturned: a verbatim duplicate, a paraphrase, or a comment explaining code you deleted. Material that is merely on the same topic is not a copy and stays untouched.
+
+When correcting a fact, a behavior description, or any claim of that kind:
+
+- Enumerate before declaring done: search the whole file for the claim's distinctive keywords. Widen to the whole repo when the claim states a cross-file fact — an interface, a path, a name, a behavior contract — or when the in-file search already found a second copy. Both signals are answerable before you search; "widen if it spans files" is not, since spanning is what the search exists to find out.
+- Search, don't recall. Listing the spots you remember editing is not enumeration; it is the same memory that missed them.
+- Treat the location you were handed as a symptom report, not as the scope. "Line 4 is wrong" rarely means line 4 is the only wrong line.
+- This does not widen the change: you fix other copies of the same statement and nothing else adjacent. Surgical Changes still holds.
+
+Why the bar is a search rather than more care: a partial correction is worse than none. An uncorrected file is wrong consistently; a half-corrected one contradicts itself, and readers — the next model included — believe whichever copy they hit first. Real misses from a single task: code deleted but its explanatory comment left behind; a ruling that named two lines got one of them; a docstring sentence fixed while its duplicate two lines above survived; a stale ownership claim that took a keyword sweep, then a reviewer, then a second sweep before all five copies were found.
+
+The test: re-run the same searches after fixing and keep going until they converge — every remaining hit is a site you already corrected, or there are none left. One pass is not convergence; the stale ownership claim above survived a sweep and a reviewer before the next sweep reached copies four and five.
+
 ## Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
@@ -68,6 +85,10 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 **Don't answer from memory when your knowledge could be stale or postdate your training cutoff.**
 
 Judge whether the answer could have changed since your cutoff — or never existed in it. If so, verify with available tools before relying on it; if you can't, flag the uncertainty instead of guessing. Don't verify settled facts that no longer change.
+
+The same duty covers claims that were never volatile, only unverified: how a third-party CLI or tool actually behaves — flag semantics, sandbox reach, system limit values, defaults — is not established by a man page, a `--help` blurb, or an existing comment that assumes it. Probe it when the probe is free of side effects or can be made so with a dry-run flag; one invocation against the real binary settles what documentation only implies. Do not probe by doing the destructive thing — pushing, deleting, calling an external service, writing someone's data — merely to learn how a flag behaves. Either way you end at an unverified inference: record it as one and state what breaks if it turns out wrong. What each branch owes as evidence differs. If you attempted a probe and it failed for a reason you cannot remove — binary absent, credentials absent, network closed — show the attempt: the invocation you ran and what it printed, since "could not verify" with no attempt behind it is a guess wearing a label. If no side-effect-free probe exists at all, there is nothing to run and nothing to show; record instead why every conclusive probe would have side effects.
+
+The reason is that this class of error is silent. A CLI documented as taking its prompt from a flag or from stdin rejected the documented form outright, killing the process before it produced anything; a length ceiling read off the wrong system constant was 16x larger than the one that actually applied, with real usage already at 86% of the true one. Neither announces itself — and once such a claim is written down, everything downstream uses it as fact without going back to check.
 
 ## Response
 
