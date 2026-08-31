@@ -854,22 +854,48 @@ fi
 # advanced setups), so this never blocks the run — but the common accidental
 # trigger is running install.sh from inside a Claude Code session launched by
 # `clauth start <profile>` (the aliases this repo installs for cl/cla/clc/...
-# and clp/clpc/clpr/... all go through clauth now). clauth mirrors the ENTIRE
-# ~/.claude directory into a per-run temporary dir and points
-# CLAUDE_CONFIG_DIR at that mirror for the lifetime of the one launched
-# session (confirmed by hand: the child process's CLAUDE_CONFIG_DIR reads
-# ~/.clauth/profiles/<profile>/runtime-<pid>-0, the numeric suffix changing
-# on every invocation). Every child process — including this script, if run
-# from inside that session — inherits the variable, so a --claude or --all
-# run started there would deploy this repo's entire config into that per-run
-# mirror instead of the real ~/.claude. This is worse than merely
-# misdirected: the mirror directory is deleted the moment the clauth-launched
-# session exits, so the deploy is silently thrown away in full. Re-running
-# from a clean shell (outside any clauth-launched session) is the fix — same
-# recommendation as before this warning was rewritten for clauth, just for a
-# different underlying mechanism. CLAUDE_CONFIG_DIR_FROM_ENV was captured
-# before the default was applied, so it only reflects a value actually
-# supplied by the user or by clauth — not the script's own fallback.
+# and clp/clpc/clpr/... all go through clauth now). CLAUDE_CONFIG_DIR for
+# that session points at a per-run temporary dir under
+# ~/.clauth/profiles/<profile>/runtime-<pid>-0 (confirmed by hand: the child
+# process's CLAUDE_CONFIG_DIR reads that path, the numeric suffix changing on
+# every invocation). Directly enumerating that whole dir while a session is
+# running (not just the paths install.sh happens to touch) shows it is NOT a
+# copy of ~/.claude: 47 symlinks, exactly 2 real files, 0 real directories.
+# The 2 real files are .claude.json and settings.json — clauth copies both
+# in rather than symlinking them, presumably so it can inject its own
+# fields; everything else, including every one of the 7 paths install.sh
+# deploys to, is a symlink pointing straight back to ~/.claude/<same-name>.
+#
+# That symlink-vs-real-file split is what makes deploying from inside such a
+# session a self-contradictory half deploy, not a clean discard, across the
+# 7 paths install.sh touches:
+#   - agents, rules, hooks, CLAUDE.md: the mirror's entry for each is a
+#     symlink to ~/.claude/<name>, not to this repo's path, so the call into
+#     link_one (via link_directory for the first three, via
+#     backup_migrate_link's own `[ -L ]` branch for CLAUDE.md) hits the
+#     CONFLICT branch and skips — nothing happens, nothing leaks, nothing is
+#     backed up, nothing vanishes.
+#   - skills, commands: link_items' `[ -d "$claude_cat_dir" ]` check is true
+#     for a symlink that points at a directory, so it does not create a new
+#     directory inside the mirror — it walks straight through the symlink
+#     and calls link_one against paths inside the REAL ~/.claude/skills and
+#     ~/.claude/commands. Confirmed by hand: this writes real per-item
+#     symlinks into the genuine ~/.claude, and those survive after the
+#     clauth session ends — the opposite of "thrown away". In practice the
+#     trigger is narrow: an item ~/.claude already links to this same repo
+#     path reports OK (no write); an item linking somewhere else (e.g. a
+#     different worktree) reports CONFLICT and is skipped. A persistent
+#     write only happens for a repo item ~/.claude doesn't already have a
+#     link for at all.
+#   - settings.json: the ONLY one of these 7 paths whose mirror entry is a
+#     real file (clauth's own copy), so backup_migrate_link renames it to
+#     *.pre-symlink.bak and replaces it with a symlink to the repo, entirely
+#     inside the mirror — both the backup and the new symlink vanish with
+#     the session.
+#
+# CLAUDE_CONFIG_DIR_FROM_ENV was captured before the default was applied, so
+# it only reflects a value actually supplied by the user or by clauth — not
+# the script's own fallback.
 # ---------------------------------------------------------------------------
 if [ -n "$want_claude" ] \
   && [ -n "$CLAUDE_CONFIG_DIR_FROM_ENV" ] \
@@ -877,9 +903,9 @@ if [ -n "$want_claude" ] \
   printf '\n*** WARNING: CLAUDE_CONFIG_DIR is set in the environment ***\n' >&2
   printf 'Deploy target: %s (default would be: %s)\n' "$CLAUDE_CONFIG_DIR" "${HOME}/.claude" >&2
   printf 'This usually means install.sh is running inside a session launched by\n' >&2
-  printf 'clauth start (any profile), whose per-run config mirror is deleted\n' >&2
-  printf 'when that session exits - any deploy made here would be silently\n' >&2
-  printf 'thrown away. Re-run install.sh from a plain shell instead.\n\n' >&2
+  printf 'clauth start (any profile). This is not a clean deploy target: some\n' >&2
+  printf 'writes can land in your real ~/.claude and persist, and settings.json\n' >&2
+  printf 'vanishes with the session. Re-run install.sh from a plain shell.\n\n' >&2
 fi
 
 # ---------------------------------------------------------------------------

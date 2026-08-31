@@ -389,28 +389,41 @@ alias md="glow -lt"
 alias csv="csvlens --color-columns --ignore-case --wrap words"
 ## aliases for claude code
 # 統一透過 clauth 的 profile 啟動 claude，不再直接呼叫 claude、也不再走
-# 自製的 _ccp_launch config-dir 切換函式（已移除）。clauth start 會把
-# ~/.claude 整份「鏡射」進一個 per-run 的暫時目錄
-# （CLAUDE_CONFIG_DIR=~/.clauth/profiles/<profile>/runtime-<pid>-0，數字
-# 隨每次執行改變），已實測驗證鏡射帶著 ~/.claude 目錄的全部內容，包含本
-# repo 部署的 agents、rules、skills、CLAUDE.md、settings.json。user-scope
-# MCP 設定（如 codegraph）則來自另一個不同的來源：$HOME/.claude.json——這
-# 是與 ~/.claude 同層的手足檔案、不在 ~/.claude 目錄內（已確認
-# ~/.claude/.claude.json 並不存在），所以「鏡射 ~/.claude」這件事本身推
-# 不出這份設定會跟著走。已實測驗證 clauth 把這份手足檔案也一併帶進了
-# per-run runtime 目錄：`clauth start personal -- mcp list` 的輸出與全域
-# `claude mcp list` 完全一致，包含 `codegraph: codegraph serve --mcp -
-# ✔ Connected`。這兩個來源合起來，才是「不需要為第二個帳號另外部署一份
-# 設定」成立的完整理由，這也是 install.sh 的 --claude-personal 機制整組
-# 移除的原因（它存在的兩個目的：第二組憑證隔離、跨訂閱共享 session，現在
-# 都由 clauth 承接）。
-# clauth 自己的旗標必須放在 profile 名之前，profile 名之後的引數會原樣
-# 轉交給 claude；因此每個 alias 一律以 `--` 分隔 clauth 與 claude 的
-# 引數，即使該 alias 目前沒有任何與 clauth 同名的旗標——理由是使用者在
-# alias 後面自行追加的引數（例如 `cla --model opus`）也會落在 `--`
-# 之後，若不加 `--`，一旦追加的引數剛好撞名 clauth 自己的旗標
-# （如 --theme、--help、--version），就會被 clauth 的解析器誤吃，而非
-# 原樣轉交給 claude。已實測確認 `clauth start <profile> --` 這種尾端
+# 自製的 _ccp_launch config-dir 切換函式（已移除）。clauth start 執行期間
+# 對 CLAUDE_CONFIG_DIR=~/.clauth/profiles/<profile>/runtime-<pid>-0
+# （數字隨每次執行改變）做完整列舉，已實測驗證這不是複製、而是「幾乎全部
+# symlink、僅兩個實體檔」的混合結構：47 個 symlink、剛好 2 個實體檔、0 個
+# 實體目錄。
+#   - symlink 回 /home/eddie/.claude/<同名>：agents、rules、hooks、
+#     skills、commands、CLAUDE.md、projects、session-env、file-history、
+#     tasks、settings.local.json、remote-settings.json。
+#   - 唯二的實體檔：.claude.json（119k，user-scope MCP 設定如 codegraph
+#     所在處；本體是與 ~/.claude 同層的手足檔案 $HOME/.claude.json，不在
+#     ~/.claude 目錄內——已確認 ~/.claude/.claude.json 並不存在）與
+#     settings.json（7.0k，clauth 應是為了注入自己的欄位才複製而非直接
+#     symlink）。
+# 已實測驗證 clauth 把 .claude.json 這份手足檔案的內容也帶進了 runtime
+# 目錄：`clauth start personal -- mcp list` 的輸出與全域 `claude mcp list`
+# 完全一致，包含 `codegraph: codegraph serve --mcp - ✔ Connected`。
+# 更重要的是：projects、session-env、file-history、tasks 這四個 session
+# 資料目錄全部是 symlink 回 ~/.claude 本體，根本不住在會隨 session 結束
+# 而消失的暫時目錄裡——「移除 --claude-personal 後 session 仍然共享」這
+# 件事因此有了直接證據，不再只是推論；這正是 --claude-personal 機制原本
+# 存在的兩個目的（第二組憑證隔離、跨訂閱共享 session）裡，第二個目的能
+# 被 clauth 直接承接的依據。
+# clauth 的 usage 建議把它自己的旗標放在 profile 名之前，但那只是建議的
+# 擺放位置，不等於解析器的實際攔截範圍——兩者不可混為一談。已逐一實測：
+# `clauth start <profile> --help`（不加 `--`）會印出 clauth 自己的 start
+# 說明、claude 根本沒被執行；`--theme` 給無效值會噴 clauth 自己的
+# "invalid value ... for '--theme <TIER>'"，代表它同樣在 profile 名之後
+# 仍被 clauth 解析；但 `--version` 不會被攔截，照樣轉交 claude（印出
+# claude 的版本而非 clauth 的）。因此攔截範圍實測為 `--help`／`-h`／
+# `--theme`，不含 `--version`。
+# 每個 alias 一律以 `--` 分隔 clauth 與 claude 的引數，即使該 alias 目前
+# 沒有任何與 clauth 同名的旗標——理由是使用者在 alias 後面自行追加的引數
+# （例如 `cla --model opus`）也會落在 `--` 之後；一旦追加到上述會被攔截
+# 的旗標，不加 `--` 就會被 clauth 吃掉，而非原樣轉交給 claude。
+# 已實測確認 `clauth start <profile> --` 這種尾端
 # 只有 `--`、後面沒有任何引數的形式不會被拒絕：clap 會把它解析為空的
 # CLAUDE_ARGS，仍正常轉交 claude 執行（exit code 0）。
 # cl* 對應 onramplab profile（Team 方案），clp* 對應 personal profile
