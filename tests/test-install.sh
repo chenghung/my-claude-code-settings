@@ -297,81 +297,24 @@ grep -qE '^\s*--all\).*want_antigravity=1' "$REPO/install.sh" && pass ag-in-all 
 # log works as the sample; log_claude_reg from scenario B above is used).
 grep -qF '開始安裝 CLI 工具' "$T/log_claude_reg" && bad install-cli-tools-actually-skipped || pass install-cli-tools-actually-skipped
 
-# ---- guard: deploy_claude_personal aborts when CLAUDE_CONFIG_DIR and
-# CLAUDE_PERSONAL_CONFIG_DIR resolve to the same directory. This is what
-# happens if install.sh runs inside a Claude Code session started by the
-# personal-subscription launcher, which exports CLAUDE_CONFIG_DIR into the
-# session (every child process inherits it) so it collides with
-# CLAUDE_PERSONAL_CONFIG_DIR's own default. Without the guard, link_one
-# would link every session-state path to itself.
-SELFREF_DIR="$T/claude-selfref"
-mkdir -p "$SELFREF_DIR"
-export CLAUDE_CONFIG_DIR="$SELFREF_DIR"
-export CLAUDE_PERSONAL_CONFIG_DIR="$SELFREF_DIR"
-CLAUDE_STUB_LOG="$T/claude-stub-selfref.log"
-: > "$CLAUDE_STUB_LOG"
-selfref_status=0
-( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude-personal --no-external > "$T/log_selfref" 2>&1 ) || selfref_status=$?
-
-[ "$selfref_status" -ne 0 ] && pass selfref-guard-aborts || bad selfref-guard-aborts
-grep -qF 'CLAUDE_CONFIG_DIR and CLAUDE_PERSONAL_CONFIG_DIR both resolve to' "$T/log_selfref" && pass selfref-guard-message || bad selfref-guard-message
-[ -z "$(ls -A "$SELFREF_DIR")" ] && pass selfref-guard-no-links || bad selfref-guard-no-links
-
-# ---- --claude-personal deploys the repo payload into the personal config
-# dir when the two dirs differ. This block also doubles as the "normal case
-# unaffected" regression check for the equality guard above. ----
-export CLAUDE_CONFIG_DIR="$T/claude-default"
-export CLAUDE_PERSONAL_CONFIG_DIR="$T/claude-personal"
-CLAUDE_STUB_LOG="$T/claude-stub-personal.log"
-: > "$CLAUDE_STUB_LOG"
-( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude-personal --no-external > "$T/log_personal" 2>&1 )
-
-grep -q 'No platform selected' "$T/log_personal" && bad personal-flag-counts-as-platform || pass personal-flag-counts-as-platform
-test -L "$CLAUDE_PERSONAL_CONFIG_DIR/agents" && pass personal-agents-symlink || bad personal-agents-symlink
-test -L "$CLAUDE_PERSONAL_CONFIG_DIR/settings.json" && pass personal-settings-symlink || bad personal-settings-symlink
-test -L "$CLAUDE_PERSONAL_CONFIG_DIR/skills/deep-thinking" && pass personal-skills-symlink || bad personal-skills-symlink
-# Scope note: this only proves repo-owned config (agents/, rules/, etc.) was
-# not deployed into the default dir by --claude-personal. It does NOT mean
-# the default dir stays untouched overall — the session-state dirs checked
-# below ARE created there on purpose, since link_one's targets must exist.
-test ! -e "$CLAUDE_CONFIG_DIR/agents" && pass personal-flag-leaves-default-alone || bad personal-flag-leaves-default-alone
-
-# ---- the four session-state dirs are symlinked at the DEFAULT config dir ----
-for d in projects session-env file-history tasks; do
-  test -L "$CLAUDE_PERSONAL_CONFIG_DIR/$d" && pass "personal-$d-is-symlink" || bad "personal-$d-is-symlink"
-  [ "$(readlink "$CLAUDE_PERSONAL_CONFIG_DIR/$d")" = "$CLAUDE_CONFIG_DIR/$d" ] && pass "personal-$d-target" || bad "personal-$d-target"
-  # Self-referential link would silently defeat session sharing entirely.
-  # -L is required first: without it, a missing link makes readlink print
-  # "", which trivially differs from the personal path and would make this
-  # assertion pass even though the link was never created at all.
-  [ -L "$CLAUDE_PERSONAL_CONFIG_DIR/$d" ] && [ "$(readlink "$CLAUDE_PERSONAL_CONFIG_DIR/$d")" != "$CLAUDE_PERSONAL_CONFIG_DIR/$d" ] && pass "personal-$d-not-self" || bad "personal-$d-not-self"
-  test -d "$CLAUDE_CONFIG_DIR/$d" && pass "default-$d-dir-ensured" || bad "default-$d-dir-ensured"
-done
-
-# Idempotent re-run must not report conflicts.
-( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude-personal --no-external > "$T/log_personal2" 2>&1 )
-grep -q 'CONFLICT' "$T/log_personal2" && bad personal-idempotent || pass personal-idempotent
-
-# Non-destructive: a real, populated dir sitting at each of the four link
-# paths must be reported as a conflict and left byte-for-byte intact. These
-# dirs hold the user's actual conversation history, so corruption here is
-# permanent data loss — each gets a non-empty file plus a nested
-# subdirectory, and content is diffed (not just existence-checked) after the
-# run, since a same-name file surviving with its content silently wiped
-# would pass an existence check but must fail this one.
-export CLAUDE_PERSONAL_CONFIG_DIR="$T/claude-personal-conflict"
-CONFLICT_SNAPSHOT="$T/claude-personal-conflict-snapshot"
-for d in projects session-env file-history tasks; do
-  mkdir -p "$CLAUDE_PERSONAL_CONFIG_DIR/$d/nested"
-  printf 'precious-%s-marker\n' "$d" > "$CLAUDE_PERSONAL_CONFIG_DIR/$d/marker.txt"
-  printf 'precious-%s-nested\n' "$d" > "$CLAUDE_PERSONAL_CONFIG_DIR/$d/nested/nested-file.txt"
-done
-mkdir -p "$CONFLICT_SNAPSHOT"
-cp -r "$CLAUDE_PERSONAL_CONFIG_DIR/." "$CONFLICT_SNAPSHOT/"
-( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude-personal --no-external > "$T/log_personal3" 2>&1 )
-for d in projects session-env file-history tasks; do
-  grep -qF "CONFLICT ${CLAUDE_PERSONAL_CONFIG_DIR}/${d}" "$T/log_personal3" && pass "personal-$d-conflict-reported" || bad "personal-$d-conflict-reported"
-  diff -r "$CONFLICT_SNAPSHOT/$d" "$CLAUDE_PERSONAL_CONFIG_DIR/$d" > /dev/null 2>&1 && pass "personal-$d-not-destroyed" || bad "personal-$d-not-destroyed"
+# ---- regression guard: the retired --claude-personal mechanism must never
+# reappear in install.sh's source. clauth's per-run CLAUDE_CONFIG_DIR mirror
+# (see the CLAUDE_CONFIG_DIR warning further up in install.sh) now covers
+# both reasons that mechanism used to exist - a second, isolated credentials
+# dir and cross-subscription session sharing - so there is no live code path
+# that should ever reintroduce these identifiers. install-cli-tools.sh has
+# its own guard for the parallel ".claude-personal" directory string in the
+# alias block (tests/test-cli-aliases.sh); this one is install.sh's, since a
+# merge conflict or a copy-pasted fragment from an old branch could drop
+# either piece back in independently of the other. ----
+for identifier in '--claude-personal' CLAUDE_PERSONAL_CONFIG_DIR deploy_claude_personal; do
+  # -e (not a bare pattern argument) is required here: "--claude-personal"
+  # starts with "--", so grep would otherwise parse it as an unrecognized
+  # option rather than the search pattern, print a usage error to stderr,
+  # exit non-zero, and fall into the `|| pass` branch below for the wrong
+  # reason - a false PASS that never actually searched for anything.
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  grep -qF -e "$identifier" "$REPO/install.sh" && bad "no-${identifier#--}-left-in-install-sh" || pass "no-${identifier#--}-left-in-install-sh"
 done
 
 # ---- external skills manifest ----

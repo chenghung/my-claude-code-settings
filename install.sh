@@ -36,7 +36,6 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # back to its own default" (see the CLAUDE_CONFIG_DIR warning further down).
 CLAUDE_CONFIG_DIR_FROM_ENV="${CLAUDE_CONFIG_DIR+1}"
 CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
-CLAUDE_PERSONAL_CONFIG_DIR="${CLAUDE_PERSONAL_CONFIG_DIR:-${HOME}/.claude-personal}"
 CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
 AGENTS_HOME="${AGENTS_HOME:-${HOME}/.agents}"
 OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-${HOME}/.config/opencode}"
@@ -266,57 +265,6 @@ deploy_claude() {
   # superpowers for Claude Code is declared in settings.json (enabledPlugins),
   # so it installs/updates through Claude Code itself, not via the CLI here.
   register_codegraph_mcp
-}
-
-# ---------------------------------------------------------------------------
-# Claude Code, personal subscription. A second, fully separate config dir is
-# the only way to keep two subscriptions logged in at once: the credentials
-# file (and .claude.json, which carries oauthAccount) both live inside
-# CLAUDE_CONFIG_DIR, so isolating the dir isolates the token quota.
-# ---------------------------------------------------------------------------
-deploy_claude_personal() {
-  # Captured now, before CLAUDE_CONFIG_DIR is temporarily overridden below.
-  # `CLAUDE_CONFIG_DIR="$personal_dir" deploy_claude` is a prefix assignment,
-  # so bash auto-restores CLAUDE_CONFIG_DIR to its prior value the moment
-  # deploy_claude returns — meaning this copy is defensive. Keep it anyway,
-  # and never rewrite the prefix assignment below into a plain
-  # `CLAUDE_CONFIG_DIR="$personal_dir"` statement: a plain assignment is NOT
-  # auto-restored, so the override would persist, default_dir would end up
-  # equal to personal_dir, and every link_one call below would link a path to
-  # itself — session sharing would break silently (links still get created,
-  # just useless), surfacing only when a switched subscription can't resume a
-  # prior conversation.
-  local default_dir="$CLAUDE_CONFIG_DIR"
-  local personal_dir="$CLAUDE_PERSONAL_CONFIG_DIR"
-
-  # Guard: if both dirs already resolve to the same path, every link_one call
-  # below would link a path to itself, silently breaking session sharing (see
-  # the note above). The common trigger is running install.sh from inside a
-  # Claude Code session started by the personal-subscription launcher, which
-  # exports CLAUDE_CONFIG_DIR into the session — every child process
-  # (including this script) inherits it, so it collides with
-  # CLAUDE_PERSONAL_CONFIG_DIR's own default.
-  if [ "$default_dir" = "$personal_dir" ]; then
-    printf 'Error: CLAUDE_CONFIG_DIR and CLAUDE_PERSONAL_CONFIG_DIR both resolve to %s.\n' "$default_dir" >&2
-    printf 'This usually means install.sh is running inside a Claude Code session\n' >&2
-    printf 'that already has CLAUDE_CONFIG_DIR set (e.g. the personal-subscription\n' >&2
-    printf 'launcher). Re-run install.sh from a plain shell instead.\n' >&2
-    printf 'Aborting --claude-personal deploy — no changes made.\n' >&2
-    exit 1
-  fi
-
-  printf 'Deploying to Claude Code (personal subscription)\n  target: %s\n\n' "$personal_dir"
-  CLAUDE_CONFIG_DIR="$personal_dir" deploy_claude
-
-  # Share chat sessions with the default subscription. These four dirs are
-  # keyed by session UUID, so two subscriptions running side by side write to
-  # disjoint paths; linking them is what lets one subscription resume a
-  # conversation the other one started.
-  local d
-  for d in projects session-env file-history tasks; do
-    mkdir -p "${default_dir}/${d}"
-    link_one "${personal_dir}/${d}" "${default_dir}/${d}"
-  done
 }
 
 # ---------------------------------------------------------------------------
@@ -849,7 +797,6 @@ install_superpowers() {
 # so it still works when stdin is piped).
 # ---------------------------------------------------------------------------
 want_claude=""
-want_claude_personal=""
 want_codex=""
 want_opencode=""
 want_antigravity=""
@@ -859,7 +806,6 @@ force_config=""
 for arg in "$@"; do
   case "$arg" in
     --claude) want_claude=1 ;;
-    --claude-personal) want_claude_personal=1 ;;
     --codex)  want_codex=1 ;;
     --opencode) want_opencode=1 ;;
     --antigravity) want_antigravity=1 ;;
@@ -867,10 +813,7 @@ for arg in "$@"; do
     --no-external) skip_external=1 ;;
     --force-config) force_config=1 ;;
     -h|--help)
-      printf 'Usage: install.sh [--claude] [--claude-personal] [--codex] [--opencode] [--antigravity] [--all] [--no-external] [--force-config]\n'
-      printf '  --claude-personal  deploy the full repo config to a second, personal-\n'
-      printf '                     subscription-only Claude Code config dir (shares\n'
-      printf '                     session state with --claude).\n'
+      printf 'Usage: install.sh [--claude] [--codex] [--opencode] [--antigravity] [--all] [--no-external] [--force-config]\n'
       printf '  --antigravity  deploy to the Antigravity CLI (agy) global config under ~/.gemini.\n'
       printf '  --force-config  re-seed an already-seeded Codex config.toml from the repo\n'
       printf '                  template (backs up the existing file first). Codex-only;\n'
@@ -881,10 +824,10 @@ for arg in "$@"; do
   esac
 done
 
-if [ -z "$want_claude" ] && [ -z "$want_claude_personal" ] && [ -z "$want_codex" ] && [ -z "$want_opencode" ] && [ -z "$want_antigravity" ]; then
+if [ -z "$want_claude" ] && [ -z "$want_codex" ] && [ -z "$want_opencode" ] && [ -z "$want_antigravity" ]; then
   if ! { : > /dev/tty; } 2>/dev/null; then
     printf 'Error: no controlling terminal available for interactive prompts.\n' >&2
-    printf 'Re-run with an explicit platform flag: --claude, --claude-personal, --codex, --opencode, --antigravity, or --all.\n' >&2
+    printf 'Re-run with an explicit platform flag: --claude, --codex, --opencode, --antigravity, or --all.\n' >&2
     exit 2
   fi
 
@@ -900,7 +843,7 @@ if [ -z "$want_claude" ] && [ -z "$want_claude_personal" ] && [ -z "$want_codex"
   ask_yn "Install for Antigravity CLI?" && want_antigravity=1
 fi
 
-if [ -z "$want_claude" ] && [ -z "$want_claude_personal" ] && [ -z "$want_codex" ] && [ -z "$want_opencode" ] && [ -z "$want_antigravity" ]; then
+if [ -z "$want_claude" ] && [ -z "$want_codex" ] && [ -z "$want_opencode" ] && [ -z "$want_antigravity" ]; then
   printf 'No platform selected - nothing to do.\n'
   exit 0
 fi
@@ -909,21 +852,60 @@ fi
 # Warn (do not abort) if CLAUDE_CONFIG_DIR was inherited from the environment
 # and points somewhere other than the default. Legitimate uses exist (tests,
 # advanced setups), so this never blocks the run — but the common accidental
-# trigger is running install.sh from inside a Claude Code session started by
-# the personal-subscription launcher, which exports CLAUDE_CONFIG_DIR into
-# the session; every child process (including this script) inherits it, so a
-# --claude or --all run would silently deploy into that dir instead of the
-# default one. CLAUDE_CONFIG_DIR_FROM_ENV was captured before the default was
-# applied, so it only reflects a value the user actually supplied — not the
-# script's own fallback.
+# trigger is running install.sh from inside a Claude Code session launched by
+# `clauth start <profile>` (the aliases this repo installs for cl/cla/clc/...
+# and clp/clpc/clpr/... all go through clauth now). CLAUDE_CONFIG_DIR for
+# that session points at a per-run temporary dir under
+# ~/.clauth/profiles/<profile>/runtime-<pid>-0 (confirmed by hand: the child
+# process's CLAUDE_CONFIG_DIR reads that path, the numeric suffix changing on
+# every invocation). Directly enumerating that whole dir while a session is
+# running (not just the paths install.sh happens to touch) shows it is NOT a
+# copy of ~/.claude: 47 symlinks, exactly 2 real files, 0 real directories.
+# The 2 real files are .claude.json and settings.json — clauth copies both
+# in rather than symlinking them, presumably so it can inject its own
+# fields; everything else, including every one of the 7 paths install.sh
+# deploys to, is a symlink pointing straight back to ~/.claude/<same-name>.
+#
+# That symlink-vs-real-file split is what makes deploying from inside such a
+# session a self-contradictory half deploy, not a clean discard, across the
+# 7 paths install.sh touches:
+#   - agents, rules, hooks, CLAUDE.md: the mirror's entry for each is a
+#     symlink to ~/.claude/<name>, not to this repo's path, so the call into
+#     link_one (via link_directory for the first three, via
+#     backup_migrate_link's own `[ -L ]` branch for CLAUDE.md) hits the
+#     CONFLICT branch and skips — nothing happens, nothing leaks, nothing is
+#     backed up, nothing vanishes.
+#   - skills, commands: link_items' `[ -d "$claude_cat_dir" ]` check is true
+#     for a symlink that points at a directory, so it does not create a new
+#     directory inside the mirror — it walks straight through the symlink
+#     and calls link_one against paths inside the REAL ~/.claude/skills and
+#     ~/.claude/commands. Confirmed by hand: this writes real per-item
+#     symlinks into the genuine ~/.claude, and those survive after the
+#     clauth session ends — the opposite of "thrown away". In practice the
+#     trigger is narrow: an item ~/.claude already links to this same repo
+#     path reports OK (no write); an item linking somewhere else (e.g. a
+#     different worktree) reports CONFLICT and is skipped. A persistent
+#     write only happens for a repo item ~/.claude doesn't already have a
+#     link for at all.
+#   - settings.json: the ONLY one of these 7 paths whose mirror entry is a
+#     real file (clauth's own copy), so backup_migrate_link renames it to
+#     *.pre-symlink.bak and replaces it with a symlink to the repo, entirely
+#     inside the mirror — both the backup and the new symlink vanish with
+#     the session.
+#
+# CLAUDE_CONFIG_DIR_FROM_ENV was captured before the default was applied, so
+# it only reflects a value actually supplied by the user or by clauth — not
+# the script's own fallback.
 # ---------------------------------------------------------------------------
-if { [ -n "$want_claude" ] || [ -n "$want_claude_personal" ]; } \
+if [ -n "$want_claude" ] \
   && [ -n "$CLAUDE_CONFIG_DIR_FROM_ENV" ] \
   && [ "$CLAUDE_CONFIG_DIR" != "${HOME}/.claude" ]; then
   printf '\n*** WARNING: CLAUDE_CONFIG_DIR is set in the environment ***\n' >&2
   printf 'Deploy target: %s (default would be: %s)\n' "$CLAUDE_CONFIG_DIR" "${HOME}/.claude" >&2
-  printf 'This usually means install.sh is running inside a session that already\n' >&2
-  printf 'has CLAUDE_CONFIG_DIR set (e.g. the personal-subscription launcher).\n\n' >&2
+  printf 'This usually means install.sh is running inside a session launched by\n' >&2
+  printf 'clauth start (any profile). This is not a clean deploy target: some\n' >&2
+  printf 'writes can land in your real ~/.claude and persist, and settings.json\n' >&2
+  printf 'vanishes with the session. Re-run install.sh from a plain shell.\n\n' >&2
 fi
 
 # ---------------------------------------------------------------------------
@@ -946,7 +928,6 @@ fi
 [ -n "$want_codex" ] && deploy_codex
 [ -n "$want_opencode" ] && deploy_opencode
 [ -n "$want_antigravity" ] && deploy_antigravity
-[ -n "$want_claude_personal" ] && deploy_claude_personal
 
 # OpenSpec is a plain dev CLI tool with no per-platform install target, so it
 # runs once regardless of which platform(s) were selected above.
