@@ -45,7 +45,7 @@ When a request falls outside the above scope, report the boundary condition to m
 
 ## Output to Main Agent
 
-- **On success**: report the file path (for `.sh` files) or inline script body (for snippets), the chosen target shell with a one-line justification, the `shellcheck` command run and its zero-warning result, and any `# shellcheck disable` directives together with their justification. For a persistent bash script, also report the `bats` command run, its all-green result, and the test file path.
+- **On success**: report the file path (for `.sh` files) or inline script body (for snippets), the chosen target shell with a one-line justification, the `shellcheck` command run and its zero-warning result, and any `# shellcheck disable` directives together with their justification. For a persistent bash script, also report the `bats` command run, its all-green result, and the test file path. When any test shadows executables through a stub-prefixed `PATH`, report the guard that covers it, which type it is (list-free or per-name), every stub removed to prove it fires — one for a list-free guard, one per name for a per-name guard — that each removal made the section fail, and that the suite is green again with all of them restored.
 - **On failure**: report the failure category (ambiguous shell, missing shellcheck, unresolved warning, scope mismatch, destructive without dry-run, etc.), the raw error message if any, and every step already attempted.
 - **Do not return**: full raw `shellcheck` output when it is clean (a single "shellcheck passed" line suffices), unrelated file contents, or any sensitive value the user inadvertently included in the input.
 
@@ -78,13 +78,19 @@ After writing or modifying any script, run `shellcheck <file>` and resolve every
 - Load helper libraries with `bats_load_library` (`bats-support`, `bats-assert`, `bats-file`) inside the test files rather than hardcoding their paths; `bats_load_library` resolves them through `BATS_LIB_PATH`, which the environment must point at wherever the libraries are installed (the pacman packages on this repo's Manjaro setup place them under `/usr/lib/bats`).
 - Prefer black-box tests that `run` the whole script and assert on `status`/`output`; only when a script has enough internal functions to warrant unit testing, guard the entry point with `[[ "${BASH_SOURCE[0]}" == "${0}" ]]` so tests can source it and call functions directly.
 
+### Stub-Prefixed PATH in Tests
+
+When a test builds `PATH` by prefixing a stub directory ahead of the real one, that shadowing is the only thing keeping the test off the real binary — and neither a missing stub nor the resulting escape reports anything: the name simply resolves past the stub dir and runs the real program. Guard every such section; this matters most when the shadowed program costs money or wall-clock time, or has effects outside the test.
+
+Do not build the guard from a list of names you wrote down; both observed misses were omissions from such a list, not faulty assertions (one escape surfaced only as suite runtime going from 15 seconds to 2 minutes). Either derive the names mechanically — the stub dir's own contents, or the external commands the section actually invokes — or use a guard that needs no list at all: fail the section if any external command it runs resolves outside the stub dir. Then prove the guard fires before trusting it: remove one stub, watch the section fail, restore the stub, re-run to green. Restoring and re-running is part of the check, not a courtesy — the state you would otherwise ship is exactly the missing stub this section exists to prevent. Make the temporary removal one that leaves a visible signal: edit the version-controlled file that defines the stub, rather than deleting an untracked artifact created at run time. An interrupted check then surfaces as a dirty tree and a failing suite instead of shipping the gap in silence. One removal suffices for a list-free guard; a guard that asserts a per-name list must be proven for every name on it.
+
 ## Workflow
 
 Follow this sequence when producing or modifying any shell script:
 
 1. Classify the task: one-off/throwaway (user signals it is disposable, run-once, or not committed for maintenance) or persistent? When unclear, treat it as persistent.
 1. Select the shell: honor an explicit user choice; otherwise prefer POSIX sh for a one-off (fall back to bash 4.3+ only if POSIX sh cannot express the logic), and default to bash 4.3+ otherwise.
-1. If the result is a persistent bash script, develop test-first with bats per `Test-First Development with bats`. Otherwise (one-off, or any POSIX sh) skip bats.
+1. If the result is a persistent bash script, develop test-first with bats per `Test-First Development with bats`, and apply `Stub-Prefixed PATH in Tests` to any test that shadows executables through `PATH`. Otherwise (one-off, or any POSIX sh) skip bats.
 1. Draft or finish the script applying `Standards and Principles`.
 1. Execute `Shellcheck Enforcement`: run, fix every warning, re-run until clean (lint POSIX sh as sh).
 1. For scripts intended to be executed directly, ensure the file mode is `0755` via `chmod +x`.

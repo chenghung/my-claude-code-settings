@@ -8,7 +8,7 @@
 | `github-manager` | 透過 gh 對 GitHub issue、PR、comment 的各類實際操作，涵蓋唯讀查詢與 mutation（含審查決議與 merge）；只負責執行，不負責 issue/PR 內文與審查回覆的結構化組裝 |
 | `manjaro-linux-admin` | Manjaro 或 Arch Linux 系統管理，包含系統診斷、log 分析、pacman/yay/flatpak 套件管理、需要 sudo 或修改系統狀態的操作 |
 | `shell-script-developer` | 產生 `.sh` 檔案、實質邏輯超過 20 行的 shell script，或含 eval、trap、特殊字元檔名處理、複雜 quoting 等高風險語法的片段 |
-| `shell-script-reviewer` | 對既有 shell 腳本與其 bats 測試做獨立唯讀審查，涵蓋 bash 相容性、安全性與 quoting、shellcheck 潔淨度、以及 bats 測試品質；只審查、回傳顧問性 findings，不修改腳本或測試 |
+| `shell-script-reviewer` | 對既有 shell 腳本與其 bats 測試做獨立唯讀審查，涵蓋 bash 相容性、安全性與 quoting、shellcheck 潔淨度、bats 測試品質、破壞性操作的 dry-run 防護、以及測試以前綴樁目錄建構 PATH 時的遮蔽完整性；只審查、回傳顧問性 findings，不修改腳本或測試 |
 | `sql-expert` | SQL 撰寫與重構、query 最佳化與 EXPLAIN 執行計畫解讀、資料庫 schema 與索引設計、關聯型與分析型資料庫的進階特性問題，涵蓋 PostgreSQL、MySQL 與 MariaDB、SQLite、DuckDB、AWS Athena，以及在使用者提供連線時對資料庫執行唯讀診斷查詢；不涵蓋應用層或 ORM 程式碼撰寫，也不對資料庫執行任何寫入操作 |
 
 ## Selection Notes
