@@ -18,7 +18,10 @@ set -euo pipefail
 #   - 透過上游官方安裝腳本（curl）安裝官方 repo 與 AUR 皆無可信對應套件的
 #     工具：codegraph、TokenUsageInsights（其 --service 旗標會另外常駐一個
 #     systemd user 服務，詳見下方第 4 節說明）、herdr（每次執行本腳本都
-#     檢查並更新）、agy（Antigravity CLI，已存在即略過，不代跑自帶更新器）
+#     檢查並更新）、agy（Antigravity CLI，已存在即略過，不代跑自帶更新器）、
+#     clauth（多組 Claude 帳號的 profile 啟動器，已存在即略過，不代跑自帶
+#     更新器；安裝時務必帶 --nocargo 旗標，避免這台機器已有的 cargo 把它
+#     改裝到別的目錄且裝出不具自更新能力的版本，詳見下方第 4 節說明）
 #   - 不再使用 npm 全域安裝任何工具（claude code / codex 已改走 repo 或 AUR）
 #   - 於 ~/.zshrc 內以 sentinel 標記包夾的方式維護（重生）alias 區塊
 # 冪等與衝突防護（重點）：
@@ -176,13 +179,17 @@ else
 fi
 
 # ------------------------------------------------------------
-# 4) 上游官方安裝腳本（curl）：codegraph、TokenUsageInsights、herdr、agy
-#    來源依據：四者官方 repo 與 AUR 皆無可信對應套件，改走上游官方安裝
-#      腳本（優先序第 4 級，低於官方 repo、AUR 與 pipx）。四者皆安裝到
-#      使用者家目錄下，不需 sudo。herdr、agy（Antigravity CLI）與
-#      codegraph、TokenUsageInsights 同樣官方未提供 repo 或 AUR 套件，
-#      只提供官方安裝腳本，故比照收在本節。
-#    冪等判斷（四者行為不盡相同，勿混為一談）：
+# 4) 上游官方安裝腳本（curl）：codegraph、TokenUsageInsights、herdr、agy、clauth
+#    來源依據：五者官方 repo 與 AUR 皆無可信對應套件，改走上游官方安裝
+#      腳本（優先序第 4 級，低於官方 repo、AUR 與 pipx）。五者皆安裝到
+#      使用者家目錄下，不需 sudo。herdr、agy（Antigravity CLI）、clauth
+#      （多組 Claude 帳號共用一支 CLI 管理、透過 profile 啟動 claude 的
+#      工具）與 codegraph、TokenUsageInsights 同樣官方未提供 repo 或 AUR
+#      套件，只提供官方安裝腳本，故比照收在本節；clauth 已實測確認：
+#      `pacman -Ss '^clauth$'` 與 `yay -Ss '^clauth$'` 皆為空輸出，
+#      `pacman -Qoq "$(command -v clauth)"` 也回報「沒有軟體包擁有」，
+#      確定不歸屬任何 pacman/AUR 套件。
+#    冪等判斷（五者行為不盡相同，勿混為一談）：
 #      - codegraph：不是「已存在即略過」。指令已存在時改跑 `codegraph
 #        upgrade`，讓它每次執行本腳本都順便檢查版本並更新到最新；已是
 #        最新版時 upgrade 會印出 "Already up to date" 並以 exit code 0
@@ -200,8 +207,29 @@ fi
 #        last_check.timestamp），由本腳本代跑更新只會與它自己的更新
 #        機制互相干擾，故已存在時一律不代跑更新，僅在指令不存在時才
 #        透過安裝腳本安裝。
-#    注意：四者的安裝腳本都把執行檔裝在 ~/.local/bin，該路徑需已加入 PATH，
-#      command -v 才偵測得到，冪等判斷才會生效；若不在 PATH 中：
+#      - clauth：比照 agy，沿用「對應指令是否已存在」為準，已存在即
+#        略過；但連「代跑更新」都不是一個選項——clauth 完全沒有
+#        update/upgrade 類的子指令（已實測 `clauth help` 列出的子指令僅有
+#        start / login / delete / disable / enable / which / list /
+#        sessions / resume / info / daemon / status / mcp / completions /
+#        help），它自帶背景自更新器（下載後以 minisign 簽章驗證才替換
+#        二進位，設定 CLAUTH_NO_UPDATE=1 可關閉），由本腳本代跑只會與它
+#        自己的更新機制互相干擾，故理由與 agy 相同、只是更徹底：agy 是
+#        「有自帶更新器所以選擇不代跑」，clauth 是「連可代跑的指令都不
+#        存在」。安裝時務必帶 --nocargo 旗標（見下方對應清單）——已實測
+#        官方安裝腳本的邏輯是一旦偵測到 cargo 就直接改跑
+#        `cargo install clauth` 並結束，這台機器的 Arch rust 套件已提供
+#        /usr/bin/cargo（cargo 1.97.1），若不加 --nocargo：
+#          - 會被裝到 ~/.cargo/bin，而非本腳本其餘工具統一使用的
+#            ~/.local/bin，冪等判斷（command -v）行為不受影響，但安裝
+#            位置會與使用者預期不一致
+#          - cargo 裝出來的版本不具備上述背景自更新能力（官方文件僅保證
+#            預建二進位安裝的版本才會自更新），等於讓自更新機制永久失效
+#    注意：五者的安裝腳本都把執行檔裝在 ~/.local/bin（clauth 更精確地說是
+#      優先裝到 /usr/local/bin，僅在該路徑不可寫時才退回 ~/.local/bin；
+#      這台機器上 /usr/local/bin 不可寫，實際落點與其餘工具一致），該路徑
+#      需已加入 PATH，command -v 才偵測得到，冪等判斷才會生效；若不在
+#      PATH 中：
 #        - codegraph 每次重跑都會重新下載並執行安裝腳本（而非改跑 upgrade）
 #        - herdr 比照 codegraph，每次重跑都會重新下載並執行安裝腳本
 #          （而非改跑 herdr update）
@@ -209,6 +237,8 @@ fi
 #          重寫 systemd unit 並重新 enable
 #        - agy 每次重跑都會重新 curl 執行安裝腳本，而這正會與 agy 自帶更新器
 #          互相干擾——即本節開頭特別要避免的情況
+#        - clauth 比照 agy，每次重跑都會重新 curl 執行安裝腳本，同樣會與它
+#          自帶的更新器互相干擾
 #    對應：指令名 -> 安裝指令
 #      codegraph->curl -fsSL
 #        https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
@@ -220,6 +250,12 @@ fi
 #        （已存在時改跑：herdr update）
 #      agy->curl -fsSL https://antigravity.google/cli/install.sh | bash
 #        （已存在時不代跑更新，agy 自帶更新器）
+#      clauth->curl -fsSL
+#        https://raw.githubusercontent.com/uwuclxdy/clauth/mommy/install.sh |
+#        bash -s -- --nocargo
+#        （分支名為 mommy，非 main，已實測此 URL 回應 HTTP 200；--nocargo
+#        的必要性見上方冪等判斷小節；已存在時不代跑更新，clauth 自帶
+#        更新器，且無 update/upgrade 子指令可代跑）
 #    安全防護：本腳本只執行上述安裝指令與 `codegraph upgrade` 取得／更新
 #      二進位，絕不額外呼叫 codegraph 官方 CLI 提供的 install 子指令——
 #      已實測驗證：`codegraph install -t opencode` 會把
@@ -240,7 +276,7 @@ fi
 #      systemd user 目錄建立 unit 並執行 systemctl --user enable --now，
 #      使其儀表板常駐監聽 3003 埠。
 # ------------------------------------------------------------
-echo "==> [4/4] 透過上游官方安裝腳本安裝（codegraph、herdr 每次檢查並更新，token-usage-insights、agy 已存在即略過）"
+echo "==> [4/4] 透過上游官方安裝腳本安裝（codegraph、herdr 每次檢查並更新，token-usage-insights、agy、clauth 已存在即略過）"
 if ! command -v curl >/dev/null 2>&1; then
   echo "    [錯誤] 找不到 curl，請先安裝 curl 後再執行此腳本。" >&2
   exit 1
@@ -286,6 +322,24 @@ if command -v agy >/dev/null 2>&1; then
 else
   echo "    [安裝] 未偵測到 'agy'，透過官方安裝腳本安裝 ..."
   curl -fsSL https://antigravity.google/cli/install.sh | bash
+fi
+
+# clauth：多組 Claude 帳號的 profile 啟動器，官方 repo 與 AUR 皆無（已實測
+# pacman -Ss / yay -Ss 皆空、pacman -Qoq 查無擁有套件），官方管道為上游安裝
+# 腳本，裝到 ~/.local/bin。冪等判斷比照 agy，已存在時「不」代跑更新——但
+# 理由比 agy 更直接：clauth 連 update/upgrade 類的子指令都不存在（已實測
+# `clauth help` 的子指令清單），它自帶背景自更新器（minisign 簽章驗證後才
+# 替換二進位），由本腳本代跑（若真有子指令可跑）也只會與它互相干擾，故與
+# agy 一樣選擇「已存在即略過」。
+# --nocargo 為必要旗標：已實測官方 install.sh 一旦偵測到這台機器既有的
+# /usr/bin/cargo 就會直接改跑 `cargo install clauth` 並結束，裝到
+# ~/.cargo/bin 且不具自更新能力；加上 --nocargo 才會強制走預建二進位安裝
+# 路徑（下載後驗 sha256sums.txt checksum）。
+if command -v clauth >/dev/null 2>&1; then
+  echo "    [略過] 'clauth' 已存在，不代跑更新（clauth 自帶更新器，且無 update/upgrade 子指令可代跑）。"
+else
+  echo "    [安裝] 未偵測到 'clauth'，透過官方安裝腳本安裝（--nocargo 避免誤走 cargo 安裝路徑）..."
+  curl -fsSL https://raw.githubusercontent.com/uwuclxdy/clauth/mommy/install.sh | bash -s -- --nocargo
 fi
 
 # ------------------------------------------------------------
@@ -334,26 +388,45 @@ alias md="glow -lt"
 #alias glow="glow -lt"
 alias csv="csvlens --color-columns --ignore-case --wrap words"
 ## aliases for claude code
-alias cl='claude'
-alias cla='claude --permission-mode auto'
-alias clc='claude --permission-mode auto --continue'
-alias clr='claude --permission-mode auto --resume'
-alias clw='claude --permission-mode auto --worktree "$(basename $(git rev-parse --show-toplevel))/wt/$(date +%Y%m%d-%H%M%S)"'
-alias clre='claude --permission-mode auto --remote-control --name remote-control-onr-notebook-$(date +%Y%m%d-%H%M%S)'
-# personal 訂閱啟動器：把 config dir 指到獨立目錄，讓憑證與 token 額度和預設
-# (onr) 訂閱完全隔離；用 subshell export 確保 CLAUDE_CONFIG_DIR 傳到 claude
-# 子行程，且不污染互動 shell。
-_ccp_launch() {
-  (
-    export CLAUDE_CONFIG_DIR="$HOME/.claude-personal"
-    claude "$@"
-  )
-}
-alias clp='_ccp_launch --permission-mode auto'
-alias clpc='_ccp_launch --permission-mode auto --continue'
-alias clpr='_ccp_launch --permission-mode auto --resume'
-alias clpw='_ccp_launch --permission-mode auto --worktree "$(basename $(git rev-parse --show-toplevel))/wt/$(date +%Y%m%d-%H%M%S)"'
-alias clpre='_ccp_launch --permission-mode auto --remote-control --name remote-control-personal-notebook-$(date +%Y%m%d-%H%M%S)'
+# 統一透過 clauth 的 profile 啟動 claude，不再直接呼叫 claude、也不再走
+# 自製的 _ccp_launch config-dir 切換函式（已移除）。clauth start 會把
+# ~/.claude 整份「鏡射」進一個 per-run 的暫時目錄
+# （CLAUDE_CONFIG_DIR=~/.clauth/profiles/<profile>/runtime-<pid>-0，數字
+# 隨每次執行改變），已實測驗證鏡射帶著 ~/.claude 目錄的全部內容，包含本
+# repo 部署的 agents、rules、skills、CLAUDE.md、settings.json。user-scope
+# MCP 設定（如 codegraph）則來自另一個不同的來源：$HOME/.claude.json——這
+# 是與 ~/.claude 同層的手足檔案、不在 ~/.claude 目錄內（已確認
+# ~/.claude/.claude.json 並不存在），所以「鏡射 ~/.claude」這件事本身推
+# 不出這份設定會跟著走。已實測驗證 clauth 把這份手足檔案也一併帶進了
+# per-run runtime 目錄：`clauth start personal -- mcp list` 的輸出與全域
+# `claude mcp list` 完全一致，包含 `codegraph: codegraph serve --mcp -
+# ✔ Connected`。這兩個來源合起來，才是「不需要為第二個帳號另外部署一份
+# 設定」成立的完整理由，這也是 install.sh 的 --claude-personal 機制整組
+# 移除的原因（它存在的兩個目的：第二組憑證隔離、跨訂閱共享 session，現在
+# 都由 clauth 承接）。
+# clauth 自己的旗標必須放在 profile 名之前，profile 名之後的引數會原樣
+# 轉交給 claude；因此每個 alias 一律以 `--` 分隔 clauth 與 claude 的
+# 引數，即使該 alias 目前沒有任何與 clauth 同名的旗標——理由是使用者在
+# alias 後面自行追加的引數（例如 `cla --model opus`）也會落在 `--`
+# 之後，若不加 `--`，一旦追加的引數剛好撞名 clauth 自己的旗標
+# （如 --theme、--help、--version），就會被 clauth 的解析器誤吃，而非
+# 原樣轉交給 claude。已實測確認 `clauth start <profile> --` 這種尾端
+# 只有 `--`、後面沒有任何引數的形式不會被拒絕：clap 會把它解析為空的
+# CLAUDE_ARGS，仍正常轉交 claude 執行（exit code 0）。
+# cl* 對應 onramplab profile（Team 方案），clp* 對應 personal profile
+# （Max 方案）——兩個 profile 名稱皆取自 `clauth list` 的實際輸出，非
+# 隨意命名。
+alias cl='clauth start onramplab --'
+alias cla='clauth start onramplab -- --permission-mode auto'
+alias clc='clauth start onramplab -- --permission-mode auto --continue'
+alias clr='clauth start onramplab -- --permission-mode auto --resume'
+alias clw='clauth start onramplab -- --permission-mode auto --worktree "$(basename $(git rev-parse --show-toplevel))/wt/$(date +%Y%m%d-%H%M%S)"'
+alias clre='clauth start onramplab -- --permission-mode auto --remote-control --name remote-control-onr-notebook-$(date +%Y%m%d-%H%M%S)'
+alias clp='clauth start personal -- --permission-mode auto'
+alias clpc='clauth start personal -- --permission-mode auto --continue'
+alias clpr='clauth start personal -- --permission-mode auto --resume'
+alias clpw='clauth start personal -- --permission-mode auto --worktree "$(basename $(git rev-parse --show-toplevel))/wt/$(date +%Y%m%d-%H%M%S)"'
+alias clpre='clauth start personal -- --permission-mode auto --remote-control --name remote-control-personal-notebook-$(date +%Y%m%d-%H%M%S)'
 ## aliases for lf (terminal file manager)
 # lfcd：離開 lf 時 cd 到瀏覽時所在目錄，透過 -last-dir-path 寫出的暫存檔傳遞。
 lfcd() {
