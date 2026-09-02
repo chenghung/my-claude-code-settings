@@ -235,10 +235,10 @@ out="$(check_clis)"
 rc=$?
 PATH="$saved_path"
 if [ "$rc" -eq 0 ] \
-  && printf '%s\n' "$out" | grep -qx 'claude missing' \
-  && printf '%s\n' "$out" | grep -qx 'codex missing' \
-  && printf '%s\n' "$out" | grep -qx 'opencode missing' \
-  && printf '%s\n' "$out" | grep -qx 'agy missing'; then
+  && grep -qx 'claude missing' <<<"$out" \
+  && grep -qx 'codex missing' <<<"$out" \
+  && grep -qx 'opencode missing' <<<"$out" \
+  && grep -qx 'agy missing' <<<"$out"; then
   pass "check_clis 四個 CLI 皆缺席時各印一行 missing 且回傳 0"
 else
   bad "check_clis 缺席輸出不正確: $out (rc=$rc)"
@@ -251,10 +251,10 @@ fi
 # ---- parse_args 解析四種旗標 ----
 out="$(parse_args --pr https://github.com/a/b/pull/1 --issue https://github.com/a/b/issues/2 \
        --design /tmp/d.md --claude --agy)"
-if printf '%s\n' "$out" | grep -qx 'pr=https://github.com/a/b/pull/1' \
-  && printf '%s\n' "$out" | grep -qx 'issue=https://github.com/a/b/issues/2' \
-  && printf '%s\n' "$out" | grep -qx 'design=/tmp/d.md' \
-  && printf '%s\n' "$out" | grep -qx 'clis=claude agy'; then
+if grep -qx 'pr=https://github.com/a/b/pull/1' <<<"$out" \
+  && grep -qx 'issue=https://github.com/a/b/issues/2' <<<"$out" \
+  && grep -qx 'design=/tmp/d.md' <<<"$out" \
+  && grep -qx 'clis=claude agy' <<<"$out"; then
   pass "parse_args 解析四種旗標"
 else
   bad "parse_args 解析結果不正確: $out"
@@ -262,7 +262,7 @@ fi
 
 # ---- parse_args 平台順序固定，不依命令列出現順序 ----
 out="$(parse_args --pr X --agy --claude)"
-if printf '%s\n' "$out" | grep -qx 'clis=claude agy'; then
+if grep -qx 'clis=claude agy' <<<"$out"; then
   pass "parse_args 平台順序固定為 claude codex opencode agy"
 else
   bad "parse_args 平台順序未正規化: $out"
@@ -328,9 +328,9 @@ PATH="$saved_path"
 
 # ---- parse_launch_args 解析 --base-dir 與多個 --agent ----
 out="$(parse_launch_args --base-dir /tmp/run-dir --agent claude=w1 --agent codex=w2)"
-if printf '%s\n' "$out" | grep -qx 'base_dir=/tmp/run-dir' \
-  && printf '%s\n' "$out" | grep -qx 'agent=claude:w1' \
-  && printf '%s\n' "$out" | grep -qx 'agent=codex:w2'; then
+if grep -qx 'base_dir=/tmp/run-dir' <<<"$out" \
+  && grep -qx 'agent=claude:w1' <<<"$out" \
+  && grep -qx 'agent=codex:w2' <<<"$out"; then
   pass "parse_launch_args 解析 --base-dir 與多個 --agent"
 else
   bad "parse_launch_args 解析結果不正確: $out"
@@ -340,8 +340,8 @@ fi
 # 正是這個情形：pane_id 字面上就是 wNN:pM 這種含冒號的形狀，若拆分邏輯
 # 錯把冒號當成分隔符，cli 或 pane_id 其中一段就會被截斷）----
 out="$(parse_launch_args --base-dir /tmp/run-dir --agent claude=w16:p1)"
-if printf '%s\n' "$out" | grep -qx 'base_dir=/tmp/run-dir' \
-  && printf '%s\n' "$out" | grep -qx 'agent=claude:w16:p1'; then
+if grep -qx 'base_dir=/tmp/run-dir' <<<"$out" \
+  && grep -qx 'agent=claude:w16:p1' <<<"$out"; then
   pass "parse_launch_args 含冒號的 pane_id 往返無損"
 else
   bad "parse_launch_args 含冒號的 pane_id 被截斷或跑位: $out"
@@ -1005,18 +1005,18 @@ BP_OUT="$(build_prompt "$BP_ROOT/contract.md" \
   claude some-model /tmp/wt origin/main "$BP_ROOT/review.md")"
 
 # shellcheck disable=SC2015
-printf '%s' "$BP_OUT" | grep -qF 'CONTRACT-BODY' && pass build-prompt-embeds-contract || bad build-prompt-embeds-contract
+grep -qF 'CONTRACT-BODY' <<<"$BP_OUT" && pass build-prompt-embeds-contract || bad build-prompt-embeds-contract
 # 材料檔就放在 materials_dir 底下、build_prompt 完全沒讀過它們的內容 --
 # 這兩份材料的內文不該出現在組出來的 prompt 裡
 # shellcheck disable=SC2015
-printf '%s' "$BP_OUT" | grep -qF 'PR-MATERIAL-BODY' && bad build-prompt-does-not-embed-pr-material || pass build-prompt-does-not-embed-pr-material
+grep -qF 'PR-MATERIAL-BODY' <<<"$BP_OUT" && bad build-prompt-does-not-embed-pr-material || pass build-prompt-does-not-embed-pr-material
 # shellcheck disable=SC2015
-printf '%s' "$BP_OUT" | grep -qF 'ISSUE-MATERIAL-BODY' && bad build-prompt-does-not-embed-issue-material || pass build-prompt-does-not-embed-issue-material
+grep -qF 'ISSUE-MATERIAL-BODY' <<<"$BP_OUT" && bad build-prompt-does-not-embed-issue-material || pass build-prompt-does-not-embed-issue-material
 # 材料目錄的絕對路徑仍要出現在座標區，供人事後查閱 -- 現在這一行指向的是
 # 呼叫端（cmd_prepare()）傳進來的那個目錄，可能是共用的 materials_dir，
 # 也可能是某個 reviewer 自己的副本，build_prompt 自己不分辨、原樣印出
 # shellcheck disable=SC2015
-printf '%s' "$BP_OUT" | grep -qF "$BP_ROOT/materials" && pass build-prompt-keeps-materials-path || bad build-prompt-keeps-materials-path
+grep -qF "$BP_ROOT/materials" <<<"$BP_OUT" && pass build-prompt-keeps-materials-path || bad build-prompt-keeps-materials-path
 
 # 契約全文必須逐字、原封不動地作為 prompt 的開頭 -- 用真正的
 # reviewer-contract.md（多章節）而非上面的合成 fixture 檢查，才抓得到
@@ -1049,13 +1049,13 @@ BP_AGY_OUT="$(build_prompt "$BP_ROOT/contract.md" \
   agy some-model /tmp/wt origin/main "$BP_AGY_OUTPUT_FILE")"
 
 # shellcheck disable=SC2015
-printf '%s' "$BP_CLAUDE_OUT" | grep -qxF -- "- 輸出檔絕對路徑：$BP_CLAUDE_OUTPUT_FILE" && pass build-prompt-output-file-claude-line || bad build-prompt-output-file-claude-line
+grep -qxF -- "- 輸出檔絕對路徑：$BP_CLAUDE_OUTPUT_FILE" <<<"$BP_CLAUDE_OUT" && pass build-prompt-output-file-claude-line || bad build-prompt-output-file-claude-line
 # shellcheck disable=SC2015
-printf '%s' "$BP_AGY_OUT" | grep -qxF -- "- 輸出檔絕對路徑：$BP_AGY_OUTPUT_FILE" && pass build-prompt-output-file-agy-line || bad build-prompt-output-file-agy-line
+grep -qxF -- "- 輸出檔絕對路徑：$BP_AGY_OUTPUT_FILE" <<<"$BP_AGY_OUT" && pass build-prompt-output-file-agy-line || bad build-prompt-output-file-agy-line
 # shellcheck disable=SC2015
-printf '%s' "$BP_CLAUDE_OUT" | grep -qF "$BP_AGY_OUTPUT_FILE" && bad build-prompt-output-file-claude-excludes-agy-path || pass build-prompt-output-file-claude-excludes-agy-path
+grep -qF "$BP_AGY_OUTPUT_FILE" <<<"$BP_CLAUDE_OUT" && bad build-prompt-output-file-claude-excludes-agy-path || pass build-prompt-output-file-claude-excludes-agy-path
 # shellcheck disable=SC2015
-printf '%s' "$BP_AGY_OUT" | grep -qF "$BP_CLAUDE_OUTPUT_FILE" && bad build-prompt-output-file-agy-excludes-claude-path || pass build-prompt-output-file-agy-excludes-claude-path
+grep -qF "$BP_CLAUDE_OUTPUT_FILE" <<<"$BP_AGY_OUT" && bad build-prompt-output-file-agy-excludes-claude-path || pass build-prompt-output-file-agy-excludes-claude-path
 
 # ==============================================================
 # setup_worktree
@@ -2353,23 +2353,23 @@ REC_L3="$(sed -n 3p "$REC_ROOT/summary.txt")"
 
 # 七個欄位，順序固定
 # shellcheck disable=SC2015
-printf '%s' "$REC_L1" | grep -qE '^cli=[^ ]+ pid=[0-9]+ exit=[^ ]+ ended_at=[^ ]+ worktree_status=[^ ]+ content_status=[^ ]+ content_file=' \
+grep -qE '^cli=[^ ]+ pid=[0-9]+ exit=[^ ]+ ended_at=[^ ]+ worktree_status=[^ ]+ content_status=[^ ]+ content_file=' <<<"$REC_L1" \
   && pass record-summary-seven-fields || bad record-summary-seven-fields
 # cli 欄位從 log 檔名推得，不必回頭對另一份摘要
 # shellcheck disable=SC2015
-printf '%s' "$REC_L1" | grep -qF 'cli=claude' && pass record-summary-names-cli || bad record-summary-names-cli
+grep -qF 'cli=claude' <<<"$REC_L1" && pass record-summary-names-cli || bad record-summary-names-cli
 # shellcheck disable=SC2015
-printf '%s' "$REC_L1" | grep -qF 'content_status=ready' && pass record-status-ready || bad record-status-ready
+grep -qF 'content_status=ready' <<<"$REC_L1" && pass record-status-ready || bad record-status-ready
 # 結束碼非零 -> withheld，內容檔仍要留下供人工判斷
 # shellcheck disable=SC2015
-printf '%s' "$REC_L2" | grep -qF 'content_status=withheld' && pass record-status-withheld || bad record-status-withheld
+grep -qF 'content_status=withheld' <<<"$REC_L2" && pass record-status-withheld || bad record-status-withheld
 # shellcheck disable=SC2015
 [ -f "$REC_ROOT/.comment-body-$REC_WITHHELD_PID.md" ] && pass record-withheld-keeps-content-file || bad record-withheld-keeps-content-file
 # 標記不成對 -> no-content，不產生內容檔，content_file 欄位留空
 # shellcheck disable=SC2015
-printf '%s' "$REC_L3" | grep -qF 'content_status=no-content' && pass record-status-no-content || bad record-status-no-content
+grep -qF 'content_status=no-content' <<<"$REC_L3" && pass record-status-no-content || bad record-status-no-content
 # shellcheck disable=SC2015
-printf '%s' "$REC_L3" | grep -qE 'content_file=$' && pass record-no-content-empty-file-field || bad record-no-content-empty-file-field
+grep -qE 'content_file=$' <<<"$REC_L3" && pass record-no-content-empty-file-field || bad record-no-content-empty-file-field
 # shellcheck disable=SC2015
 [ ! -e "$REC_ROOT/.comment-body-$REC_NOCONTENT_PID.md" ] && pass record-no-content-writes-no-file || bad record-no-content-writes-no-file
 
@@ -3227,9 +3227,9 @@ E2E_PROMPT_FILE="$E2E_LOGS_DIR/codex.prompt"
 # base_dir/worktree_dir plus one reviewer_workdir_<cli>= and one
 # prompt_file_<cli>= line per selected reviewer. ----
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s\n' "$out" | grep -qxF "base_dir=$E2E_BASE_DIR" && pass main-e2e-prepare-prints-base-dir || bad main-e2e-prepare-prints-base-dir
+grep -qxF "base_dir=$E2E_BASE_DIR" <<<"$out" && pass main-e2e-prepare-prints-base-dir || bad main-e2e-prepare-prints-base-dir
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s\n' "$out" | grep -qxF "worktree_dir=$E2E_BASE_DIR/worktree" && pass main-e2e-prepare-prints-worktree-dir || bad main-e2e-prepare-prints-worktree-dir
+grep -qxF "worktree_dir=$E2E_BASE_DIR/worktree" <<<"$out" && pass main-e2e-prepare-prints-worktree-dir || bad main-e2e-prepare-prints-worktree-dir
 
 # ---- Task 3 Step 2: base_dir is now the two-layer <repo>-pr-<number>/
 # <timestamp>-<pid> shape -- no sha256 hash, no intervening pr-review
@@ -3252,9 +3252,9 @@ for cli in claude codex opencode; do
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
   [ -d "$E2E_BASE_DIR/reviewers/$cli/home" ] && pass "main-e2e-reviewer-home-created-$cli" || bad "main-e2e-reviewer-home-created-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  printf '%s\n' "$out" | grep -qxF "reviewer_workdir_$cli=$E2E_BASE_DIR/reviewers/$cli/workdir" && pass "main-e2e-prepare-prints-reviewer-workdir-$cli" || bad "main-e2e-prepare-prints-reviewer-workdir-$cli"
+  grep -qxF "reviewer_workdir_$cli=$E2E_BASE_DIR/reviewers/$cli/workdir" <<<"$out" && pass "main-e2e-prepare-prints-reviewer-workdir-$cli" || bad "main-e2e-prepare-prints-reviewer-workdir-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  printf '%s\n' "$out" | grep -qxF "prompt_file_$cli=$E2E_LOGS_DIR/$cli.prompt" && pass "main-e2e-prepare-prints-prompt-file-$cli" || bad "main-e2e-prepare-prints-prompt-file-$cli"
+  grep -qxF "prompt_file_$cli=$E2E_LOGS_DIR/$cli.prompt" <<<"$out" && pass "main-e2e-prepare-prints-prompt-file-$cli" || bad "main-e2e-prepare-prints-prompt-file-$cli"
 done
 
 # ---- Task 3b: cmd_prepare() copies this run's materials into each
@@ -3747,9 +3747,9 @@ mkdir -p "$PS_ROOT/logs"
 printf '111\n' > "$PS_ROOT/logs/claude.pid"
 PS_OUT="$(print_summary "$PS_ROOT/logs" claude --skipped codex opencode)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$PS_OUT" | grep -qF "$PS_ROOT/summary.txt" && pass print-summary-shows-summary-path || bad print-summary-shows-summary-path
+grep -qF "$PS_ROOT/summary.txt" <<<"$PS_OUT" && pass print-summary-shows-summary-path || bad print-summary-shows-summary-path
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$PS_OUT" | grep -qF "本次執行目錄：$PS_ROOT" && pass print-summary-shows-run-dir || bad print-summary-shows-run-dir
+grep -qF "本次執行目錄：$PS_ROOT" <<<"$PS_OUT" && pass print-summary-shows-run-dir || bad print-summary-shows-run-dir
 
 # ==============================================================
 # 審查契約強化：失敗情境、高風險變更、信心等級、摺疊區
@@ -3771,8 +3771,16 @@ done
 # `out="$(cmd)" || out=""` 那種寫法：後者的 `||` 會把失敗原因整個丟掉——
 # 這條斷言本身在這個分支開發期間曾被三個不同 agent 各自獨立撞見過一次
 # 間歇性失敗，26 次各自獨立重跑都重現不出來，每次撞見時機器都在跑其他
-# 高負載工作，本地資源競爭是目前唯一站得住的假說，但沒人能確認，因為
-# 結束碼與 stderr 當場就被丟了，什麼都留不下來查。
+# 高負載工作。真正原因後來查清了，不在這裡的 `if cmd; then ...`，而在
+# 緊接在後面那一行：`printf '%s' "$prompt_out" | grep -q ...` 這種寫法，
+# 搭配本檔開頭的 set -o pipefail，一比對到就立刻結束的 grep -q 會在
+# printf 還沒把內容寫完前就關閉讀取端，讓 printf 收到 SIGPIPE 以 141
+# 結束；pipefail 之下這個 141 會蓋過 grep 本身「找到了」的 0，讓整條
+# 管線回報失敗，即使比對其實成功。這裡嵌入的是 93KB 的
+# reviewer-contract.md 全文，遠超過管線緩衝區，所以不是偶發而是機械
+# 必然，只是命中哪一次重跑要看行程排程的時機。已改用下面的 herestring
+# （<<<）取代這條管線：讀取端不再是另一個行程，沒有行程可收 SIGPIPE，
+# 這個假失敗不會再發生。
 BUILD_PROMPT_STDERR="$T/build-prompt.stderr"
 if prompt_out="$(build_prompt "$contract" "https://github.com/a/b/pull/1" \
   "$T/materials-empty" "claude" "opus-5" "$T/wt" "origin/main" "$T/wt/review.md" 2>"$BUILD_PROMPT_STDERR")"; then
@@ -3781,7 +3789,7 @@ else
   prompt_rc=$?
   prompt_out=""
 fi
-if printf '%s' "$prompt_out" | grep -q "高風險變更"; then
+if grep -q "高風險變更" <<<"$prompt_out"; then
   pass "build_prompt 嵌入了高風險變更清單"
 else
   bad "build_prompt 未嵌入契約新內容（exit=$prompt_rc, stderr: $(cat "$BUILD_PROMPT_STDERR" 2>/dev/null)）"
@@ -3945,10 +3953,10 @@ rcf_out="$(_ready_content_files "$T/synth/summary.txt")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$(printf '%s\n' "$rcf_out" | wc -l)" -eq 2 ] && pass "_ready_content_files 只印兩行" || bad "_ready_content_files 印了非兩行: $rcf_out"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s\n' "$rcf_out" | grep -qF "$(printf 'claude\t%s/synth/.comment-body-111.md' "$T")" \
+grep -qF "$(printf 'claude\t%s/synth/.comment-body-111.md' "$T")" <<<"$rcf_out" \
   && pass "_ready_content_files 含 claude 那一行" || bad "_ready_content_files 缺 claude 那一行"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s\n' "$rcf_out" | grep -qF "$(printf 'agy\t%s/synth/.comment-body-222.md' "$T")" \
+grep -qF "$(printf 'agy\t%s/synth/.comment-body-222.md' "$T")" <<<"$rcf_out" \
   && pass "_ready_content_files 含 agy 那一行" || bad "_ready_content_files 缺 agy 那一行"
 case "$rcf_out" in
   *codex*) bad "_ready_content_files 誤含 codex（content_status=no-content）" ;;
@@ -3968,18 +3976,18 @@ esac
 out="$(build_synthesis_prompt \
   "$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md" \
   "$T/synth/roster.txt" "$T/synth/summary.txt" "claude" "opus-5-synth-marker")"
-if printf '%s' "$out" | grep -q 'REVIEW-FROM-CLAUDE' \
-  && printf '%s' "$out" | grep -q 'REVIEW-FROM-AGY' \
-  && printf '%s' "$out" | grep -q '共識' \
-  && printf '%s' "$out" | grep -q 'codex' \
-  && printf '%s' "$out" | grep -q 'opencode' ; then
+if grep -q 'REVIEW-FROM-CLAUDE' <<<"$out" \
+  && grep -q 'REVIEW-FROM-AGY' <<<"$out" \
+  && grep -q '共識' <<<"$out" \
+  && grep -q 'codex' <<<"$out" \
+  && grep -q 'opencode' <<<"$out" ; then
   pass "build_synthesis_prompt 內嵌契約、兩份 review 與完整名單"
 else
   bad "build_synthesis_prompt 內容不完整"
 fi
 
 # ---- 不得內嵌 no-content（連標記都沒有）的內容 ----
-if printf '%s' "$out" | grep -q 'comment-body-333'; then
+if grep -q 'comment-body-333' <<<"$out"; then
   bad "build_synthesis_prompt 誤含 no-content 的內容檔"
 else
   pass "build_synthesis_prompt 只取 ready 的內容"
@@ -3987,7 +3995,7 @@ fi
 
 # ---- 不得內嵌 withheld（標記齊全但被判定不可信）的內容全文，即使該
 # CLI 仍要出現在名單的揭露段落裡 ----
-if printf '%s' "$out" | grep -q 'REVIEW-FROM-OPENCODE-WITHHELD'; then
+if grep -q 'REVIEW-FROM-OPENCODE-WITHHELD' <<<"$out"; then
   bad "build_synthesis_prompt 誤含 withheld 的 review 全文"
 else
   pass "build_synthesis_prompt 排除 withheld 的 review 全文"
@@ -4028,12 +4036,12 @@ esac
 # 流本身的 CLI 與 model，不只是各份 review 自己的身分。用一個與名單裡
 # 任何 model 字串都不同的標記值，確認確實是新加的這一段揭露，不是撞到
 # 既有名單或 review 內容裡的字串 ----
-if printf '%s' "$out" | grep -qF 'opus-5-synth-marker'; then
+if grep -qF 'opus-5-synth-marker' <<<"$out"; then
   pass "build_synthesis_prompt 揭露執行合流本身的 model"
 else
   bad "build_synthesis_prompt 未揭露執行合流本身的 model"
 fi
-if printf '%s' "$out" | grep -qF 'CLI 名稱：claude'; then
+if grep -qF 'CLI 名稱：claude' <<<"$out"; then
   pass "build_synthesis_prompt 揭露執行合流本身的 CLI 名稱"
 else
   bad "build_synthesis_prompt 未揭露執行合流本身的 CLI 名稱"
@@ -4055,12 +4063,12 @@ printf 'agy some-model dispatched\n' > "$T/synth/roster-gap.txt"
 gap_out="$(build_synthesis_prompt \
   "$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md" \
   "$T/synth/roster-gap.txt" "$ROSTER_GAP_SUMMARY" "claude" "some-synth-model")"
-if printf '%s' "$gap_out" | grep -qF -- '- claude / 未提供：完成'; then
+if grep -qF -- '- claude / 未提供：完成' <<<"$gap_out"; then
   pass "build_synthesis_prompt 名單缺漏時把 model 寫成未提供"
 else
   bad "build_synthesis_prompt 名單缺漏時未寫成未提供"
 fi
-if printf '%s' "$gap_out" | grep -qF -- '- agy / some-model：完成'; then
+if grep -qF -- '- agy / some-model：完成' <<<"$gap_out"; then
   pass "build_synthesis_prompt 名單有紀錄的那筆不受缺漏影響"
 else
   bad "build_synthesis_prompt 名單有紀錄的那筆被誤判"
@@ -4084,7 +4092,7 @@ if noroster_out="$(build_synthesis_prompt \
 else
   bad "build_synthesis_prompt 名單檔整個不存在時卻中止: $noroster_out"
 fi
-if printf '%s' "$noroster_out" | grep -qF -- '- claude / 未提供：完成'; then
+if grep -qF -- '- claude / 未提供：完成' <<<"$noroster_out"; then
   pass "build_synthesis_prompt 名單檔整個不存在時把 model 寫成未提供"
 else
   bad "build_synthesis_prompt 名單檔整個不存在時未寫成未提供"
@@ -4142,7 +4150,7 @@ else
   bad "build_synthesis_prompt 有一份可嵌入卻仍被保護閘擋下"
 fi
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$oneembed_out" | grep -q 'REVIEW-ONE-EMBEDDABLE' && pass "build_synthesis_prompt 對照組確實嵌入了那唯一一份 review" || bad "build_synthesis_prompt 對照組未嵌入那唯一一份 review"
+grep -q 'REVIEW-ONE-EMBEDDABLE' <<<"$oneembed_out" && pass "build_synthesis_prompt 對照組確實嵌入了那唯一一份 review" || bad "build_synthesis_prompt 對照組未嵌入那唯一一份 review"
 
 # ==============================================================
 # launch_synthesis
@@ -4366,14 +4374,14 @@ _record_synthesis_result 77001 claude "$RSYN_READY_ROOT/synthesis.log" "$RSYN_RE
 RSYN_L1="$(sed -n 1p "$RSYN_SUMMARY")"
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$RSYN_L1" | grep -qE '^cli=[^ ]+ pid=[0-9]+ exit=[^ ]+ ended_at=[^ ]+ worktree_status=[^ ]+ content_status=[^ ]+ content_file=' \
+grep -qE '^cli=[^ ]+ pid=[0-9]+ exit=[^ ]+ ended_at=[^ ]+ worktree_status=[^ ]+ content_status=[^ ]+ content_file=' <<<"$RSYN_L1" \
   && pass "_record_synthesis_result 七欄位" || bad "_record_synthesis_result 七欄位不對: $RSYN_L1"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$RSYN_L1" | grep -qF 'cli=synthesis:claude' && pass "_record_synthesis_result 的 cli 欄為 synthesis:claude" || bad "_record_synthesis_result 的 cli 欄不對: $RSYN_L1"
+grep -qF 'cli=synthesis:claude' <<<"$RSYN_L1" && pass "_record_synthesis_result 的 cli 欄為 synthesis:claude" || bad "_record_synthesis_result 的 cli 欄不對: $RSYN_L1"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$RSYN_L1" | grep -qF 'worktree_status=n/a' && pass "_record_synthesis_result 的 worktree_status 為 n/a" || bad "_record_synthesis_result 的 worktree_status 不對"
+grep -qF 'worktree_status=n/a' <<<"$RSYN_L1" && pass "_record_synthesis_result 的 worktree_status 為 n/a" || bad "_record_synthesis_result 的 worktree_status 不對"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$RSYN_L1" | grep -qF 'content_status=ready' && pass "_record_synthesis_result exit=0 時 content_status=ready" || bad "_record_synthesis_result exit=0 時 content_status 不對"
+grep -qF 'content_status=ready' <<<"$RSYN_L1" && pass "_record_synthesis_result exit=0 時 content_status=ready" || bad "_record_synthesis_result exit=0 時 content_status 不對"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$(head -1 "$RSYN_READY_ROOT/.comment-body-synthesis.md")" = '<!-- pr-review-by-multi-agents -->' ] \
   && pass "_record_synthesis_result 內容檔第一行是回音室標記" || bad "_record_synthesis_result 內容檔缺回音室標記"
@@ -4392,9 +4400,9 @@ printf '1' > "$RSYN_WITHHELD_ROOT/.synthesis-exit-77002"
 _record_synthesis_result 77002 codex "$RSYN_WITHHELD_ROOT/synthesis.log" "$RSYN_WITHHELD_ROOT" "$RSYN_SUMMARY"
 RSYN_L2="$(sed -n 2p "$RSYN_SUMMARY")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$RSYN_L2" | grep -qF 'cli=synthesis:codex' && pass "_record_synthesis_result 的 cli 欄保留實際執行合流的 CLI 名稱" || bad "_record_synthesis_result 的 cli 欄未保留實際 CLI"
+grep -qF 'cli=synthesis:codex' <<<"$RSYN_L2" && pass "_record_synthesis_result 的 cli 欄保留實際執行合流的 CLI 名稱" || bad "_record_synthesis_result 的 cli 欄未保留實際 CLI"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$RSYN_L2" | grep -qF 'content_status=withheld' && pass "_record_synthesis_result exit 非零時 content_status=withheld" || bad "_record_synthesis_result exit 非零時 content_status 不對"
+grep -qF 'content_status=withheld' <<<"$RSYN_L2" && pass "_record_synthesis_result exit 非零時 content_status=withheld" || bad "_record_synthesis_result exit 非零時 content_status 不對"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -f "$RSYN_WITHHELD_ROOT/.comment-body-synthesis.md" ] && pass "_record_synthesis_result withheld 仍保留內容檔" || bad "_record_synthesis_result withheld 遺失內容檔"
 
@@ -4405,9 +4413,9 @@ printf '0' > "$RSYN_NOCONTENT_ROOT/.synthesis-exit-77003"
 _record_synthesis_result 77003 opencode "$RSYN_NOCONTENT_ROOT/synthesis.log" "$RSYN_NOCONTENT_ROOT" "$RSYN_SUMMARY"
 RSYN_L3="$(sed -n 3p "$RSYN_SUMMARY")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$RSYN_L3" | grep -qF 'content_status=no-content' && pass "_record_synthesis_result 標記缺失時 content_status=no-content" || bad "_record_synthesis_result 標記缺失時 content_status 不對"
+grep -qF 'content_status=no-content' <<<"$RSYN_L3" && pass "_record_synthesis_result 標記缺失時 content_status=no-content" || bad "_record_synthesis_result 標記缺失時 content_status 不對"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$RSYN_L3" | grep -qE 'content_file=$' && pass "_record_synthesis_result no-content 時 content_file 留空" || bad "_record_synthesis_result no-content 時 content_file 未留空"
+grep -qE 'content_file=$' <<<"$RSYN_L3" && pass "_record_synthesis_result no-content 時 content_file 留空" || bad "_record_synthesis_result no-content 時 content_file 未留空"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ ! -e "$RSYN_NOCONTENT_ROOT/.comment-body-synthesis.md" ] && pass "_record_synthesis_result no-content 不寫內容檔" || bad "_record_synthesis_result no-content 卻寫了內容檔"
 
@@ -4511,9 +4519,9 @@ case "$SPWSYN_L4" in
   *) bad "spawn_supervisor 合流那一行的 cli 欄不對: $SPWSYN_L4" ;;
 esac
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$SPWSYN_L4" | grep -qF 'worktree_status=n/a' && pass "spawn_supervisor 合流那一行 worktree_status=n/a" || bad "spawn_supervisor 合流那一行 worktree_status 不對"
+grep -qF 'worktree_status=n/a' <<<"$SPWSYN_L4" && pass "spawn_supervisor 合流那一行 worktree_status=n/a" || bad "spawn_supervisor 合流那一行 worktree_status 不對"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$SPWSYN_L4" | grep -qF 'content_status=ready' && pass "spawn_supervisor 合流那一行 content_status=ready" || bad "spawn_supervisor 合流那一行 content_status 不對: $SPWSYN_L4"
+grep -qF 'content_status=ready' <<<"$SPWSYN_L4" && pass "spawn_supervisor 合流那一行 content_status=ready" || bad "spawn_supervisor 合流那一行 content_status 不對: $SPWSYN_L4"
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$SPWSYN_ROOT/synthesis.log" ] && pass "spawn_supervisor 把合流 log 放在 base_dir 而非 logs_dir" || bad "spawn_supervisor 未在 base_dir 寫出合流 log"
@@ -4668,9 +4676,9 @@ case "$SPWSYNI_L4" in
   *) bad "spawn_supervisor_interactive 合流那一行的 cli 欄不對: $SPWSYNI_L4" ;;
 esac
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$SPWSYNI_L4" | grep -qF 'worktree_status=n/a' && pass "spawn_supervisor_interactive 合流那一行 worktree_status=n/a" || bad "spawn_supervisor_interactive 合流那一行 worktree_status 不對"
+grep -qF 'worktree_status=n/a' <<<"$SPWSYNI_L4" && pass "spawn_supervisor_interactive 合流那一行 worktree_status=n/a" || bad "spawn_supervisor_interactive 合流那一行 worktree_status 不對"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$SPWSYNI_L4" | grep -qF 'content_status=ready' && pass "spawn_supervisor_interactive 合流那一行 content_status=ready" || bad "spawn_supervisor_interactive 合流那一行 content_status 不對: $SPWSYNI_L4"
+grep -qF 'content_status=ready' <<<"$SPWSYNI_L4" && pass "spawn_supervisor_interactive 合流那一行 content_status=ready" || bad "spawn_supervisor_interactive 合流那一行 content_status 不對: $SPWSYNI_L4"
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$SPWSYNI_ROOT/synthesis.log" ] && pass "spawn_supervisor_interactive 把合流 log 放在 base_dir" || bad "spawn_supervisor_interactive 未在 base_dir 寫出合流 log"
