@@ -2,9 +2,13 @@
 # Orchestrates parallel PR code review by claude, codex, opencode, and agy
 # CLIs.
 #
-# Command line: run-review.sh --pr <link> [--issue <ref>] [--design <path>]
-# --claude|--codex|--opencode|--agy (one or more; see parse_args). --pr,
-# --issue and --design may be omitted or empty -- an empty/omitted PR link
+# Command line: two subcommands. `run-review.sh prepare --pr <link>
+# [--issue <ref>] [--design <path>] --claude|--codex|--opencode|--agy` (one
+# or more platform flags; see parse_args) runs every precondition check and
+# writes each selected CLI's prompt file. `run-review.sh launch --base-dir
+# <path> --agent <cli>=<pane_id>...` (one or more; see parse_launch_args)
+# launches the reviewers `prepare` already set up. --pr, --issue and
+# --design may be omitted or empty -- an empty/omitted PR link
 # derives the PR from the current branch (see parse_pr_url); an empty issue
 # link makes fetch_review_materials derive the issue number itself from the
 # PR's own body instead (see _derive_issue_number); an empty, or unreadable,
@@ -23,8 +27,9 @@
 # prompt assembly); and, below, launching each reviewer CLI with its own
 # least-privilege sandbox/permission flags, supervising them to completion,
 # synthesizing the trustworthy reviews into the single comment that
-# eventually gets posted, and reporting a summary -- the main() function at
-# the bottom strings all of the above into the complete pipeline.
+# eventually gets posted, and reporting a summary -- main() only dispatches
+# to cmd_prepare() and cmd_launch(), which together string all of the
+# above into the complete two-phase pipeline.
 set -euo pipefail
 
 # IFS is intentionally left at its bash default here. Nothing in this file
@@ -231,8 +236,9 @@ _fetch_issue_material() {
 # used to have no visible symptom beyond three reviewers separately noting
 # the material was missing.
 #
-# The final `chmod -R a-w` is the same second-layer defense main() already
-# applies to the worktree and logs dir: a reviewer CLI that writes despite
+# The final `chmod -R a-w` is the same second-layer defense cmd_prepare()
+# and cmd_launch() already apply to the worktree and logs dir respectively:
+# a reviewer CLI that writes despite
 # its own sandbox flags (see launch_reviewer's docstring on why those are
 # not the guarantee) could otherwise rewrite the very requirements it is
 # being judged against, and every later reviewer in the same run would read
@@ -333,8 +339,9 @@ parse_pr_url() {
 # Verifies gh is installed and authenticated. Returns 0 when both hold; on
 # the first failure prints the reason to stderr and returns non-zero.
 # Split out from check_prerequisites (which also checks the PR exists,
-# needing owner/repo/number that main() doesn't have yet until parse_pr_url
-# has already run) so main() can call this before parse_pr_url: an empty
+# needing owner/repo/number that cmd_prepare() doesn't have yet until
+# parse_pr_url has already run) so cmd_prepare() can call this before
+# parse_pr_url: an empty
 # PR link makes parse_pr_url call `gh pr view` itself, with stderr
 # discarded, to derive the PR from the current branch -- without this
 # check running first, a missing/unauthenticated gh would make that
@@ -426,11 +433,12 @@ parse_args() {
           return 2
         fi
         # This function hands its result to the caller as four printf'd
-        # lines (pr=/issue=/design=/clis=), which main() re-parses line by
-        # line. A newline embedded in a value would let it forge one of
-        # those lines -- e.g. a --design value crafted to inject its own
-        # "clis=" line and silently swap which platforms main() dispatches
-        # -- so it is rejected here, before it ever reaches that output.
+        # lines (pr=/issue=/design=/clis=), which cmd_prepare() re-parses
+        # line by line. A newline embedded in a value would let it forge
+        # one of those lines -- e.g. a --design value crafted to inject
+        # its own "clis=" line and silently swap which platforms
+        # cmd_prepare() dispatches -- so it is rejected here, before it
+        # ever reaches that output.
         case "$2" in
           *$'\n'*)
             printf 'run-review.sh: %s value must not contain a newline\n' "$1" >&2
@@ -469,6 +477,117 @@ parse_args() {
   printf 'issue=%s\n' "$issue"
   printf 'design=%s\n' "$design"
   printf 'clis=%s\n' "${selected[*]}"
+}
+
+# parse_launch_args <arg>...
+#
+# Parses the launch subcommand's flags and prints one base_dir= line
+# followed by one agent=<cli>:<pane_id> line per --agent pair -- cli and
+# pane_id joined with a colon rather than an equals sign, because pane_id
+# itself may contain colons (e.g. w16:p3) and re-splitting on "=" would be
+# ambiguous. cmd_launch, in its current form, only reads the cli back out
+# of each agent= line (everything up to the first colon) to decide which
+# reviewer to dispatch; it does not extract or use pane_id yet (see
+# cmd_launch's own docstring) -- whichever later task wires pane_id into
+# herdr must take everything *after* the first colon, not split further,
+# so a colon inside pane_id itself is preserved rather than truncated.
+# --base-dir must appear exactly once and be an absolute path (leading
+# "/") -- cmd_launch derives worktree_dir/logs_dir/summary_file from it
+# with plain string concatenation, so a relative value would silently
+# resolve those against cmd_launch's own cwd at run time instead of the
+# directory prepare actually built. --agent must appear at least once;
+# each value must be <cli>=<pane_id> with <cli> one of
+# claude/codex/opencode/agy, and no <cli> may repeat across separate
+# --agent flags -- cmd_launch has no other guard against that, and a
+# repeated cli would make it call launch_reviewer twice for the same
+# platform, the second call's log/pid writes silently clobbering the
+# first's and .roster gaining a duplicate line. pane_id itself is not
+# format-checked here, it is handed to herdr as-is and any format error in
+# it surfaces as that command's own failure. Returns 2 on any usage error,
+# printing the reason to stderr, the same convention parse_args uses.
+parse_launch_args() {
+  local base_dir="" cli pane_id agent_val agent
+  local -a agents=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --base-dir)
+        if [ "$#" -lt 2 ] || [ "${2#--}" != "$2" ]; then
+          printf 'run-review.sh: %s requires a value\n' "$1" >&2
+          return 2
+        fi
+        if [ -n "$base_dir" ]; then
+          printf 'run-review.sh: --base-dir may only be given once\n' >&2
+          return 2
+        fi
+        case "$2" in
+          /*) ;;
+          *)
+            printf 'run-review.sh: --base-dir must be an absolute path: %s\n' "$2" >&2
+            return 2
+            ;;
+        esac
+        base_dir="$2"
+        shift 2
+        ;;
+      --agent)
+        if [ "$#" -lt 2 ] || [ "${2#--}" != "$2" ]; then
+          printf 'run-review.sh: %s requires a value\n' "$1" >&2
+          return 2
+        fi
+        agent_val="$2"
+        case "$agent_val" in
+          *=*)
+            cli="${agent_val%%=*}"
+            pane_id="${agent_val#*=}"
+            ;;
+          *)
+            printf 'run-review.sh: --agent value must be <cli>=<pane_id>: %s\n' "$agent_val" >&2
+            return 2
+            ;;
+        esac
+        case "$cli" in
+          claude|codex|opencode|agy) ;;
+          *)
+            printf 'run-review.sh: --agent cli must be one of claude/codex/opencode/agy: %s\n' "$cli" >&2
+            return 2
+            ;;
+        esac
+        # A repeated cli is a usage error, not last-write-wins: see this
+        # function's own docstring on the silent log/pid/.roster
+        # corruption it would otherwise cause in cmd_launch.
+        for agent in "${agents[@]+"${agents[@]}"}"; do
+          case "$agent" in
+            "$cli":*)
+              printf 'run-review.sh: --agent cli given more than once: %s\n' "$cli" >&2
+              return 2
+              ;;
+          esac
+        done
+        agents+=("$cli:$pane_id")
+        shift 2
+        ;;
+      *)
+        printf 'run-review.sh: unknown argument: %s\n' "$1" >&2
+        return 2
+        ;;
+    esac
+  done
+
+  if [ -z "$base_dir" ]; then
+    printf 'run-review.sh: --base-dir is required\n' >&2
+    return 2
+  fi
+
+  if [ "${#agents[@]}" -eq 0 ]; then
+    printf 'run-review.sh: at least one --agent is required\n' >&2
+    return 2
+  fi
+
+  printf 'base_dir=%s\n' "$base_dir"
+  for agent in "${agents[@]}"; do
+    printf 'agent=%s\n' "$agent"
+  done
 }
 
 # verify_selection <cli>...
@@ -569,15 +688,16 @@ _origin_matches_owner_repo() {
 # Reads the caller's cwd's `origin` remote URL and verifies it actually
 # points at <owner>/<repo> on github.com (see _origin_matches_owner_repo),
 # printing a clear reason to stderr and returning non-zero otherwise. Both
-# setup_worktree and main() call this -- main() calls it once, up front,
-# before resolve_base_ref or setup_worktree ever run, because
-# resolve_base_ref's own `git fetch` (updating a remote-tracking ref) used
-# to run *before* setup_worktree's origin check did, meaning a run started
-# from the wrong cwd would still mutate that ref before eventually being
-# rejected. setup_worktree keeps its own call too, as a second, redundant
-# gate -- it is exercised directly in this repo's own tests and could in
-# principle be called by some future caller that skips this new
-# up-front main() check, and it must stay safe on its own regardless.
+# setup_worktree and cmd_prepare() call this -- cmd_prepare() calls it
+# once, up front, before resolve_base_ref or setup_worktree ever run,
+# because resolve_base_ref's own `git fetch` (updating a remote-tracking
+# ref) used to run *before* setup_worktree's origin check did, meaning a
+# run started from the wrong cwd would still mutate that ref before
+# eventually being rejected. setup_worktree keeps its own call too, as a
+# second, redundant gate -- it is exercised directly in this repo's own
+# tests and could in principle be called by some future caller that skips
+# this new up-front cmd_prepare() check, and it must stay safe on its own
+# regardless.
 #
 # Reads `git config --get remote.origin.url` (the raw, literally-
 # configured value) rather than `git remote get-url origin` (the
@@ -673,8 +793,8 @@ setup_worktree() {
 
   # Fail fast if the cwd's origin doesn't actually point at this PR's own
   # repo, rather than silently fetching/reviewing the wrong codebase. See
-  # _check_origin_matches's own docstring on why main() also calls this
-  # up front now, before this function ever runs.
+  # _check_origin_matches's own docstring on why cmd_prepare() also calls
+  # this up front now, before this function ever runs.
   _check_origin_matches "$owner" "$repo" || return 1
 
   _reap_stale_run_dirs "$base_dir" || true
@@ -1361,7 +1481,7 @@ _write_agy_home() {
 # agy's write tool bypasses its own permission layer entirely regardless
 # of what its allow list names (see the agy bullet above). Given that, the
 # worktree's actual protection is an OS-level one applied uniformly to all
-# four from main(), independent of any single CLI's own permission
+# four from cmd_prepare(), independent of any single CLI's own permission
 # engine: `chmod -R a-w` on the worktree right after
 # setup_worktree creates it (before any reviewer is launched), restored
 # with `chmod -R u+w` immediately before removal (see spawn_supervisor and
@@ -1415,7 +1535,7 @@ _write_agy_home() {
 # function's `$!` observes, because `nohup` execs its argument in place
 # rather than forking an extra layer. This holds true even when this whole
 # function is invoked via command substitution (`pid=$(launch_reviewer
-# ...)`), which is the normal way main() calls it: unlike `wait`, this
+# ...)`), which is the normal way cmd_launch() calls it: unlike `wait`, this
 # file-based handoff has no dependency on process parentage, so it survives
 # the command substitution's own transient subshell exiting immediately
 # after printing the PID.
@@ -2295,8 +2415,8 @@ spawn_supervisor() {
 #
 # Prints the dispatch summary the skill relays to the user: which reviewers
 # were actually launched (with each one's PID, read back from the
-# <cli>.pid file main() writes right after launch_reviewer, and its log
-# file path), and which were skipped because that CLI wasn't installed.
+# <cli>.pid file cmd_launch() writes right after launch_reviewer, and its
+# log file path), and which were skipped because that CLI wasn't installed.
 # When exactly one reviewer was dispatched, adds a line calling out that
 # cross-validation across independent reviewers does not hold for this run.
 # When two or more were dispatched, adds a line noting that a synthesis
@@ -2456,20 +2576,21 @@ resolve_base_ref() {
 
 # _dispatch_failed_cleanup <worktree_dir> <already_launched_pid>...
 #
-# main()'s reviewer-dispatch loop calls resolve_model, build_prompt, and
-# launch_reviewer once per detected CLI; under set -e, any one of those
-# failing partway through (say, on the second of three CLIs) would abort
-# main() right there with no further cleanup -- leaving the worktree in
-# place forever (nothing else in this script's lifetime ever removes it
-# outside spawn_supervisor, which this abort path never reaches) and, if a
-# CLI *before* the one that failed already got launched, its process
-# running as a permanent orphan with no spawn_supervisor ever tracking it
-# to completion or recording its exit. Both are silent resource leaks with
-# no error surfaced anywhere else, which is why main() calls this instead
-# of just letting set -e abort bare: it reports exactly which already-
+# cmd_prepare()'s per-CLI loop calls resolve_model and build_prompt, and
+# cmd_launch()'s own per-CLI loop calls launch_reviewer, once per detected
+# CLI; under set -e, any one of those failing partway through (say, on the
+# second of three CLIs) would abort that loop's function right there with
+# no further cleanup -- leaving the worktree in place forever (nothing else
+# in this script's lifetime ever removes it outside spawn_supervisor, which
+# this abort path never reaches) and, if a CLI *before* the one that failed
+# already got launched, its process running as a permanent orphan with no
+# spawn_supervisor ever tracking it to completion or recording its exit.
+# Both are silent resource leaks with no error surfaced anywhere else,
+# which is why cmd_prepare() and cmd_launch() each call this instead of
+# just letting set -e abort bare: it reports exactly which already-
 # launched PIDs are now unsupervised (so a human has something to `kill`
 # or `ps` on) and makes a best-effort attempt to remove the worktree before
-# main() exits non-zero.
+# the caller exits non-zero.
 _dispatch_failed_cleanup() {
   local worktree_dir="$1"
   shift
@@ -2480,47 +2601,43 @@ _dispatch_failed_cleanup() {
     printf 'run-review.sh: reviewer dispatch failed before any reviewer was launched\n' >&2
   fi
 
-  # Undo main()'s `chmod -R a-w` before removing -- see spawn_supervisor's
-  # matching step for why `git worktree remove` needs this first.
+  # Undo cmd_prepare()'s `chmod -R a-w` before removing -- see
+  # spawn_supervisor's matching step for why `git worktree remove` needs
+  # this first.
   chmod -R u+w "$worktree_dir" 2>/dev/null || true
   git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
 }
 
-# main [--pr <link>] [--issue <ref>] [--design <path>] --claude|--codex|--opencode|--agy...
+# cmd_prepare --pr <link> [--issue <ref>] [--design <path>] --claude|--codex|--opencode|--agy...
 #
-# The full pipeline: parse the named flags (see parse_args) and verify
-# every selected reviewer platform is actually installed (see
+# The prepare half of the pipeline: parse the named flags (see parse_args)
+# and verify every selected reviewer platform is actually installed (see
 # verify_selection), resolve and validate the PR, set up the shared
-# worktree and base ref, launch each selected reviewer with its own
-# prompt, hand them to spawn_supervisor, and print the dispatch summary.
-# Every hard precondition (gh missing/not authenticated, PR not found,
-# contract file missing, base ref unresolvable, worktree creation failing)
-# exits 1 before anything is launched -- see each called function's own
-# docstring for what it reports on failure. Two other exit codes are
-# reserved for earlier, cheaper rejections: parse_args itself exits 2 on a
-# usage error (unknown flag, a value-taking flag with no value, or no
-# platform selected at all), and verify_selection exits 3 when a selected
-# platform isn't on PATH -- both before gh is ever touched.
-main() {
+# worktree and base ref, then build and write each selected reviewer's own
+# prompt file. Every hard precondition (gh missing/not authenticated, PR
+# not found, contract file missing, base ref unresolvable, worktree
+# creation failing) exits 1 -- see each called function's own docstring for
+# what it reports on failure. Two other exit codes are reserved for
+# earlier, cheaper rejections: parse_args itself exits 2 on a usage error
+# (unknown flag, a value-taking flag with no value, or no platform selected
+# at all), and verify_selection exits 3 when a selected platform isn't on
+# PATH -- both before gh is ever touched. Does not launch any reviewer, and
+# does not yet print anything on success -- a later task adds what
+# cmd_prepare(), cmd_launch(), and the calling agent still need from here
+# (reviewer-specific writable directories, isolated home directories, and
+# printing the execution/worktree/prompt-file paths).
+cmd_prepare() {
   local pr_arg="" issue_arg="" design_doc_path="" clis_line=""
   local pr_info owner repo number contract_path base_ref pr_url
   local project_root project_hash project_folder
-  local base_dir logs_dir summary_file worktree_dir materials_dir
-  local cli model prompt pid parsed parsed_line
-  local -a all_reviewers=() skipped=() pids=()
-
-  # --check-clis is a standalone preflight mode: it must not run any other
-  # precondition check and must not create anything, because the skill
-  # calls it before the user has even chosen a combination.
-  if [ "${1:-}" = "--check-clis" ] && [ "$#" -eq 1 ]; then
-    check_clis
-    return 0
-  fi
+  local base_dir logs_dir worktree_dir materials_dir
+  local cli model prompt parsed parsed_line
+  local -a all_reviewers=()
 
   # Parsed with pure shell builtins (case/parameter-expansion, a here-string
   # loop), not an external filter like sed: this runs before
   # _check_gh_available below, and that check's own docstring explains why
-  # main() must not depend on any external tool's presence before it
+  # cmd_prepare() must not depend on any external tool's presence before it
   # actually confirms one -- an unrelated missing tool here would surface as
   # the wrong failure entirely instead of the "gh CLI not found" message
   # that check exists to guarantee.
@@ -2557,12 +2674,6 @@ main() {
 
   check_prerequisites "$owner" "$repo" "$number" || exit 1
 
-  # skipped is now always empty: the selection is explicit and verified
-  # above, so there is no such thing as a silently-degraded run any more.
-  # print_summary's --skipped section is kept for compatibility with its
-  # existing signature and simply receives nothing.
-  skipped=()
-
   contract_path="$(resolve_contract_path)" || exit 1
 
   # Must run before resolve_base_ref: that function's own `git fetch`
@@ -2588,7 +2699,6 @@ main() {
   # enough to rule that out.
   base_dir="$HOME/.tmp/$project_folder/pr-review/$number-$(date -u +%Y%m%d%H%M%S)-$$"
   logs_dir="$base_dir/logs"
-  summary_file="$base_dir/summary.txt"
   mkdir -p "$logs_dir"
 
   worktree_dir="$(setup_worktree "$owner" "$repo" "$number" "$base_dir")" || {
@@ -2627,16 +2737,73 @@ main() {
   for cli in "${all_reviewers[@]}"; do
     # Each step below is checked explicitly (rather than as a bare
     # statement) so a failure partway through this loop runs
-    # _dispatch_failed_cleanup instead of letting set -e abort main() with
-    # an already-launched reviewer or the worktree left behind with
-    # nothing to clean it up.
+    # _dispatch_failed_cleanup instead of letting set -e abort cmd_prepare()
+    # with the worktree left behind and nothing to clean it up.
     if ! model="$(resolve_model "$cli")" \
       || ! prompt="$(build_prompt "$contract_path" "$pr_url" "$materials_dir" \
              "$cli" "$model" "$worktree_dir" "$base_ref")"; then
-      _dispatch_failed_cleanup "$worktree_dir" "${pids[@]+"${pids[@]}"}"
+      _dispatch_failed_cleanup "$worktree_dir"
       exit 1
     fi
     printf '%s' "$prompt" > "$logs_dir/$cli.prompt"
+  done
+}
+
+# cmd_launch --base-dir <path> --agent <cli>=<pane_id>...
+#
+# The launch half of the pipeline: parse the named flags (see
+# parse_launch_args), re-verify every named cli is still on PATH (see
+# verify_selection), then for each named cli read back the prompt file
+# cmd_prepare wrote for it, launch it (see launch_reviewer), record its
+# PID, write .roster, hand every launched PID to spawn_supervisor, and
+# print the dispatch summary (see print_summary). launch_reviewer here is
+# the same implementation cmd_prepare's own dispatch loop used before this
+# split into two subcommands -- a later task replaces it with herdr's own
+# start-in-pane mechanism; the <cli>:<pane_id> pairs parse_launch_args
+# prints are read back here but not yet acted on for that reason.
+# parse_launch_args itself exits 2 on a usage error, the same convention
+# parse_args uses; verify_selection exits 3 on a platform that isn't on
+# PATH, the same convention cmd_prepare's own call to it uses -- see the
+# comment on that second call below for why cmd_prepare's own check is not
+# enough to rely on here.
+cmd_launch() {
+  local base_dir="" logs_dir summary_file worktree_dir
+  local cli pid parsed parsed_line agent_pair
+  local -a all_reviewers=() skipped=() pids=()
+
+  parsed="$(parse_launch_args "$@")" || exit $?
+  while IFS= read -r parsed_line; do
+    case "$parsed_line" in
+      base_dir=*) base_dir="${parsed_line#base_dir=}" ;;
+      agent=*)
+        agent_pair="${parsed_line#agent=}"
+        all_reviewers+=("${agent_pair%%:*}")
+        ;;
+    esac
+  done <<< "$parsed"
+
+  worktree_dir="$base_dir/worktree"
+  logs_dir="$base_dir/logs"
+  summary_file="$base_dir/summary.txt"
+
+  # cmd_prepare already ran this same check, but that was a separate,
+  # earlier process invocation -- prepare and launch are split into two
+  # subcommands specifically so a human-scale delay can sit between them
+  # (the calling agent builds herdr panes in between), and a cli that was
+  # on PATH at prepare time is not guaranteed to still be there now. Without
+  # this, a cli removed or shadowed during that delay would not fail
+  # cleanly with exit 3 the way an initial bad selection does -- it would
+  # reach launch_reviewer, fail there as a plain "command not found" (exit
+  # 127), and surface only as a blank entry in the summary, after every
+  # other selected reviewer has already been launched for real.
+  verify_selection "${all_reviewers[@]}" || exit 3
+
+  for cli in "${all_reviewers[@]}"; do
+    # Each step below is checked explicitly (rather than as a bare
+    # statement) so a failure partway through this loop runs
+    # _dispatch_failed_cleanup instead of letting set -e abort cmd_launch()
+    # with an already-launched reviewer or the worktree left behind with
+    # nothing to clean it up.
     if ! pid="$(launch_reviewer "$cli" "$worktree_dir" "$logs_dir/$cli.log" < "$logs_dir/$cli.prompt")"; then
       _dispatch_failed_cleanup "$worktree_dir" "${pids[@]+"${pids[@]}"}"
       exit 1
@@ -2677,9 +2844,9 @@ main() {
   # comparison is blind to this path entirely, since logs_dir lives
   # outside the worktree.
   #
-  # Unlike the worktree chmod above, a failure here is not treated as a
-  # hard-abort precondition: every reviewer is already running by this
-  # point, so aborting would only orphan them (nothing would ever
+  # Unlike the worktree chmod cmd_prepare() applies, a failure here is not
+  # treated as a hard-abort precondition: every reviewer is already running
+  # by this point, so aborting would only orphan them (nothing would ever
   # supervise them to completion or write a summary line for them) while
   # not actually making the exposure this closes any worse than it
   # already was before this line ever ran. Best-effort, logged loudly.
@@ -2689,7 +2856,40 @@ main() {
 
   spawn_supervisor "$worktree_dir" "$summary_file" "${pids[@]}"
 
+  # skipped is always empty here: platform selection is explicit and
+  # verified during the earlier prepare invocation (see verify_selection),
+  # so there is no such thing as a silently-degraded run any more.
+  # print_summary's --skipped section is kept for compatibility with its
+  # existing signature and simply receives nothing.
   print_summary "$logs_dir" "${all_reviewers[@]}" --skipped "${skipped[@]+"${skipped[@]}"}"
+}
+
+# main --check-clis | prepare <flags>... | launch <flags>...
+#
+# Top-level dispatch only. Otherwise the first argument selects one of the
+# two pipeline phases -- prepare (see cmd_prepare) does every precondition
+# check, sets up the worktree, and writes each selected reviewer's prompt
+# file; launch (see cmd_launch) reads those prompt files back, launches
+# each named reviewer, and hands them to spawn_supervisor. Any other first
+# argument, or none at all, is a usage error, exit code 2 -- the same code
+# cmd_prepare's own parse_args and cmd_launch's own parse_launch_args use
+# for their own usage errors.
+main() {
+  # --check-clis is a standalone preflight mode: it must not run any other
+  # precondition check and must not create anything, because the skill
+  # calls it before the user has even chosen a combination.
+  if [ "${1:-}" = "--check-clis" ] && [ "$#" -eq 1 ]; then
+    check_clis
+    return 0
+  fi
+  case "${1:-}" in
+    prepare) shift; cmd_prepare "$@" ;;
+    launch) shift; cmd_launch "$@" ;;
+    *)
+      printf 'run-review.sh: expected a subcommand (prepare|launch) or --check-clis\n' >&2
+      exit 2
+      ;;
+  esac
 }
 
 # Only run the pipeline when this file is executed directly -- sourcing it

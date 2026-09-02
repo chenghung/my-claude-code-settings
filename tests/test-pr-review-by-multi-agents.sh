@@ -13,8 +13,9 @@ bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 source "$RUN_SH"
 
 T="$(mktemp -d)"
-# chmod -R u+w before rm -rf: several fixtures below exercise main()'s own
-# read-only chmod on logs_dir/worktree_dir for real (that being the whole
+# chmod -R u+w before rm -rf: several fixtures below exercise
+# cmd_prepare()'s and cmd_launch()'s own read-only chmod on
+# worktree_dir/logs_dir for real (that being the whole
 # point of testing it), and a directory tree with any read-only entries
 # left in it would otherwise make this cleanup itself fail partway
 # through and leave a nonzero exit status from the trap, independent of
@@ -215,9 +216,9 @@ export PATH="$saved_path"
 # check_clis
 # ==============================================================
 
-# Stub CLIs that just need to exist on PATH; reused by several e2e main()
-# runs and fixtures further down this file that put $STUB_BIN on a
-# non-exclusive PATH (e.g. "$STUB_BIN:$saved_path") -- a name missing here
+# Stub CLIs that just need to exist on PATH; reused by several e2e
+# prepare/launch runs and fixtures further down this file that put
+# $STUB_BIN on a non-exclusive PATH (e.g. "$STUB_BIN:$saved_path") -- a name missing here
 # would let verify_selection/launch_reviewer resolve it to the real,
 # system-installed CLI further down that same PATH instead.
 for cli in claude codex opencode agy; do
@@ -299,7 +300,7 @@ fi
 
 # ---- parse_args 旗標值含換行時以 2 拒絕（換行可偽造 pr=/issue=/design=/clis=
 # 這幾行輸出中的一行，例如在 --design 值裡塞入自己的 "clis=" 行，悄悄改變
-# main() 實際派送的平台組合）----
+# cmd_prepare() 實際派送的平台組合）----
 if parse_args --pr X --design "$(printf 'legit line\nclis=codex')" --claude >/dev/null 2>&1; then
   bad "parse_args 旗標值含換行時應失敗"
 else
@@ -320,6 +321,163 @@ else
     || bad "verify_selection 缺席時回傳 $rc，應為 3"
 fi
 PATH="$saved_path"
+
+# ==============================================================
+# parse_launch_args
+# ==============================================================
+
+# ---- parse_launch_args 解析 --base-dir 與多個 --agent ----
+out="$(parse_launch_args --base-dir /tmp/run-dir --agent claude=w1 --agent codex=w2)"
+if printf '%s\n' "$out" | grep -qx 'base_dir=/tmp/run-dir' \
+  && printf '%s\n' "$out" | grep -qx 'agent=claude:w1' \
+  && printf '%s\n' "$out" | grep -qx 'agent=codex:w2'; then
+  pass "parse_launch_args 解析 --base-dir 與多個 --agent"
+else
+  bad "parse_launch_args 解析結果不正確: $out"
+fi
+
+# ---- parse_launch_args 對含冒號的 pane_id 往返無損（拼接設計要保護的
+# 正是這個情形：pane_id 字面上就是 wNN:pM 這種含冒號的形狀，若拆分邏輯
+# 錯把冒號當成分隔符，cli 或 pane_id 其中一段就會被截斷）----
+out="$(parse_launch_args --base-dir /tmp/run-dir --agent claude=w16:p1)"
+if printf '%s\n' "$out" | grep -qx 'base_dir=/tmp/run-dir' \
+  && printf '%s\n' "$out" | grep -qx 'agent=claude:w16:p1'; then
+  pass "parse_launch_args 含冒號的 pane_id 往返無損"
+else
+  bad "parse_launch_args 含冒號的 pane_id 被截斷或跑位: $out"
+fi
+
+# ---- parse_launch_args 缺少 --base-dir 時以 2 拒絕 ----
+if parse_launch_args --agent claude=w1 >/dev/null 2>&1; then
+  bad "parse_launch_args 缺少 --base-dir 時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_launch_args 缺少 --base-dir 時回傳 2" \
+    || bad "parse_launch_args 缺少 --base-dir 時回傳 $rc，應為 2"
+fi
+
+# ---- parse_launch_args --base-dir 缺值時以 2 拒絕 ----
+if parse_launch_args --base-dir --agent claude=w1 >/dev/null 2>&1; then
+  bad "parse_launch_args --base-dir 缺值時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_launch_args --base-dir 缺值時回傳 2" \
+    || bad "parse_launch_args --base-dir 缺值時回傳 $rc，應為 2"
+fi
+
+# ---- parse_launch_args --base-dir 重複給值時以 2 拒絕 ----
+if parse_launch_args --base-dir /tmp/a --base-dir /tmp/b --agent claude=w1 >/dev/null 2>&1; then
+  bad "parse_launch_args --base-dir 重複時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_launch_args --base-dir 重複時回傳 2" \
+    || bad "parse_launch_args --base-dir 重複時回傳 $rc，應為 2"
+fi
+
+# ---- parse_launch_args --base-dir 非絕對路徑時以 2 拒絕 ----
+if parse_launch_args --base-dir relative/dir --agent claude=w1 >/dev/null 2>&1; then
+  bad "parse_launch_args --base-dir 非絕對路徑時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_launch_args --base-dir 非絕對路徑時回傳 2" \
+    || bad "parse_launch_args --base-dir 非絕對路徑時回傳 $rc，應為 2"
+fi
+
+# ---- parse_launch_args 缺少 --agent 時以 2 拒絕 ----
+if parse_launch_args --base-dir /tmp/run-dir >/dev/null 2>&1; then
+  bad "parse_launch_args 缺少 --agent 時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_launch_args 缺少 --agent 時回傳 2" \
+    || bad "parse_launch_args 缺少 --agent 時回傳 $rc，應為 2"
+fi
+
+# ---- parse_launch_args --agent 缺值時以 2 拒絕 ----
+if parse_launch_args --base-dir /tmp/run-dir --agent >/dev/null 2>&1; then
+  bad "parse_launch_args --agent 缺值時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_launch_args --agent 缺值時回傳 2" \
+    || bad "parse_launch_args --agent 缺值時回傳 $rc，應為 2"
+fi
+
+# ---- parse_launch_args --agent 值缺少等號時以 2 拒絕 ----
+if parse_launch_args --base-dir /tmp/run-dir --agent claude-no-equals-sign >/dev/null 2>&1; then
+  bad "parse_launch_args --agent 值缺少等號時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_launch_args --agent 值缺少等號時回傳 2" \
+    || bad "parse_launch_args --agent 值缺少等號時回傳 $rc，應為 2"
+fi
+
+# ---- parse_launch_args --agent cli 不在列舉範圍時以 2 拒絕 ----
+if parse_launch_args --base-dir /tmp/run-dir --agent bogus-cli=w1 >/dev/null 2>&1; then
+  bad "parse_launch_args --agent cli 不在列舉範圍時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_launch_args --agent cli 不在列舉範圍時回傳 2" \
+    || bad "parse_launch_args --agent cli 不在列舉範圍時回傳 $rc，應為 2"
+fi
+
+# ---- parse_launch_args 同一個 cli 重複給值時以 2 拒絕（否則 cmd_launch 會
+# 對同一個 cli 呼叫兩次 launch_reviewer，造成 log/pid 檔案互相覆蓋與名單
+# 檔重複列，見這個函式自己的 docstring）----
+if parse_launch_args --base-dir /tmp/run-dir --agent claude=w1 --agent claude=w2 >/dev/null 2>&1; then
+  bad "parse_launch_args --agent cli 重複時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_launch_args --agent cli 重複時回傳 2" \
+    || bad "parse_launch_args --agent cli 重複時回傳 $rc，應為 2"
+fi
+
+# ---- parse_launch_args 未知旗標時以 2 拒絕 ----
+if parse_launch_args --base-dir /tmp/run-dir --agent claude=w1 --bogus >/dev/null 2>&1; then
+  bad "parse_launch_args 未知旗標時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_launch_args 未知旗標時回傳 2" \
+    || bad "parse_launch_args 未知旗標時回傳 $rc，應為 2"
+fi
+
+# ==============================================================
+# main() 頂層 dispatch
+#
+# main() 的 --check-clis 分支已由上面 check_clis 那組測試間接覆蓋
+# （main() 只是原樣轉呼叫），prepare/launch 兩個已知分支的行為由散布全檔
+# 的 e2e 測試覆蓋。這裡只補兩個分支本身：不帶子命令、帶未知子命令，都要
+# 以結束碼 2 拒絕。main() 在這兩個分支都呼叫 exit（不是 return），所以
+# 用子行程 `( main ... )` 包起來呼叫，避免真的把這支測試腳本自己結束掉。
+# ==============================================================
+
+# ---- main() 不帶任何引數時以 2 拒絕 ----
+if ( main ) >/dev/null 2>&1; then
+  bad "main() 不帶引數時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "main() 不帶引數時回傳 2" \
+    || bad "main() 不帶引數時回傳 $rc，應為 2"
+fi
+
+# ---- main() 帶未知子命令時以 2 拒絕 ----
+if ( main bogus-subcommand ) >/dev/null 2>&1; then
+  bad "main() 帶未知子命令時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "main() 帶未知子命令時回傳 2" \
+    || bad "main() 帶未知子命令時回傳 $rc，應為 2"
+fi
 
 # ==============================================================
 # resolve_contract_path
@@ -2343,10 +2501,10 @@ unset GH_STUB_BASE_REF_NAME
 export PATH="$saved_path"
 
 # --- _check_origin_matches must run, and reject, before resolve_base_ref
-# ever gets a chance to fetch -- exercised through a real main() run
-# (bash "$RUN_SH" ...), not just a direct resolve_base_ref call, since
-# what's actually being pinned down here is main()'s own call *order*.
-# Before this fix, a run against the wrong owner/repo still mutated a
+# ever gets a chance to fetch -- exercised through a real cmd_prepare() run
+# (bash "$RUN_SH" prepare ...), not just a direct resolve_base_ref call,
+# since what's actually being pinned down here is cmd_prepare()'s own call
+# *order*. Before this fix, a run against the wrong owner/repo still mutated a
 # remote-tracking ref for the (unrelated) base branch before eventually
 # being rejected by setup_worktree's own origin check further down. ---
 
@@ -2381,7 +2539,7 @@ git init -q -b main "$ORIGIN_ORDER_FIXTURE/work"
 assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
 if out="$(cd "$ORIGIN_ORDER_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="origin-order-base-branch" \
   HOME="$T/origin-order-home" PATH="$STUB_BIN:$saved_path" \
-  bash "$RUN_SH" --pr "https://github.com/wrong-owner/wrong-repo/pull/1" --claude 2>&1)"; then
+  bash "$RUN_SH" prepare --pr "https://github.com/wrong-owner/wrong-repo/pull/1" --claude 2>&1)"; then
   bad main-e2e-origin-check-rejects-wrong-owner
 else
   pass main-e2e-origin-check-rejects-wrong-owner
@@ -2409,9 +2567,10 @@ git init -q -b main "$GH_MISSING_FIXTURE"
 
 # A stub `claude` on PATH, with no `gh` alongside it, isolates the
 # gh-missing path this test targets from verify_selection's own PATH
-# check -- which main() now runs before _check_gh_available (see main()'s
-# own call-site comment on that ordering) -- so an empty PATH here would
-# make verify_selection fail first and report the wrong one of the two.
+# check -- which cmd_prepare() now runs before _check_gh_available (see
+# cmd_prepare()'s own call-site comment on that ordering) -- so an empty
+# PATH here would make verify_selection fail first and report the wrong
+# one of the two.
 GH_MISSING_BIN="$T/gh-missing-bin"
 mkdir -p "$GH_MISSING_BIN"
 cat > "$GH_MISSING_BIN/claude" <<'STUB'
@@ -2426,7 +2585,7 @@ chmod +x "$GH_MISSING_BIN/claude"
 # on it would make "bash" itself fail to be found (exit 127, "command not
 # found"), which is not what this test is trying to exercise.
 BASH_ABS_PATH="$(command -v bash)"
-if out="$(cd "$GH_MISSING_FIXTURE" && PATH="$GH_MISSING_BIN" "$BASH_ABS_PATH" "$RUN_SH" --claude 2>&1)"; then
+if out="$(cd "$GH_MISSING_FIXTURE" && PATH="$GH_MISSING_BIN" "$BASH_ABS_PATH" "$RUN_SH" prepare --claude 2>&1)"; then
   bad main-e2e-gh-missing-fails
 else
   pass main-e2e-gh-missing-fails
@@ -2443,8 +2602,9 @@ esac
 # ==============================================================
 # _dispatch_failed_cleanup
 #
-# Direct unit tests for the helper main()'s reviewer-dispatch loop calls
-# on a partial failure (see its own docstring in run-review.sh): it must report
+# Direct unit tests for the helper cmd_prepare()'s and cmd_launch()'s own
+# per-CLI loops each call on a partial failure (see its own docstring in
+# run-review.sh): it must report
 # any already-launched, now-unsupervised PIDs to stderr and remove the
 # worktree, and must not claim a PID was launched when none was.
 # ==============================================================
@@ -2469,7 +2629,7 @@ case "$dfc_err2" in
 esac
 
 # ==============================================================
-# main() end-to-end
+# prepare/launch end-to-end
 #
 # The most load-bearing test in this section: build_prompt takes 7
 # positional parameters, and a caller that transposes two of them (e.g.
@@ -2478,10 +2638,10 @@ esac
 # a missing argument, never a misordered one. Every coordinate value
 # below is deliberately distinct from every other, and each coordinate
 # assertion checks that value against *its own* labeled line in the
-# prompt file main() actually wrote to disk, not just that the value
+# prompt file cmd_prepare() actually wrote to disk, not just that the value
 # appears somewhere in it (which would pass even if two labels' values
 # were swapped). The issue and design-doc materials, unlike the
-# coordinates, are no longer handed to build_prompt directly -- main()
+# coordinates, are no longer handed to build_prompt directly -- cmd_prepare()
 # resolves them into materials_dir via fetch_review_materials first -- so
 # those two are instead checked by their own distinctive embedded
 # content, the same way build_prompt's own section elsewhere in this file
@@ -2490,10 +2650,11 @@ esac
 # This also exercises run-review.sh's command-line contract end to end (task 5's
 # own addition, not specified by the earlier tasks): named flags --
 # --pr, --issue, --design, plus one flag per selected reviewer platform --
-# invoked exactly as a real caller would, via `bash run-review.sh ...`, not
-# by sourcing and calling main() directly (main() calls `exit` on its
-# failure paths, which would kill this whole test script if called
-# in-process instead of as a real subprocess).
+# invoked exactly as a real caller would, via `bash run-review.sh prepare ...`
+# then `bash run-review.sh launch ...`, not by sourcing and calling
+# cmd_prepare()/cmd_launch() directly (both call `exit` on their failure
+# paths, which would kill this whole test script if called in-process
+# instead of as real subprocesses).
 #
 # The origin remote is a literal https://github.com/acme9pr/widgets9pr.git
 # URL, matching what _check_origin_matches needs to see in the raw
@@ -2527,7 +2688,7 @@ E2E_HOME="$T/main-e2e-home"
 mkdir -p "$E2E_HOME/.codex"
 printf 'model = "e2e-distinctive-model"\n' > "$E2E_HOME/.codex/config.toml"
 
-# design_doc_path is resolved relative to main()'s own cwd (see
+# design_doc_path is resolved relative to cmd_prepare()'s own cwd (see
 # fetch_review_materials), so this needs a real file on disk at the exact
 # relative path handed to run-review.sh below, not just a distinctive string --
 # an empty issue/design section renders as explicitly absent instead
@@ -2539,14 +2700,14 @@ printf 'e2e-distinctive-design-doc-marker-content\n' > "$E2E_FIXTURE/work/docs/d
 
 assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
 if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" \
-  bash "$RUN_SH" \
+  bash "$RUN_SH" prepare \
     --pr "https://github.com/acme9pr/widgets9pr/pull/321" \
     --issue "777" \
     --design "docs/distinctive-design-doc-marker.md" \
     --claude --codex --opencode 2>&1)"; then
-  pass main-e2e-succeeds
+  pass main-e2e-prepare-succeeds
 else
-  bad main-e2e-succeeds
+  bad main-e2e-prepare-succeeds
 fi
 
 E2E_LOGS_DIR="$(find "$E2E_HOME/.tmp" -type d -name logs 2>/dev/null | head -1)"
@@ -2556,7 +2717,29 @@ E2E_PROMPT_FILE="$E2E_LOGS_DIR/codex.prompt"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -n "$E2E_LOGS_DIR" ] && [ -s "$E2E_PROMPT_FILE" ] && pass main-e2e-prompt-file-written || bad main-e2e-prompt-file-written
 
-# Task 7 Step 8: main() writes .roster right after dispatching every
+# cmd_prepare() does not launch anything itself (see its own docstring) --
+# launch is a second, separate `bash "$RUN_SH"` invocation, fed the same
+# base_dir prepare just set up, with one --agent <cli>=<pane_id> pair per
+# platform prepare selected above. The pane_id values below are arbitrary
+# placeholders: cmd_launch does not act on them yet in this task (a later
+# task wires them into herdr), it only needs them to satisfy
+# parse_launch_args's own shape check. Still run with cwd inside
+# $E2E_FIXTURE/work, same as prepare above: spawn_supervisor's own
+# `git worktree remove` (unmodified by this task -- run through
+# cmd_launch() now, but not itself touched) resolves the repo to operate
+# on from the caller's cwd, not from worktree_dir itself, and fails
+# silently (swallowed by `|| true`) when run from anywhere else -- proven
+# by leaving this cd out here first and watching the worktree removal
+# below never converge.
+if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" \
+  bash "$RUN_SH" launch --base-dir "$E2E_BASE_DIR" \
+    --agent claude=pane-claude --agent codex=pane-codex --agent opencode=pane-opencode 2>&1)"; then
+  pass main-e2e-launch-succeeds
+else
+  bad main-e2e-launch-succeeds
+fi
+
+# Task 7 Step 8: cmd_launch() writes .roster right after dispatching every
 # reviewer -- the only point in this pipeline a model name is still
 # available for every dispatched CLI, since resolve_model reads it back
 # out of that CLI's own config file, and there is nowhere left to read
@@ -2596,8 +2779,9 @@ grep -qxF -- '- 產出這則 review 的 CLI 名稱：codex' "$E2E_PROMPT_FILE" 2
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qxF -- '- 產出這則 review 的 model 名稱：e2e-distinctive-model' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-model-in-place || bad main-e2e-prompt-model-in-place
 # No scratch-directory coordinate at all any more: the reviewer prints
-# its review to stdout (main()'s log file) instead of writing a comment-
-# body file anywhere, so there is no longer a scratch path to hand it.
+# its review to stdout (cmd_launch()'s log file) instead of writing a
+# comment-body file anywhere, so there is no longer a scratch path to
+# hand it.
 oc_e2e_prompt_content="$(cat "$E2E_PROMPT_FILE" 2>/dev/null)"
 case "$oc_e2e_prompt_content" in
   *'暫存目錄'*) bad main-e2e-prompt-no-scratch-dir-coordinate ;;
@@ -2606,15 +2790,15 @@ esac
 
 E2E_WORKTREE_DIR="$E2E_BASE_DIR/worktree"
 
-# --- the `chmod -R a-w` mechanism main() applies to the worktree (closing
-# the gap that every individual reviewer CLI's own sandbox/permission
-# flags turned out, on real testing, not to fully close on their own --
-# see launch_reviewer's docstring) is checked directly against its own
-# fixture here, not against the e2e run above: that run's stub reviewers
-# finish and get cleaned up by spawn_supervisor near-instantly, so
-# checking the worktree's permissions or attempting a write against it
-# *after* `bash "$RUN_SH"` has already returned would race spawn_supervisor
-# possibly having already removed it. ---
+# --- the `chmod -R a-w` mechanism cmd_prepare() applies to the worktree
+# (closing the gap that every individual reviewer CLI's own
+# sandbox/permission flags turned out, on real testing, not to fully close
+# on their own -- see launch_reviewer's docstring) is checked directly
+# against its own fixture here, not against the e2e run above: that run's
+# stub reviewers finish and get cleaned up by spawn_supervisor
+# near-instantly, so checking the worktree's permissions or attempting a
+# write against it *after* `bash "$RUN_SH" launch` has already returned
+# would race spawn_supervisor possibly having already removed it. ---
 
 CHMOD_ROOT="$T/chmod-worktree-fixture"
 CHMOD_WT="$(_make_worktree_fixture "$CHMOD_ROOT")"
@@ -2637,7 +2821,7 @@ git -C "$CHMOD_WT" status --porcelain >/dev/null 2>&1 && pass chmod-worktree-sta
 git -C "$CHMOD_WT" diff main...HEAD >/dev/null 2>&1 && pass chmod-worktree-diff-still-works || bad chmod-worktree-diff-still-works
 chmod -R u+w "$CHMOD_WT"
 
-# --- print_summary's own stdout (main()'s only output) names every
+# --- print_summary's own stdout (cmd_launch()'s only output) names every
 # dispatched reviewer with its PID and log path -- the exact chain
 # SKILL.md's reporting depends on. ---
 
@@ -2648,9 +2832,10 @@ esac
 
 # This run's own issue_arg ("777") was explicit and its design doc path was
 # readable -- confirming print_summary's materials section reflects that
-# correctly end to end (real main() -> fetch_review_materials ->
-# .materials-status -> print_summary), not just against a hand-written
-# .materials-status fixture the way the print_summary section above does.
+# correctly end to end (real cmd_prepare() -> fetch_review_materials ->
+# .materials-status -> cmd_launch()'s print_summary), not just against a
+# hand-written .materials-status fixture the way the print_summary section
+# above does.
 case "$out" in
   *'issue 內文與討論串：已取得（呼叫端明確指定：#777）'*) pass main-e2e-summary-output-shows-explicit-issue ;;
   *) bad main-e2e-summary-output-shows-explicit-issue ;;
@@ -2688,20 +2873,33 @@ assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode a
 if out="$(cd "$E2E_FIXTURE/work" \
   && CLAUDE_CONFIG_DIR="" GH_STUB_DERIVE_OK=1 GH_STUB_DERIVED_URL="https://github.com/acme9pr/widgets9pr/pull/321" \
      GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME2" PATH="$STUB_BIN:$saved_path" \
-  bash "$RUN_SH" --claude --codex --opencode 2>&1)"; then
-  pass main-e2e-empty-args-accepted
+  bash "$RUN_SH" prepare --claude --codex --opencode 2>&1)"; then
+  pass main-e2e-empty-args-prepare-succeeds
 else
-  bad main-e2e-empty-args-accepted
+  bad main-e2e-empty-args-prepare-succeeds
 fi
 
 E2E_LOGS_DIR2="$(find "$E2E_HOME2/.tmp" -type d -name logs 2>/dev/null | head -1)"
+E2E_BASE_DIR2="$(dirname "${E2E_LOGS_DIR2:-/nonexistent}")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -n "$E2E_LOGS_DIR2" ] && grep -qF '未提供' "$E2E_LOGS_DIR2/codex.prompt" 2>/dev/null && pass main-e2e-empty-args-render-not-provided || bad main-e2e-empty-args-render-not-provided
+
+# See the earlier prepare/launch pair's own comment on why this is a
+# second, separate `bash "$RUN_SH"` call, why the pane_id values below are
+# arbitrary placeholders, and why cwd must still be inside
+# $E2E_FIXTURE/work.
+if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" HOME="$E2E_HOME2" PATH="$STUB_BIN:$saved_path" \
+  bash "$RUN_SH" launch --base-dir "$E2E_BASE_DIR2" \
+    --agent claude=pane-claude --agent codex=pane-codex --agent opencode=pane-opencode 2>&1)"; then
+  pass main-e2e-empty-args-launch-succeeds
+else
+  bad main-e2e-empty-args-launch-succeeds
+fi
 
 # print_summary's own materials section must say the same thing in plain
 # language: no issue was declared (the stub PR body carries no closing
 # keyword and no issue link was given), and no design doc was given
-# either -- $out here still holds this second run's own stdout.
+# either -- $out here still holds this second run's own launch-side stdout.
 case "$out" in
   *'issue 內文與討論串：未提供（PR 本文未宣告 closing 的 issue）'*) pass main-e2e-empty-args-summary-shows-issue-not-declared ;;
   *) bad main-e2e-empty-args-summary-shows-issue-not-declared ;;
@@ -2711,10 +2909,11 @@ case "$out" in
   *) bad main-e2e-empty-args-summary-shows-design-not-provided ;;
 esac
 
-# --- main() actually applies its own worktree/logs_dir read-only chmod,
-# not just "chmod behaves this way when I do it myself in a fixture"
-# (which CHMOD_ROOT above already covers, but deleting main()'s own
-# chmod line entirely would leave that test just as green). logs_dir is
+# --- cmd_prepare() and cmd_launch() actually apply their own
+# worktree/logs_dir read-only chmod, not just "chmod behaves this way when
+# I do it myself in a fixture" (which CHMOD_ROOT above already covers, but
+# deleting either chmod line entirely would leave that test just as
+# green). logs_dir is
 # never removed by this pipeline, so checking its permissions after
 # `bash "$RUN_SH"` returns is not racy; the worktree, on the other hand,
 # gets removed asynchronously by spawn_supervisor, so checking *its*
@@ -2756,8 +2955,8 @@ cp "$STUB_BIN/gh" "$CHMODE2E_STUB_BIN/gh"
 # "$CHMODE2E_STUB_BIN:$saved_path", not an exclusive PATH, so leaving
 # either name out would let verify_selection's and launch_reviewer's own
 # PATH lookups resolve it to the *real*, system-installed claude/opencode
-# further down that same PATH -- which main() would then actually launch,
-# for real, burning real tokens. Bitten by exactly this once already
+# further down that same PATH -- which cmd_launch() would then actually
+# launch, for real, burning real tokens. Bitten by exactly this once already
 # earlier in this same task (see this task's own report).
 cp "$STUB_BIN/claude" "$CHMODE2E_STUB_BIN/claude"
 cp "$STUB_BIN/opencode" "$CHMODE2E_STUB_BIN/opencode"
@@ -2786,17 +2985,30 @@ CHMODE2E_HOME="$T/chmod-e2e-home"
 # --agy), so only the three names it actually provides are checked.
 assert_cli_stub_only "$CHMODE2E_STUB_BIN:$saved_path" "$CHMODE2E_STUB_BIN" claude codex opencode
 if out="$(cd "$CHMODE2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME=main HOME="$CHMODE2E_HOME" PATH="$CHMODE2E_STUB_BIN:$saved_path" \
-  bash "$RUN_SH" --pr "https://github.com/acme/widgets/pull/50" --claude --codex --opencode 2>&1)"; then
-  pass main-e2e-chmod-run-succeeds
+  bash "$RUN_SH" prepare --pr "https://github.com/acme/widgets/pull/50" --claude --codex --opencode 2>&1)"; then
+  pass main-e2e-chmod-prepare-succeeds
 else
-  bad main-e2e-chmod-run-succeeds
+  bad main-e2e-chmod-prepare-succeeds
 fi
 
 CHMODE2E_LOGS_DIR="$(find "$CHMODE2E_HOME/.tmp" -type d -name logs 2>/dev/null | head -1)"
+CHMODE2E_BASE_DIR="$(dirname "${CHMODE2E_LOGS_DIR:-/nonexistent}")"
+
+# See the first prepare/launch pair's own comment on why this is a second,
+# separate `bash "$RUN_SH"` call, why the pane_id values below are
+# arbitrary placeholders, and why cwd must still be inside
+# $CHMODE2E_FIXTURE/work. This is the call that actually execs the stub
+# codex above, which is what performs the worktree write-attempt probe.
+if out="$(cd "$CHMODE2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" HOME="$CHMODE2E_HOME" PATH="$CHMODE2E_STUB_BIN:$saved_path" \
+  bash "$RUN_SH" launch --base-dir "$CHMODE2E_BASE_DIR" \
+    --agent claude=pane-claude --agent codex=pane-codex --agent opencode=pane-opencode 2>&1)"; then
+  pass main-e2e-chmod-launch-succeeds
+else
+  bad main-e2e-chmod-launch-succeeds
+fi
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -n "$CHMODE2E_LOGS_DIR" ] && grep -qF 'WRITE_ATTEMPT_RESULT: blocked' "$CHMODE2E_LOGS_DIR/codex.log" 2>/dev/null && pass main-e2e-worktree-write-actually-blocked || bad main-e2e-worktree-write-actually-blocked
 
-CHMODE2E_BASE_DIR="$(dirname "${CHMODE2E_LOGS_DIR:-/nonexistent}")"
 # Not racy: logs_dir is never removed by this pipeline, so its
 # permissions are stable to inspect any time after the run returns.
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -2808,7 +3020,76 @@ else
 fi
 chmod -R u+w "$CHMODE2E_BASE_DIR" 2>/dev/null || true
 
-# --- main(): jq 前置檢查、print_summary 印出執行目錄 ---
+# --- cmd_launch() 在真正呼叫 launch_reviewer 之前，對選定平台重跑一次
+# 等價於 verify_selection 的 PATH 檢查（Medium 3 審查意見）：prepare 與
+# launch 是刻意分成兩次獨立行程呼叫、中間留了人類尺度延遲讓呼叫端建立
+# herdr pane，所以 prepare 當時在 PATH 上的 cli，launch 執行的當下不保證
+# 還在。這裡直接重現那個延遲：prepare 時 claude／codex 都在 PATH 上、
+# 成功結束；launch 時把 codex 從 PATH 上拿掉，驗證結束碼是 3（跟一開始
+# 選錯平台同一個結束碼，而不是 launch_reviewer 自己那種找不到指令的
+# 127），而且連仍然在 PATH 上的 claude 也不能被啟動——半數啟動半數沒啟動
+# 是比整批都不啟動更糟的結果，因為使用者分不出哪半段能信。----
+
+VERIFY3_FIXTURE="$T/verify3-fixture"
+mkdir -p "$VERIFY3_FIXTURE/remotes/acme" "$VERIFY3_FIXTURE/work"
+git init -q -b main --bare "$VERIFY3_FIXTURE/remotes/acme/widgets.git"
+git init -q -b main "$VERIFY3_FIXTURE/work"
+(
+  cd "$VERIFY3_FIXTURE/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "https://github.com/acme/widgets.git"
+  git config "url.$VERIFY3_FIXTURE/remotes/acme/widgets.git.insteadOf" "https://github.com/acme/widgets.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b feature
+  printf 'feature\n' >> f.txt
+  git commit -aq -m feature
+  git push -q origin feature:refs/pull/91/head
+  git checkout -q main
+)
+
+VERIFY3_HOME="$T/verify3-home"
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
+if out="$(cd "$VERIFY3_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME=main HOME="$VERIFY3_HOME" PATH="$STUB_BIN:$saved_path" \
+  bash "$RUN_SH" prepare --pr "https://github.com/acme/widgets/pull/91" --claude --codex 2>&1)"; then
+  pass verify3-prepare-succeeds
+else
+  bad "verify3-prepare-succeeds: $out"
+fi
+
+VERIFY3_LOGS_DIR="$(find "$VERIFY3_HOME/.tmp" -type d -name logs 2>/dev/null | head -1)"
+VERIFY3_BASE_DIR="$(dirname "${VERIFY3_LOGS_DIR:-/nonexistent}")"
+
+# codex 這裡刻意不在 PATH 上，而且用的是一個獨立、乾淨的目錄（跟上面
+# GH_MISSING_BIN／JQ_MISSING_BIN 同一種手法），不是把它疊在
+# "$STUB_BIN:$saved_path" 前面——否則萬一這台機器真的裝了 codex，它會從
+# $saved_path 那一段被 verify_selection 的 command -v 找到，這個測試就
+# 測不到本來要測的那個缺席情境。bash 本身透過絕對路徑 $BASH_ABS_PATH
+# 呼叫，不靠 PATH 解析，所以這個目錄不需要另外放一份 bash。
+VERIFY3_MISSING_BIN="$T/verify3-missing-bin"
+mkdir -p "$VERIFY3_MISSING_BIN"
+cp "$STUB_BIN/claude" "$VERIFY3_MISSING_BIN/claude"
+if out="$(cd "$VERIFY3_FIXTURE/work" && PATH="$VERIFY3_MISSING_BIN" "$BASH_ABS_PATH" "$RUN_SH" launch --base-dir "$VERIFY3_BASE_DIR" \
+  --agent claude=pane-claude --agent codex=pane-codex 2>&1)"; then
+  rc=0
+else
+  rc=$?
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 3 ] && pass "cmd_launch 平台於延遲期間消失時回傳 3" \
+  || bad "cmd_launch 平台於延遲期間消失時回傳 $rc，應為 3: $out"
+case "$out" in
+  *'codex'*) pass "cmd_launch 回傳 3 時訊息點名缺席的 codex" ;;
+  *) bad "cmd_launch 回傳 3 時訊息未點名缺席的 codex: $out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$VERIFY3_LOGS_DIR/claude.pid" ] && pass "cmd_launch 回傳 3 時連仍在 PATH 上的 claude 也沒有被啟動" \
+  || bad "cmd_launch 回傳 3 卻仍啟動了 claude，partial dispatch 沒被擋下"
+
+# --- prepare/launch: jq 前置檢查、print_summary 印出執行目錄 ---
 
 # jq 缺席時 check_prerequisites 必須在動到使用者 repo 之前拒絕執行。gh 的
 # 可用性、認證與 PR 存在性都以既有的 gh stub 保證成立（其預設值
@@ -2969,8 +3250,8 @@ sed -i "s#T_PLACEHOLDER#$T#g" "$T/synth/summary.txt"
 printf 'REVIEW-FROM-CLAUDE\n' > "$T/synth/.comment-body-111.md"
 printf 'REVIEW-FROM-AGY\n'    > "$T/synth/.comment-body-222.md"
 printf 'REVIEW-FROM-OPENCODE-WITHHELD\n' > "$T/synth/.comment-body-444.md"
-# Lines end in " dispatched", matching exactly what main() itself writes
-# to .roster (see main()'s own .roster-writing loop) and what
+# Lines end in " dispatched", matching exactly what cmd_launch() itself
+# writes to .roster (see cmd_launch()'s own .roster-writing loop) and what
 # build_synthesis_prompt's roster-lookup sed pattern requires to match at
 # all -- a line ending in anything else (e.g. "completed"/"failed") would
 # silently never match, always falling through to the missing-entry
@@ -3412,8 +3693,8 @@ else
   pass "launch_synthesis 未知 CLI 回傳非零"
 fi
 
-# ---- 「最容易被踩到的坑」之一：main() 對 logs_dir 下的 chmod -R a-w 是
-# 在每個 reviewer 都已啟動之後才施加的，合流是在那之後才啟動的新行
+# ---- 「最容易被踩到的坑」之一：cmd_launch() 對 logs_dir 下的 chmod -R a-w
+# 是在每個 reviewer 都已啟動之後才施加的，合流是在那之後才啟動的新行
 # 程，若合流的 log 落在 logs_dir 底下就會直接開不出新檔。這裡直接重現
 # 「base_dir 可寫、其 logs 子目錄唯讀」這個前提，確認 launch_synthesis
 # 把 log 放在 base_dir 這一層時仍能正常寫出。----
@@ -3510,7 +3791,7 @@ printf '%s' "$RSYN_L3" | grep -qE 'content_file=$' && pass "_record_synthesis_re
 # (via launch_reviewer, not a hand-rolled substitute) -- two of them
 # (claude, agy) producing a trustworthy review, the third (codex)
 # deliberately crashing with no output at all -- then a direct
-# spawn_supervisor call, the same entry point main() itself uses, to
+# spawn_supervisor call, the same entry point cmd_launch() itself uses, to
 # confirm the whole chain: ready_count >= 2 triggers synthesis, .roster
 # feeds the roster section (including codex's failure, the same way a
 # real run's own .roster would), the synthesis log lands outside the
@@ -3548,9 +3829,9 @@ cp "$SPWSYN_STUB_BIN/claude" "$SPWSYN_STUB_BIN/opencode"
 # codex crashes outright: no markers, non-zero exit -- content_status
 # ends up no-content, the realistic shape of "a dispatched reviewer that
 # failed" (as opposed to one that was never dispatched at all, which
-# main() can't actually produce a .roster entry for -- see this
-# function's own case in main(): a launch_reviewer failure aborts the
-# whole run via _dispatch_failed_cleanup before .roster is ever written).
+# cmd_launch() can't actually produce a .roster entry for -- see this
+# function's own case in cmd_launch(): a launch_reviewer failure aborts
+# the whole run via _dispatch_failed_cleanup before .roster is ever written).
 cat > "$SPWSYN_STUB_BIN/codex" <<'STUB'
 #!/usr/bin/env bash
 exit 1
@@ -3567,14 +3848,14 @@ spwsyn_claude_pid="$(launch_reviewer claude "$SPWSYN_WT" "$SPWSYN_ROOT/logs/clau
 spwsyn_agy_pid="$(launch_reviewer agy "$SPWSYN_WT" "$SPWSYN_ROOT/logs/agy.log" < "$SPWSYN_ROOT/logs/agy.prompt")"
 spwsyn_codex_pid="$(launch_reviewer codex "$SPWSYN_WT" "$SPWSYN_ROOT/logs/codex.log" < "$SPWSYN_ROOT/logs/codex.prompt")"
 
-# .roster is normally written by main() right after dispatch (Task 7's
-# Step 8); this test calls spawn_supervisor directly, bypassing main(),
-# so it seeds the same file by hand.
+# .roster is normally written by cmd_launch() right after dispatch (Task
+# 7's Step 8); this test calls spawn_supervisor directly, bypassing
+# cmd_launch(), so it seeds the same file by hand.
 printf 'claude claude-e2e-model dispatched\nagy agy-e2e-model dispatched\ncodex codex-e2e-model dispatched\n' \
   > "$SPWSYN_ROOT/.roster"
 
-# main() 對 logs_dir 下的 chmod -R a-w 是在每個 reviewer 都已啟動之後才
-# 施加的（見 main() 本體），這裡直接重現同一前提，確保合流的 log 確實
+# cmd_launch() 對 logs_dir 下的 chmod -R a-w 是在每個 reviewer 都已啟動之後
+# 才施加的（見 cmd_launch() 本體），這裡直接重現同一前提，確保合流的 log 確實
 # 落在 base_dir 這一層而不是 logs_dir 底下——否則這個情境根本開不出新
 # 檔。三個 launch_reviewer 呼叫已經讓各自的檔案描述子先開好，之後才
 # chmod，不受影響。
