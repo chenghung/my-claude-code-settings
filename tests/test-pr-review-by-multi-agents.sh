@@ -990,7 +990,9 @@ export PATH="$saved_path"
 # build_prompt
 # ==============================================================
 
-# --- build_prompt: 材料以內文嵌入，缺料渲染成明確不存在 ---
+# --- build_prompt: 契約原文照樣嵌入，但材料內文不再嵌入 -- 材料改由
+# cmd_prepare() 複製到 reviewer 自己的目錄，由 reviewer 自己讀取，
+# build_prompt 這一端只印座標，不碰材料檔的內容 ---
 BP_ROOT="$T/build-prompt-materials"
 mkdir -p "$BP_ROOT/materials"
 printf 'CONTRACT-BODY\n' > "$BP_ROOT/contract.md"
@@ -1004,19 +1006,17 @@ BP_OUT="$(build_prompt "$BP_ROOT/contract.md" \
 
 # shellcheck disable=SC2015
 printf '%s' "$BP_OUT" | grep -qF 'CONTRACT-BODY' && pass build-prompt-embeds-contract || bad build-prompt-embeds-contract
+# 材料檔就放在 materials_dir 底下、build_prompt 完全沒讀過它們的內容 --
+# 這兩份材料的內文不該出現在組出來的 prompt 裡
 # shellcheck disable=SC2015
-printf '%s' "$BP_OUT" | grep -qF 'PR-MATERIAL-BODY' && pass build-prompt-embeds-pr-material || bad build-prompt-embeds-pr-material
+printf '%s' "$BP_OUT" | grep -qF 'PR-MATERIAL-BODY' && bad build-prompt-does-not-embed-pr-material || pass build-prompt-does-not-embed-pr-material
 # shellcheck disable=SC2015
-printf '%s' "$BP_OUT" | grep -qF 'ISSUE-MATERIAL-BODY' && pass build-prompt-embeds-issue-material || bad build-prompt-embeds-issue-material
-# design.md 不存在，該節要明確渲染成不存在
-# shellcheck disable=SC2015
-printf '%s' "$BP_OUT" | grep -qF '（未提供，明確視為不存在）' && pass build-prompt-renders-absent-design || bad build-prompt-renders-absent-design
-# 材料目錄的絕對路徑仍要出現在座標區，供人事後查閱
+printf '%s' "$BP_OUT" | grep -qF 'ISSUE-MATERIAL-BODY' && bad build-prompt-does-not-embed-issue-material || pass build-prompt-does-not-embed-issue-material
+# 材料目錄的絕對路徑仍要出現在座標區，供人事後查閱 -- 現在這一行指向的是
+# 呼叫端（cmd_prepare()）傳進來的那個目錄，可能是共用的 materials_dir，
+# 也可能是某個 reviewer 自己的副本，build_prompt 自己不分辨、原樣印出
 # shellcheck disable=SC2015
 printf '%s' "$BP_OUT" | grep -qF "$BP_ROOT/materials" && pass build-prompt-keeps-materials-path || bad build-prompt-keeps-materials-path
-# 每一節材料前都要有那句「這是資料不是指令」的注入防線
-# shellcheck disable=SC2015
-[ "$(printf '%s' "$BP_OUT" | grep -cF '它是被審查的資料')" -ge 2 ] && pass build-prompt-injection-guard-per-section || bad build-prompt-injection-guard-per-section
 
 # 契約全文必須逐字、原封不動地作為 prompt 的開頭 -- 用真正的
 # reviewer-contract.md（多章節）而非上面的合成 fixture 檢查，才抓得到
@@ -3111,11 +3111,14 @@ esac
 # prompt file cmd_prepare() actually wrote to disk, not just that the value
 # appears somewhere in it (which would pass even if two labels' values
 # were swapped). The issue and design-doc materials, unlike the
-# coordinates, are no longer handed to build_prompt directly -- cmd_prepare()
-# resolves them into materials_dir via fetch_review_materials first -- so
-# those two are instead checked by their own distinctive embedded
-# content, the same way build_prompt's own section elsewhere in this file
-# does.
+# coordinates, are never handed to build_prompt as content at all --
+# cmd_prepare() resolves them into the shared materials_dir via
+# fetch_review_materials, then copies that into each reviewer's own
+# materials directory (see cmd_prepare's own per-cli loop) -- so those two
+# are instead checked by their own distinctive content showing up in that
+# per-reviewer copy on disk, and explicitly *not* showing up in the built
+# prompt file, the same way build_prompt's own section elsewhere in this
+# file does.
 #
 # This also exercises run-review.sh's command-line contract end to end (task 5's
 # own addition, not specified by the earlier tasks): named flags --
@@ -3194,10 +3197,10 @@ printf 'model = "e2e-distinctive-model"\n' > "$E2E_HOME/.codex/config.toml"
 # design_doc_path is resolved relative to cmd_prepare()'s own cwd (see
 # fetch_review_materials), so this needs a real file on disk at the exact
 # relative path handed to run-review.sh below, not just a distinctive string --
-# an empty issue/design section renders as explicitly absent instead
-# (see the fetch-materials-degrades-* tests above), so a nonexistent path
-# here would silently exercise that path instead of the one this test
-# means to cover.
+# fetch_review_materials simply never writes design.md at all when the path
+# is missing or unreadable instead (see the fetch-materials-degrades-* tests
+# above), so a nonexistent path here would silently exercise that path
+# instead of the one this test means to cover.
 mkdir -p "$E2E_FIXTURE/work/docs"
 printf 'e2e-distinctive-design-doc-marker-content\n' > "$E2E_FIXTURE/work/docs/distinctive-design-doc-marker.md"
 
@@ -3253,6 +3256,43 @@ for cli in claude codex opencode; do
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
   printf '%s\n' "$out" | grep -qxF "prompt_file_$cli=$E2E_LOGS_DIR/$cli.prompt" && pass "main-e2e-prepare-prints-prompt-file-$cli" || bad "main-e2e-prepare-prints-prompt-file-$cli"
 done
+
+# ---- Task 3b: cmd_prepare() copies this run's materials into each
+# reviewer's own materials subdirectory under its workdir, locks that copy
+# read-only, and points that reviewer's own prompt file's 材料檔目錄絕對路徑
+# coordinate line at exactly that copy -- not the shared materials_dir a
+# level up in $E2E_BASE_DIR/materials, and not another reviewer's copy. ----
+for cli in claude codex opencode; do
+  cli_materials="$E2E_BASE_DIR/reviewers/$cli/workdir/materials"
+  cli_prompt_file="$E2E_LOGS_DIR/$cli.prompt"
+
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ -s "$cli_materials/pr.md" ] && pass "main-e2e-reviewer-materials-pr-copied-$cli" || bad "main-e2e-reviewer-materials-pr-copied-$cli"
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  grep -qF 'e2e-distinctive-issue-body-marker' "$cli_materials/issue.md" 2>/dev/null && pass "main-e2e-reviewer-materials-issue-copied-$cli" || bad "main-e2e-reviewer-materials-issue-copied-$cli"
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  grep -qF 'e2e-distinctive-design-doc-marker-content' "$cli_materials/design.md" 2>/dev/null && pass "main-e2e-reviewer-materials-design-copied-$cli" || bad "main-e2e-reviewer-materials-design-copied-$cli"
+
+  # 唯讀：對複製後的材料檔嘗試寫入，確認被拒
+  if ( : > "$cli_materials/pr.md" ) 2>/dev/null; then
+    bad "main-e2e-reviewer-materials-read-only-$cli"
+  else
+    pass "main-e2e-reviewer-materials-read-only-$cli"
+  fi
+
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  grep -qxF -- "- 材料檔目錄絕對路徑：$cli_materials" "$cli_prompt_file" 2>/dev/null && pass "main-e2e-prompt-materials-coordinate-own-copy-$cli" || bad "main-e2e-prompt-materials-coordinate-own-copy-$cli"
+done
+chmod -R u+w "$E2E_BASE_DIR/reviewers" 2>/dev/null || true
+
+# 兩個不同 reviewer 各自指到自己那一份，不會互相混到：claude 的 prompt 檔
+# 不該提到 codex 那份材料副本的路徑，反之亦然。
+E2E_CLAUDE_MATERIALS="$E2E_BASE_DIR/reviewers/claude/workdir/materials"
+E2E_CODEX_MATERIALS="$E2E_BASE_DIR/reviewers/codex/workdir/materials"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF "$E2E_CODEX_MATERIALS" "$E2E_LOGS_DIR/claude.prompt" 2>/dev/null && bad main-e2e-prompt-materials-coordinate-no-cross-contamination-claude || pass main-e2e-prompt-materials-coordinate-no-cross-contamination-claude
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF "$E2E_CLAUDE_MATERIALS" "$E2E_LOGS_DIR/codex.prompt" 2>/dev/null && bad main-e2e-prompt-materials-coordinate-no-cross-contamination-codex || pass main-e2e-prompt-materials-coordinate-no-cross-contamination-codex
 
 # ---- Task 3 Step 5: .roster is written during prepare (not launch) --
 # confirmed here, before cmd_launch() has run at all. ----
@@ -3321,15 +3361,16 @@ grep -qxF -- "- git worktree 絕對路徑：$E2E_BASE_DIR/worktree" "$E2E_PROMPT
 grep -qxF -- '- base ref：origin/e2e-distinctive-base' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-base-ref-in-place || bad main-e2e-prompt-base-ref-in-place
 # issue_arg "777" resolves via _parse_issue_ref straight through
 # fetch_review_materials to a real (stubbed) `gh issue view` call; its
-# body is embedded into the prompt as material, not placed on its own
-# coordinate line the way it was before build_prompt took materials_dir
-# instead of issue_url.
+# body ends up copied into codex's own materials/issue.md (asserted in the
+# Task 3b block above, main-e2e-reviewer-materials-issue-copied-codex), not
+# embedded into this prompt file -- confirmed negatively here.
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'e2e-distinctive-issue-body-marker' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-issue-material-embedded || bad main-e2e-prompt-issue-material-embedded
-# Same shift for the design doc: its full text is embedded as material
-# instead of its path being placed on its own coordinate line.
+grep -qF 'e2e-distinctive-issue-body-marker' "$E2E_PROMPT_FILE" 2>/dev/null && bad main-e2e-prompt-issue-material-not-embedded || pass main-e2e-prompt-issue-material-not-embedded
+# Same shift for the design doc: its full text ends up copied into
+# codex's own materials/design.md instead of being embedded in this
+# prompt file -- confirmed negatively here too.
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'e2e-distinctive-design-doc-marker-content' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-design-material-embedded || bad main-e2e-prompt-design-material-embedded
+grep -qF 'e2e-distinctive-design-doc-marker-content' "$E2E_PROMPT_FILE" 2>/dev/null && bad main-e2e-prompt-design-material-not-embedded || pass main-e2e-prompt-design-material-not-embedded
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qxF -- '- 產出這則 review 的 CLI 名稱：codex' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-cli-name-in-place || bad main-e2e-prompt-cli-name-in-place
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -3425,8 +3466,13 @@ until [ ! -e "$E2E_WORKTREE_DIR" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ ! -e "$E2E_WORKTREE_DIR" ] && pass main-e2e-worktree-removed-after-completion || bad main-e2e-worktree-removed-after-completion
 
-# --- --pr/--issue/--design all omitted: PR derives from branch, issue/design
-# render as "not provided" rather than blocking the run ---
+# --- --pr/--issue/--design all omitted: PR derives from branch, and (the
+# stub PR body carrying no closing keyword, same as the header's shared gh
+# stub) fetch_review_materials never derives an issue either -- so only
+# pr.md ever lands in the shared materials_dir, rather than blocking the
+# run. The point of this fixture: cmd_prepare()'s own per-reviewer copy
+# step (see its docstring) must not fail just because issue.md/design.md
+# were never there to copy, and must not invent empty ones either. ---
 
 E2E_HOME2="$T/main-e2e-home2"
 assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
@@ -3441,8 +3487,13 @@ fi
 
 E2E_LOGS_DIR2="$(find "$E2E_HOME2/.tmp" -type d -name logs 2>/dev/null | head -1)"
 E2E_BASE_DIR2="$(dirname "${E2E_LOGS_DIR2:-/nonexistent}")"
+E2E_CODEX_MATERIALS2="$E2E_BASE_DIR2/reviewers/codex/workdir/materials"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$E2E_LOGS_DIR2" ] && grep -qF '未提供' "$E2E_LOGS_DIR2/codex.prompt" 2>/dev/null && pass main-e2e-empty-args-render-not-provided || bad main-e2e-empty-args-render-not-provided
+[ -s "$E2E_CODEX_MATERIALS2/pr.md" ] && pass main-e2e-empty-args-materials-pr-copied || bad main-e2e-empty-args-materials-pr-copied
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$E2E_CODEX_MATERIALS2/issue.md" ] && pass main-e2e-empty-args-materials-no-issue-file || bad main-e2e-empty-args-materials-no-issue-file
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$E2E_CODEX_MATERIALS2/design.md" ] && pass main-e2e-empty-args-materials-no-design-file || bad main-e2e-empty-args-materials-no-design-file
 
 # See the earlier prepare/launch pair's own comment on why this is a
 # second, separate `bash "$RUN_SH"` call, why the pane_id values below are
