@@ -19,4 +19,4 @@ issue 不需要在這裡指定，由 skill 依當時的定義自動處理，不�
 
 會動到的：目標 PR 上通常只新增一則彙整過的 AI review comment，只有彙整失敗時才退回逐則張貼、每份可信的 review 各成一則；執行期間會在使用者當前 repo 暫時建立一個工作用的 git worktree 與本地分支，並對 base 分支的遠端追蹤 ref 做強制更新、強制刪除陳舊的同形狀分支——完整清單見 `pr-review-by-multi-agents` skill 定義中的「已知限制」節。腳本另會在使用者家目錄下建立一整套產出物目錄；正常（全綠）結束時由腳本與 main agent 自動清理，非全綠的執行則會把這個目錄整個保留——位置與保留規則見該 skill 定義中的「產出物位置」節。
 
-不會動到的：不修改 PR 本身的程式碼或倉庫中的任何既有檔案，不 approve、不 merge、不 close PR 或 issue；本次派出的每個 reviewer CLI 對被審查的程式碼一律唯讀。
+不會動到的：不 approve、不 merge、不 close PR 或 issue；不修改 PR 本身的程式碼，也不修改倉庫中的既有檔案。後面這兩項靠的是契約與檔案權限，不是機制保證：reviewer 這次必須寫得出自己那份 review 輸出檔，寫入工具因此是開著的，擋在被審查的程式碼前面的只有作業系統層的唯讀權限位元，而 reviewer 與腳本跑在同一個使用者身分底下、改得回去。真的被改動時，腳本在每個 reviewer 啟動前後的 git 狀態比對會抓到，那份 review 就不會被張貼——完整說明見 `pr-review-by-multi-agents` skill 定義中的「已知限制」節。
