@@ -2632,6 +2632,55 @@ until [ ! -e "$SV4_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 export PATH="$saved_path"
 
 # ==============================================================
+# spawn_supervisor -- must not hold the caller's own stdout/stderr open
+# (Task 7 簡報第五節記載的缺陷：`(...)& disown` 沒有重導向繼承來的 fd
+# 1/2，背景 subshell 因此一直持有呼叫端的輸出管線；呼叫端若以命令替換
+# 擷取這次呼叫的輸出，就得等到監督行程整個跑完──含合流──才拿得到
+# EOF，把非同步派工變成同步等待）。opencode 的 stub 特意 sleep 3 秒才結
+# 束，讓「命令替換立刻返回」與「監督行程其實還在跑」這兩件事都測得到：
+# 前者驗證修好了，後者排除「返回快是因為背景根本沒真的在跑」這個混淆。
+# ==============================================================
+
+SVPIPE_STUB_BIN="$T/supervisor-pipe-stub-bin"
+mkdir -p "$SVPIPE_STUB_BIN"
+cat > "$SVPIPE_STUB_BIN/opencode" <<'STUB'
+#!/usr/bin/env bash
+sleep 3
+exit 0
+STUB
+chmod +x "$SVPIPE_STUB_BIN/opencode"
+export PATH="$SVPIPE_STUB_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$SVPIPE_STUB_BIN" opencode
+
+SVPIPE_ROOT="$T/supervisor-pipe-fixture"
+SVPIPE_WT="$(_make_worktree_fixture "$SVPIPE_ROOT")"
+mkdir -p "$SVPIPE_ROOT/logs"
+printf 'p' > "$SVPIPE_ROOT/logs/opencode.prompt"
+svpipe_pid="$(launch_reviewer opencode "$SVPIPE_WT" "$SVPIPE_ROOT/logs/opencode.log" < "$SVPIPE_ROOT/logs/opencode.prompt")"
+SVPIPE_SUMMARY="$SVPIPE_ROOT/summary.txt"
+
+svpipe_t0="$(date +%s)"
+svpipe_out="$(cd "$SVPIPE_ROOT/work" && spawn_supervisor "$SVPIPE_WT" "$SVPIPE_SUMMARY" "$svpipe_pid")"
+svpipe_t1="$(date +%s)"
+svpipe_elapsed="$((svpipe_t1 - svpipe_t0))"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$svpipe_elapsed" -le 2 ] && pass "spawn_supervisor 不持有呼叫端管線：命令替換立刻返回" \
+  || bad "spawn_supervisor 命令替換等了 ${svpipe_elapsed}s 才返回（reviewer 要 3s 才結束），疑似仍持有呼叫端的 fd 1/2"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$svpipe_out" ] && pass "spawn_supervisor 命令替換沒有擷取到非預期輸出" || bad "spawn_supervisor 命令替換擷取到非預期輸出: $svpipe_out"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -e "$SVPIPE_WT" ] && pass "spawn_supervisor 返回時背景輪詢確實還沒收尾（worktree 仍在，時序假設成立）" \
+  || bad "spawn_supervisor 返回過快，worktree 已經被清掉，時序假設不成立，上面立刻返回的斷言不足採信"
+
+i=0
+until [ ! -e "$SVPIPE_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$SVPIPE_WT" ] && pass "spawn_supervisor 背景輪詢最終仍完成收尾" || bad "spawn_supervisor 背景輪詢從未收尾"
+
+export PATH="$saved_path"
+
+# ==============================================================
 # _reap_stale_run_dirs
 #
 # A dead PID for the "stale" sibling is obtained by actually starting and
@@ -2792,19 +2841,22 @@ esac
 # print_summary
 # ==============================================================
 
-PS_LOGS="$T/print-summary-logs"
-mkdir -p "$PS_LOGS"
-printf '11111\n' > "$PS_LOGS/claude.pid"
-printf '22222\n' > "$PS_LOGS/codex.pid"
+PS_BASE="$T/print-summary-base"
+mkdir -p "$PS_BASE"
 
-ps_out="$(print_summary "$PS_LOGS" claude codex --skipped opencode)"
+# claude's own pane id below deliberately contains a colon (the same
+# wNN:pM shape parse_launch_args's own round-trip test above uses) --
+# print_summary splits each <cli>:<pane_id> argument on only the *first*
+# colon (see its own docstring), so this also pins down that a colon
+# inside the pane id itself survives whole rather than being truncated.
+ps_out="$(print_summary "$PS_BASE" claude:w16:p3 codex:pane-codex-1 --skipped opencode)"
 
 case "$ps_out" in
-  *'claude'*'11111'*"$PS_LOGS/claude.log"*) pass print-summary-shows-dispatched-pid-and-log ;;
-  *) bad print-summary-shows-dispatched-pid-and-log ;;
+  *'claude'*'w16:p3'*"$PS_BASE/reviewers/claude/workdir/review.md"*) pass print-summary-shows-dispatched-pane-and-output-file ;;
+  *) bad print-summary-shows-dispatched-pane-and-output-file ;;
 esac
 case "$ps_out" in
-  *'codex'*'22222'*"$PS_LOGS/codex.log"*) pass print-summary-shows-second-dispatched-entry ;;
+  *'codex'*'pane-codex-1'*"$PS_BASE/reviewers/codex/workdir/review.md"*) pass print-summary-shows-second-dispatched-entry ;;
   *) bad print-summary-shows-second-dispatched-entry ;;
 esac
 case "$ps_out" in
@@ -2816,11 +2868,11 @@ case "$ps_out" in
   *) pass print-summary-no-cross-validation-note-for-two ;;
 esac
 case "$ps_out" in
-  *"$T/synthesis.log"*) pass print-summary-reports-synthesis-log-path ;;
+  *"$PS_BASE/synthesis.log"*) pass print-summary-reports-synthesis-log-path ;;
   *) bad print-summary-reports-synthesis-log-path ;;
 esac
 
-ps_out_single="$(print_summary "$PS_LOGS" claude --skipped codex opencode)"
+ps_out_single="$(print_summary "$PS_BASE" claude:w16:p3 --skipped codex opencode)"
 case "$ps_out_single" in
   *'交叉驗證'*) pass print-summary-cross-validation-note-for-one ;;
   *) bad print-summary-cross-validation-note-for-one ;;
@@ -2830,7 +2882,7 @@ case "$ps_out_single" in
   *) pass print-summary-single-reviewer-omits-synthesis-log ;;
 esac
 
-ps_out_none_skipped="$(print_summary "$PS_LOGS" claude codex opencode --skipped)"
+ps_out_none_skipped="$(print_summary "$PS_BASE" claude:w16:p3 codex:pane-codex-1 opencode:pane-opencode-1 --skipped)"
 case "$ps_out_none_skipped" in
   *'（無）'*) pass print-summary-none-skipped-marker ;;
   *) bad print-summary-none-skipped-marker ;;
@@ -2841,8 +2893,8 @@ esac
 # 直到三個 reviewer 各自回報同一件事 ---
 
 # 沒有 .materials-status 時（例如直接呼叫 print_summary，從沒跑過
-# fetch_review_materials）完全不印這節，也不能報錯；PS_LOGS 的 base_dir 是
-# 這個測試檔共用的 $T，本來就沒有 .materials-status。
+# fetch_review_materials）完全不印這節，也不能報錯；PS_BASE 是這個測試檔
+# 共用的 $T 底下的一個獨立子目錄，本來就沒有 .materials-status。
 case "$ps_out" in
   *'審查材料'*) bad print-summary-omits-materials-section-when-absent ;;
   *) pass print-summary-omits-materials-section-when-absent ;;
@@ -2850,13 +2902,13 @@ esac
 
 # issue 由 PR 內文推導、design document 已提供
 PS_MAT_A="$T/print-summary-materials-a"
-mkdir -p "$PS_MAT_A/logs"
+mkdir -p "$PS_MAT_A"
 cat > "$PS_MAT_A/.materials-status" <<'STATUS'
 issue_status=derived
 issue_number=123
 design_status=provided
 STATUS
-ps_out_mat_a="$(print_summary "$PS_MAT_A/logs" claude --skipped codex opencode)"
+ps_out_mat_a="$(print_summary "$PS_MAT_A" claude:p1 --skipped codex opencode)"
 case "$ps_out_mat_a" in
   *'issue 內文與討論串：已取得（issue 編號由 PR 本文的 closing keyword 推導：#123）'*) pass print-summary-issue-derived-message ;;
   *) bad print-summary-issue-derived-message ;;
@@ -2868,13 +2920,13 @@ esac
 
 # issue 由呼叫端明確指定、design document 未提供
 PS_MAT_B="$T/print-summary-materials-b"
-mkdir -p "$PS_MAT_B/logs"
+mkdir -p "$PS_MAT_B"
 cat > "$PS_MAT_B/.materials-status" <<'STATUS'
 issue_status=explicit
 issue_number=7
 design_status=not-provided
 STATUS
-ps_out_mat_b="$(print_summary "$PS_MAT_B/logs" claude --skipped codex opencode)"
+ps_out_mat_b="$(print_summary "$PS_MAT_B" claude:p1 --skipped codex opencode)"
 case "$ps_out_mat_b" in
   *'issue 內文與討論串：已取得（呼叫端明確指定：#7）'*) pass print-summary-issue-explicit-message ;;
   *) bad print-summary-issue-explicit-message ;;
@@ -2888,13 +2940,13 @@ esac
 # 有給路徑但讀不到 -- 「未提供」跟「不可讀」是不同訊號，前者是使用者的
 # 選擇，後者通常是打錯路徑
 PS_MAT_C="$T/print-summary-materials-c"
-mkdir -p "$PS_MAT_C/logs"
+mkdir -p "$PS_MAT_C"
 cat > "$PS_MAT_C/.materials-status" <<'STATUS'
 issue_status=not-declared
 issue_number=
 design_status=unreadable
 STATUS
-ps_out_mat_c="$(print_summary "$PS_MAT_C/logs" claude --skipped codex opencode)"
+ps_out_mat_c="$(print_summary "$PS_MAT_C" claude:p1 --skipped codex opencode)"
 case "$ps_out_mat_c" in
   *'issue 內文與討論串：未提供（PR 本文未宣告 closing 的 issue）'*) pass print-summary-issue-not-declared-message ;;
   *) bad print-summary-issue-not-declared-message ;;
@@ -2906,13 +2958,13 @@ esac
 
 # issue 有編號（不論推導或明確指定）但抓取失敗，訊息要帶上那個編號
 PS_MAT_D="$T/print-summary-materials-d"
-mkdir -p "$PS_MAT_D/logs"
+mkdir -p "$PS_MAT_D"
 cat > "$PS_MAT_D/.materials-status" <<'STATUS'
 issue_status=failed
 issue_number=55
 design_status=provided
 STATUS
-ps_out_mat_d="$(print_summary "$PS_MAT_D/logs" claude --skipped codex opencode)"
+ps_out_mat_d="$(print_summary "$PS_MAT_D" claude:p1 --skipped codex opencode)"
 case "$ps_out_mat_d" in
   *'issue 內文與討論串：嘗試取得但失敗（issue 編號：#55'*) pass print-summary-issue-failed-with-number-message ;;
   *) bad print-summary-issue-failed-with-number-message ;;
@@ -2921,13 +2973,13 @@ esac
 # 呼叫端給的 issue 參照本身就解析不出編號，訊息要說清楚是參照解析失敗，
 # 不能印出一個空的 "#"
 PS_MAT_E="$T/print-summary-materials-e"
-mkdir -p "$PS_MAT_E/logs"
+mkdir -p "$PS_MAT_E"
 cat > "$PS_MAT_E/.materials-status" <<'STATUS'
 issue_status=failed
 issue_number=
 design_status=provided
 STATUS
-ps_out_mat_e="$(print_summary "$PS_MAT_E/logs" claude --skipped codex opencode)"
+ps_out_mat_e="$(print_summary "$PS_MAT_E" claude:p1 --skipped codex opencode)"
 case "$ps_out_mat_e" in
   *'issue 內文與討論串：嘗試取得但失敗（呼叫端提供的 issue 參照無法解析）'*) pass print-summary-issue-failed-no-number-message ;;
   *) bad print-summary-issue-failed-no-number-message ;;
@@ -3419,12 +3471,13 @@ git -C "$CHMOD_WT" diff main...HEAD >/dev/null 2>&1 && pass chmod-worktree-diff-
 chmod -R u+w "$CHMOD_WT"
 
 # --- print_summary's own stdout (cmd_launch()'s only output) names every
-# dispatched reviewer with its PID and log path -- the exact chain
-# SKILL.md's reporting depends on. ---
+# dispatched reviewer with its pane id (from the --agent flag above, e.g.
+# codex=pane-codex) and its fixed output file -- the exact chain SKILL.md's
+# reporting depends on. ---
 
 case "$out" in
-  *'codex'*"$E2E_LOGS_DIR/codex.log"*) pass main-e2e-summary-output-lists-log-path ;;
-  *) bad main-e2e-summary-output-lists-log-path ;;
+  *'codex'*'pane-codex'*"$E2E_BASE_DIR/reviewers/codex/workdir/review.md"*) pass main-e2e-summary-output-lists-pane-and-output-file ;;
+  *) bad main-e2e-summary-output-lists-pane-and-output-file ;;
 esac
 
 # This run's own issue_arg ("777") was explicit and its design doc path was
@@ -3862,13 +3915,12 @@ fi
 export PATH="$saved_path"
 
 # print_summary 要印出執行目錄與 summary.txt 的絕對路徑，讓呼叫端不必從
-# log 路徑往上推兩層。用完整標籤字串比對（而非只比對 $PS_ROOT 本身），
-# 因為既有的 dispatched log 那一行本來就已經以 $PS_ROOT 開頭，光比對
+# 輸出檔路徑往上推兩層。用完整標籤字串比對（而非只比對 $PS_ROOT 本身），
+# 因為既有的 dispatched 輸出檔那一行本來就已經以 $PS_ROOT 開頭，光比對
 # $PS_ROOT 子字串不能真正證明是新加的那兩行執行目錄／摘要檔輸出。
 PS_ROOT="$T/print-summary-paths"
-mkdir -p "$PS_ROOT/logs"
-printf '111\n' > "$PS_ROOT/logs/claude.pid"
-PS_OUT="$(print_summary "$PS_ROOT/logs" claude --skipped codex opencode)"
+mkdir -p "$PS_ROOT"
+PS_OUT="$(print_summary "$PS_ROOT" claude:p1 --skipped codex opencode)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qF "$PS_ROOT/summary.txt" <<<"$PS_OUT" && pass print-summary-shows-summary-path || bad print-summary-shows-summary-path
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -4907,6 +4959,51 @@ until [ -s "$SPWSYNI2_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1))
 [ -s "$SPWSYNI2_SUMMARY" ] && pass "spawn_supervisor_interactive 標記出現後輪詢才記錄" || bad "spawn_supervisor_interactive 標記出現後仍未記錄"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qF 'content_status=ready' "$SPWSYNI2_SUMMARY" 2>/dev/null && pass "spawn_supervisor_interactive 補上標記後 content_status=ready" || bad "spawn_supervisor_interactive 補上標記後這一行不對: $(cat "$SPWSYNI2_SUMMARY" 2>/dev/null)"
+
+# ==============================================================
+# spawn_supervisor_interactive -- must not hold the caller's own
+# stdout/stderr open（見上面 spawn_supervisor 的同名區段對這個缺陷的完
+# 整說明；這裡驗證的是同一個修法在互動版本上一樣有效，且更關鍵：
+# `run-review.sh launch` 正是 SKILL.md 輪詢設計仰賴立刻返回的那次呼
+# 叫，這個函式是它背後真正跑的東西）。比照上面合流接線區段最後一段的
+# 手法：背景 sleep 之後才補上結束標記，讓輪詢迴圈有真的要等的東西，這
+# 個函式不啟動任何 CLI，不需要另外的 PATH 樁。
+# ==============================================================
+
+SVIPIPE_ROOT="$T/supervisor-interactive-pipe-fixture"
+SVIPIPE_WT="$(_make_worktree_fixture "$SVIPIPE_ROOT")"
+mkdir -p "$SVIPIPE_ROOT/reviewers/claude/workdir"
+SVIPIPE_REVIEW="$SVIPIPE_ROOT/reviewers/claude/workdir/review.md"
+printf 'still writing, no end marker yet\n' > "$SVIPIPE_REVIEW"
+printf '%s\n' "$(_git_status_snapshot "$SVIPIPE_WT")" > "$SVIPIPE_ROOT/.git-status-before-claude"
+printf 'claude claude-e2e-model dispatched\n' > "$SVIPIPE_ROOT/.roster"
+SVIPIPE_SUMMARY="$SVIPIPE_ROOT/summary.txt"
+
+# shellcheck disable=SC2016  # single quotes intentional: $1/$2 expand inside the nested bash -c, not here
+nohup bash -c '
+  review="$1"; delay="$2"
+  sleep "$delay"
+  printf "===PR-REVIEW-BY-MULTI-AGENTS-END===\n" >> "$review"
+' _ "$SVIPIPE_REVIEW" 3 >/dev/null 2>&1 &
+
+svipipe_t0="$(date +%s)"
+svipipe_out="$(cd "$SVIPIPE_ROOT/work" && spawn_supervisor_interactive "$SVIPIPE_WT" "$SVIPIPE_SUMMARY" claude)"
+svipipe_t1="$(date +%s)"
+svipipe_elapsed="$((svipipe_t1 - svipipe_t0))"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$svipipe_elapsed" -le 2 ] && pass "spawn_supervisor_interactive 不持有呼叫端管線：命令替換立刻返回" \
+  || bad "spawn_supervisor_interactive 命令替換等了 ${svipipe_elapsed}s 才返回（標記要等 3s 才補上），疑似仍持有呼叫端的 fd 1/2"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$svipipe_out" ] && pass "spawn_supervisor_interactive 命令替換沒有擷取到非預期輸出" || bad "spawn_supervisor_interactive 命令替換擷取到非預期輸出: $svipipe_out"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$SVIPIPE_SUMMARY" ] && pass "spawn_supervisor_interactive 返回時輪詢確實還沒收尾（標記還沒補上，時序假設成立）" \
+  || bad "spawn_supervisor_interactive 返回過快，summary.txt 已經有內容，時序假設不成立，上面立刻返回的斷言不足採信"
+
+i=0
+until [ -s "$SVIPIPE_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$SVIPIPE_SUMMARY" ] && pass "spawn_supervisor_interactive 背景輪詢最終仍完成收尾" || bad "spawn_supervisor_interactive 背景輪詢從未收尾"
 
 export PATH="$saved_path"
 

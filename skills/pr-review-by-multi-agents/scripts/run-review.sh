@@ -1757,8 +1757,9 @@ _write_agy_home_interactive() {
 # user's own opencode default model is unusable (no billing, revoked
 # credentials, etc.), the opencode reviewer is expected to fail with a
 # non-zero exit code -- spawn_supervisor records that in the summary file
-# exactly like any other reviewer failure, and print_summary's PID/log
-# line lets the caller find the failing run's log to see why. Fixing an
+# exactly like any other reviewer failure, and the <cli>.log file
+# launch_reviewer wrote for it (see that function's own docstring) is what
+# a human uses to find the failing run's log to see why. Fixing an
 # individual user's opencode billing/model setup is out of this script's
 # scope.
 #
@@ -2838,6 +2839,30 @@ _record_synthesis_result() {
 # holding the branch this run created) permanently stuck -- neither this
 # script's own future runs (which only prune worktrees whose directory is
 # already gone) nor a normal branch cleanup ever reaches it again.
+#
+# The `> "$(dirname "$worktree_dir")/.supervisor.log" 2>&1` below the
+# closing `)` is required, not decorative: neither `(...)&` nor `disown`
+# closes the *inherited* stdout/stderr fds this subshell forks with --
+# both keep pointing at whatever fd 1/2 were in the caller's own process,
+# for as long as this subshell (and, via the synthesis pass, everything
+# it blocks on) keeps running. A caller that captures this function's own
+# output via command substitution or a pipe -- as `run-review.sh launch`'s
+# own caller does, per SKILL.md's polling design -- would then not get
+# EOF on that read until every process holding that write end closes it,
+# this subshell included, turning a fire-and-forget dispatch into a wait
+# for the entire review (and any synthesis pass after it) to finish.
+# Verified empirically: an unredirected `(...)&` held a captured command
+# substitution open for the backgrounded subshell's full runtime; with
+# this redirect in place the same capture returns immediately. `base_dir`
+# (`dirname "$worktree_dir"`) is the target, not `logs_dir`, because
+# `logs_dir` is `chmod -R a-w`'d once every reviewer is dispatched (see
+# cmd_prepare's docstring on the matching lock for the worktree) while
+# `base_dir` itself never is (see SKILL.md's own note on that) -- a file
+# under it stays writable for this subshell's entire lifetime. stdin needs
+# no matching redirect: bash already defaults a backgrounded command's
+# stdin to /dev/null on its own (see launch_reviewer's own docstring on
+# this same behavior, verified there against this repo's actual bash),
+# and nothing in this subshell ever reads from stdin regardless.
 spawn_supervisor() {
   local worktree_dir="$1" summary_file="$2"
   shift 2
@@ -2903,7 +2928,7 @@ spawn_supervisor() {
         fi
       fi
     fi
-  ) &
+  ) > "$(dirname "$worktree_dir")/.supervisor.log" 2>&1 &
   disown
 }
 
@@ -2938,6 +2963,16 @@ spawn_supervisor() {
 # indefinitely, via `kill -0`, until every PID it was given has exited --
 # this is simply the same "no timeout of its own" property applied to
 # a file-marker check instead of a process-liveness check.
+#
+# Same `> "$base_dir/.supervisor.log" 2>&1` redirect on this function's own
+# `(...)&`, and for the same reason -- see spawn_supervisor's own docstring
+# for the full explanation (holding the caller's inherited stdout/stderr
+# open blocks a captured `run-review.sh launch` from ever seeing EOF until
+# this subshell, and everything it waits on, finishes) and the empirical
+# verification behind it. This is the more load-bearing of the two fixes:
+# `run-review.sh launch` is exactly the call SKILL.md's own polling design
+# depends on returning immediately, and this function is what it backs
+# onto.
 spawn_supervisor_interactive() {
   local worktree_dir="$1" summary_file="$2" base_dir
   shift 2
@@ -3031,24 +3066,37 @@ spawn_supervisor_interactive() {
         fi
       fi
     fi
-  ) &
+  ) > "$base_dir/.supervisor.log" 2>&1 &
   disown
 }
 
-# print_summary <logs_dir> <dispatched_cli>... --skipped <skipped_cli>...
+# print_summary <base_dir> <dispatched_cli>:<pane_id>... --skipped <skipped_cli>...
 #
-# Prints the dispatch summary the skill relays to the user: which reviewers
-# were actually launched (with each one's PID, read back from the
-# <cli>.pid file, and its log file path), and which were skipped because
-# that CLI wasn't installed. As of Task 6, cmd_launch()'s own production
-# per-CLI loop no longer writes either file -- it dispatches through
-# launch_reviewer_interactive, which has no PID and writes review.md, not
-# a <cli>.log -- so both fields below print their existing "missing"
-# fallback (未知 / a log path that was never created) for every reviewer
-# launched that way; the PID/.log description below still describes this
-# function's own mechanism correctly, and still matches the (unmodified)
-# headless launch_reviewer path this file's tests keep exercising
-# directly, it is just no longer what cmd_launch() itself feeds it.
+# Prints cmd_launch()'s own one-time closing summary: which reviewers were
+# actually dispatched, and which were skipped because that CLI wasn't
+# installed. There is no PID to report for a dispatched reviewer any more:
+# an interactively-dispatched reviewer runs inside a pane herdr itself
+# manages, not as a child process of this script (see
+# launch_reviewer_interactive's own docstring), so pane id is what
+# identifies it instead. That pane id is handed in here by the caller, one
+# <cli>:<pane_id> pair per dispatched reviewer -- cli and pane_id joined
+# with a colon rather than an equals sign, the same convention
+# parse_launch_args itself uses and for the same reason: a pane id may
+# itself contain a colon (e.g. w16:p3), so this splits only on the *first*
+# colon (cli is everything up to it, pane_id is everything after, not
+# split further) the same way that function's own cmd_launch-side reader
+# does. There is no file to read this mapping back out of, and none is
+# needed: it comes straight from cmd_launch()'s own --agent flag, and
+# cmd_launch and this function run in the same shell, in the same call --
+# unlike a value that has to survive a separate process invocation (the
+# way, say, .roster has to survive from cmd_prepare() to cmd_launch()),
+# nothing here crosses a process boundary that would require landing it on
+# disk first. Each dispatched reviewer's line also prints its fixed output
+# file, <base_dir>/reviewers/<cli>/workdir/review.md -- the same path
+# build_prompt already told that reviewer to write its review to, and the
+# same path spawn_supervisor_interactive itself polls for a
+# marker-terminated review (see that function's own docstring).
+#
 # When exactly one reviewer was dispatched, adds a line calling out that
 # cross-validation across independent reviewers does not hold for this run.
 # When two or more were dispatched, adds a line noting that a synthesis
@@ -3068,25 +3116,17 @@ spawn_supervisor_interactive() {
 # section is that missing signal, stated once, up front, in the one place
 # a human is guaranteed to read regardless of how the reviewers behave.
 #
-# Each dispatched reviewer's log path here is a diagnostic aid for a
-# human, not a functional dependency of the posting pipeline itself any
-# more: the reviewer prints its full review to stdout (captured in
-# exactly this <cli>.log -- see launch_reviewer's docstring on why stdout
-# and stderr are captured to separate files), wrapped in the contract's
-# BEGIN/END markers, and spawn_supervisor -- not this function -- is what
-# actually reads that log back and records it (via a separate <cli>.log
-# path launch_reviewer records for spawn_supervisor's own use, in
-# base_dir's `.log-<pid>` file; see launch_reviewer's and
-# spawn_supervisor's docstrings); nothing in this script posts it any
-# more. This function's own log path is still worth getting right -- it
-# is what a human uses to go find a reviewer's log by hand, e.g. after a
-# summary_file line reports content_status=withheld -- it just no longer
-# gates anything else in this pipeline the way it once did.
+# --skipped is kept even though cmd_launch() itself never has anything to
+# put after it any more (see cmd_launch()'s own comment on why: platform
+# selection is fully verified during the earlier prepare invocation, so
+# there is no such thing as a silently-degraded launch left to report) --
+# this function's own tests still call it directly with skipped names, and
+# the section costs nothing to keep correct for that caller.
 print_summary() {
-  local logs_dir="$1"
+  local base_dir="$1"
   shift
   local -a dispatched=() skipped=()
-  local arg mode="dispatched" cli pid
+  local arg mode="dispatched" cli pane_id
 
   for arg in "$@"; do
     if [ "$arg" = "--skipped" ]; then
@@ -3100,9 +3140,6 @@ print_summary() {
     fi
   done
 
-  local base_dir
-  base_dir="$(dirname "$logs_dir")"
-
   printf '本次執行目錄：%s\n' "$base_dir"
   printf '摘要檔：%s\n\n' "$base_dir/summary.txt"
 
@@ -3110,9 +3147,10 @@ print_summary() {
   if [ "${#dispatched[@]}" -eq 0 ]; then
     printf '（無）\n'
   else
-    for cli in "${dispatched[@]+"${dispatched[@]}"}"; do
-      pid="$(cat "$logs_dir/$cli.pid" 2>/dev/null)" || pid=""
-      printf -- '- %s（PID：%s，log：%s）\n' "$cli" "${pid:-未知}" "$logs_dir/$cli.log"
+    for arg in "${dispatched[@]+"${dispatched[@]}"}"; do
+      cli="${arg%%:*}"
+      pane_id="${arg#*:}"
+      printf -- '- %s（pane：%s，輸出檔：%s）\n' "$cli" "$pane_id" "$base_dir/reviewers/$cli/workdir/review.md"
     done
   fi
 
@@ -3482,7 +3520,7 @@ cmd_launch() {
   local base_dir="" logs_dir summary_file worktree_dir
   local cli parsed parsed_line agent_pair
   local reviewer_workdir reviewer_home prompt_file
-  local -a all_reviewers=() skipped=() dispatched=()
+  local -a all_reviewers=() skipped=() dispatched=() dispatched_agents=()
   local -A pane_id_by_cli=()
 
   parsed="$(parse_launch_args "$@")" || exit $?
@@ -3535,6 +3573,11 @@ cmd_launch() {
       exit 1
     fi
     dispatched+=("$cli")
+    # <cli>:<pane_id>, fed to print_summary below -- see that function's
+    # own docstring on why this is how it learns each pane id (no file
+    # round-trip needed, this is the same shell and the same call) and why
+    # colon, not equals, is the join character.
+    dispatched_agents+=("$cli:${pane_id_by_cli[$cli]}")
   done
 
   # logs_dir gets the same read-only treatment as the worktree, applied
@@ -3565,7 +3608,7 @@ cmd_launch() {
   # so there is no such thing as a silently-degraded run any more.
   # print_summary's --skipped section is kept for compatibility with its
   # existing signature and simply receives nothing.
-  print_summary "$logs_dir" "${all_reviewers[@]}" --skipped "${skipped[@]+"${skipped[@]}"}"
+  print_summary "$base_dir" "${dispatched_agents[@]+"${dispatched_agents[@]}"}" --skipped "${skipped[@]+"${skipped[@]}"}"
 }
 
 # main --check-clis | prepare <flags>... | launch <flags>...
