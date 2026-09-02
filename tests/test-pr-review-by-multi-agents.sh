@@ -3526,31 +3526,64 @@ case "$out" in
   *) bad main-e2e-empty-args-summary-shows-design-not-provided ;;
 esac
 
+# Tear down the herdr stub installed at the top of the "prepare/launch
+# end-to-end" section above -- both prepare/launch pairs that need it are
+# done. CHMODE2E_STUB_BIN below is a wholly separate stub directory (with
+# its own, separately scoped herdr stub -- see its own comment further
+# down), so this line does not change its behavior either way; it exists
+# so $STUB_BIN itself does not carry the leftover file into whatever
+# reuses $STUB_BIN after this point, the same scoping this file's herdr
+# stubs apply everywhere else.
+rm -f "$STUB_BIN/herdr"
+
 # --- cmd_prepare() and cmd_launch() actually apply their own
 # worktree/logs_dir read-only chmod, not just "chmod behaves this way when
 # I do it myself in a fixture" (which CHMOD_ROOT above already covers, but
 # deleting either chmod line entirely would leave that test just as
-# green). logs_dir is
-# never removed by this pipeline, so checking its permissions after
-# `bash "$RUN_SH"` returns is not racy; the worktree, on the other hand,
-# gets removed asynchronously by spawn_supervisor, so checking *its*
-# permissions the same way would race that removal -- instead, a real
-# stub reviewer attempts one write against the worktree path it was
-# actually launched against (via its own -C argument) at startup, and
-# records whether that write succeeded or was blocked into its own
-# stdout (captured in <cli>.log, outside the worktree, so it survives
-# the worktree's later removal) -- avoiding both the race and having to
-# inspect permissions after the fact at all. ---
-
-# Tear down the herdr stub installed at the top of the "prepare/launch
-# end-to-end" section above -- both prepare/launch pairs that need it are
-# done. CHMODE2E_STUB_BIN below is a wholly separate stub directory that
-# never includes herdr on purpose (see its own comment further down), so
-# this line does not change its behavior either way; it exists so
-# $STUB_BIN itself does not carry the leftover file into whatever reuses
-# $STUB_BIN after this point, the same scoping this file's herdr stubs
-# apply everywhere else.
-rm -f "$STUB_BIN/herdr"
+# green). The write-probe this section used to rely on -- a real stub
+# reviewer CLI, invoked with the worktree path on its own -C argument,
+# attempting one write against it at startup -- no longer reflects how
+# cmd_launch() actually dispatches: every reviewer now goes through
+# launch_reviewer_interactive, which hands the reviewer command to herdr
+# to spawn inside a pane herdr itself manages (this script never execs
+# claude/codex/opencode directly any more -- see that function's own
+# docstring), and even codex's own argv there points `-C` at
+# reviewer_workdir, not worktree_dir (see launch_reviewer_interactive's
+# own cmd= arrays) -- a directory this pipeline never chmods read-only in
+# the first place. Confirmed directly, not assumed: real herdr, run
+# against a pane ID no pane manager ever created (exactly what this
+# fixture's own placeholder pane IDs are), returns
+# {"error":{"code":"agent_pane_not_found",...}} and exits non-zero
+# immediately, without ever running its own trailing argv -- so a stub
+# codex wired up the old way would never even be reached, real herdr or
+# stubbed. This is also why main-e2e-chmod-launch-succeeds used to fail
+# outright: cmd_launch() was aborting at launch_reviewer_interactive's own
+# herdr call, before dispatching a single reviewer, real or stubbed.
+#
+# The fix below stubs herdr too (same minimal stub as the "prepare/launch
+# end-to-end" section's own, scoped to this fixture's own separate stub
+# directory), which lets cmd_launch() actually reach and pass its own
+# per-cli dispatch loop and its own `chmod -R a-w "$logs_dir"` line. What
+# replaces the old write-probe is a direct filesystem write attempt
+# against worktree_dir itself, run from this test process, not from
+# inside any reviewer -- the same technique the logs_dir assertions just
+# below already use. logs_dir is never removed by this pipeline, so
+# checking its permissions after `bash "$RUN_SH"` returns is not racy;
+# worktree_dir, on the other hand, does get removed once
+# spawn_supervisor_interactive (started by cmd_launch() itself, in the
+# background) sees every dispatched reviewer's review.md end in the
+# contract's marker (see that function's own docstring) -- so this
+# section deliberately never supplies that marker until after its own
+# checks are done. Until then, spawn_supervisor_interactive's own poll
+# loop has no marker to find, stays pending by construction (not by
+# timing), and worktree_dir stays exactly as cmd_prepare() left it. Once
+# this section's checks are done, it supplies the markers itself (the
+# same direct-write technique the "prepare/launch end-to-end" section
+# uses for its own stub reviewers) and polls for the whole run to
+# converge, so the background supervisor still finishes and this section
+# leaves no process running behind it -- see that wait's own comment
+# further down for what it also triggers and why that stays safe under
+# this fixture's own stubs. ---
 
 CHMODE2E_FIXTURE="$T/chmod-e2e-fixture"
 mkdir -p "$CHMODE2E_FIXTURE/remotes/acme" "$CHMODE2E_FIXTURE/work"
@@ -3576,41 +3609,57 @@ git init -q -b main "$CHMODE2E_FIXTURE/work"
 CHMODE2E_STUB_BIN="$T/chmod-e2e-stub-bin"
 mkdir -p "$CHMODE2E_STUB_BIN"
 cp "$STUB_BIN/gh" "$CHMODE2E_STUB_BIN/gh"
-# claude and opencode are also stubbed here (as trivial "exit 0" stand-ins
-# that never actually run for this test's own purpose) even though this
-# test only cares about codex's own write-attempt probe: PATH below is
-# "$CHMODE2E_STUB_BIN:$saved_path", not an exclusive PATH, so leaving
-# either name out would let verify_selection's and launch_reviewer's own
-# PATH lookups resolve it to the *real*, system-installed claude/opencode
-# further down that same PATH -- which cmd_launch() would then actually
-# launch, for real, burning real tokens. Bitten by exactly this once already
-# earlier in this same task (see this task's own report).
+# claude, codex, and opencode are all trivial "exit 0" stand-ins here --
+# none of the three is ever actually invoked as a process by this
+# fixture's own test code any more, and cmd_launch() itself no longer
+# execs any of them directly either (see this section's own top comment
+# on launch_reviewer_interactive): herdr owns spawning whatever follows
+# `--` inside its own pane, and the herdr stub below only reports
+# success, it never execs its own trailing argv. PATH below is still
+# "$CHMODE2E_STUB_BIN:$saved_path", not an exclusive PATH, so leaving any
+# of the three names out would still let verify_selection's own
+# `command -v` check resolve it to the *real*, system-installed CLI
+# further down that same PATH -- verify_selection runs regardless of
+# whether herdr would ever actually launch it, so a missing stub here
+# still fails this fixture the same way it always did. Bitten by exactly
+# this once already earlier in this same task (see this task's own
+# report).
 cp "$STUB_BIN/claude" "$CHMODE2E_STUB_BIN/claude"
+cp "$STUB_BIN/codex" "$CHMODE2E_STUB_BIN/codex"
 cp "$STUB_BIN/opencode" "$CHMODE2E_STUB_BIN/opencode"
-cat > "$CHMODE2E_STUB_BIN/codex" <<'STUB'
+
+# herdr must also be stubbed here now that cmd_launch() actually reaches
+# it (see this section's own top comment) -- without this, herdr resolves
+# to the real, system-installed binary and, given this fixture's own
+# placeholder pane IDs (pane-claude/pane-codex/pane-opencode -- arbitrary
+# strings no real pane manager ever created; see the "prepare/launch
+# end-to-end" section's own comment on why), fails immediately with
+# agent_pane_not_found (confirmed directly against the real binary -- see
+# this section's own top comment). Same minimal stub as that section's
+# own: only needs to succeed, nothing here asserts on herdr's argv.
+cat > "$CHMODE2E_STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
-prev=""
-worktree_arg=""
-for a in "$@"; do
-  [ "$prev" = "-C" ] && worktree_arg="$a"
-  prev="$a"
-done
-if : > "$worktree_arg/WRITE-ATTEMPT-PROBE.txt" 2>/dev/null; then
-  echo "WRITE_ATTEMPT_RESULT: succeeded"
-else
-  echo "WRITE_ATTEMPT_RESULT: blocked"
-fi
-echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
-echo "probe review"
-echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
-exit 0
+case "${1:-}" in
+agent)
+  case "${2:-}" in
+  start) exit 0 ;;
+  prompt) exit 0 ;;
+  esac
+  ;;
+pane)
+  case "${2:-}" in
+  read) printf 'e2e-stub-pane-ready'; exit 0 ;;
+  esac
+  ;;
+esac
+exit 1
 STUB
-chmod +x "$CHMODE2E_STUB_BIN/codex"
+chmod +x "$CHMODE2E_STUB_BIN/herdr"
 
 CHMODE2E_HOME="$T/chmod-e2e-home"
 # agy is deliberately absent from CHMODE2E_STUB_BIN (this run never passes
-# --agy), so only the three names it actually provides are checked.
-assert_cli_stub_only "$CHMODE2E_STUB_BIN:$saved_path" "$CHMODE2E_STUB_BIN" claude codex opencode
+# --agy), so only the four names it actually provides are checked.
+assert_cli_stub_only "$CHMODE2E_STUB_BIN:$saved_path" "$CHMODE2E_STUB_BIN" claude codex opencode herdr
 if out="$(cd "$CHMODE2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME=main HOME="$CHMODE2E_HOME" PATH="$CHMODE2E_STUB_BIN:$saved_path" \
   bash "$RUN_SH" prepare --pr "https://github.com/acme/widgets/pull/50" --claude --codex --opencode 2>&1)"; then
   pass main-e2e-chmod-prepare-succeeds
@@ -3620,21 +3669,65 @@ fi
 
 CHMODE2E_LOGS_DIR="$(find "$CHMODE2E_HOME/.tmp" -type d -name logs 2>/dev/null | head -1)"
 CHMODE2E_BASE_DIR="$(dirname "${CHMODE2E_LOGS_DIR:-/nonexistent}")"
+CHMODE2E_WORKTREE_DIR="$CHMODE2E_BASE_DIR/worktree"
 
-# See the first prepare/launch pair's own comment on why this is a second,
-# separate `bash "$RUN_SH"` call, why the pane_id values below are
-# arbitrary placeholders, and why cwd must still be inside
-# $CHMODE2E_FIXTURE/work. This is the call that actually execs the stub
-# codex above, which is what performs the worktree write-attempt probe.
-if out="$(cd "$CHMODE2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" HOME="$CHMODE2E_HOME" PATH="$CHMODE2E_STUB_BIN:$saved_path" \
+# See the first prepare/launch pair's own comment on why this is a
+# second, separate `bash "$RUN_SH"` call, why the pane_id values below
+# are arbitrary placeholders, and why cwd must still be inside
+# $CHMODE2E_FIXTURE/work. Unlike that pair, no review.md is pre-written
+# for any reviewer here -- see this section's own top comment on why
+# withholding the marker is exactly what keeps worktree_dir alive and
+# read-only long enough for the write-probe just below to run without
+# racing spawn_supervisor_interactive's own async removal.
+#
+# Output goes to a regular file here, not an `out="$(... 2>&1)"` command
+# substitution the way every other launch call in this file captures
+# its own -- cmd_launch()'s background spawn_supervisor_interactive
+# subshell inherits whatever fd this call's own stdout/stderr point at,
+# and with no marker written yet (see above) that subshell is still
+# running, still holding its own copy of that fd, for as long as this
+# section's own checks take. A pipe-backed command substitution blocks
+# its reader until every process holding the write end has closed it,
+# including that still-running grandchild -- capturing this call's
+# output that way deadlocks this section against its own later
+# marker-writing step, which cannot run until the capture returns. A
+# plain file redirect carries no such "wait for every holder to close"
+# contract: the shell below only waits on its direct child (`bash
+# "$RUN_SH" launch` itself), so this line returns as soon as cmd_launch()
+# does, exactly like real usage expects (see SKILL.md's own "此時
+# reviewer 還在背景跑" on launch returning right after dispatch). Found
+# empirically, not by inspection: an earlier version of this line used
+# the command-substitution form and hung indefinitely.
+# Wrapped in `if ... ; then ... ; else ... ; fi`, not a bare statement
+# followed by a separate `rc=$?` line, so a real failure here (e.g. this
+# whole fixture's own bug recurring) trips neither `set -e` nor the
+# `pipefail` this file also sets -- an unguarded nonzero exit on its own
+# line would abort this entire test script right here under `set -euo
+# pipefail`, silently skipping every section after it, exactly the same
+# hazard `# shellcheck disable=SC2015`'s own `&&`/`||` idiom exists to
+# avoid elsewhere in this file. Caught empirically: this uncovered a real
+# `set -e` abort during the herdr PATH-guard proof this task's own report
+# describes, the first time this exact line legitimately failed.
+CHMODE2E_LAUNCH_OUT="$T/chmod-e2e-launch.out"
+if (cd "$CHMODE2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" HOME="$CHMODE2E_HOME" PATH="$CHMODE2E_STUB_BIN:$saved_path" \
   bash "$RUN_SH" launch --base-dir "$CHMODE2E_BASE_DIR" \
-    --agent claude=pane-claude --agent codex=pane-codex --agent opencode=pane-opencode 2>&1)"; then
+    --agent claude=pane-claude --agent codex=pane-codex --agent opencode=pane-opencode) \
+  > "$CHMODE2E_LAUNCH_OUT" 2>&1; then
   pass main-e2e-chmod-launch-succeeds
 else
-  bad main-e2e-chmod-launch-succeeds
+  bad "main-e2e-chmod-launch-succeeds: $(cat "$CHMODE2E_LAUNCH_OUT" 2>/dev/null)"
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$CHMODE2E_LOGS_DIR" ] && grep -qF 'WRITE_ATTEMPT_RESULT: blocked' "$CHMODE2E_LOGS_DIR/codex.log" 2>/dev/null && pass main-e2e-worktree-write-actually-blocked || bad main-e2e-worktree-write-actually-blocked
+
+# Direct write attempt against worktree_dir itself -- see this section's
+# own top comment for why this replaces the old stub-reviewer write-probe,
+# and why running it here, immediately after cmd_launch() returns and
+# before any reviewer's review.md carries an end marker, cannot race
+# spawn_supervisor_interactive's own removal.
+if ( : > "$CHMODE2E_WORKTREE_DIR/should-not-be-writable.txt" ) 2>/dev/null; then
+  bad main-e2e-worktree-write-actually-blocked
+else
+  pass main-e2e-worktree-write-actually-blocked
+fi
 
 # Not racy: logs_dir is never removed by this pipeline, so its
 # permissions are stable to inspect any time after the run returns.
@@ -3645,6 +3738,36 @@ if ( : > "$CHMODE2E_LOGS_DIR/should-not-be-writable.txt" ) 2>/dev/null; then
 else
   pass main-e2e-logs-dir-write-actually-denied
 fi
+
+# This section's own checks are done -- supply every dispatched
+# reviewer's end marker now (the same direct-write technique the
+# "prepare/launch end-to-end" section uses for its own stub reviewers) so
+# spawn_supervisor_interactive's background poll loop can finally
+# converge, remove worktree_dir, and exit, rather than being left polling
+# forever (see that function's own docstring on why a marker-less
+# review.md never lets it finish). All three reviewers going
+# content_status=ready also clears the >= 2 threshold that triggers a
+# synthesis pass in that same background subshell -- safe under this
+# fixture's own stubs: the subshell inherits this run's own
+# PATH="$CHMODE2E_STUB_BIN:$saved_path", so whichever CLI
+# _select_synthesis_cli picks (claude, codex, or opencode -- agy was
+# never dispatched here, so it is never a candidate) still resolves to
+# this fixture's own trivial stand-in, not a real, system-installed CLI.
+# Polling for summary_file to reach its full four lines (one per
+# reviewer plus the synthesis line) rather than merely for worktree_dir's
+# removal: worktree removal happens earlier in the same subshell, so
+# waiting for the later signal also proves the subshell's own synthesis
+# pass -- and therefore the whole background job -- has finished, leaving
+# nothing still running behind this section once the wait returns.
+for chmode2e_reviewer_cli in claude codex opencode; do
+  printf '%s review body (chmod e2e stub)\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' "$chmode2e_reviewer_cli" \
+    > "$CHMODE2E_BASE_DIR/reviewers/$chmode2e_reviewer_cli/workdir/review.md"
+done
+
+CHMODE2E_SUMMARY_FILE="$CHMODE2E_BASE_DIR/summary.txt"
+i=0
+until { [ -f "$CHMODE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$CHMODE2E_SUMMARY_FILE")" -eq 4 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+
 chmod -R u+w "$CHMODE2E_BASE_DIR" 2>/dev/null || true
 
 # --- cmd_launch() 在真正呼叫 launch_reviewer 之前，對選定平台重跑一次
