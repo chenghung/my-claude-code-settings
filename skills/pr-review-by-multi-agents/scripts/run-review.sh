@@ -1262,6 +1262,123 @@ _write_agy_home() {
     > "$dir/.gemini/antigravity-cli/settings.json" || return 1
 }
 
+# _write_claude_home_interactive <dir> <reviewer_workdir>
+#
+# Builds an isolated HOME directory for one claude reviewer process
+# running in *interactive* (herdr-driven) mode -- a separate function from
+# _write_agy_home-style headless setup, not a variant of any existing
+# claude helper (this skill had none before this function). Only the
+# credentials file is symlinked in; the user's real ~/.claude.json
+# (roughly 116KB, carrying real project history) is never linked in
+# wholesale. Instead a minimal .claude.json is written by hand with just
+# the two keys claude's interactive startup checks: hasCompletedOnboarding,
+# and hasTrustDialogAccepted keyed by <reviewer_workdir>'s own absolute
+# path -- not the shared worktree path -- generated fresh on every call
+# since the caller creates a new reviewer_workdir per run. Also touches
+# .zshrc: verified empirically that a freshly isolated HOME has no shell
+# startup files at all, so zsh's first interactive launch triggers the
+# zsh-newuser-install wizard, which swallows the first characters of
+# whatever herdr sends it and surfaces as "timed out waiting for agent
+# startup" -- an empty .zshrc suppresses that wizard. Every sibling
+# *_interactive function below touches .zshrc for this same reason.
+_write_claude_home_interactive() {
+  local dir="$1" reviewer_workdir="$2"
+  mkdir -p "$dir/.claude" || return 1
+  ln -sf "$HOME/.claude/.credentials.json" "$dir/.claude/.credentials.json" || return 1
+  jq -n --arg cwd "$reviewer_workdir" \
+    '{hasCompletedOnboarding: true, hasTrustDialogAccepted: {($cwd): true}}' \
+    > "$dir/.claude.json" || return 1
+  touch "$dir/.zshrc" || return 1
+}
+
+# _write_codex_home_interactive <dir> <reviewer_workdir>
+#
+# Builds an isolated HOME directory for one codex reviewer process
+# running in interactive mode. Only auth.json is symlinked in; trust is
+# granted by hand-writing a two-line .codex/config.toml that marks
+# <reviewer_workdir>'s own absolute path -- not the shared worktree path
+# -- as trusted, generated fresh on every call the same way
+# _write_claude_home_interactive's .claude.json is. Also touches .zshrc
+# (see that function's docstring for why).
+_write_codex_home_interactive() {
+  local dir="$1" reviewer_workdir="$2"
+  mkdir -p "$dir/.codex" || return 1
+  ln -sf "$HOME/.codex/auth.json" "$dir/.codex/auth.json" || return 1
+  printf '[projects."%s"]\ntrust_level = "trusted"\n' "$reviewer_workdir" \
+    > "$dir/.codex/config.toml" || return 1
+  touch "$dir/.zshrc" || return 1
+}
+
+# _write_opencode_home_interactive <dir>
+#
+# Builds an isolated HOME directory for one opencode reviewer process
+# running in interactive mode. opencode needs no named credential symlink
+# to reach a state where it can accept the review prompt -- it falls back
+# to its own built-in free model ("Big Pickle") -- so the only thing this
+# function writes is .zshrc (see _write_claude_home_interactive's
+# docstring for why that file matters).
+_write_opencode_home_interactive() {
+  local dir="$1"
+  mkdir -p "$dir" || return 1
+  touch "$dir/.zshrc" || return 1
+}
+
+# _write_agy_home_interactive <dir> <reviewer_workdir> <worktree_dir>
+#
+# Builds an isolated HOME directory for one agy reviewer process running
+# in interactive mode. This is a separate function from the headless
+# _write_agy_home above, not a variant of it: verified empirically that
+# _write_agy_home's entire output -- the six named symlinks, the
+# ~/.gemini/settings.json auth-type marker, and the single
+# "command(git diff)" allow rule -- is indistinguishable from an empty
+# HOME directory under interactive startup; the on-screen output was
+# identical either way.
+#
+# Two files this function writes that _write_agy_home never did:
+# .gemini/antigravity-cli/settings.json's trustedWorkspaces (pointed at
+# <reviewer_workdir>'s own absolute path, not the worktree path) and
+# .gemini/antigravity-cli/cache/onboarding.json's onboardingComplete flag.
+#
+# Deliberately does NOT write a top-level .gemini/settings.json, unlike
+# _write_agy_home -- verified empirically that the auth-type marker that
+# file carries is not needed for interactive startup.
+#
+# The allow list holds two rules, not one. agy matches each allow rule as
+# a literal prefix of the full command string. In this interactive layout
+# the reviewer's own pane cwd is <reviewer_workdir>, with the worktree
+# living outside it, so the review contract issues its git diff as
+# `git -C <worktree_dir> diff` rather than a plain `git diff` run from
+# inside the worktree -- a different string prefix than "command(git
+# diff)" covers, so that headless-era rule alone would never match here.
+# The second rule, scoped to this exact -C invocation, is what actually
+# lets the reviewer's git diff through. Also touches .zshrc (see
+# _write_claude_home_interactive's docstring for why).
+_write_agy_home_interactive() {
+  local dir="$1" reviewer_workdir="$2" worktree_dir="$3"
+  local real_gemini="$HOME/.gemini" f
+
+  mkdir -p "$dir/.gemini/antigravity-cli/cache" || return 1
+
+  for f in oauth_creds.json google_accounts.json google_account_id \
+           installation_id gemini-credentials.json extension_integrity.json; do
+    if [ -e "$real_gemini/$f" ]; then
+      ln -sf "$real_gemini/$f" "$dir/.gemini/$f" || return 1
+    fi
+  done
+
+  jq -n \
+    --arg allow_plain "command(git diff)" \
+    --arg allow_c "command(git -C $worktree_dir diff)" \
+    --arg workspace "$reviewer_workdir" \
+    '{permissions: {allow: [$allow_plain, $allow_c]}, trustedWorkspaces: [$workspace]}' \
+    > "$dir/.gemini/antigravity-cli/settings.json" || return 1
+
+  jq -n '{onboardingComplete: true}' \
+    > "$dir/.gemini/antigravity-cli/cache/onboarding.json" || return 1
+
+  touch "$dir/.zshrc" || return 1
+}
+
 # launch_reviewer <cli_name> <worktree_dir> <log_file>
 #
 # Starts one reviewer CLI as a detached, nohup'd background process whose

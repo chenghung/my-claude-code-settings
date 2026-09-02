@@ -1520,6 +1520,147 @@ _write_agy_home "$agy_home2" || bad "_write_agy_home 第二次呼叫回傳非零
 [ -f "$agy_home2/.gemini/antigravity-cli/settings.json" ] && [ "$agy_home2" != "$agy_home" ] && pass _write_agy_home-independent-instances || bad _write_agy_home-independent-instances
 
 # ==============================================================
+# _write_claude_home_interactive
+#
+# reviewer_workdir_i below stands in for the caller-supplied
+# reviewer_workdir -- a real directory, distinct from any worktree path,
+# so the hasTrustDialogAccepted key can be checked against its own actual
+# absolute path rather than a hardcoded string.
+# ==============================================================
+
+claude_home_i="$T/claude-home-interactive"
+reviewer_workdir_i="$T/claude-workdir-interactive"
+mkdir -p "$reviewer_workdir_i"
+if _write_claude_home_interactive "$claude_home_i" "$reviewer_workdir_i"; then
+  pass "_write_claude_home_interactive 回傳成功"
+else
+  bad "_write_claude_home_interactive 回傳非零"
+fi
+
+if [ -L "$claude_home_i/.claude/.credentials.json" ] \
+  && [ "$(readlink "$claude_home_i/.claude/.credentials.json")" = "$HOME/.claude/.credentials.json" ]; then
+  pass "_write_claude_home_interactive 的 credentials 符號連結指向正確目標"
+else
+  bad "_write_claude_home_interactive 的 credentials 符號連結不正確"
+fi
+
+ccj="$claude_home_i/.claude.json"
+if [ -f "$ccj" ] && [ ! -L "$ccj" ] \
+  && jq -e '.hasCompletedOnboarding == true' "$ccj" >/dev/null \
+  && jq -e --arg cwd "$reviewer_workdir_i" '.hasTrustDialogAccepted[$cwd] == true' "$ccj" >/dev/null \
+  && jq -e '.hasTrustDialogAccepted | length == 1' "$ccj" >/dev/null; then
+  pass "_write_claude_home_interactive 寫出只含兩個鍵、以 reviewer_workdir 為鍵的 .claude.json"
+else
+  bad "_write_claude_home_interactive 的 .claude.json 內容不正確: $(cat "$ccj" 2>/dev/null)"
+fi
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$claude_home_i/.zshrc" ] && pass "_write_claude_home_interactive 建立 .zshrc" || bad "_write_claude_home_interactive 未建立 .zshrc"
+
+# ==============================================================
+# _write_codex_home_interactive
+# ==============================================================
+
+codex_home_i="$T/codex-home-interactive"
+codex_workdir_i="$T/codex-workdir-interactive"
+mkdir -p "$codex_workdir_i"
+if _write_codex_home_interactive "$codex_home_i" "$codex_workdir_i"; then
+  pass "_write_codex_home_interactive 回傳成功"
+else
+  bad "_write_codex_home_interactive 回傳非零"
+fi
+
+if [ -L "$codex_home_i/.codex/auth.json" ] \
+  && [ "$(readlink "$codex_home_i/.codex/auth.json")" = "$HOME/.codex/auth.json" ]; then
+  pass "_write_codex_home_interactive 的 auth.json 符號連結指向正確目標"
+else
+  bad "_write_codex_home_interactive 的 auth.json 符號連結不正確"
+fi
+
+cct="$codex_home_i/.codex/config.toml"
+expected_cct="$(printf '[projects."%s"]\ntrust_level = "trusted"\n' "$codex_workdir_i")"
+if [ -f "$cct" ] && [ "$(cat "$cct")" = "$expected_cct" ]; then
+  pass "_write_codex_home_interactive 寫出正確的 config.toml"
+else
+  bad "_write_codex_home_interactive 的 config.toml 內容不正確: $(cat "$cct" 2>/dev/null)"
+fi
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$codex_home_i/.zshrc" ] && pass "_write_codex_home_interactive 建立 .zshrc" || bad "_write_codex_home_interactive 未建立 .zshrc"
+
+# ==============================================================
+# _write_opencode_home_interactive
+# ==============================================================
+
+opencode_home_i="$T/opencode-home-interactive"
+if _write_opencode_home_interactive "$opencode_home_i"; then
+  pass "_write_opencode_home_interactive 回傳成功"
+else
+  bad "_write_opencode_home_interactive 回傳非零"
+fi
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$opencode_home_i/.zshrc" ] && pass "_write_opencode_home_interactive 建立 .zshrc" || bad "_write_opencode_home_interactive 未建立 .zshrc"
+
+# ==============================================================
+# _write_agy_home_interactive
+#
+# agy_workdir_i and agy_worktree_i are deliberately two different
+# directories (not aliases of the same path), the same way cmd_prepare's
+# real reviewer_workdir and worktree_dir are -- otherwise a bug that swaps
+# the two arguments in trustedWorkspaces or the -C rule could not be told
+# apart from correct behavior.
+# ==============================================================
+
+agy_home_i="$T/agy-home-interactive"
+agy_workdir_i="$T/agy-workdir-interactive"
+agy_worktree_i="$T/agy-worktree-interactive"
+mkdir -p "$agy_workdir_i" "$agy_worktree_i"
+if _write_agy_home_interactive "$agy_home_i" "$agy_workdir_i" "$agy_worktree_i"; then
+  pass "_write_agy_home_interactive 回傳成功"
+else
+  bad "_write_agy_home_interactive 回傳非零"
+fi
+
+si="$agy_home_i/.gemini/antigravity-cli/settings.json"
+if [ -f "$si" ] \
+  && jq -e '.permissions.allow | index("command(git diff)")' "$si" >/dev/null \
+  && jq -e --arg rule "command(git -C $agy_worktree_i diff)" \
+       '.permissions.allow | index($rule)' "$si" >/dev/null \
+  && jq -e '.permissions.allow | length == 2' "$si" >/dev/null; then
+  pass "_write_agy_home_interactive 的允許規則同時含 git diff 與帶路徑的 -C 規則"
+else
+  bad "_write_agy_home_interactive 的允許規則不正確: $(cat "$si" 2>/dev/null)"
+fi
+
+if jq -e --arg w "$agy_workdir_i" '.trustedWorkspaces == [$w]' "$si" >/dev/null 2>&1; then
+  pass "_write_agy_home_interactive 的 trustedWorkspaces 指向 reviewer_workdir"
+else
+  bad "_write_agy_home_interactive 的 trustedWorkspaces 不正確: $(cat "$si" 2>/dev/null)"
+fi
+
+if jq -e --arg w "$agy_worktree_i" '(.trustedWorkspaces | index($w)) == null' "$si" >/dev/null 2>&1; then
+  pass "_write_agy_home_interactive 的 trustedWorkspaces 不含 worktree_dir"
+else
+  bad "_write_agy_home_interactive 的 trustedWorkspaces 不應含 worktree_dir: $(cat "$si" 2>/dev/null)"
+fi
+
+ob="$agy_home_i/.gemini/antigravity-cli/cache/onboarding.json"
+if [ -f "$ob" ] && jq -e '.onboardingComplete == true' "$ob" >/dev/null 2>&1; then
+  pass "_write_agy_home_interactive 寫出 onboardingComplete 為 true 的 onboarding.json"
+else
+  bad "_write_agy_home_interactive 未正確寫出 onboarding.json: $(cat "$ob" 2>/dev/null)"
+fi
+
+# 刻意差異，不是遺漏：實測結論是互動模式不需要頂層 .gemini/settings.json
+# 的 auth-type 標記（見 _write_agy_home_interactive 自己的文件字串）。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$agy_home_i/.gemini/settings.json" ] && pass "_write_agy_home_interactive 不寫頂層 .gemini/settings.json" || bad "_write_agy_home_interactive 不應寫頂層 .gemini/settings.json"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$agy_home_i/.zshrc" ] && pass "_write_agy_home_interactive 建立 .zshrc" || bad "_write_agy_home_interactive 未建立 .zshrc"
+
+# ==============================================================
 # launch_reviewer
 #
 # Recording stubs (distinct from the plain "exit 0" claude/codex/opencode
