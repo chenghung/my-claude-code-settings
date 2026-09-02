@@ -1953,6 +1953,16 @@ esac
 
 unset HERDR_RECORD_DIR
 export PATH="$saved_path"
+# Remove the herdr stub itself, not just drop $STUB_BIN off PATH above:
+# $STUB_BIN is reused by many fixtures below that put it back on PATH
+# (e.g. "$STUB_BIN:$saved_path"), and a stub file left sitting in that
+# directory would silently reactivate for every one of them -- exactly
+# the leak that once let a herdr-calling fixture reach
+# spawn_supervisor_interactive with no real reviewer ever writing a
+# marker-terminated review.md, hanging its poll loop forever. Deleting
+# the file here scopes it to this section only, the same way the
+# PATH restore above already scopes $STUB_BIN itself.
+rm -f "$STUB_BIN/herdr"
 
 # ==============================================================
 # launch_reviewer
@@ -3123,6 +3133,39 @@ esac
 # see GIT_FIXTURE's own comment on this technique.
 # ==============================================================
 
+# cmd_launch() (task 6's herdr-interactive switch) always dispatches
+# through launch_reviewer_interactive, which calls herdr -- unlike the
+# claude/codex/opencode/agy stubs above, herdr is genuinely installed on
+# dev machines that run this suite, so a missing stub here would silently
+# fall through to a real herdr trying to control a real terminal pane
+# (see the launch_reviewer_interactive section's own docstring on this
+# exact PATH-leak risk). Scoped tightly to this "prepare/launch
+# end-to-end" section -- covering both the named-args and empty-args
+# pairs below, since both reuse this same $STUB_BIN:$saved_path PATH --
+# and removed again right before the CHMODE2E fixture further down,
+# which deliberately uses a separate stub directory that never includes
+# herdr (see that fixture's own comment on why). This stub only needs to
+# succeed, unlike launch_reviewer_interactive's own dedicated section
+# above, which also asserts on herdr's argv.
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+agent)
+  case "${2:-}" in
+  start) exit 0 ;;
+  prompt) exit 0 ;;
+  esac
+  ;;
+pane)
+  case "${2:-}" in
+  read) printf 'e2e-stub-pane-ready'; exit 0 ;;
+  esac
+  ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+
 E2E_FIXTURE="$T/e2e-fixture"
 mkdir -p "$E2E_FIXTURE/remotes/acme9pr" "$E2E_FIXTURE/work"
 git init -q -b main --bare "$E2E_FIXTURE/remotes/acme9pr/widgets9pr.git"
@@ -3158,7 +3201,7 @@ printf 'model = "e2e-distinctive-model"\n' > "$E2E_HOME/.codex/config.toml"
 mkdir -p "$E2E_FIXTURE/work/docs"
 printf 'e2e-distinctive-design-doc-marker-content\n' > "$E2E_FIXTURE/work/docs/distinctive-design-doc-marker.md"
 
-assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
 if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" \
   bash "$RUN_SH" prepare \
     --pr "https://github.com/acme9pr/widgets9pr/pull/321" \
@@ -3231,6 +3274,20 @@ E2E_ROSTER_AFTER_PREPARE="$E2E_BASE_DIR/.roster"
 # silently (swallowed by `|| true`) when run from anywhere else -- proven
 # by leaving this cd out here first and watching the worktree removal
 # below never converge.
+#
+# spawn_supervisor_interactive (started in the background by the launch
+# call below) treats a reviewer as still running until its fixed
+# <reviewer_workdir>/review.md file ends in the contract's END marker
+# (see that function's own docstring) -- by design it has no timeout of
+# its own and simply waits forever otherwise. This fixture's herdr stub
+# above never writes that file itself, the same way a real reviewer CLI
+# running inside its own pane eventually would, so it is supplied
+# directly here for all three dispatched reviewers.
+for e2e_reviewer_cli in claude codex opencode; do
+  printf '%s review body (e2e stub)\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' "$e2e_reviewer_cli" \
+    > "$E2E_BASE_DIR/reviewers/$e2e_reviewer_cli/workdir/review.md"
+done
+
 if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" \
   bash "$RUN_SH" launch --base-dir "$E2E_BASE_DIR" \
     --agent claude=pane-claude --agent codex=pane-codex --agent opencode=pane-opencode 2>&1)"; then
@@ -3344,18 +3401,22 @@ case "$out" in
   *) bad main-e2e-summary-output-shows-design-provided ;;
 esac
 
-# --- spawn_supervisor's summary_file (base_dir/summary.txt, i.e. two
-# directories up from any <cli>.log path -- the exact derivation SKILL.md
-# uses to find it) eventually exists and converges to exactly one line per
-# dispatched reviewer, then the worktree it removes on completion is
-# actually gone. Bounded polling, not a fixed sleep, since this run's
-# stub reviewers finish in well under a second but real ones would not. ---
+# --- spawn_supervisor_interactive's summary_file (base_dir/summary.txt,
+# i.e. two directories up from any <cli>.log path -- the exact derivation
+# SKILL.md uses to find it) eventually exists and converges to one line
+# per dispatched reviewer plus one more synthesis line (all three
+# reviewers above are content_status=ready -- marker-terminated review.md,
+# untouched worktree -- so the >= 2 ready_count threshold documented on
+# spawn_supervisor_interactive triggers a synthesis pass), then the
+# worktree it removes on completion is actually gone. Bounded polling, not
+# a fixed sleep, since this run's stub reviewers and stub synthesis CLI
+# finish in well under a second but real ones would not. ---
 
 E2E_SUMMARY_FILE="$E2E_BASE_DIR/summary.txt"
 i=0
-until { [ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 3 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+until { [ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 4 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 3 ] && pass main-e2e-summary-file-converges || bad main-e2e-summary-file-converges
+[ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 4 ] && pass main-e2e-summary-file-converges || bad main-e2e-summary-file-converges
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -q 'worktree_status=ok' "$E2E_SUMMARY_FILE" 2>/dev/null && pass main-e2e-summary-file-worktree-status-ok || bad main-e2e-summary-file-worktree-status-ok
 
@@ -3368,7 +3429,7 @@ until [ ! -e "$E2E_WORKTREE_DIR" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1
 # render as "not provided" rather than blocking the run ---
 
 E2E_HOME2="$T/main-e2e-home2"
-assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
 if out="$(cd "$E2E_FIXTURE/work" \
   && CLAUDE_CONFIG_DIR="" GH_STUB_DERIVE_OK=1 GH_STUB_DERIVED_URL="https://github.com/acme9pr/widgets9pr/pull/321" \
      GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME2" PATH="$STUB_BIN:$saved_path" \
@@ -3386,7 +3447,13 @@ E2E_BASE_DIR2="$(dirname "${E2E_LOGS_DIR2:-/nonexistent}")"
 # See the earlier prepare/launch pair's own comment on why this is a
 # second, separate `bash "$RUN_SH"` call, why the pane_id values below are
 # arbitrary placeholders, and why cwd must still be inside
-# $E2E_FIXTURE/work.
+# $E2E_FIXTURE/work -- and on why the loop just below is needed at all
+# (spawn_supervisor_interactive's own polling requirement).
+for e2e_reviewer_cli in claude codex opencode; do
+  printf '%s review body (e2e stub)\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' "$e2e_reviewer_cli" \
+    > "$E2E_BASE_DIR2/reviewers/$e2e_reviewer_cli/workdir/review.md"
+done
+
 if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" HOME="$E2E_HOME2" PATH="$STUB_BIN:$saved_path" \
   bash "$RUN_SH" launch --base-dir "$E2E_BASE_DIR2" \
     --agent claude=pane-claude --agent codex=pane-codex --agent opencode=pane-opencode 2>&1)"; then
@@ -3423,6 +3490,16 @@ esac
 # stdout (captured in <cli>.log, outside the worktree, so it survives
 # the worktree's later removal) -- avoiding both the race and having to
 # inspect permissions after the fact at all. ---
+
+# Tear down the herdr stub installed at the top of the "prepare/launch
+# end-to-end" section above -- both prepare/launch pairs that need it are
+# done. CHMODE2E_STUB_BIN below is a wholly separate stub directory that
+# never includes herdr on purpose (see its own comment further down), so
+# this line does not change its behavior either way; it exists so
+# $STUB_BIN itself does not carry the leftover file into whatever reuses
+# $STUB_BIN after this point, the same scoping this file's herdr stubs
+# apply everywhere else.
+rm -f "$STUB_BIN/herdr"
 
 CHMODE2E_FIXTURE="$T/chmod-e2e-fixture"
 mkdir -p "$CHMODE2E_FIXTURE/remotes/acme" "$CHMODE2E_FIXTURE/work"
