@@ -49,6 +49,21 @@ set -euo pipefail
 # diff 與 comments，它加不加、加成什麼樣子都不可信。
 readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 
+# PROMPT_BYTE_LIMIT: the largest prompt_file size, in bytes, that
+# launch_reviewer_interactive will hand to `herdr agent prompt <TARGET>
+# <TEXT>` -- TEXT has no file/stdin alternative (see that function's own
+# docstring), so the whole prompt has to cross this script's command line as
+# a single argv entry. Chosen with a margin below the two ceilings actually
+# measured against a real binary, not just under the hard OS limit: that
+# limit is 131072 bytes (140000 already fails there), but the largest size
+# ever confirmed to arrive at all four reviewer CLIs intact, unmodified and
+# untruncated, was only ~101KB -- the band between that and 131072 was never
+# exercised. 100000 stays clear of that unverified band while still leaving
+# roughly 2.3x headroom over a real review prompt's typical size
+# (41-44KB), which is the point of failing here with a clear message instead
+# of letting an oversized prompt fail opaquely at the OS layer.
+readonly PROMPT_BYTE_LIMIT=100000
+
 # _fetch_pr_material <owner> <repo> <number> <out_file> <raw_body_file>
 #
 # Writes the PR's title, body, conversation comments and review summary
@@ -1323,6 +1338,100 @@ _write_opencode_home_interactive() {
   touch "$dir/.zshrc" || return 1
 }
 
+# _write_opencode_permission_config_interactive <path>
+#
+# Same deny list as _write_opencode_permission_config (see that function's
+# own docstring for the rationale behind every entry below), minus the
+# top-level `"edit": "deny"` line. That line exists in the headless config
+# to close off the one write path this skill's headless reviewer never
+# needs (it prints its review to stdout instead); this interactive
+# reviewer's whole job, by contrast, is writing its review to
+# <reviewer_workdir>/review.md, so leaving `edit` denied here would block
+# the one write this reviewer actually has to make -- an interactive
+# opencode review would run to completion and report success while
+# producing nothing to read back. Every other entry -- the bash deny list
+# covering git add/commit/push/fetch/checkout/reset/rebase/merge/rm/branch
+# -D, rm/mv/chmod, sudo, curl/wget/nc, and every state-changing `gh`
+# subcommand -- is unrelated to file writes and stays exactly as-is.
+_write_opencode_permission_config_interactive() {
+  local path="$1"
+
+  cat > "$path" <<'JSON'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "bash": {
+      "git add*": "deny",
+      "git commit*": "deny",
+      "git push*": "deny",
+      "git fetch*": "deny",
+      "git checkout*": "deny",
+      "git reset*": "deny",
+      "git rebase*": "deny",
+      "git merge*": "deny",
+      "git rm*": "deny",
+      "git branch -D*": "deny",
+      "rm *": "deny",
+      "mv *": "deny",
+      "chmod *": "deny",
+      "sudo*": "deny",
+      "curl*": "deny",
+      "wget*": "deny",
+      "nc*": "deny",
+      "gh api -X POST*": "deny",
+      "gh api -X PUT*": "deny",
+      "gh api -X PATCH*": "deny",
+      "gh api -X DELETE*": "deny",
+      "gh api --method POST*": "deny",
+      "gh api --method PUT*": "deny",
+      "gh api --method PATCH*": "deny",
+      "gh api --method DELETE*": "deny",
+      "gh pr edit*": "deny",
+      "gh pr review*": "deny",
+      "gh pr merge*": "deny",
+      "gh pr close*": "deny",
+      "gh pr reopen*": "deny",
+      "gh pr comment*": "deny",
+      "gh pr create*": "deny",
+      "gh pr ready*": "deny",
+      "gh pr checkout*": "deny",
+      "gh issue close*": "deny",
+      "gh issue comment*": "deny",
+      "gh issue create*": "deny",
+      "gh issue delete*": "deny",
+      "gh issue edit*": "deny",
+      "gh issue lock*": "deny",
+      "gh issue pin*": "deny",
+      "gh issue reopen*": "deny",
+      "gh issue transfer*": "deny",
+      "gh issue unlock*": "deny",
+      "gh issue unpin*": "deny",
+      "gh repo create*": "deny",
+      "gh repo delete*": "deny",
+      "gh repo edit*": "deny",
+      "gh repo rename*": "deny",
+      "gh repo archive*": "deny",
+      "gh label create*": "deny",
+      "gh label edit*": "deny",
+      "gh label delete*": "deny",
+      "gh release create*": "deny",
+      "gh release edit*": "deny",
+      "gh release delete*": "deny",
+      "gh secret set*": "deny",
+      "gh secret delete*": "deny",
+      "gh variable set*": "deny",
+      "gh variable delete*": "deny",
+      "gh workflow run*": "deny",
+      "gh workflow enable*": "deny",
+      "gh workflow disable*": "deny",
+      "gh auth logout*": "deny",
+      "gh auth login*": "deny"
+    }
+  }
+}
+JSON
+}
+
 # _write_agy_home_interactive <dir> <reviewer_workdir> <worktree_dir>
 #
 # Builds an isolated HOME directory for one agy reviewer process running
@@ -1827,6 +1936,155 @@ launch_reviewer() {
   printf '%s\n' "$log_file" > "$base_dir/.log-$pid"
 
   printf '%s\n' "$pid"
+}
+
+# launch_reviewer_interactive <cli> <pane_id> <worktree_dir> <reviewer_workdir> <reviewer_home> <prompt_file>
+#
+# The interactive counterpart to launch_reviewer above (see that function's
+# own docstring for the shared least-privilege rationale -- everything there
+# not specific to running headless still applies here): starts one reviewer
+# CLI inside an existing, already-created herdr pane via `herdr agent
+# start`, confirms the pane actually rendered before trusting it, then hands
+# it this run's prompt via `herdr agent prompt`. launch_reviewer itself is
+# NOT modified or removed for this -- the headless merge/synthesis path
+# (see spawn_supervisor) still calls it directly, unchanged.
+#
+# Unlike launch_reviewer, this function backgrounds nothing and returns no
+# PID: the reviewer runs inside a pane herdr itself manages, not as a child
+# process of this script, so there is no PID to track. It returns as soon
+# as the prompt has been accepted, not once the reviewer finishes writing
+# its review -- supervising that to completion is a later task. On success
+# it prints the fixed output file path,
+# <reviewer_workdir>/review.md -- the same path build_prompt already told
+# this reviewer to write its review to (this formula is a fixed decision,
+# not something this function or its caller may invent a different one
+# for) -- so a caller can read that back without re-deriving the formula
+# itself. Prints nothing and returns non-zero on any failure below.
+#
+# The one flag difference from launch_reviewer that matters most here:
+# launch_reviewer's headless claude branch disallows Edit/Write/
+# NotebookEdit outright, because that path's reviewer only ever prints its
+# review to stdout and never needs to write anything. This interactive
+# reviewer's whole job, by contrast, is writing its review directly to
+# <reviewer_workdir>/review.md -- it needs Write. Reusing launch_reviewer's
+# disallow list here would leave every claude review empty: claude would
+# report success while producing nothing this run could ever read back.
+# --disallowedTools here therefore names only WebFetch (no task here has
+# any legitimate need for network access, the same reasoning as
+# launch_reviewer's own claude bullet); --permission-mode is left unset
+# entirely rather than passed as dontAsk, per this task's own empirical
+# finding that dontAsk is already claude's default permission mode under
+# `agent start` -- passing it explicitly added nothing. Also gone: `-p`,
+# which only makes sense for claude's headless, non-interactive mode.
+#
+# Two herdr subcommand facts this function depends on, both confirmed
+# against the real binary (not inferred from --help text) before this
+# function was written:
+#   - `herdr agent prompt <TARGET> <TEXT> [OPTIONS]` takes TARGET and TEXT
+#     as two leading positional arguments, with any options after -- it has
+#     no --pane option (unlike `agent start`) and no file/stdin input flag
+#     of any kind, so TEXT is the only way to hand it a prompt. That is
+#     exactly why PROMPT_BYTE_LIMIT (see its own docstring near the top of
+#     this file) exists: the whole prompt has to cross this script's own
+#     command line as a single argv entry, which the OS caps hard. TARGET
+#     resolves by pane id, not by the agent name `agent start` was given --
+#     confirmed with a read-only probe against `herdr agent get` (a real
+#     pane id resolved to the agent; a terminal id did not), not assumed
+#     from --help, which documents <TARGET> with no explanation at all.
+#   - `herdr agent start`'s own reported success, and a subsequent
+#     agent_status of done/idle, can both be wrong -- confirmed
+#     empirically, not assumed. Neither is trusted here: this function
+#     reads the pane's own rendered content via `herdr pane read` before
+#     ever calling `agent prompt`, and fails explicitly, rather than
+#     guessing, when that read comes back empty twice in a row. A single
+#     empty read immediately after `agent start` is a known, harmless
+#     timing artifact (the terminal has not finished rendering yet) --
+#     re-reading once is enough to tell that apart from a pane that is
+#     genuinely never going to produce output.
+#
+# The before-snapshot this function records (see _git_status_snapshot's own
+# docstring for why a git-status comparison is needed at all) is keyed by
+# cli name here, unlike launch_reviewer's own PID-keyed file -- this
+# reviewer is not a child process of this script, so it has no PID to key
+# by. A later task reads this file back to compare against an after-
+# snapshot.
+launch_reviewer_interactive() {
+  local cli_name="$1" pane_id="$2" worktree_dir="$3"
+  local reviewer_workdir="$4" reviewer_home="$5" prompt_file="$6"
+  local output_file="$reviewer_workdir/review.md"
+  local base_dir before_snapshot pane_content prompt_bytes
+  local -a cmd=()
+
+  case "$cli_name" in
+    claude) _write_claude_home_interactive "$reviewer_home" "$reviewer_workdir" || return 1 ;;
+    codex)  _write_codex_home_interactive "$reviewer_home" "$reviewer_workdir" || return 1 ;;
+    opencode)
+      _write_opencode_home_interactive "$reviewer_home" || return 1
+      _write_opencode_permission_config_interactive "$reviewer_home/opencode-permission.json" || return 1
+      ;;
+    agy) _write_agy_home_interactive "$reviewer_home" "$reviewer_workdir" "$worktree_dir" || return 1 ;;
+    *)
+      printf 'launch_reviewer_interactive: unknown reviewer CLI: %s\n' "$cli_name" >&2
+      return 1
+      ;;
+  esac
+
+  case "$cli_name" in
+    claude)
+      cmd=(herdr agent start "$cli_name-$pane_id" --kind claude --pane "$pane_id" \
+        -- claude --disallowedTools "WebFetch")
+      ;;
+    codex)
+      cmd=(herdr agent start "$cli_name-$pane_id" --kind codex --pane "$pane_id" \
+        -- codex -C "$reviewer_workdir")
+      ;;
+    opencode)
+      cmd=(herdr agent start "$cli_name-$pane_id" --kind opencode --pane "$pane_id" \
+        -- opencode "$reviewer_workdir")
+      ;;
+    agy)
+      cmd=(herdr agent start "$cli_name-$pane_id" --kind agy --pane "$pane_id" \
+        -- agy --add-dir "$reviewer_workdir" --model gemini-3.7-flash-high)
+      ;;
+  esac
+
+  "${cmd[@]}" || {
+    printf 'launch_reviewer_interactive: herdr failed to start %s in pane %s\n' "$cli_name" "$pane_id" >&2
+    return 1
+  }
+
+  # agent start's own success, and agent_status done/idle, can both be
+  # false (see this function's docstring) -- read the pane's own rendered
+  # content instead of trusting either. One retry absorbs the known,
+  # harmless "not rendered yet" timing case; two empty reads in a row is
+  # treated as a real failure to reach a confirmable ready state.
+  pane_content="$(herdr pane read "$pane_id" 2>/dev/null)" || pane_content=""
+  if [ -z "$pane_content" ]; then
+    pane_content="$(herdr pane read "$pane_id" 2>/dev/null)" || pane_content=""
+  fi
+  if [ -z "$pane_content" ]; then
+    printf 'launch_reviewer_interactive: pane %s produced no output after starting %s; cannot confirm it is ready to receive the prompt\n' \
+      "$pane_id" "$cli_name" >&2
+    return 1
+  fi
+
+  prompt_bytes="$(wc -c < "$prompt_file")"
+  if (( prompt_bytes > PROMPT_BYTE_LIMIT )); then
+    printf 'launch_reviewer_interactive: prompt for %s is %d bytes, exceeds limit of %d bytes\n' \
+      "$cli_name" "$prompt_bytes" "$PROMPT_BYTE_LIMIT" >&2
+    return 1
+  fi
+
+  base_dir="$(dirname "$worktree_dir")"
+  before_snapshot="$(_git_status_snapshot "$worktree_dir")"
+  printf '%s\n' "$before_snapshot" > "$base_dir/.git-status-before-$cli_name"
+
+  herdr agent prompt "$pane_id" "$(cat "$prompt_file")" || {
+    printf 'launch_reviewer_interactive: herdr failed to submit the prompt to %s in pane %s\n' "$cli_name" "$pane_id" >&2
+    return 1
+  }
+
+  printf '%s\n' "$output_file"
 }
 
 # _extract_review_content <log_file>

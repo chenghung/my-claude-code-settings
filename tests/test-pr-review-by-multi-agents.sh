@@ -1661,6 +1661,300 @@ fi
 [ -f "$agy_home_i/.zshrc" ] && pass "_write_agy_home_interactive 建立 .zshrc" || bad "_write_agy_home_interactive 未建立 .zshrc"
 
 # ==============================================================
+# launch_reviewer_interactive
+#
+# Stub herdr into the *existing* STUB_BIN (not a dedicated recording dir
+# the way LAUNCH_STUB_BIN below is for claude/codex/opencode/agy) --
+# launch_reviewer_interactive itself never execs claude/codex/opencode/agy
+# directly, only herdr; herdr is what starts those inside their own pane.
+# A real herdr binary is genuinely installed on dev machines that run this
+# suite (unlike the four AI CLIs, which may or may not be), so this section
+# is exactly the kind of PATH leak assert_cli_stub_only exists to catch:
+# without it, a missing/renamed stub here would silently fall through to a
+# real herdr trying to control a real terminal pane.
+#
+# The stub itself is not built with `set -euo pipefail` (unlike the shared
+# `gh` stub above) -- it follows the LAUNCH_STUB_BIN recording stubs'
+# pattern instead, since it is structurally the same kind of thing: record
+# argv/text under HERDR_RECORD_DIR, then return a controllable exit code.
+# `agent start` argv is keyed by the --kind value found in its own argv
+# (parsed by this stub itself), not by a name supplied by the caller,
+# since every cli's `agent start` call goes through this one script -- there
+# is no separate "claude" binary on PATH the way LAUNCH_STUB_BIN gives each
+# cli its own recording file via $0's basename. `agent prompt`'s TARGET
+# argument (position 3) becomes part of its own recording filename for the
+# same reason, which doubles as this suite's check that TARGET really is
+# the pane id and not the `cli-pane_id` agent name `agent start` was given
+# -- a wrong TARGET would record under a filename these tests never read
+# back from, so the assertion would fail by absence rather than a specific
+# check having to be written for it.
+#
+# HERDR_STUB_PANE_EMPTY_READS controls how many of `pane read`'s own
+# leading calls, *for one given pane id* (tracked via a per-pane-id counter
+# file, since the four per-cli calls below all read the same script and
+# would otherwise collide on a single shared counter), come back empty
+# before a real one returns HERDR_STUB_PANE_CONTENT. Left at its default
+# (0) for the four per-cli flag-assertion calls below, so their first read
+# already succeeds; overridden per-call further down to exercise the
+# retry-then-succeed and still-empty-after-retry paths this function's own
+# docstring documents.
+# ==============================================================
+
+LRI_ROOT="$T/launch-reviewer-interactive-fixture"
+LRI_WT="$(_make_worktree_fixture "$LRI_ROOT")"
+LRI_RECORD_DIR="$LRI_ROOT/records"
+mkdir -p "$LRI_RECORD_DIR"
+
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+agent)
+  case "${2:-}" in
+  start)
+    kind=""
+    prev=""
+    for a in "$@"; do
+      if [ "$prev" = "--kind" ]; then kind="$a"; fi
+      prev="$a"
+    done
+    record="$HERDR_RECORD_DIR/agent-start.$kind.argv"
+    : > "$record"
+    for a in "$@"; do printf '%s\n' "$a" >> "$record"; done
+    if [ "${HERDR_STUB_START_OK:-1}" = "1" ]; then exit 0; else exit 1; fi
+    ;;
+  prompt)
+    target="$3"
+    text="${4:-}"
+    printf '%s' "$text" > "$HERDR_RECORD_DIR/agent-prompt.$target.text"
+    if [ "${HERDR_STUB_PROMPT_OK:-1}" = "1" ]; then exit 0; else exit 1; fi
+    ;;
+  esac
+  ;;
+pane)
+  case "${2:-}" in
+  read)
+    pane_id="$3"
+    count_file="$HERDR_RECORD_DIR/pane-read-count.$pane_id"
+    n=0
+    if [ -f "$count_file" ]; then n="$(cat "$count_file")"; fi
+    n=$((n + 1))
+    printf '%s' "$n" > "$count_file"
+    if [ "$n" -le "${HERDR_STUB_PANE_EMPTY_READS:-0}" ]; then
+      exit 0
+    fi
+    printf '%s' "${HERDR_STUB_PANE_CONTENT:-pane-ready-marker}"
+    exit 0
+    ;;
+  esac
+  ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+
+export PATH="$STUB_BIN:$saved_path"
+export HERDR_RECORD_DIR="$LRI_RECORD_DIR"
+assert_cli_stub_only "$PATH" "$STUB_BIN" herdr
+
+# --- claude: --disallowedTools names only WebFetch; no -p; no
+# --permission-mode; and, the assertion this task exists to protect, no
+# Edit/Write/NotebookEdit on --disallowedTools -- any of those three
+# appearing would mean this branch reused launch_reviewer's headless deny
+# list, leaving this reviewer unable to write review.md at all ---
+
+lri_claude_workdir="$LRI_ROOT/reviewers/claude/workdir"
+lri_claude_home="$LRI_ROOT/reviewers/claude/home"
+mkdir -p "$lri_claude_workdir" "$lri_claude_home"
+printf 'claude review prompt' > "$LRI_ROOT/claude.prompt"
+
+lri_claude_out="$(launch_reviewer_interactive claude lri-pane-claude "$LRI_WT" \
+  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_claude_out" = "$lri_claude_workdir/review.md" ] && pass launch-reviewer-interactive-claude-prints-output-file || bad "launch-reviewer-interactive-claude-prints-output-file: $lri_claude_out"
+
+claude_start_argv="$LRI_RECORD_DIR/agent-start.claude.argv"
+mapfile -t lri_claude_argv < "$claude_start_argv"
+case "$(cat "$claude_start_argv")" in
+  *'--disallowedTools'*'WebFetch'*) pass launch-reviewer-interactive-claude-disallows-webfetch ;;
+  *) bad "launch-reviewer-interactive-claude-disallows-webfetch: $(cat "$claude_start_argv")" ;;
+esac
+# Checked as an exact argv token, not a substring of the joined argv line:
+# "--permission-mode" itself contains the two characters "-p", which a
+# naive substring check against the whole line would false-positive on.
+lri_claude_dash_p_found=0
+for a in "${lri_claude_argv[@]}"; do
+  case "$a" in
+    -p) lri_claude_dash_p_found=1 ;;
+  esac
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_claude_dash_p_found" -eq 0 ] && pass launch-reviewer-interactive-claude-no-print-flag || bad launch-reviewer-interactive-claude-no-print-flag
+case "$(cat "$claude_start_argv")" in
+  *'--permission-mode'*) bad "launch-reviewer-interactive-claude-no-permission-mode: $(cat "$claude_start_argv")" ;;
+  *) pass launch-reviewer-interactive-claude-no-permission-mode ;;
+esac
+case "$(cat "$claude_start_argv")" in
+  *'Edit'*|*'Write'*) bad "launch-reviewer-interactive-claude-write-not-disallowed: $(cat "$claude_start_argv")" ;;
+  *) pass launch-reviewer-interactive-claude-write-not-disallowed ;;
+esac
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$LRI_ROOT/.git-status-before-claude" ] && pass launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name || bad launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$LRI_RECORD_DIR/agent-prompt.lri-pane-claude.text" 2>/dev/null)" = "claude review prompt" ] && pass launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content || bad launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content
+
+# --- codex: no -s (the sandbox flag is launch_reviewer's own headless-only
+# concern; herdr's own --pane already scopes this to one interactive pane) ---
+
+lri_codex_workdir="$LRI_ROOT/reviewers/codex/workdir"
+lri_codex_home="$LRI_ROOT/reviewers/codex/home"
+mkdir -p "$lri_codex_workdir" "$lri_codex_home"
+printf 'codex review prompt' > "$LRI_ROOT/codex.prompt"
+
+lri_codex_out="$(launch_reviewer_interactive codex lri-pane-codex "$LRI_WT" \
+  "$lri_codex_workdir" "$lri_codex_home" "$LRI_ROOT/codex.prompt")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_codex_out" = "$lri_codex_workdir/review.md" ] && pass launch-reviewer-interactive-codex-prints-output-file || bad "launch-reviewer-interactive-codex-prints-output-file: $lri_codex_out"
+
+codex_start_argv="$LRI_RECORD_DIR/agent-start.codex.argv"
+mapfile -t lri_codex_argv < "$codex_start_argv"
+lri_codex_dash_s_found=0
+for a in "${lri_codex_argv[@]}"; do
+  case "$a" in
+    -s) lri_codex_dash_s_found=1 ;;
+  esac
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_codex_dash_s_found" -eq 0 ] && pass launch-reviewer-interactive-codex-no-sandbox-flag || bad launch-reviewer-interactive-codex-no-sandbox-flag
+found=0
+for idx in "${!lri_codex_argv[@]}"; do
+  if [ "${lri_codex_argv[$idx]}" = "-C" ] && [ "${lri_codex_argv[$((idx + 1))]:-}" = "$lri_codex_workdir" ]; then
+    found=1
+  fi
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$found" -eq 1 ] && pass launch-reviewer-interactive-codex-workdir-flag || bad launch-reviewer-interactive-codex-workdir-flag
+
+# --- opencode: no `run`; no `--dir` (dropped in favour of the positional
+# project-path argument -- the top-level command has no --dir at all) ---
+
+lri_opencode_workdir="$LRI_ROOT/reviewers/opencode/workdir"
+lri_opencode_home="$LRI_ROOT/reviewers/opencode/home"
+mkdir -p "$lri_opencode_workdir" "$lri_opencode_home"
+printf 'opencode review prompt' > "$LRI_ROOT/opencode.prompt"
+
+lri_opencode_out="$(launch_reviewer_interactive opencode lri-pane-opencode "$LRI_WT" \
+  "$lri_opencode_workdir" "$lri_opencode_home" "$LRI_ROOT/opencode.prompt")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_opencode_out" = "$lri_opencode_workdir/review.md" ] && pass launch-reviewer-interactive-opencode-prints-output-file || bad "launch-reviewer-interactive-opencode-prints-output-file: $lri_opencode_out"
+
+opencode_start_argv="$LRI_RECORD_DIR/agent-start.opencode.argv"
+mapfile -t lri_opencode_argv < "$opencode_start_argv"
+lri_opencode_run_found=0
+lri_opencode_dir_found=0
+for a in "${lri_opencode_argv[@]}"; do
+  case "$a" in
+    run) lri_opencode_run_found=1 ;;
+    --dir) lri_opencode_dir_found=1 ;;
+  esac
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_opencode_run_found" -eq 0 ] && pass launch-reviewer-interactive-opencode-no-run-subcommand || bad launch-reviewer-interactive-opencode-no-run-subcommand
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_opencode_dir_found" -eq 0 ] && pass launch-reviewer-interactive-opencode-no-dir-flag || bad launch-reviewer-interactive-opencode-no-dir-flag
+found=0
+for a in "${lri_opencode_argv[@]}"; do
+  [ "$a" = "$lri_opencode_workdir" ] && found=1
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$found" -eq 1 ] && pass launch-reviewer-interactive-opencode-positional-workdir || bad launch-reviewer-interactive-opencode-positional-workdir
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$lri_opencode_home/opencode-permission.json" ] && pass launch-reviewer-interactive-opencode-writes-permission-config || bad launch-reviewer-interactive-opencode-writes-permission-config
+case "$(cat "$lri_opencode_home/opencode-permission.json" 2>/dev/null)" in
+  *'"edit": "deny"'*) bad "launch-reviewer-interactive-opencode-permission-config-allows-edit: reviewer would be unable to write review.md" ;;
+  *) pass launch-reviewer-interactive-opencode-permission-config-allows-edit ;;
+esac
+
+# --- agy: no --print-timeout (no interactive-mode equivalent exists);
+# --add-dir names only reviewer_workdir, never the worktree path too ---
+
+lri_agy_workdir="$LRI_ROOT/reviewers/agy/workdir"
+lri_agy_home="$LRI_ROOT/reviewers/agy/home"
+mkdir -p "$lri_agy_workdir" "$lri_agy_home"
+printf 'agy review prompt' > "$LRI_ROOT/agy.prompt"
+
+lri_agy_out="$(launch_reviewer_interactive agy lri-pane-agy "$LRI_WT" \
+  "$lri_agy_workdir" "$lri_agy_home" "$LRI_ROOT/agy.prompt")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_agy_out" = "$lri_agy_workdir/review.md" ] && pass launch-reviewer-interactive-agy-prints-output-file || bad "launch-reviewer-interactive-agy-prints-output-file: $lri_agy_out"
+
+agy_start_argv="$LRI_RECORD_DIR/agent-start.agy.argv"
+mapfile -t lri_agy_argv < "$agy_start_argv"
+case "$(cat "$agy_start_argv")" in
+  *'--print-timeout'*) bad "launch-reviewer-interactive-agy-no-print-timeout: $(cat "$agy_start_argv")" ;;
+  *) pass launch-reviewer-interactive-agy-no-print-timeout ;;
+esac
+add_dir_values=()
+for idx in "${!lri_agy_argv[@]}"; do
+  if [ "${lri_agy_argv[$idx]}" = "--add-dir" ]; then
+    add_dir_values+=("${lri_agy_argv[$((idx + 1))]:-}")
+  fi
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "${#add_dir_values[@]}" -eq 1 ] && [ "${add_dir_values[0]}" = "$lri_agy_workdir" ] && pass launch-reviewer-interactive-agy-add-dir-reviewer-workdir-only || bad "launch-reviewer-interactive-agy-add-dir-reviewer-workdir-only: ${add_dir_values[*]:-<none>}"
+case "$(cat "$agy_start_argv")" in
+  *"$LRI_WT"*) bad "launch-reviewer-interactive-agy-add-dir-excludes-worktree: $(cat "$agy_start_argv")" ;;
+  *) pass launch-reviewer-interactive-agy-add-dir-excludes-worktree ;;
+esac
+
+# --- pane readiness: a single empty read right after `agent start` is a
+# known timing artifact (see this function's own docstring) -- one retry
+# must be enough to reach the real content and still send the prompt ---
+
+lri_retry_out="$(HERDR_STUB_PANE_EMPTY_READS=1 launch_reviewer_interactive claude lri-pane-retry "$LRI_WT" \
+  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_retry_out" = "$lri_claude_workdir/review.md" ] && pass launch-reviewer-interactive-pane-read-retry-then-succeeds || bad "launch-reviewer-interactive-pane-read-retry-then-succeeds: $lri_retry_out"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$LRI_RECORD_DIR/agent-prompt.lri-pane-retry.text" ] && pass launch-reviewer-interactive-pane-read-retry-prompt-still-sent || bad launch-reviewer-interactive-pane-read-retry-prompt-still-sent
+
+# --- pane readiness: still empty after the one retry is a real failure,
+# not guessed past -- `agent prompt` must never be called in that case ---
+
+if lri_neverready_out="$(HERDR_STUB_PANE_EMPTY_READS=99 launch_reviewer_interactive claude lri-pane-neverready "$LRI_WT" \
+  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt" 2>"$LRI_ROOT/neverready.stderr")"; then
+  bad "launch-reviewer-interactive-pane-never-ready-rejected: printed $lri_neverready_out"
+else
+  pass launch-reviewer-interactive-pane-never-ready-rejected
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$LRI_RECORD_DIR/agent-prompt.lri-pane-neverready.text" ] && pass launch-reviewer-interactive-pane-never-ready-no-prompt-sent || bad launch-reviewer-interactive-pane-never-ready-no-prompt-sent
+
+# --- prompt size limit: reject before ever calling `agent prompt`, with
+# both the actual size and the limit in the failure message ---
+
+lri_oversized_bytes=$((PROMPT_BYTE_LIMIT + 1))
+head -c "$lri_oversized_bytes" /dev/zero > "$LRI_ROOT/oversized.prompt"
+
+if lri_oversized_out="$(launch_reviewer_interactive claude lri-pane-oversized "$LRI_WT" \
+  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/oversized.prompt" 2>"$LRI_ROOT/oversized.stderr")"; then
+  bad "launch-reviewer-interactive-prompt-too-large-rejected: printed $lri_oversized_out"
+else
+  pass launch-reviewer-interactive-prompt-too-large-rejected
+fi
+lri_oversized_err="$(cat "$LRI_ROOT/oversized.stderr" 2>/dev/null)"
+case "$lri_oversized_err" in
+  *"$lri_oversized_bytes"*"$PROMPT_BYTE_LIMIT"*) pass launch-reviewer-interactive-prompt-too-large-message-has-both-sizes ;;
+  *) bad "launch-reviewer-interactive-prompt-too-large-message-has-both-sizes: $lri_oversized_err" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$LRI_RECORD_DIR/agent-prompt.lri-pane-oversized.text" ] && pass launch-reviewer-interactive-prompt-too-large-no-prompt-sent || bad launch-reviewer-interactive-prompt-too-large-no-prompt-sent
+
+unset HERDR_RECORD_DIR
+export PATH="$saved_path"
+
+# ==============================================================
 # launch_reviewer
 #
 # Recording stubs (distinct from the plain "exit 0" claude/codex/opencode
