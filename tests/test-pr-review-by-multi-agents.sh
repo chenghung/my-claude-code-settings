@@ -1000,7 +1000,7 @@ printf '# Issue 標題\n\nISSUE-MATERIAL-BODY\n' > "$BP_ROOT/materials/issue.md"
 BP_OUT="$(build_prompt "$BP_ROOT/contract.md" \
   'https://github.com/acme/widgets/pull/7' \
   "$BP_ROOT/materials" \
-  claude some-model /tmp/wt origin/main)"
+  claude some-model /tmp/wt origin/main "$BP_ROOT/review.md")"
 
 # shellcheck disable=SC2015
 printf '%s' "$BP_OUT" | grep -qF 'CONTRACT-BODY' && pass build-prompt-embeds-contract || bad build-prompt-embeds-contract
@@ -1025,12 +1025,37 @@ printf '%s' "$BP_OUT" | grep -qF "$BP_ROOT/materials" && pass build-prompt-keeps
 BP_REAL_OUT="$(build_prompt "$REAL_CONTRACT" \
   'https://github.com/acme/widgets/pull/7' \
   "$BP_ROOT/materials" \
-  claude some-model /tmp/wt origin/main)"
+  claude some-model /tmp/wt origin/main "$BP_ROOT/review.md")"
 BP_REAL_CONTRACT_TEXT="$(cat "$REAL_CONTRACT")"
 case "$BP_REAL_OUT" in
   "$BP_REAL_CONTRACT_TEXT"*) pass build-prompt-real-contract-verbatim-prefix ;;
   *) bad build-prompt-real-contract-verbatim-prefix ;;
 esac
+
+# --- build_prompt: 新增的第 8 個位置參數 output_file 正確對應到各自的
+# reviewer，不會被混到別家 -- 兩個不同 reviewer 各自的 output_file 值
+# 分別指向 reviewers/claude/workdir/review.md 與
+# reviewers/agy/workdir/review.md，斷言各自組出的內容都含一行標著自己
+# 那個路徑的座標，且不含另一個 reviewer 的路徑 ---
+BP_CLAUDE_OUTPUT_FILE="$BP_ROOT/reviewers/claude/workdir/review.md"
+BP_AGY_OUTPUT_FILE="$BP_ROOT/reviewers/agy/workdir/review.md"
+BP_CLAUDE_OUT="$(build_prompt "$BP_ROOT/contract.md" \
+  'https://github.com/acme/widgets/pull/7' \
+  "$BP_ROOT/materials" \
+  claude some-model /tmp/wt origin/main "$BP_CLAUDE_OUTPUT_FILE")"
+BP_AGY_OUT="$(build_prompt "$BP_ROOT/contract.md" \
+  'https://github.com/acme/widgets/pull/7' \
+  "$BP_ROOT/materials" \
+  agy some-model /tmp/wt origin/main "$BP_AGY_OUTPUT_FILE")"
+
+# shellcheck disable=SC2015
+printf '%s' "$BP_CLAUDE_OUT" | grep -qxF -- "- 輸出檔絕對路徑：$BP_CLAUDE_OUTPUT_FILE" && pass build-prompt-output-file-claude-line || bad build-prompt-output-file-claude-line
+# shellcheck disable=SC2015
+printf '%s' "$BP_AGY_OUT" | grep -qxF -- "- 輸出檔絕對路徑：$BP_AGY_OUTPUT_FILE" && pass build-prompt-output-file-agy-line || bad build-prompt-output-file-agy-line
+# shellcheck disable=SC2015
+printf '%s' "$BP_CLAUDE_OUT" | grep -qF "$BP_AGY_OUTPUT_FILE" && bad build-prompt-output-file-claude-excludes-agy-path || pass build-prompt-output-file-claude-excludes-agy-path
+# shellcheck disable=SC2015
+printf '%s' "$BP_AGY_OUT" | grep -qF "$BP_CLAUDE_OUTPUT_FILE" && bad build-prompt-output-file-agy-excludes-claude-path || pass build-prompt-output-file-agy-excludes-claude-path
 
 # ==============================================================
 # setup_worktree
@@ -1581,7 +1606,7 @@ esac
 # real handoff between the two functions directly. ---
 
 bp_direct_prompt="$(build_prompt "$REAL_CONTRACT" "https://github.com/acme/widgets/pull/1" "$LAUNCH_ROOT" \
-  codex "direct-pairing-model-marker" "$LAUNCH_WT" "origin/main")"
+  codex "direct-pairing-model-marker" "$LAUNCH_WT" "origin/main" "$LAUNCH_ROOT/review.md")"
 printf '%s' "$bp_direct_prompt" > "$LAUNCH_LOGS/codex-direct.prompt"
 pid_codex_direct="$(launch_reviewer codex "$LAUNCH_WT" "$LAUNCH_LOGS/codex-direct.log" < "$LAUNCH_LOGS/codex-direct.prompt")"
 i=0
@@ -2717,6 +2742,46 @@ E2E_PROMPT_FILE="$E2E_LOGS_DIR/codex.prompt"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -n "$E2E_LOGS_DIR" ] && [ -s "$E2E_PROMPT_FILE" ] && pass main-e2e-prompt-file-written || bad main-e2e-prompt-file-written
 
+# ---- Task 3 Step 6: cmd_prepare() prints its own coordinates on success --
+# base_dir/worktree_dir plus one reviewer_workdir_<cli>= and one
+# prompt_file_<cli>= line per selected reviewer. ----
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s\n' "$out" | grep -qxF "base_dir=$E2E_BASE_DIR" && pass main-e2e-prepare-prints-base-dir || bad main-e2e-prepare-prints-base-dir
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s\n' "$out" | grep -qxF "worktree_dir=$E2E_BASE_DIR/worktree" && pass main-e2e-prepare-prints-worktree-dir || bad main-e2e-prepare-prints-worktree-dir
+
+# ---- Task 3 Step 2: base_dir is now the two-layer <repo>-pr-<number>/
+# <timestamp>-<pid> shape -- no sha256 hash, no intervening pr-review
+# directory. ----
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(dirname "$E2E_BASE_DIR")" = "$E2E_HOME/.tmp/widgets9pr-pr-321" ] && pass main-e2e-base-dir-repo-pr-parent || bad "main-e2e-base-dir-repo-pr-parent: $(dirname "$E2E_BASE_DIR")"
+case "$(basename "$E2E_BASE_DIR")" in
+  [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9]*)
+    pass main-e2e-base-dir-timestamp-pid-shape ;;
+  *)
+    bad "main-e2e-base-dir-timestamp-pid-shape: $(basename "$E2E_BASE_DIR")" ;;
+esac
+
+# ---- Task 3 Step 4: each selected reviewer gets its own writable
+# workdir and isolated home directory, and their paths are among what
+# cmd_prepare() printed above. ----
+for cli in claude codex opencode; do
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ -d "$E2E_BASE_DIR/reviewers/$cli/workdir" ] && pass "main-e2e-reviewer-workdir-created-$cli" || bad "main-e2e-reviewer-workdir-created-$cli"
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ -d "$E2E_BASE_DIR/reviewers/$cli/home" ] && pass "main-e2e-reviewer-home-created-$cli" || bad "main-e2e-reviewer-home-created-$cli"
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  printf '%s\n' "$out" | grep -qxF "reviewer_workdir_$cli=$E2E_BASE_DIR/reviewers/$cli/workdir" && pass "main-e2e-prepare-prints-reviewer-workdir-$cli" || bad "main-e2e-prepare-prints-reviewer-workdir-$cli"
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  printf '%s\n' "$out" | grep -qxF "prompt_file_$cli=$E2E_LOGS_DIR/$cli.prompt" && pass "main-e2e-prepare-prints-prompt-file-$cli" || bad "main-e2e-prepare-prints-prompt-file-$cli"
+done
+
+# ---- Task 3 Step 5: .roster is written during prepare (not launch) --
+# confirmed here, before cmd_launch() has run at all. ----
+E2E_ROSTER_AFTER_PREPARE="$E2E_BASE_DIR/.roster"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$E2E_ROSTER_AFTER_PREPARE" ] && [ "$(wc -l < "$E2E_ROSTER_AFTER_PREPARE")" -eq 3 ] && pass main-e2e-roster-written-by-prepare || bad main-e2e-roster-written-by-prepare
+
 # cmd_prepare() does not launch anything itself (see its own docstring) --
 # launch is a second, separate `bash "$RUN_SH"` invocation, fed the same
 # base_dir prepare just set up, with one --agent <cli>=<pane_id> pair per
@@ -2739,11 +2804,10 @@ else
   bad main-e2e-launch-succeeds
 fi
 
-# Task 7 Step 8: cmd_launch() writes .roster right after dispatching every
-# reviewer -- the only point in this pipeline a model name is still
-# available for every dispatched CLI, since resolve_model reads it back
-# out of that CLI's own config file, and there is nowhere left to read
-# it from once that reviewer has finished.
+# .roster was already written by cmd_prepare() (see the
+# main-e2e-roster-written-by-prepare assertion above, and Task 3 Step 5);
+# this re-checks the same content survived cmd_launch() unmodified, since
+# nothing in cmd_launch() touches .roster any more.
 E2E_ROSTER_FILE="$E2E_BASE_DIR/.roster"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$E2E_ROSTER_FILE" ] && [ "$(wc -l < "$E2E_ROSTER_FILE")" -eq 3 ] && pass main-e2e-roster-written || bad main-e2e-roster-written
@@ -3148,7 +3212,7 @@ done
 # 結束碼與 stderr 當場就被丟了，什麼都留不下來查。
 BUILD_PROMPT_STDERR="$T/build-prompt.stderr"
 if prompt_out="$(build_prompt "$contract" "https://github.com/a/b/pull/1" \
-  "$T/materials-empty" "claude" "opus-5" "$T/wt" "origin/main" 2>"$BUILD_PROMPT_STDERR")"; then
+  "$T/materials-empty" "claude" "opus-5" "$T/wt" "origin/main" "$T/wt/review.md" 2>"$BUILD_PROMPT_STDERR")"; then
   prompt_rc=0
 else
   prompt_rc=$?
@@ -3250,8 +3314,8 @@ sed -i "s#T_PLACEHOLDER#$T#g" "$T/synth/summary.txt"
 printf 'REVIEW-FROM-CLAUDE\n' > "$T/synth/.comment-body-111.md"
 printf 'REVIEW-FROM-AGY\n'    > "$T/synth/.comment-body-222.md"
 printf 'REVIEW-FROM-OPENCODE-WITHHELD\n' > "$T/synth/.comment-body-444.md"
-# Lines end in " dispatched", matching exactly what cmd_launch() itself
-# writes to .roster (see cmd_launch()'s own .roster-writing loop) and what
+# Lines end in " dispatched", matching exactly what cmd_prepare() itself
+# writes to .roster (see cmd_prepare()'s own .roster-writing loop) and what
 # build_synthesis_prompt's roster-lookup sed pattern requires to match at
 # all -- a line ending in anything else (e.g. "completed"/"failed") would
 # silently never match, always falling through to the missing-entry
@@ -3828,10 +3892,12 @@ cp "$SPWSYN_STUB_BIN/claude" "$SPWSYN_STUB_BIN/agy"
 cp "$SPWSYN_STUB_BIN/claude" "$SPWSYN_STUB_BIN/opencode"
 # codex crashes outright: no markers, non-zero exit -- content_status
 # ends up no-content, the realistic shape of "a dispatched reviewer that
-# failed" (as opposed to one that was never dispatched at all, which
-# cmd_launch() can't actually produce a .roster entry for -- see this
-# function's own case in cmd_launch(): a launch_reviewer failure aborts
-# the whole run via _dispatch_failed_cleanup before .roster is ever written).
+# failed" (as opposed to one that was never dispatched at all: .roster is
+# written by cmd_prepare(), before any reviewer launches, so it always has
+# an entry for every selected cli by the time cmd_launch() runs -- but a
+# launch_reviewer failure in cmd_launch() still aborts the whole run via
+# _dispatch_failed_cleanup before spawn_supervisor, .roster's only reader,
+# ever runs, so this scenario never surfaces as a real state to test).
 cat > "$SPWSYN_STUB_BIN/codex" <<'STUB'
 #!/usr/bin/env bash
 exit 1
@@ -3848,9 +3914,10 @@ spwsyn_claude_pid="$(launch_reviewer claude "$SPWSYN_WT" "$SPWSYN_ROOT/logs/clau
 spwsyn_agy_pid="$(launch_reviewer agy "$SPWSYN_WT" "$SPWSYN_ROOT/logs/agy.log" < "$SPWSYN_ROOT/logs/agy.prompt")"
 spwsyn_codex_pid="$(launch_reviewer codex "$SPWSYN_WT" "$SPWSYN_ROOT/logs/codex.log" < "$SPWSYN_ROOT/logs/codex.prompt")"
 
-# .roster is normally written by cmd_launch() right after dispatch (Task
-# 7's Step 8); this test calls spawn_supervisor directly, bypassing
-# cmd_launch(), so it seeds the same file by hand.
+# .roster is normally written by cmd_prepare(), before any reviewer
+# launches (Task 3 Step 5); this test calls spawn_supervisor directly,
+# bypassing both cmd_prepare() and cmd_launch(), so it seeds the same
+# file by hand.
 printf 'claude claude-e2e-model dispatched\nagy agy-e2e-model dispatched\ncodex codex-e2e-model dispatched\n' \
   > "$SPWSYN_ROOT/.roster"
 

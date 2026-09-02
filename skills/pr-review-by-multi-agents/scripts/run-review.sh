@@ -501,7 +501,7 @@ parse_args() {
 # --agent flags -- cmd_launch has no other guard against that, and a
 # repeated cli would make it call launch_reviewer twice for the same
 # platform, the second call's log/pid writes silently clobbering the
-# first's and .roster gaining a duplicate line. pane_id itself is not
+# first's. pane_id itself is not
 # format-checked here, it is handed to herdr as-is and any format error in
 # it surfaces as that command's own failure. Returns 2 on any usage error,
 # printing the reason to stderr, the same convention parse_args uses.
@@ -554,8 +554,8 @@ parse_launch_args() {
             ;;
         esac
         # A repeated cli is a usage error, not last-write-wins: see this
-        # function's own docstring on the silent log/pid/.roster
-        # corruption it would otherwise cause in cmd_launch.
+        # function's own docstring on the silent log/pid corruption it
+        # would otherwise cause in cmd_launch.
         for agent in "${agents[@]+"${agents[@]}"}"; do
           case "$agent" in
             "$cli":*)
@@ -738,16 +738,22 @@ _check_origin_matches() {
 # will even let them delete it.
 #
 # Scans <base_dir>'s own siblings (other run directories under the same
-# pr-review root) for ones whose embedded PID (the trailing -<PID> this
-# script's own base_dir naming always ends in) no longer belongs to a
-# running process, and whose worktree subdirectory still exists. For each
-# one found, restores write access and removes it the same way
-# spawn_supervisor's own successful-path cleanup does. Runs before
-# `git worktree prune` and the stale-ref branch cleanup below, in the same
-# invocation, specifically so that by the time those run, this reap has
-# already made both of them effective for whatever it just cleaned up
-# (registration gone, branch no longer checked out) instead of leaving
-# that branch for a follow-up run to notice.
+# repo/PR parent directory) for ones whose embedded PID (the trailing
+# -<PID> this script's own base_dir naming always ends in) no longer
+# belongs to a running process, and whose worktree subdirectory still
+# exists. For each one found, restores write access and removes it the
+# same way spawn_supervisor's own successful-path cleanup does. Runs
+# before `git worktree prune` and the stale-ref branch cleanup below, in
+# the same invocation, specifically so that by the time those run, this
+# reap has already made both of them effective for whatever it just
+# cleaned up (registration gone, branch no longer checked out) instead of
+# leaving that branch for a follow-up run to notice.
+#
+# Under the two-layer base_dir naming (`~/.tmp/<repo>-pr-<number>/
+# <timestamp>-<pid>`), `dirname "$base_dir"` already names the
+# repo/PR-specific parent -- there is no longer a shared "pr-review" root
+# above it -- so every sibling this scan finds already belongs to the same
+# repo and the same PR; no separate PR filter is needed here.
 #
 # Best-effort throughout -- failures here must never block the current
 # run from proceeding, since this is opportunistic cleanup of a *previous*
@@ -947,11 +953,15 @@ _emit_material_section() {
 }
 
 # build_prompt <contract_path> <pr_url> <materials_dir> <cli_name> <model> \
-#              <worktree_path> <base_ref>
+#              <worktree_path> <base_ref> <output_file>
 #
 # Prints the complete prompt for one reviewer CLI to stdout: the reviewer
 # contract's full text verbatim, this run's coordinates, then the full
-# text of every material this run collected.
+# text of every material this run collected. output_file is this
+# reviewer's own review.md path under its reviewer-specific writable
+# directory (see cmd_prepare's own reviewer_workdir) -- the coordinate
+# line labeled 輸出檔絕對路徑, the fixed key name the reviewer contract's
+# own termination rule already commits to.
 #
 # The materials are embedded inline rather than handed over as paths for
 # the reviewer to open itself. Reading a path is what the previous version
@@ -968,6 +978,7 @@ _emit_material_section() {
 build_prompt() {
   local contract_path="$1" pr_url="$2" materials_dir="$3"
   local cli_name="$4" model="$5" worktree_path="$6" base_ref="$7"
+  local output_file="$8"
   local contract
 
   contract="$(cat "$contract_path")" || return 1
@@ -983,6 +994,7 @@ build_prompt() {
   printf '\n## 本次審查的座標資訊\n\n'
   printf -- '- PR：%s\n' "$pr_url"
   printf -- '- git worktree 絕對路徑：%s\n' "$worktree_path"
+  printf -- '- 輸出檔絕對路徑：%s\n' "$output_file"
   printf -- '- base ref：%s\n' "$base_ref"
   printf -- '- 材料檔目錄絕對路徑：%s\n' "$materials_dir"
   printf -- '- 產出這則 review 的 CLI 名稱：%s\n' "$cli_name"
@@ -2613,25 +2625,27 @@ _dispatch_failed_cleanup() {
 # The prepare half of the pipeline: parse the named flags (see parse_args)
 # and verify every selected reviewer platform is actually installed (see
 # verify_selection), resolve and validate the PR, set up the shared
-# worktree and base ref, then build and write each selected reviewer's own
-# prompt file. Every hard precondition (gh missing/not authenticated, PR
-# not found, contract file missing, base ref unresolvable, worktree
-# creation failing) exits 1 -- see each called function's own docstring for
-# what it reports on failure. Two other exit codes are reserved for
-# earlier, cheaper rejections: parse_args itself exits 2 on a usage error
-# (unknown flag, a value-taking flag with no value, or no platform selected
-# at all), and verify_selection exits 3 when a selected platform isn't on
-# PATH -- both before gh is ever touched. Does not launch any reviewer, and
-# does not yet print anything on success -- a later task adds what
-# cmd_prepare(), cmd_launch(), and the calling agent still need from here
-# (reviewer-specific writable directories, isolated home directories, and
-# printing the execution/worktree/prompt-file paths).
+# worktree and base ref, create each selected reviewer's own writable
+# working directory and isolated home directory (paths only -- the named
+# files a later task writes under the isolated home don't exist yet), then
+# build and write each selected reviewer's own prompt file and write
+# .roster. Every hard precondition (gh missing/not authenticated, PR not
+# found, contract file missing, base ref unresolvable, worktree creation
+# failing) exits 1 -- see each called function's own docstring for what it
+# reports on failure. Two other exit codes are reserved for earlier,
+# cheaper rejections: parse_args itself exits 2 on a usage error (unknown
+# flag, a value-taking flag with no value, or no platform selected at
+# all), and verify_selection exits 3 when a selected platform isn't on
+# PATH -- both before gh is ever touched. Does not launch any reviewer.
+# On success, prints the run's own coordinates for the calling agent:
+# base_dir, worktree_dir, then one reviewer_workdir_<cli>= line and one
+# prompt_file_<cli>= line per selected reviewer.
 cmd_prepare() {
   local pr_arg="" issue_arg="" design_doc_path="" clis_line=""
   local pr_info owner repo number contract_path base_ref pr_url
-  local project_root project_hash project_folder
   local base_dir logs_dir worktree_dir materials_dir
   local cli model prompt parsed parsed_line
+  local reviewer_workdir reviewer_home
   local -a all_reviewers=()
 
   # Parsed with pure shell builtins (case/parameter-expansion, a here-string
@@ -2687,17 +2701,13 @@ cmd_prepare() {
     exit 1
   }
 
-  project_root="$(git rev-parse --show-toplevel)" || {
-    printf 'run-review.sh: not inside a git repository\n' >&2
-    exit 1
-  }
-  project_hash="$(printf '%s' "$project_root" | sha256sum | cut -c1-8)"
-  project_folder="$(basename "$project_root")-$project_hash"
-  # $$ (same disambiguation setup_worktree's own pr_ref already relies on)
-  # keeps two calls for the same PR started within the same second from
-  # colliding on one base_dir -- the timestamp alone isn't fine-grained
-  # enough to rule that out.
-  base_dir="$HOME/.tmp/$project_folder/pr-review/$number-$(date -u +%Y%m%d%H%M%S)-$$"
+  # Two-layer naming (design doc section 6): a parent directory shared by
+  # every run against this same repo/PR, and a per-invocation child under
+  # it. $$ (same disambiguation setup_worktree's own pr_ref already relies
+  # on) keeps two calls for the same PR started within the same second
+  # from colliding on one base_dir -- the timestamp alone isn't
+  # fine-grained enough to rule that out.
+  base_dir="$HOME/.tmp/$repo-pr-$number/$(date -u +%Y%m%d%H%M%S)-$$"
   logs_dir="$base_dir/logs"
   mkdir -p "$logs_dir"
 
@@ -2735,17 +2745,53 @@ cmd_prepare() {
   pr_url="https://github.com/$owner/$repo/pull/$number"
 
   for cli in "${all_reviewers[@]}"; do
+    # reviewer_workdir is this reviewer's own pane working directory
+    # (herdr's --cwd target, and where its review.md output file lands);
+    # reviewer_home is its isolated HOME (herdr's --env HOME= target). Only
+    # the paths are established here -- the named files a later task
+    # writes under reviewer_home still don't exist yet.
+    reviewer_workdir="$base_dir/reviewers/$cli/workdir"
+    reviewer_home="$base_dir/reviewers/$cli/home"
+
     # Each step below is checked explicitly (rather than as a bare
     # statement) so a failure partway through this loop runs
     # _dispatch_failed_cleanup instead of letting set -e abort cmd_prepare()
-    # with the worktree left behind and nothing to clean it up.
-    if ! model="$(resolve_model "$cli")" \
+    # with the worktree left behind and nothing to clean it up -- mkdir -p
+    # is folded into this same chain for that reason, not left as a bare
+    # statement.
+    if ! mkdir -p "$reviewer_workdir" "$reviewer_home" \
+      || ! model="$(resolve_model "$cli")" \
       || ! prompt="$(build_prompt "$contract_path" "$pr_url" "$materials_dir" \
-             "$cli" "$model" "$worktree_dir" "$base_ref")"; then
+             "$cli" "$model" "$worktree_dir" "$base_ref" "$reviewer_workdir/review.md")"; then
       _dispatch_failed_cleanup "$worktree_dir"
       exit 1
     fi
     printf '%s' "$prompt" > "$logs_dir/$cli.prompt"
+  done
+
+  # .roster records which model each selected CLI resolved to. Written
+  # here, at prepare time, rather than at launch time: resolve_model
+  # doesn't depend on anything only available once a reviewer actually
+  # starts running, and writing it now lets cmd_launch()'s own --agent
+  # flag cross-check against the platforms actually selected here. This
+  # is also the disclosure data build_synthesis_prompt reads back out of
+  # .roster long after every reviewer is done and there is nowhere left to
+  # look a model name up.
+  : > "$base_dir/.roster"
+  for cli in "${all_reviewers[@]}"; do
+    printf '%s %s dispatched\n' "$cli" "$(resolve_model "$cli")" >> "$base_dir/.roster"
+  done
+
+  # Prints the run's own coordinates for the calling agent: the execution
+  # and worktree directories, then each selected reviewer's own writable
+  # directory and prompt file, one line per cli.
+  printf 'base_dir=%s\n' "$base_dir"
+  printf 'worktree_dir=%s\n' "$worktree_dir"
+  for cli in "${all_reviewers[@]}"; do
+    printf 'reviewer_workdir_%s=%s\n' "$cli" "$base_dir/reviewers/$cli/workdir"
+  done
+  for cli in "${all_reviewers[@]}"; do
+    printf 'prompt_file_%s=%s\n' "$cli" "$logs_dir/$cli.prompt"
   done
 }
 
@@ -2755,8 +2801,10 @@ cmd_prepare() {
 # parse_launch_args), re-verify every named cli is still on PATH (see
 # verify_selection), then for each named cli read back the prompt file
 # cmd_prepare wrote for it, launch it (see launch_reviewer), record its
-# PID, write .roster, hand every launched PID to spawn_supervisor, and
-# print the dispatch summary (see print_summary). launch_reviewer here is
+# PID, hand every launched PID to spawn_supervisor, and print the dispatch
+# summary (see print_summary). .roster is already on disk by this point --
+# cmd_prepare wrote it, not this function (see cmd_prepare's own docstring
+# and its .roster-writing loop). launch_reviewer here is
 # the same implementation cmd_prepare's own dispatch loop used before this
 # split into two subcommands -- a later task replaces it with herdr's own
 # start-in-pane mechanism; the <cli>:<pane_id> pairs parse_launch_args
@@ -2810,17 +2858,6 @@ cmd_launch() {
     fi
     pids+=("$pid")
     printf '%s\n' "$pid" > "$logs_dir/$cli.pid"
-  done
-
-  # .roster records which model each dispatched CLI resolved to at the
-  # moment it was actually launched. This is the only point in this
-  # pipeline that information is ever available: once a reviewer has
-  # finished, there is nowhere left to look its model back up, and
-  # build_synthesis_prompt's disclosure of "本次原定派出名單" needs it
-  # long after every reviewer is done.
-  : > "$base_dir/.roster"
-  for cli in "${all_reviewers[@]}"; do
-    printf '%s %s dispatched\n' "$cli" "$(resolve_model "$cli")" >> "$base_dir/.roster"
   done
 
   # logs_dir gets the same read-only treatment as the worktree, applied
