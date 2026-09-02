@@ -4284,18 +4284,18 @@ printf '%s' "$RSYN_L3" | grep -qE 'content_file=$' && pass "_record_synthesis_re
 [ ! -e "$RSYN_NOCONTENT_ROOT/.comment-body-synthesis.md" ] && pass "_record_synthesis_result no-content 不寫內容檔" || bad "_record_synthesis_result no-content 卻寫了內容檔"
 
 # ==============================================================
-# spawn_supervisor -- 合流的完整接線
+# spawn_supervisor -- 合流的完整接線（現行無頭模式，不受本任務影響）
 #
 # Three reviewers, launched the same way any real dispatch loop would
 # (via launch_reviewer, not a hand-rolled substitute) -- two of them
 # (claude, agy) producing a trustworthy review, the third (codex)
 # deliberately crashing with no output at all -- then a direct
-# spawn_supervisor call, the same entry point cmd_launch() itself uses, to
-# confirm the whole chain: ready_count >= 2 triggers synthesis, .roster
-# feeds the roster section (including codex's failure, the same way a
-# real run's own .roster would), the synthesis log lands outside the
-# (deliberately, here too) read-only logs_dir, and the resulting summary
-# line carries the synthesis:<cli> tag with worktree_status=n/a.
+# spawn_supervisor call, the same entry point the headless dispatch loop
+# uses, to confirm the whole chain: ready_count >= 2 triggers synthesis,
+# .roster feeds the roster section (including codex's failure, the same
+# way a real run's own .roster would), the synthesis log lands outside
+# the (deliberately, here too) read-only logs_dir, and the resulting
+# summary line carries the synthesis:<cli> tag with worktree_status=n/a.
 #
 # Every reviewer stub finishes in a few milliseconds, well before
 # spawn_supervisor's poll loop's first iteration ever checks any of the
@@ -4307,6 +4307,12 @@ printf '%s' "$RSYN_L3" | grep -qE 'content_file=$' && pass "_record_synthesis_re
 # directly, so this scenario never even falls through to
 # _first_ready_cli's plain completion-order pick); the assertions below
 # accept either winner rather than gamble on an exact ordering.
+#
+# This section, spawn_supervisor itself, and launch_reviewer are all left
+# untouched by Task 6 (the herdr-interactive switch) -- cmd_launch() no
+# longer calls either of them, but this suite keeps exercising them
+# directly, unchanged, as the proof that the merge segment migrated
+# verbatim into spawn_supervisor_interactive below behaves identically.
 # ==============================================================
 
 SPWSYN_ROOT="$T/spawn-supervisor-synthesis-fixture"
@@ -4415,7 +4421,7 @@ esac
 
 chmod -R u+w "$SPWSYN_ROOT/logs" 2>/dev/null || true
 
-# --- ready_count < 2：只有一個 ready reviewer 時不觸發合流 ---
+# --- ready_count < 2：只有一個 ready reviewer 時不觸發合流（無頭模式） ---
 SPWSYN1_ROOT="$T/spawn-supervisor-single-ready-fixture"
 SPWSYN1_WT="$(_make_worktree_fixture "$SPWSYN1_ROOT")"
 mkdir -p "$SPWSYN1_ROOT/logs"
@@ -4436,6 +4442,212 @@ sleep 1
 [ "$(wc -l < "$SPWSYN1_SUMMARY")" -eq 1 ] && pass "spawn_supervisor 只有一個 ready reviewer 時不多寫合流那一行" || bad "spawn_supervisor 在只有一個 ready reviewer 時仍寫出合流那一行: $(cat "$SPWSYN1_SUMMARY" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ ! -e "$SPWSYN1_ROOT/synthesis.log" ] && pass "spawn_supervisor 只有一個 ready reviewer 時不啟動合流行程" || bad "spawn_supervisor 只有一個 ready reviewer 時仍啟動了合流行程"
+
+# ==============================================================
+# spawn_supervisor_interactive -- 合流的完整接線（互動模式）
+#
+# 對照上面 spawn_supervisor 的合流測試，但完成判準換成「輸出檔已存在
+# 且帶結束標記」，不再透過 launch_reviewer 起真正的背景行程：claude、
+# agy 兩個 reviewer 直接把內容加結束標記寫進各自的 review.md（模擬已
+# 完成），codex 的 review.md 同樣帶標記（讓輪詢迴圈能終止），但刻意不
+# 寫 .git-status-before-codex，使其 worktree 前後比對必然不符、落在
+# invalidated -> withheld。
+#
+# 這是「codex 派出但內容不可信」這個情境在互動模式下唯一可觸達的等價
+# 寫法：_extract_reviewer_output 同時是輪詢迴圈的完成判準與
+# _record_reviewer_result_interactive 的內容擷取共用的同一個函式，若
+# codex 的檔案缺少標記（原本無頭模式「行程崩潰、沒有標記」對應
+# no-content 的成因），輪詢迴圈會把它視為「還沒完成」而永遠等下去，
+# 不會像無頭模式那樣靠 kill -0 偵測到行程已結束、進而記成 no-content
+# ——這正是 spawn_supervisor_interactive 自身文件所寫「不判斷卡住或永
+# 遠不會完成」的直接體現。no-content 這個分支因此只能透過直接呼叫
+# _record_reviewer_result_interactive 觸達，見下面新增的輪詢等待案例。
+#
+# 三份輸出檔在呼叫 spawn_supervisor_interactive 之前就已就緒，且傳入的
+# cli 順序固定（claude agy codex），輪詢迴圈的第一輪就會依序、同步地
+# 把三者都記進 summary.txt——不像無頭模式仰賴背景行程的真實完成順序，
+# 這裡的完成順序就是傳入順序，因此哪個 CLI 中選合流不必用「接受任一
+# 勝出者」這種寫法，claude 必定排在 agy 之前入選（_select_synthesis_cli
+# 掃描 ready 行時只認先出現的那個）。
+# ==============================================================
+
+SPWSYNI_ROOT="$T/spawn-supervisor-interactive-synthesis-fixture"
+SPWSYNI_WT="$(_make_worktree_fixture "$SPWSYNI_ROOT")"
+mkdir -p "$SPWSYNI_ROOT/reviewers/claude/workdir" "$SPWSYNI_ROOT/reviewers/agy/workdir" "$SPWSYNI_ROOT/reviewers/codex/workdir"
+
+SPWSYNI_STUB_BIN="$T/spawn-supervisor-interactive-synthesis-stub-bin"
+mkdir -p "$SPWSYNI_STUB_BIN"
+# 只需要 claude 的 stub：見上面文件說明，_select_synthesis_cli 在
+# claude/agy 兩者都 ready 時必定選 claude（傳入順序固定，claude 先於
+# agy 落進 summary.txt）。codex 落在 withheld，不會參與合流挑選，也不
+# 會被啟動，所以不需要它的 stub。agy 雖然 ready，但不會中選、因此也不
+# 會被 launch_synthesis 啟動，同樣不需要它的 stub。
+cat > "$SPWSYNI_STUB_BIN/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
+cat
+echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
+exit 0
+STUB
+chmod +x "$SPWSYNI_STUB_BIN/claude"
+export PATH="$SPWSYNI_STUB_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$SPWSYNI_STUB_BIN" claude
+
+printf 'claude review body\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$SPWSYNI_ROOT/reviewers/claude/workdir/review.md"
+printf 'agy review body\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$SPWSYNI_ROOT/reviewers/agy/workdir/review.md"
+printf 'codex review body\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$SPWSYNI_ROOT/reviewers/codex/workdir/review.md"
+
+printf '%s\n' "$(_git_status_snapshot "$SPWSYNI_WT")" > "$SPWSYNI_ROOT/.git-status-before-claude"
+printf '%s\n' "$(_git_status_snapshot "$SPWSYNI_WT")" > "$SPWSYNI_ROOT/.git-status-before-agy"
+# .git-status-before-codex 刻意不寫：見上面文件說明，這是讓 codex 落在
+# withheld 的手法。
+
+# .roster 正常由 cmd_prepare() 寫入；這裡直接呼叫
+# spawn_supervisor_interactive，繞過 cmd_prepare()/cmd_launch()，自行備
+# 妥同一份檔案。
+printf 'claude claude-e2e-model dispatched\nagy agy-e2e-model dispatched\ncodex codex-e2e-model dispatched\n' \
+  > "$SPWSYNI_ROOT/.roster"
+
+SPWSYNI_SUMMARY="$SPWSYNI_ROOT/summary.txt"
+(cd "$SPWSYNI_ROOT/work" && spawn_supervisor_interactive "$SPWSYNI_WT" "$SPWSYNI_SUMMARY" claude agy codex)
+
+i=0
+until { [ -f "$SPWSYNI_SUMMARY" ] && [ "$(wc -l < "$SPWSYNI_SUMMARY")" -eq 4 ]; } || [ "$i" -ge 200 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$SPWSYNI_SUMMARY" ] && [ "$(wc -l < "$SPWSYNI_SUMMARY")" -eq 4 ] && pass "spawn_supervisor_interactive 三個 reviewer（兩個 ready）後多寫一行合流" || bad "spawn_supervisor_interactive 未寫出合流那一行: $(cat "$SPWSYNI_SUMMARY" 2>/dev/null)"
+
+SPWSYNI_L1="$(sed -n 1p "$SPWSYNI_SUMMARY")"
+case "$SPWSYNI_L1" in
+  'cli=claude pid=n/a exit=n/a '*' content_status=ready '*) pass "spawn_supervisor_interactive claude 那一行 pid=n/a exit=n/a content_status=ready" ;;
+  *) bad "spawn_supervisor_interactive claude 那一行不對: $SPWSYNI_L1" ;;
+esac
+
+SPWSYNI_L2="$(sed -n 2p "$SPWSYNI_SUMMARY")"
+case "$SPWSYNI_L2" in
+  'cli=agy pid=n/a exit=n/a '*' content_status=ready '*) pass "spawn_supervisor_interactive agy 那一行 pid=n/a exit=n/a content_status=ready" ;;
+  *) bad "spawn_supervisor_interactive agy 那一行不對: $SPWSYNI_L2" ;;
+esac
+
+SPWSYNI_L3="$(sed -n 3p "$SPWSYNI_SUMMARY")"
+case "$SPWSYNI_L3" in
+  'cli=codex pid=n/a exit=n/a '*' content_status=withheld '*) pass "spawn_supervisor_interactive codex 那一行 pid=n/a exit=n/a content_status=withheld" ;;
+  *) bad "spawn_supervisor_interactive codex 那一行不對: $SPWSYNI_L3" ;;
+esac
+
+SPWSYNI_L4="$(sed -n 4p "$SPWSYNI_SUMMARY")"
+case "$SPWSYNI_L4" in
+  'cli=synthesis:claude '*) pass "spawn_supervisor_interactive 合流那一行的 cli 欄以 synthesis:claude 開頭" ;;
+  *) bad "spawn_supervisor_interactive 合流那一行的 cli 欄不對: $SPWSYNI_L4" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$SPWSYNI_L4" | grep -qF 'worktree_status=n/a' && pass "spawn_supervisor_interactive 合流那一行 worktree_status=n/a" || bad "spawn_supervisor_interactive 合流那一行 worktree_status 不對"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$SPWSYNI_L4" | grep -qF 'content_status=ready' && pass "spawn_supervisor_interactive 合流那一行 content_status=ready" || bad "spawn_supervisor_interactive 合流那一行 content_status 不對: $SPWSYNI_L4"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$SPWSYNI_ROOT/synthesis.log" ] && pass "spawn_supervisor_interactive 把合流 log 放在 base_dir" || bad "spawn_supervisor_interactive 未在 base_dir 寫出合流 log"
+
+# 合流實際收到的 prompt（透過 stub 把 stdin 原樣回顯進 synthesis.log）
+# 涵蓋契約組出的名單（含 codex 這個真的被派出、卻沒有標記可信賴內容的
+# 那一項）與兩份 ready review 全文。
+SPWSYNI_SYNTH_LOG_CONTENT="$(cat "$SPWSYNI_ROOT/synthesis.log" 2>/dev/null)"
+case "$SPWSYNI_SYNTH_LOG_CONTENT" in
+  *'claude review body'*) pass "合流（互動）log 內含 claude 那份 review 全文" ;;
+  *) bad "合流（互動）log 缺 claude 那份 review 全文" ;;
+esac
+case "$SPWSYNI_SYNTH_LOG_CONTENT" in
+  *'agy review body'*) pass "合流（互動）log 內含 agy 那份 review 全文" ;;
+  *) bad "合流（互動）log 缺 agy 那份 review 全文" ;;
+esac
+case "$SPWSYNI_SYNTH_LOG_CONTENT" in
+  *'codex review body'*) bad "合流（互動）log 誤含 codex 這份不可信的 review 全文" ;;
+  *) pass "合流（互動）log 排除 codex 這份不可信的 review 全文" ;;
+esac
+case "$SPWSYNI_SYNTH_LOG_CONTENT" in
+  *'codex-e2e-model'*) pass "合流（互動）log 內含名單中不可信的 codex 項" ;;
+  *) bad "合流（互動）log 缺名單中的 codex 項" ;;
+esac
+case "$SPWSYNI_SYNTH_LOG_CONTENT" in
+  *'CLI 名稱：claude'*) pass "合流（互動）log 揭露執行合流本身的 CLI 名稱" ;;
+  *) bad "合流（互動）log 未揭露執行合流本身的 CLI 名稱" ;;
+esac
+
+# --- ready_count < 2：只有一個 ready reviewer 時不觸發合流（互動模式） ---
+SPWSYNI1_ROOT="$T/spawn-supervisor-interactive-single-ready-fixture"
+SPWSYNI1_WT="$(_make_worktree_fixture "$SPWSYNI1_ROOT")"
+mkdir -p "$SPWSYNI1_ROOT/reviewers/claude/workdir"
+printf 'only reviewer\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$SPWSYNI1_ROOT/reviewers/claude/workdir/review.md"
+printf '%s\n' "$(_git_status_snapshot "$SPWSYNI1_WT")" > "$SPWSYNI1_ROOT/.git-status-before-claude"
+printf 'claude claude-e2e-model dispatched\n' > "$SPWSYNI1_ROOT/.roster"
+SPWSYNI1_SUMMARY="$SPWSYNI1_ROOT/summary.txt"
+(cd "$SPWSYNI1_ROOT/work" && spawn_supervisor_interactive "$SPWSYNI1_WT" "$SPWSYNI1_SUMMARY" claude)
+
+i=0
+until [ ! -e "$SPWSYNI1_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# 額外靜候片刻，理由與無頭模式的同一斷言相同：確認的是「合流不會被觸
+# 發」，不是「合流還沒來得及跑完」。
+sleep 1
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(wc -l < "$SPWSYNI1_SUMMARY")" -eq 1 ] && pass "spawn_supervisor_interactive 只有一個 ready reviewer 時不多寫合流那一行" || bad "spawn_supervisor_interactive 在只有一個 ready reviewer 時仍寫出合流那一行: $(cat "$SPWSYNI1_SUMMARY" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$SPWSYNI1_ROOT/synthesis.log" ] && pass "spawn_supervisor_interactive 只有一個 ready reviewer 時不啟動合流行程" || bad "spawn_supervisor_interactive 只有一個 ready reviewer 時仍啟動了合流行程"
+
+# ==============================================================
+# spawn_supervisor_interactive -- 標記出現前持續等待，出現後才記錄
+#
+# _extract_reviewer_output 在檔案缺少結束標記時回傳 1；先直接呼叫
+# _record_reviewer_result_interactive（繞過輪詢迴圈本身）確認這個狀態
+# 若被記錄下來會是 content_status=no-content（對照上一段文件：輪詢迴
+# 圈用同一個判準決定「是否已完成」，因此永遠不會替一個沒有標記的檔案
+# 寫下這行，這裡先證明的是「若真的被記錄，值是什麼」，不是輪詢迴圈本
+# 身的行為）。再用背景 sleep 之後才補上標記的手法（比照上面
+# supervisor-order 區段 _order_launch 對非同步行為的驗證方式），證明
+# 輪詢迴圈確實會一直等，直到標記出現才把這一行寫進 summary.txt。
+# ==============================================================
+
+SPWSYNI2_ROOT="$T/spawn-supervisor-interactive-pending-fixture"
+SPWSYNI2_WT="$(_make_worktree_fixture "$SPWSYNI2_ROOT")"
+mkdir -p "$SPWSYNI2_ROOT/reviewers/claude/workdir"
+SPWSYNI2_REVIEW="$SPWSYNI2_ROOT/reviewers/claude/workdir/review.md"
+printf 'still writing, no end marker yet\n' > "$SPWSYNI2_REVIEW"
+printf '%s\n' "$(_git_status_snapshot "$SPWSYNI2_WT")" > "$SPWSYNI2_ROOT/.git-status-before-claude"
+
+# 直接呼叫，不經輪詢迴圈：確認缺標記時 content_status=no-content。寫進
+# 一個獨立的 summary 檔，不干擾下面真正輪詢用的那一份。
+SPWSYNI2_DIRECT_SUMMARY="$SPWSYNI2_ROOT/direct-summary.txt"
+: > "$SPWSYNI2_DIRECT_SUMMARY"
+_record_reviewer_result_interactive claude "$SPWSYNI2_ROOT" "$SPWSYNI2_WT" "$SPWSYNI2_REVIEW" "$SPWSYNI2_DIRECT_SUMMARY"
+SPWSYNI2_DIRECT_LINE="$(cat "$SPWSYNI2_DIRECT_SUMMARY")"
+case "$SPWSYNI2_DIRECT_LINE" in
+  'cli=claude pid=n/a exit=n/a '*' content_status=no-content '*) pass "_record_reviewer_result_interactive 缺標記時 pid/exit=n/a 且 content_status=no-content" ;;
+  *) bad "_record_reviewer_result_interactive 缺標記時這一行不對: $SPWSYNI2_DIRECT_LINE" ;;
+esac
+
+printf 'claude claude-e2e-model dispatched\n' > "$SPWSYNI2_ROOT/.roster"
+SPWSYNI2_SUMMARY="$SPWSYNI2_ROOT/summary.txt"
+
+# shellcheck disable=SC2016  # single quotes intentional: $1/$2 expand inside the nested bash -c, not here
+nohup bash -c '
+  review="$1"; delay="$2"
+  sleep "$delay"
+  printf "===PR-REVIEW-BY-MULTI-AGENTS-END===\n" >> "$review"
+' _ "$SPWSYNI2_REVIEW" 3 >/dev/null 2>&1 &
+
+(cd "$SPWSYNI2_ROOT/work" && spawn_supervisor_interactive "$SPWSYNI2_WT" "$SPWSYNI2_SUMMARY" claude)
+
+# 標記還沒補上（背景 sleep 3 秒還沒到）：輪詢迴圈這時應該已經跑過至少
+# 一輪，仍應該還在等，summary.txt 不該有任何一行。
+sleep 1
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$SPWSYNI2_SUMMARY" ] && pass "spawn_supervisor_interactive 標記出現前持續等待、不預先記錄" || bad "spawn_supervisor_interactive 標記出現前就記錄了: $(cat "$SPWSYNI2_SUMMARY" 2>/dev/null)"
+
+i=0
+until [ -s "$SPWSYNI2_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$SPWSYNI2_SUMMARY" ] && pass "spawn_supervisor_interactive 標記出現後輪詢才記錄" || bad "spawn_supervisor_interactive 標記出現後仍未記錄"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'content_status=ready' "$SPWSYNI2_SUMMARY" 2>/dev/null && pass "spawn_supervisor_interactive 補上標記後 content_status=ready" || bad "spawn_supervisor_interactive 補上標記後這一行不對: $(cat "$SPWSYNI2_SUMMARY" 2>/dev/null)"
 
 export PATH="$saved_path"
 

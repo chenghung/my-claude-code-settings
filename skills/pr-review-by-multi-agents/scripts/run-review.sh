@@ -500,12 +500,12 @@ parse_args() {
 # followed by one agent=<cli>:<pane_id> line per --agent pair -- cli and
 # pane_id joined with a colon rather than an equals sign, because pane_id
 # itself may contain colons (e.g. w16:p3) and re-splitting on "=" would be
-# ambiguous. cmd_launch, in its current form, only reads the cli back out
-# of each agent= line (everything up to the first colon) to decide which
-# reviewer to dispatch; it does not extract or use pane_id yet (see
-# cmd_launch's own docstring) -- whichever later task wires pane_id into
-# herdr must take everything *after* the first colon, not split further,
-# so a colon inside pane_id itself is preserved rather than truncated.
+# ambiguous. cmd_launch reads both fields back out of each agent= line: the
+# cli (everything up to the first colon) decides which reviewer to
+# dispatch, and pane_id (everything *after* that first colon, not split
+# further, so a colon inside pane_id itself is preserved rather than
+# truncated) is handed to launch_reviewer_interactive as its own pane
+# target (see cmd_launch's own docstring).
 # --base-dir must appear exactly once and be an absolute path (leading
 # "/") -- cmd_launch derives worktree_dir/logs_dir/summary_file from it
 # with plain string concatenation, so a relative value would silently
@@ -568,9 +568,10 @@ parse_launch_args() {
             return 2
             ;;
         esac
-        # A repeated cli is a usage error, not last-write-wins: see this
-        # function's own docstring on the silent log/pid corruption it
-        # would otherwise cause in cmd_launch.
+        # A repeated cli is a usage error, not last-write-wins: two --agent
+        # entries for the same cli would both resolve to the same
+        # base_dir/reviewers/<cli>/{workdir,home} paths in cmd_launch,
+        # silently colliding on the same review.md output file.
         for agent in "${agents[@]+"${agents[@]}"}"; do
           case "$agent" in
             "$cli":*)
@@ -1773,10 +1774,24 @@ _write_agy_home_interactive() {
 # function's `$!` observes, because `nohup` execs its argument in place
 # rather than forking an extra layer. This holds true even when this whole
 # function is invoked via command substitution (`pid=$(launch_reviewer
-# ...)`), which is the normal way cmd_launch() calls it: unlike `wait`, this
+# ...)`), the shape every call site here uses: unlike `wait`, this
 # file-based handoff has no dependency on process parentage, so it survives
 # the command substitution's own transient subshell exiting immediately
 # after printing the PID.
+#
+# As of Task 6 (the herdr-interactive switch), this function has no caller
+# left anywhere in this file's own production dispatch: cmd_launch() now
+# calls launch_reviewer_interactive instead (see that function's own
+# docstring), and the merge/synthesis path never called this one to begin
+# with -- it calls launch_synthesis directly. Do NOT delete this function
+# for that reason: eight-plus comments elsewhere in this file (its own
+# opencode/agy home-building helpers, launch_synthesis's claude/agy
+# branches, and more) cross-reference the empirically-verified
+# sandbox/permission findings recorded in this docstring and the case
+# branches below by name -- removing the function would orphan every one
+# of those references. It also remains directly exercised by this file's
+# own test suite, which still calls it to drive the (unmodified) headless
+# spawn_supervisor path's own tests.
 launch_reviewer() {
   local cli_name="$1" worktree_dir="$2" log_file="$3"
   local -a cmd=()
@@ -1946,8 +1961,11 @@ launch_reviewer() {
 # CLI inside an existing, already-created herdr pane via `herdr agent
 # start`, confirms the pane actually rendered before trusting it, then hands
 # it this run's prompt via `herdr agent prompt`. launch_reviewer itself is
-# NOT modified or removed for this -- the headless merge/synthesis path
-# (see spawn_supervisor) still calls it directly, unchanged.
+# NOT modified or removed for this -- kept, unchanged, for the reasons its
+# own docstring now records (Task 6 update: the merge/synthesis path was
+# previously, incorrectly, believed to still call it directly; it never
+# did -- that path calls launch_synthesis, an entirely separate function,
+# see spawn_supervisor's own docstring).
 #
 # Unlike launch_reviewer, this function backgrounds nothing and returns no
 # PID: the reviewer runs inside a pane herdr itself manages, not as a child
@@ -2134,6 +2152,44 @@ _extract_review_content() {
   printf '%s\n' "$content"
 }
 
+# _extract_reviewer_output <output_file>
+#
+# The interactive counterpart to _extract_review_content above -- same
+# purpose (decide whether a reviewer's output is trustworthy enough to
+# read, print it if so), but a different shape of source and a different
+# marker convention: this reads <output_file> (the fixed
+# <reviewer_workdir>/review.md path launch_reviewer_interactive told the
+# reviewer to write to), not a captured stdout log, and it looks for a
+# single END marker as the file's own last line -- not a BEGIN/END pair
+# -- because the reviewer writes straight to this file with an editor
+# tool rather than printing to a stream this script wraps itself. Once
+# the file's last line is the end marker, everything above it is treated
+# as this reviewer's complete review; `sed '$d'` (delete the last line)
+# is how that's taken back out, mirroring _extract_review_content's own
+# "extract everything between the markers" job for this file's simpler,
+# single-marker shape.
+#
+# Returns 1, printing nothing, when the file is empty/missing, its last
+# line isn't the marker verbatim, or the content left after stripping the
+# marker is empty -- the same three failure shapes _extract_review_content
+# guards against for its own format. This function is also what
+# spawn_supervisor_interactive's poll loop uses to decide a reviewer is
+# done at all (see its own docstring): until this returns 0 for a given
+# cli, that cli's output file is treated as still being written, not as a
+# finished-but-untrustworthy result.
+_extract_reviewer_output() {
+  local output_file="$1"
+  local last_line content
+
+  [ -s "$output_file" ] || return 1
+  last_line="$(tail -n 1 "$output_file")"
+  [ "$last_line" = "===PR-REVIEW-BY-MULTI-AGENTS-END===" ] || return 1
+
+  content="$(sed '$d' "$output_file")"
+  [ -n "$content" ] || return 1
+  printf '%s' "$content"
+}
+
 # _record_reviewer_result <pid> <base_dir> <worktree_dir> <summary_file>
 #
 # Records one finished reviewer: reads its exit code, compares the
@@ -2208,6 +2264,62 @@ _record_reviewer_result() {
 
   printf 'cli=%s pid=%s exit=%s ended_at=%s worktree_status=%s content_status=%s content_file=%s\n' \
     "$cli_name" "$pid" "${rc:-unknown}" "$end_time" "$status" "$content_status" "$content_file" \
+    >> "$summary_file"
+}
+
+# _record_reviewer_result_interactive <cli_name> <base_dir> <worktree_dir> \
+#                                      <output_file> <summary_file>
+#
+# The interactive counterpart to _record_reviewer_result above: same
+# summary-line shape and the same worktree-tamper check (see that
+# function's own docstring for content_status's three values and why the
+# withheld/no-content distinction exists), but reads the reviewer's review
+# from <output_file> via _extract_reviewer_output instead of from a
+# captured log via _extract_review_content, and is keyed by cli name
+# rather than PID -- see launch_reviewer_interactive's own docstring for
+# why the before-snapshot this reads is filed under
+# .git-status-before-<cli_name> rather than .git-status-before-<pid>.
+#
+# `pid` and `exit` are always printed as the literal string "n/a", not
+# left blank or omitted: an interactive reviewer runs inside a herdr pane
+# this script never forks, so it has no PID and no exit code to report --
+# "n/a" says that plainly rather than reading as an accidentally-missing
+# value. This has one real semantic consequence for content_status:
+# _record_reviewer_result's own "withheld" case has two independent
+# causes, a non-zero exit code OR an invalidated worktree; with no exit
+# code available here, that first cause is gone, so withheld can only ever
+# mean the worktree state came back invalidated. The seven summary fields
+# themselves (cli/pid/exit/ended_at/worktree_status/content_status/
+# content_file) keep their existing order and names regardless, so every
+# downstream reader that parses this format (see this file's own header
+# comment: _count_ready, _first_ready_cli, _select_synthesis_cli,
+# _ready_content_files, _disclosure_status_label, build_synthesis_prompt,
+# _write_opencode_synthesis_permission_config, launch_synthesis,
+# _record_synthesis_result) stays compatible unchanged -- none of them
+# parse pid as anything other than an opaque display field.
+_record_reviewer_result_interactive() {
+  local cli_name="$1" base_dir="$2" worktree_dir="$3" output_file="$4" summary_file="$5"
+  local before after status content content_file content_status
+
+  before="$(cat "$base_dir/.git-status-before-$cli_name" 2>/dev/null)" || before=""
+  after="$(_git_status_snapshot "$worktree_dir")"
+  [ "$before" = "$after" ] && status="ok" || status="invalidated"
+
+  content_file="$base_dir/.comment-body-$cli_name.md"
+  if content="$(_extract_reviewer_output "$output_file")"; then
+    { printf '%s\n\n' "$ECHO_GUARD_MARKER"; printf '%s' "$content"; } > "$content_file"
+    if [ "$status" = "ok" ]; then
+      content_status="ready"
+    else
+      content_status="withheld"
+    fi
+  else
+    content_status="no-content"
+    content_file=""
+  fi
+
+  printf 'cli=%s pid=%s exit=%s ended_at=%s worktree_status=%s content_status=%s content_file=%s\n' \
+    "$cli_name" "n/a" "n/a" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$status" "$content_status" "$content_file" \
     >> "$summary_file"
 }
 
@@ -2798,12 +2910,148 @@ spawn_supervisor() {
   disown
 }
 
+# spawn_supervisor_interactive <worktree_dir> <summary_file> <cli>...
+#
+# The interactive counterpart to spawn_supervisor above: same backgrounding
+# shape, same .supervisor.pid heartbeat file, same HUP-ignoring trap (see
+# spawn_supervisor's own docstring for why each of those exists -- nothing
+# about any of it is specific to headless), but polls a completely
+# different signal. spawn_supervisor waits for each reviewer's own child
+# process to exit (a PID it can `kill -0`); this function's reviewers are
+# not child processes of this script at all (see launch_reviewer_
+# interactive's own docstring), so there is no PID to poll. What it polls
+# instead is purely a filesystem check: for each cli still pending, whether
+# _extract_reviewer_output can successfully read a complete, marker-
+# terminated review out of that cli's fixed output file,
+# <base_dir>/reviewers/<cli>/workdir/review.md. As soon as it can, that cli
+# is handed to _record_reviewer_result_interactive and dropped from the
+# pending set; a cli whose file is missing, empty, or not yet ending in the
+# marker line simply stays pending and is checked again next pass.
+#
+# This loop calls no `herdr` command at all, and does not attempt to judge
+# whether a reviewer is stuck at a permission/approval dialog, has stalled
+# without ever starting, or will simply never finish -- detecting `blocked`
+# and enforcing a deadline are both explicitly left to the calling agent's
+# own wait loop (a later task), not to this shell subprocess. A consequence
+# worth being explicit about: this loop has no timeout of its own, so a
+# reviewer that never writes a marker-terminated review.md leaves its cli
+# in `pending` forever, and this subshell (and therefore the worktree
+# removal and any synthesis pass below it) never runs. This mirrors
+# spawn_supervisor's own lack of a timeout -- that one also polls
+# indefinitely, via `kill -0`, until every PID it was given has exited --
+# this is simply the same "no timeout of its own" property applied to
+# a file-marker check instead of a process-liveness check.
+spawn_supervisor_interactive() {
+  local worktree_dir="$1" summary_file="$2" base_dir
+  shift 2
+  local -a clis=("$@")
+  base_dir="$(dirname "$worktree_dir")"
+
+  (
+    trap '' HUP
+    printf '%s\n' "$BASHPID" > "$base_dir/.supervisor.pid"
+    : > "$summary_file"
+
+    local -a pending=("${clis[@]}") still=()
+    local cli output_file
+    while [ "${#pending[@]}" -gt 0 ]; do
+      still=()
+      for cli in "${pending[@]}"; do
+        output_file="$base_dir/reviewers/$cli/workdir/review.md"
+        if _extract_reviewer_output "$output_file" >/dev/null 2>&1; then
+          _record_reviewer_result_interactive "$cli" "$base_dir" "$worktree_dir" "$output_file" "$summary_file"
+        else
+          still+=("$cli")
+        fi
+      done
+      pending=("${still[@]+"${still[@]}"}")
+      [ "${#pending[@]}" -eq 0 ] || sleep 1
+    done
+
+    # Everything from here down (worktree removal through the synthesis
+    # pass) is spawn_supervisor's own merge segment, copied verbatim --
+    # not re-derived, not adjusted for anything above -- because this is
+    # exactly the "合流那一路不受影響" precondition this task was built on:
+    # none of the nine functions this segment calls (_count_ready,
+    # _select_synthesis_cli, build_synthesis_prompt,
+    # _write_opencode_synthesis_permission_config, launch_synthesis,
+    # _record_synthesis_result, and the two _ready_content_files/
+    # _disclosure_status_label helpers build_synthesis_prompt calls) parse
+    # or depend on pid= being numeric, so the switch to pid=n/a above
+    # changes nothing about how this segment behaves.
+    #
+    # One dependency this segment carries that is now a genuinely new
+    # concern, not merely an unmodified copy: `git worktree remove --force
+    # "$worktree_dir"` below has no `-C "$worktree_dir"`/`-C <repo>` of its
+    # own, so it resolves which repository to act on from whatever this
+    # process's *current working directory* happens to be -- it relies on
+    # being run from inside the target repo's checkout. For spawn_supervisor
+    # that was always true by construction: main() runs synchronously from
+    # cmd_prepare()'s single invocation, in the cwd the user already ran
+    # run-review.sh from. cmd_launch() -- this function's own caller -- is
+    # now a *separate* process invocation from cmd_prepare() (the prepare/
+    # launch split), so this same assumption now depends on whoever invokes
+    # `run-review.sh launch` doing so from that same repo's cwd too. That
+    # calling-convention contract ("launch must be invoked from the target
+    # repo's cwd") is documented for callers in this skill's own usage
+    # instructions (a separate task's responsibility); this comment exists
+    # so the dependency itself isn't silently lost sight of here, at the
+    # one line that actually exercises it.
+
+    # Undo main()'s `chmod -R a-w` before removing -- `git worktree
+    # remove` needs write access to actually delete the tree.
+    chmod -R u+w "$worktree_dir" 2>/dev/null || true
+    git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+
+    # Synthesis runs after the worktree is gone on purpose: it works only
+    # from the review texts already extracted into content files, so it
+    # neither needs nor should have access to the code under review. Its
+    # own log is deliberately placed directly under base_dir, a sibling
+    # of logs_dir, rather than inside logs_dir itself -- main() applies
+    # `chmod -R a-w` to logs_dir once every reviewer has been launched,
+    # and synthesis starts well after that point, so a new file inside
+    # logs_dir could never be created in the first place.
+    local ready_count synth_cli synth_model synth_log synth_pid synth_contract
+    ready_count="$(_count_ready "$summary_file")"
+    if [ "$ready_count" -ge 2 ]; then
+      synth_cli="$(_select_synthesis_cli "$summary_file")"
+      synth_model="$(resolve_model "$synth_cli")"
+      synth_log="$(_synthesis_log_path "$base_dir")"
+      if synth_contract="$(resolve_synthesis_contract_path)"; then
+        # build_synthesis_prompt itself now refuses (non-zero, and no
+        # launch attempted) when none of the ready reviewers' content
+        # files could actually be embedded -- see its own docstring.
+        # Guarded explicitly here, rather than left to this subshell's
+        # inherited set -e, so that failure visibly skips launch_synthesis
+        # instead of launching it against an empty or partial prompt.
+        if build_synthesis_prompt "$synth_contract" "$base_dir/.roster" "$summary_file" \
+             "$synth_cli" "$synth_model" > "$base_dir/.synthesis-prompt"; then
+          if synth_pid="$(launch_synthesis "$synth_cli" "$base_dir" "$synth_log" \
+               < "$base_dir/.synthesis-prompt")"; then
+            while kill -0 "$synth_pid" 2>/dev/null; do sleep 1; done
+            _record_synthesis_result "$synth_pid" "$synth_cli" "$synth_log" "$base_dir" "$summary_file"
+          fi
+        fi
+      fi
+    fi
+  ) &
+  disown
+}
+
 # print_summary <logs_dir> <dispatched_cli>... --skipped <skipped_cli>...
 #
 # Prints the dispatch summary the skill relays to the user: which reviewers
 # were actually launched (with each one's PID, read back from the
-# <cli>.pid file cmd_launch() writes right after launch_reviewer, and its
-# log file path), and which were skipped because that CLI wasn't installed.
+# <cli>.pid file, and its log file path), and which were skipped because
+# that CLI wasn't installed. As of Task 6, cmd_launch()'s own production
+# per-CLI loop no longer writes either file -- it dispatches through
+# launch_reviewer_interactive, which has no PID and writes review.md, not
+# a <cli>.log -- so both fields below print their existing "missing"
+# fallback (未知 / a log path that was never created) for every reviewer
+# launched that way; the PID/.log description below still describes this
+# function's own mechanism correctly, and still matches the (unmodified)
+# headless launch_reviewer path this file's tests keep exercising
+# directly, it is just no longer what cmd_launch() itself feeds it.
 # When exactly one reviewer was dispatched, adds a line calling out that
 # cross-validation across independent reviewers does not hold for this run.
 # When two or more were dispatched, adds a line noting that a synthesis
@@ -2961,29 +3209,32 @@ resolve_base_ref() {
   printf 'origin/%s\n' "$base_ref_name"
 }
 
-# _dispatch_failed_cleanup <worktree_dir> <already_launched_pid>...
+# _dispatch_failed_cleanup <worktree_dir> <already_dispatched_cli>...
 #
 # cmd_prepare()'s per-CLI loop calls resolve_model and build_prompt, and
-# cmd_launch()'s own per-CLI loop calls launch_reviewer, once per detected
-# CLI; under set -e, any one of those failing partway through (say, on the
-# second of three CLIs) would abort that loop's function right there with
-# no further cleanup -- leaving the worktree in place forever (nothing else
-# in this script's lifetime ever removes it outside spawn_supervisor, which
-# this abort path never reaches) and, if a CLI *before* the one that failed
-# already got launched, its process running as a permanent orphan with no
-# spawn_supervisor ever tracking it to completion or recording its exit.
-# Both are silent resource leaks with no error surfaced anywhere else,
-# which is why cmd_prepare() and cmd_launch() each call this instead of
-# just letting set -e abort bare: it reports exactly which already-
-# launched PIDs are now unsupervised (so a human has something to `kill`
-# or `ps` on) and makes a best-effort attempt to remove the worktree before
-# the caller exits non-zero.
+# cmd_launch()'s own per-CLI loop calls launch_reviewer_interactive, once
+# per detected CLI; under set -e, any one of those failing partway through
+# (say, on the second of three CLIs) would abort that loop's function
+# right there with no further cleanup -- leaving the worktree in place
+# forever (nothing else in this script's lifetime ever removes it outside
+# spawn_supervisor/spawn_supervisor_interactive, which this abort path
+# never reaches) and, if a CLI *before* the one that failed was already
+# dispatched, its herdr pane running as a permanent orphan with no
+# supervisor ever tracking it to completion or recording its exit. Both
+# are silent resource leaks with no error surfaced anywhere else, which is
+# why cmd_prepare() and cmd_launch() each call this instead of just
+# letting set -e abort bare: it reports exactly which reviewers were
+# already dispatched and are now unsupervised (cmd_launch() passes their
+# cli names; this function does not otherwise care what the trailing
+# values are, it only ever interpolates them into the message below) and
+# makes a best-effort attempt to remove the worktree before the caller
+# exits non-zero.
 _dispatch_failed_cleanup() {
   local worktree_dir="$1"
   shift
 
   if [ "$#" -gt 0 ]; then
-    printf 'run-review.sh: reviewer dispatch failed partway through; PID(s) already launched and now unsupervised: %s\n' "$*" >&2
+    printf 'run-review.sh: reviewer dispatch failed partway through; already dispatched and now unsupervised: %s\n' "$*" >&2
   else
     printf 'run-review.sh: reviewer dispatch failed before any reviewer was launched\n' >&2
   fi
@@ -3175,24 +3426,34 @@ cmd_prepare() {
 # The launch half of the pipeline: parse the named flags (see
 # parse_launch_args), re-verify every named cli is still on PATH (see
 # verify_selection), then for each named cli read back the prompt file
-# cmd_prepare wrote for it, launch it (see launch_reviewer), record its
-# PID, hand every launched PID to spawn_supervisor, and print the dispatch
-# summary (see print_summary). .roster is already on disk by this point --
-# cmd_prepare wrote it, not this function (see cmd_prepare's own docstring
-# and its .roster-writing loop). launch_reviewer here is
-# the same implementation cmd_prepare's own dispatch loop used before this
-# split into two subcommands -- a later task replaces it with herdr's own
-# start-in-pane mechanism; the <cli>:<pane_id> pairs parse_launch_args
-# prints are read back here but not yet acted on for that reason.
-# parse_launch_args itself exits 2 on a usage error, the same convention
-# parse_args uses; verify_selection exits 3 on a platform that isn't on
-# PATH, the same convention cmd_prepare's own call to it uses -- see the
-# comment on that second call below for why cmd_prepare's own check is not
-# enough to rely on here.
+# cmd_prepare wrote for it and start it inside its already-created herdr
+# pane (see launch_reviewer_interactive), hand every dispatched cli name to
+# spawn_supervisor_interactive, and print the dispatch summary (see
+# print_summary). .roster is already on disk by this point -- cmd_prepare
+# wrote it, not this function (see cmd_prepare's own docstring and its
+# .roster-writing loop).
+#
+# No PID is ever recorded here: an interactively-started reviewer runs
+# inside a pane herdr itself manages, not as a child process of this
+# script (see launch_reviewer_interactive's own docstring), so there is
+# nothing to record a PID for. spawn_supervisor_interactive is handed cli
+# names instead, and polls each one's fixed output file
+# (<base_dir>/reviewers/<cli>/workdir/review.md) rather than a PID (see its
+# own docstring).
+#
+# The headless launch_reviewer is NOT called from here any more -- see its
+# own docstring for why it is kept regardless, unchanged. parse_launch_args
+# itself exits 2 on a usage error, the same convention parse_args uses;
+# verify_selection exits 3 on a platform that isn't on PATH, the same
+# convention cmd_prepare's own call to it uses -- see the comment on that
+# second call below for why cmd_prepare's own check is not enough to rely
+# on here.
 cmd_launch() {
   local base_dir="" logs_dir summary_file worktree_dir
-  local cli pid parsed parsed_line agent_pair
-  local -a all_reviewers=() skipped=() pids=()
+  local cli parsed parsed_line agent_pair
+  local reviewer_workdir reviewer_home prompt_file
+  local -a all_reviewers=() skipped=() dispatched=()
+  local -A pane_id_by_cli=()
 
   parsed="$(parse_launch_args "$@")" || exit $?
   while IFS= read -r parsed_line; do
@@ -3200,7 +3461,9 @@ cmd_launch() {
       base_dir=*) base_dir="${parsed_line#base_dir=}" ;;
       agent=*)
         agent_pair="${parsed_line#agent=}"
-        all_reviewers+=("${agent_pair%%:*}")
+        cli="${agent_pair%%:*}"
+        all_reviewers+=("$cli")
+        pane_id_by_cli["$cli"]="${agent_pair#*:}"
         ;;
     esac
   done <<< "$parsed"
@@ -3216,57 +3479,56 @@ cmd_launch() {
   # on PATH at prepare time is not guaranteed to still be there now. Without
   # this, a cli removed or shadowed during that delay would not fail
   # cleanly with exit 3 the way an initial bad selection does -- it would
-  # reach launch_reviewer, fail there as a plain "command not found" (exit
-  # 127), and surface only as a blank entry in the summary, after every
-  # other selected reviewer has already been launched for real.
+  # reach launch_reviewer_interactive, fail there as a plain "command not
+  # found" (exit 127) from inside the pane, and surface only as a reviewer
+  # that never produces a marker-terminated review.md, after every other
+  # selected reviewer has already been launched for real.
   verify_selection "${all_reviewers[@]}" || exit 3
 
   for cli in "${all_reviewers[@]}"; do
+    # reviewer_workdir/reviewer_home already exist on disk -- cmd_prepare's
+    # own per-CLI loop created both (see its docstring) in the earlier
+    # `prepare` invocation; this function only derives their paths again,
+    # it does not create them.
+    reviewer_workdir="$base_dir/reviewers/$cli/workdir"
+    reviewer_home="$base_dir/reviewers/$cli/home"
+    prompt_file="$logs_dir/$cli.prompt"
+
     # Each step below is checked explicitly (rather than as a bare
     # statement) so a failure partway through this loop runs
     # _dispatch_failed_cleanup instead of letting set -e abort cmd_launch()
-    # with an already-launched reviewer or the worktree left behind with
+    # with an already-dispatched reviewer or the worktree left behind with
     # nothing to clean it up.
-    if ! pid="$(launch_reviewer "$cli" "$worktree_dir" "$logs_dir/$cli.log" < "$logs_dir/$cli.prompt")"; then
-      _dispatch_failed_cleanup "$worktree_dir" "${pids[@]+"${pids[@]}"}"
+    if ! launch_reviewer_interactive "$cli" "${pane_id_by_cli[$cli]}" "$worktree_dir" \
+         "$reviewer_workdir" "$reviewer_home" "$prompt_file" >/dev/null; then
+      _dispatch_failed_cleanup "$worktree_dir" "${dispatched[@]+"${dispatched[@]}"}"
       exit 1
     fi
-    pids+=("$pid")
-    printf '%s\n' "$pid" > "$logs_dir/$cli.pid"
+    dispatched+=("$cli")
   done
 
   # logs_dir gets the same read-only treatment as the worktree, applied
-  # only now that every reviewer has actually been launched (every
-  # redirect into <cli>.log/<cli>.log.stderr is through a file descriptor
-  # already opened before this point -- chmod does not revoke an
-  # already-open fd's ability to keep writing, only new open() calls from
-  # here on are blocked by the permission bits). This closes a real gap
-  # the worktree-only chmod left open: a reviewer that can still write
-  # despite its own CLI's sandbox/permission flags (see launch_reviewer's
-  # docstring on why those aren't the actual guarantee) could otherwise
-  # reach logs_dir just as easily as the worktree -- the worktree's own
-  # absolute path is right there in its prompt, and logs_dir is a
-  # constant sibling directory one level up -- and overwrite another
-  # reviewer's log (impersonating that CLI's review) or write arbitrary
-  # content, e.g. a credentials file, wrapped in the contract's own
-  # markers into any log; spawn_supervisor trusts whatever it finds
-  # between the markers and would extract it into that reviewer's
-  # content file verbatim, for the calling agent to post exactly as if
-  # it came from the real reviewer. The worktree's own git-status
-  # comparison is blind to this path entirely, since logs_dir lives
-  # outside the worktree.
+  # only now that every reviewer has actually been dispatched. logs_dir
+  # still holds each cli's own <cli>.prompt file (the only thing left in
+  # it once launch_reviewer_interactive stopped writing <cli>.log/<cli>.pid
+  # here -- its own output goes to reviewer_workdir/review.md instead, a
+  # different directory entirely, not covered by this chmod); protecting
+  # those prompt files from being overwritten for the rest of this run is
+  # still worth doing even though the specific log-impersonation risk the
+  # original comment here described no longer applies the same way.
   #
   # Unlike the worktree chmod cmd_prepare() applies, a failure here is not
-  # treated as a hard-abort precondition: every reviewer is already running
-  # by this point, so aborting would only orphan them (nothing would ever
-  # supervise them to completion or write a summary line for them) while
-  # not actually making the exposure this closes any worse than it
-  # already was before this line ever ran. Best-effort, logged loudly.
+  # treated as a hard-abort precondition: every reviewer is already
+  # dispatched by this point, so aborting would only orphan them (nothing
+  # would ever supervise them to completion or write a summary line for
+  # them) while not actually making the exposure this closes any worse
+  # than it already was before this line ever ran. Best-effort, logged
+  # loudly.
   if ! chmod -R a-w "$logs_dir" 2>/dev/null; then
     printf 'run-review.sh: WARNING: failed to make the logs directory read-only; logs remain writable for the duration of this run\n' >&2
   fi
 
-  spawn_supervisor "$worktree_dir" "$summary_file" "${pids[@]}"
+  spawn_supervisor_interactive "$worktree_dir" "$summary_file" "${all_reviewers[@]}"
 
   # skipped is always empty here: platform selection is explicit and
   # verified during the earlier prepare invocation (see verify_selection),
@@ -3281,9 +3543,10 @@ cmd_launch() {
 # Top-level dispatch only. Otherwise the first argument selects one of the
 # two pipeline phases -- prepare (see cmd_prepare) does every precondition
 # check, sets up the worktree, and writes each selected reviewer's prompt
-# file; launch (see cmd_launch) reads those prompt files back, launches
-# each named reviewer, and hands them to spawn_supervisor. Any other first
-# argument, or none at all, is a usage error, exit code 2 -- the same code
+# file; launch (see cmd_launch) reads those prompt files back, starts each
+# named reviewer inside its herdr pane, and hands them to
+# spawn_supervisor_interactive. Any other first argument, or none at all,
+# is a usage error, exit code 2 -- the same code
 # cmd_prepare's own parse_args and cmd_launch's own parse_launch_args use
 # for their own usage errors.
 main() {
