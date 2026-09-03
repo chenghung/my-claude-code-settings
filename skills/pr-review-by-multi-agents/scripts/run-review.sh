@@ -439,6 +439,27 @@ check_clis() {
   done
 }
 
+# _check_herdr_env
+#
+# Confirms this process is itself running inside a herdr-managed pane.
+# HERDR_ENV=1 is herdr's own signal for that -- the same variable and the
+# same `test "${HERDR_ENV:-}" = 1` check herdr's own skill definition uses,
+# confirmed present (alongside HERDR_TAB_ID/HERDR_PANE_ID/HERDR_SOCKET_PATH)
+# in a real herdr pane's environment. herdr is a hard prerequisite for
+# prepare and launch: every reviewer either of them ends up dispatching
+# runs interactively inside a herdr pane (see SKILL.md), so a run started
+# outside one cannot succeed no matter what flags follow it. Both of
+# main()'s prepare/launch branches call this before doing anything else --
+# see main()'s own docstring on why --check-clis is deliberately exempt.
+# Prints a reason and returns 1 on failure; prints nothing and returns 0
+# when HERDR_ENV is exactly "1".
+_check_herdr_env() {
+  if [ "${HERDR_ENV:-}" != 1 ]; then
+    printf 'run-review.sh: must run inside a herdr pane (HERDR_ENV is not 1); this skill requires herdr for its interactive reviewers -- see SKILL.md\n' >&2
+    return 1
+  fi
+}
+
 # parse_args <arg>...
 #
 # Parses the named-flag command line and prints four lines: pr=, issue=,
@@ -642,6 +663,57 @@ verify_selection() {
   if [ "${#missing[@]}" -gt 0 ]; then
     printf 'run-review.sh: selected but not installed: %s\n' "${missing[*]}" >&2
     return 3
+  fi
+}
+
+# _check_agents_selected <base_dir> <cli>...
+#
+# Confirms every cli named on cmd_launch()'s own --agent flags was actually
+# selected by the matching prepare invocation, by reading back
+# <base_dir>/.roster -- cmd_prepare's own record of which clis it
+# dispatched (one "<cli> <model> dispatched" line per selected cli; see
+# cmd_prepare's own .roster-writing loop). A cli launch names that prepare
+# never selected has no prompt file, no reviewer_workdir, no reviewer_home
+# -- prepare never created any of them for it -- so letting it through
+# here would only surface later as a confusing, harder-to-diagnose failure
+# instead of the plain caller mistake it actually is. Parsed with a pure
+# shell loop, not grep/sed, the same reason cmd_prepare's own flag-parsing
+# loop gives for avoiding an external filter here: this runs before any
+# external tool's presence is a settled fact.
+#
+# Returns 2 -- the same usage-error code parse_args and parse_launch_args
+# already use -- both when .roster itself is missing (this base_dir was
+# never `prepare`d, or was prepared by a build that predates .roster) and
+# when it exists but is missing an entry for a named cli. Does not return
+# 3: verify_selection's exit 3 means "was selected, but is no longer on
+# PATH", a different fact from "was never selected at all".
+_check_agents_selected() {
+  local base_dir="$1"
+  shift
+  local roster_file="$base_dir/.roster"
+  local cli line found sel
+  local -a selected=() unselected=()
+
+  if [ ! -f "$roster_file" ]; then
+    printf 'run-review.sh: %s has no .roster file -- was prepare ever run against this --base-dir?\n' "$base_dir" >&2
+    return 2
+  fi
+
+  while IFS= read -r line; do
+    selected+=("${line%% *}")
+  done < "$roster_file"
+
+  for cli in "$@"; do
+    found=0
+    for sel in "${selected[@]+"${selected[@]}"}"; do
+      [ "$sel" = "$cli" ] && { found=1; break; }
+    done
+    [ "$found" -eq 1 ] || unselected+=("$cli")
+  done
+
+  if [ "${#unselected[@]}" -gt 0 ]; then
+    printf 'run-review.sh: --agent named a platform prepare did not select: %s\n' "${unselected[*]}" >&2
+    return 2
   fi
 }
 
@@ -1991,11 +2063,11 @@ launch_reviewer() {
 # entirely rather than passed as dontAsk, per a separate probe's
 # empirical finding that auto -- not dontAsk -- is already claude's
 # default permission mode under `agent start` when the flag is omitted:
-# a real `agent start` invocation with no --permission-mode flag showed
-# "auto mode on" in the pane's own rendered status bar (screen capture,
-# not inference from --help text; see
-# docs/superpowers/specs/2026-09-02-large-prompt-delivery-probe-findings.md,
-# 觀測 2) -- passing --permission-mode explicitly would add nothing.
+# starting claude via herdr's `agent start` with no --permission-mode flag
+# at all, the pane's own rendered status bar showed, verbatim, "auto mode
+# on" -- a screen capture of the pane's own rendered state, not an
+# inference from --help text (that probe's full record is not in this
+# repo) -- so passing --permission-mode explicitly would add nothing.
 # Also gone: `-p`, which only makes sense for claude's headless,
 # non-interactive mode.
 #
@@ -2090,7 +2162,27 @@ launch_reviewer_interactive() {
     return 1
   fi
 
-  prompt_bytes="$(wc -c < "$prompt_file")"
+  # Checked explicitly, as its own `if`, rather than trusting `wc -c`'s own
+  # exit status through a bare `var="$(wc -c < "$prompt_file")"` assignment:
+  # this function's only caller (cmd_launch) invokes it as `if !
+  # launch_reviewer_interactive ...; then`, and bash exempts an entire
+  # function call from `set -e` for the whole time it runs when the call
+  # itself is a `if`/`while`/`&&`/`||` condition -- confirmed against a real
+  # bash, not assumed. Without this explicit check, a missing or unreadable
+  # prompt_file made the `<` redirection fail, the substitution came back
+  # empty, and `(( "" > PROMPT_BYTE_LIMIT ))` silently evaluated the empty
+  # string as 0 -- the size guard passed, and `herdr agent prompt` below
+  # was reached and given an empty prompt instead of ever failing.
+  if [ ! -r "$prompt_file" ]; then
+    printf 'launch_reviewer_interactive: prompt file for %s is missing or unreadable: %s\n' \
+      "$cli_name" "$prompt_file" >&2
+    return 1
+  fi
+  prompt_bytes="$(wc -c < "$prompt_file")" || {
+    printf 'launch_reviewer_interactive: failed to read the size of %s prompt file: %s\n' \
+      "$cli_name" "$prompt_file" >&2
+    return 1
+  }
   if (( prompt_bytes > PROMPT_BYTE_LIMIT )); then
     printf 'launch_reviewer_interactive: prompt for %s is %d bytes, exceeds limit of %d bytes\n' \
       "$cli_name" "$prompt_bytes" "$PROMPT_BYTE_LIMIT" >&2
@@ -2174,20 +2266,35 @@ _extract_review_content() {
 # single-marker shape.
 #
 # Returns 1, printing nothing, when the file is empty/missing, its last
-# line isn't the marker verbatim, or the content left after stripping the
-# marker is empty -- the same three failure shapes _extract_review_content
-# guards against for its own format. This function is also what
-# spawn_supervisor_interactive's poll loop uses to decide a reviewer is
-# done at all (see its own docstring): until this returns 0 for a given
-# cli, that cli's output file is treated as still being written, not as a
-# finished-but-untrustworthy result.
+# line isn't the marker verbatim, the marker appears anywhere else in the
+# file besides that last line, or the content left after stripping the
+# marker is empty -- the single definition SKILL.md's own 產出物位置
+# section commits to (file exists, the marker's last-line occurrence is
+# the whole file's only one, content above it is non-empty), all three
+# checked here since this is the actual decider spawn_supervisor_interactive's
+# poll loop and _record_reviewer_result_interactive both rely on: until
+# this returns 0 for a given cli, that cli's output file is treated as
+# still being written, not as a finished-but-untrustworthy result. The
+# uniqueness check matters on its own, not just as a stricter reading of
+# "last line" -- a second, earlier occurrence of the marker elsewhere in
+# the file would otherwise still pass (the last-line check alone never
+# looks past the last line), and everything from the file's start up to
+# that earlier occurrence's own position is not what `sed '$d'` extracts;
+# the content this function returns would silently include the earlier
+# marker line verbatim, which is exactly the shape SKILL.md's own contract
+# names as the one failure mode that gets untrustworthy content posted to
+# the PR.
 _extract_reviewer_output() {
   local output_file="$1"
-  local last_line content
+  local end_marker='===PR-REVIEW-BY-MULTI-AGENTS-END==='
+  local last_line content marker_count
 
   [ -s "$output_file" ] || return 1
   last_line="$(tail -n 1 "$output_file")"
-  [ "$last_line" = "===PR-REVIEW-BY-MULTI-AGENTS-END===" ] || return 1
+  [ "$last_line" = "$end_marker" ] || return 1
+
+  marker_count="$(grep -c -x -F "$end_marker" "$output_file")" || marker_count=0
+  [ "$marker_count" -eq 1 ] || return 1
 
   content="$(sed '$d' "$output_file")"
   [ -n "$content" ] || return 1
@@ -2700,13 +2807,17 @@ launch_synthesis() {
       # writing: agy's write tool is not gated by this permission layer at
       # all (see the agy bullet in launch_reviewer's own docstring), so it
       # stays reachable regardless of what this list contains. That gap is
-      # more exposed here than for a reviewer -- a reviewer's write
-      # attempts are still stopped by the worktree's read-only chmod, but
-      # by the time synthesis runs the worktree has already been removed,
-      # its cwd is base_dir (never chmod'd), and its isolated HOME carries
-      # symlinks to the user's real credential files (see _write_agy_home).
-      # Left open, not closed by this list; recorded here rather than
-      # overstated.
+      # more exposed here than for a reviewer, and worse than base_dir
+      # itself: a reviewer's write attempts are still stopped by the
+      # worktree's read-only chmod, but this branch's own cmd array below
+      # carries no directory flag at all (unlike codex's -C or opencode's
+      # --dir just above), so agy inherits whatever cwd this script's own
+      # caller was already running in when launch started -- per that
+      # caller's own contract, the user's actual repo working copy, not
+      # base_dir, and more sensitive than base_dir would have been. Its
+      # isolated HOME also carries symlinks to the user's real credential
+      # files (see _write_agy_home). Left open, not closed by this list;
+      # recorded here rather than overstated.
       jq -n '{permissions: {allow: []}}' \
         > "$agy_home/.gemini/antigravity-cli/settings.json" || return 1
       # No -p/--print flag at all, on purpose -- the same reasoning and
@@ -3502,14 +3613,16 @@ cmd_prepare() {
 # cmd_launch --base-dir <path> --agent <cli>=<pane_id>...
 #
 # The launch half of the pipeline: parse the named flags (see
-# parse_launch_args), re-verify every named cli is still on PATH (see
-# verify_selection), then for each named cli read back the prompt file
-# cmd_prepare wrote for it and start it inside its already-created herdr
-# pane (see launch_reviewer_interactive), hand every dispatched cli name to
-# spawn_supervisor_interactive, and print the dispatch summary (see
-# print_summary). .roster is already on disk by this point -- cmd_prepare
-# wrote it, not this function (see cmd_prepare's own docstring and its
-# .roster-writing loop).
+# parse_launch_args), confirm every named cli was actually selected by the
+# matching prepare invocation (see _check_agents_selected), re-verify every
+# named cli is still on PATH (see verify_selection), then for each named
+# cli read back the prompt file cmd_prepare wrote for it and start it
+# inside its already-created herdr pane (see launch_reviewer_interactive),
+# hand every dispatched cli name to spawn_supervisor_interactive, and print
+# the dispatch summary (see print_summary). .roster is already on disk by
+# this point -- cmd_prepare wrote it, not this function (see cmd_prepare's
+# own docstring and its .roster-writing loop) -- and is what
+# _check_agents_selected reads back.
 #
 # No PID is ever recorded here: an interactively-started reviewer runs
 # inside a pane herdr itself manages, not as a child process of this
@@ -3522,10 +3635,11 @@ cmd_prepare() {
 # The headless launch_reviewer is NOT called from here any more -- see its
 # own docstring for why it is kept regardless, unchanged. parse_launch_args
 # itself exits 2 on a usage error, the same convention parse_args uses;
-# verify_selection exits 3 on a platform that isn't on PATH, the same
-# convention cmd_prepare's own call to it uses -- see the comment on that
-# second call below for why cmd_prepare's own check is not enough to rely
-# on here.
+# _check_agents_selected also exits 2, on the same usage-error tier, for a
+# named cli prepare never selected; verify_selection exits 3 on a platform
+# that isn't on PATH, the same convention cmd_prepare's own call to it
+# uses -- see the comment on that second call below for why cmd_prepare's
+# own check is not enough to rely on here.
 cmd_launch() {
   local base_dir="" logs_dir summary_file worktree_dir
   local cli parsed parsed_line agent_pair
@@ -3549,6 +3663,15 @@ cmd_launch() {
   worktree_dir="$base_dir/worktree"
   logs_dir="$base_dir/logs"
   summary_file="$base_dir/summary.txt"
+
+  # Must run before verify_selection below: a cli named on --agent that
+  # prepare never selected has no prompt file, no reviewer_workdir, no
+  # reviewer_home under this base_dir -- prepare never created any of them
+  # for it -- so this is a caller/usage mistake, not a "no longer on PATH"
+  # fact, and it should be rejected with that distinct meaning (exit 2, see
+  # _check_agents_selected's own docstring) before verify_selection's PATH
+  # check gets a chance to report a different, misleading reason instead.
+  _check_agents_selected "$base_dir" "${all_reviewers[@]}" || exit 2
 
   # cmd_prepare already ran this same check, but that was a separate,
   # earlier process invocation -- prepare and launch are split into two
@@ -3631,7 +3754,17 @@ cmd_launch() {
 # spawn_supervisor_interactive. Any other first argument, or none at all,
 # is a usage error, exit code 2 -- the same code
 # cmd_prepare's own parse_args and cmd_launch's own parse_launch_args use
-# for their own usage errors.
+# for their own usage errors. Both the prepare and launch branches below
+# check _check_herdr_env first and exit 4 on failure -- a code reserved for
+# exactly this failure, before either subcommand's own parsing or
+# precondition checks run and before either has a single side effect to
+# protect against (no gh round-trip, no repo mutation, no directory
+# created). --check-clis is deliberately NOT gated the same way: it is
+# already a side-effect-free PATH probe (see its own docstring) that the
+# calling skill runs before the user has even chosen a combination,
+# plausibly before a herdr session exists at all -- gating it here would
+# turn a herdr-independent diagnostic into one that spuriously requires
+# herdr too, for no side effect it would actually be preventing.
 main() {
   # --check-clis is a standalone preflight mode: it must not run any other
   # precondition check and must not create anything, because the skill
@@ -3641,8 +3774,8 @@ main() {
     return 0
   fi
   case "${1:-}" in
-    prepare) shift; cmd_prepare "$@" ;;
-    launch) shift; cmd_launch "$@" ;;
+    prepare) shift; _check_herdr_env || exit 4; cmd_prepare "$@" ;;
+    launch) shift; _check_herdr_env || exit 4; cmd_launch "$@" ;;
     *)
       printf 'run-review.sh: expected a subcommand (prepare|launch) or --check-clis\n' >&2
       exit 2
