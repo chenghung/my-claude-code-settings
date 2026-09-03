@@ -901,7 +901,7 @@ _reap_stale_run_dirs() {
 # as gh being missing.
 setup_worktree() {
   local owner="$1" repo="$2" number="$3" base_dir="$4"
-  local worktree_path pr_ref stale_ref
+  local worktree_path pr_ref stale_ref stale_pid
 
   # Fail fast if the cwd's origin doesn't actually point at this PR's own
   # repo, rather than silently fetching/reviewing the wrong codebase. See
@@ -930,8 +930,22 @@ setup_worktree() {
   # no confirmation prompt, since the model-facing consent gate in
   # SKILL.md is natural language a human reads, not something this script
   # invoked directly (skipping SKILL.md entirely) ever goes through.
+  #
+  # git's "still checked out" guard is not the only race this loop needs
+  # to survive: this function creates its own branch (a few lines below)
+  # before checking it out, so a concurrent prepare running this same
+  # loop during that window would otherwise see a branch matching the
+  # exact ref shape above that is not yet checked out anywhere, and
+  # delete it out from under the run that just created it. The PID
+  # liveness check below closes that window the same way
+  # _reap_stale_run_dirs already does for sibling run directories: skip
+  # any ref whose trailing PID segment still names a live process, since
+  # a branch created by a still-running invocation is never stale
+  # regardless of whether it has been checked out yet.
   while IFS= read -r stale_ref; do
     if [[ "$stale_ref" =~ ^pr-review-[0-9]+-[0-9]+$ ]]; then
+      stale_pid="${stale_ref##*-}"
+      kill -0 "$stale_pid" 2>/dev/null && continue
       git branch -D "$stale_ref" >/dev/null 2>&1 || true
     fi
   done < <(git for-each-ref --format='%(refname:short)' 'refs/heads/pr-review-*' 2>/dev/null)
@@ -2638,7 +2652,14 @@ build_synthesis_prompt() {
   local synth_cli="$4" synth_model="$5"
   local cli status content_file model embedded_count=0
 
-  cat "$contract_path"
+  # Guarded like build_prompt's own `contract="$(cat ...)" || return 1`:
+  # this function runs inside spawn_supervisor's `if build_synthesis_prompt
+  # ...; then` call, which exempts the entire function body from the
+  # subshell's inherited errexit for the duration of that call. Without
+  # this guard, a failed read here would be silently swallowed and the
+  # function would continue on to print the coordinates, roster, and
+  # review text as if the contract had been read successfully.
+  cat "$contract_path" || return 1
 
   printf '\n\n## 執行本次合流的身分\n\n'
   printf '下列是執行這次合流的 CLI 與其 model，也就是輸出開頭揭露段落中必須據實填入的你自己的身分，不得自行猜測、預設或改寫。\n\n'

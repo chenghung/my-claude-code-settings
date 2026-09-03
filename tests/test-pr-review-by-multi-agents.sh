@@ -1345,6 +1345,28 @@ git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-no
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-42 && pass setup-worktree-preserves-single-number-user-branch || bad setup-worktree-preserves-single-number-user-branch
 
+# A branch matching this function's own exact stale-ref shape, but NOT
+# checked out anywhere -- exactly the window this function's own docstring
+# risk covers: it creates its ref before checking it out, so a concurrent
+# prepare running this same loop during that window would otherwise see a
+# branch that fits the shape yet isn't checked out yet, and delete it out
+# from under the run that just created it. Git's "still checked out" guard
+# does not cover this window at all, so the only thing that can is a
+# liveness check on the ref's own trailing PID segment -- the same check
+# _reap_stale_run_dirs already does for stale run directories. $$ (this
+# test script's own PID) stands in for that still-running owner, since it
+# is genuinely alive for the whole duration of this test run.
+git -C "$CLEANUP_FIXTURE/work" branch "pr-review-77-$$" main
+
+# PR 888 has no matching pull ref on this fixture's remote, so this call
+# fails at the fetch step -- but the branch-cleanup loop under test runs
+# before that fetch, so the failure doesn't prevent it from exercising the
+# liveness check.
+(cd "$CLEANUP_FIXTURE/work" && setup_worktree acme widgets 888 "$T/setup-worktree-cleanup-check2") >/dev/null 2>&1 || true
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet "refs/heads/pr-review-77-$$" && pass setup-worktree-preserves-branch-with-live-pid || bad setup-worktree-preserves-branch-with-live-pid
+
 # ==============================================================
 # _git_status_snapshot
 # ==============================================================
@@ -4563,6 +4585,22 @@ if grep -qF -- '- claude / 未提供：完成' <<<"$noroster_out"; then
   pass "build_synthesis_prompt 名單檔整個不存在時把 model 寫成未提供"
 else
   bad "build_synthesis_prompt 名單檔整個不存在時未寫成未提供"
+fi
+
+# ---- 契約檔本身讀不到（路徑指向不存在的檔案）時，函式必須整個中
+# 止，不得吞掉這個失敗、繼續往下印出座標、名單與各份 review 全文後仍
+# 回傳成功。這是與 build_prompt 姊妹函式先前已修過的同一種缺陷：這裡
+# 的呼叫跟 spawn_supervisor 自己的呼叫一樣包在 `if build_synthesis_prompt
+# ...; then` 底下，整個函式體因此豁免 set -e 的 errexit，函式裡沒接
+# `|| return 1` 的那一行讀檔失敗就會被靜默吞掉，讓呼叫端拿到一份完全
+# 沒有合流契約指示、卻仍判定為成功的 prompt。----
+NO_CONTRACT_FILE="$T/synth/nonexistent-contract.md"
+if nocontract_out="$(build_synthesis_prompt \
+  "$NO_CONTRACT_FILE" \
+  "$T/synth/roster.txt" "$T/synth/summary.txt" "claude" "some-synth-model" 2>/dev/null)"; then
+  bad "build_synthesis_prompt 契約檔讀不到時仍回傳成功: $nocontract_out"
+else
+  pass "build_synthesis_prompt 契約檔讀不到時回傳非零"
 fi
 
 # ==============================================================
