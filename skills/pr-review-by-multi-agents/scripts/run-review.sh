@@ -1988,10 +1988,16 @@ launch_reviewer() {
 # --disallowedTools here therefore names only WebFetch (no task here has
 # any legitimate need for network access, the same reasoning as
 # launch_reviewer's own claude bullet); --permission-mode is left unset
-# entirely rather than passed as dontAsk, per this task's own empirical
-# finding that dontAsk is already claude's default permission mode under
-# `agent start` -- passing it explicitly added nothing. Also gone: `-p`,
-# which only makes sense for claude's headless, non-interactive mode.
+# entirely rather than passed as dontAsk, per a separate probe's
+# empirical finding that auto -- not dontAsk -- is already claude's
+# default permission mode under `agent start` when the flag is omitted:
+# a real `agent start` invocation with no --permission-mode flag showed
+# "auto mode on" in the pane's own rendered status bar (screen capture,
+# not inference from --help text; see
+# docs/superpowers/specs/2026-09-02-large-prompt-delivery-probe-findings.md,
+# 觀測 2) -- passing --permission-mode explicitly would add nothing.
+# Also gone: `-p`, which only makes sense for claude's headless,
+# non-interactive mode.
 #
 # Two herdr subcommand facts this function depends on, both confirmed
 # against the real binary (not inferred from --help text) before this
@@ -3301,8 +3307,9 @@ _dispatch_failed_cleanup() {
 # all), and verify_selection exits 3 when a selected platform isn't on
 # PATH -- both before gh is ever touched. Does not launch any reviewer.
 # On success, prints the run's own coordinates for the calling agent:
-# base_dir, worktree_dir, then one reviewer_workdir_<cli>= line and one
-# prompt_file_<cli>= line per selected reviewer.
+# base_dir, worktree_dir, then one reviewer_workdir_<cli>=, one
+# reviewer_home_<cli>=, and one prompt_file_<cli>= line per selected
+# reviewer.
 cmd_prepare() {
   local pr_arg="" issue_arg="" design_doc_path="" clis_line=""
   local pr_info owner repo number contract_path base_ref pr_url
@@ -3478,11 +3485,14 @@ cmd_prepare() {
 
   # Prints the run's own coordinates for the calling agent: the execution
   # and worktree directories, then each selected reviewer's own writable
-  # directory and prompt file, one line per cli.
+  # directory, isolated home directory, and prompt file, one line per cli.
   printf 'base_dir=%s\n' "$base_dir"
   printf 'worktree_dir=%s\n' "$worktree_dir"
   for cli in "${all_reviewers[@]}"; do
     printf 'reviewer_workdir_%s=%s\n' "$cli" "$base_dir/reviewers/$cli/workdir"
+  done
+  for cli in "${all_reviewers[@]}"; do
+    printf 'reviewer_home_%s=%s\n' "$cli" "$base_dir/reviewers/$cli/home"
   done
   for cli in "${all_reviewers[@]}"; do
     printf 'prompt_file_%s=%s\n' "$cli" "$logs_dir/$cli.prompt"

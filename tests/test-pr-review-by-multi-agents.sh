@@ -3276,8 +3276,9 @@ E2E_PROMPT_FILE="$E2E_LOGS_DIR/codex.prompt"
 [ -n "$E2E_LOGS_DIR" ] && [ -s "$E2E_PROMPT_FILE" ] && pass main-e2e-prompt-file-written || bad main-e2e-prompt-file-written
 
 # ---- Task 3 Step 6: cmd_prepare() prints its own coordinates on success --
-# base_dir/worktree_dir plus one reviewer_workdir_<cli>= and one
-# prompt_file_<cli>= line per selected reviewer. ----
+# base_dir/worktree_dir plus one reviewer_workdir_<cli>=, one
+# reviewer_home_<cli>=, and one prompt_file_<cli>= line per selected
+# reviewer. ----
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qxF "base_dir=$E2E_BASE_DIR" <<<"$out" && pass main-e2e-prepare-prints-base-dir || bad main-e2e-prepare-prints-base-dir
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -3305,6 +3306,8 @@ for cli in claude codex opencode; do
   [ -d "$E2E_BASE_DIR/reviewers/$cli/home" ] && pass "main-e2e-reviewer-home-created-$cli" || bad "main-e2e-reviewer-home-created-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
   grep -qxF "reviewer_workdir_$cli=$E2E_BASE_DIR/reviewers/$cli/workdir" <<<"$out" && pass "main-e2e-prepare-prints-reviewer-workdir-$cli" || bad "main-e2e-prepare-prints-reviewer-workdir-$cli"
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  grep -qxF "reviewer_home_$cli=$E2E_BASE_DIR/reviewers/$cli/home" <<<"$out" && pass "main-e2e-prepare-prints-reviewer-home-$cli" || bad "main-e2e-prepare-prints-reviewer-home-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
   grep -qxF "prompt_file_$cli=$E2E_LOGS_DIR/$cli.prompt" <<<"$out" && pass "main-e2e-prepare-prints-prompt-file-$cli" || bad "main-e2e-prepare-prints-prompt-file-$cli"
 done
