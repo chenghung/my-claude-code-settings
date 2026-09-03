@@ -78,14 +78,14 @@ design document 傳絕對路徑不是風格偏好：這個路徑只在腳本自�
 
 三項輸入的旗標可以整個省略，也可以帶空字串。旗標值不得含換行，腳本會直接拒絕：解析結果是以四行 `key=value` 交回主流程的，值裡的換行可以在其中偽造出一行 `clis=`，把實際派送的平台整組換掉。
 
-成功時它把本次執行的座標逐行印出來，全部要讀回：`base_dir`、`worktree_dir`，接著每個選中的平台各一行 `reviewer_workdir_<cli>` 與一行 `prompt_file_<cli>`。`prompt_file_<cli>` 要轉達給使用者——那是他唯一看得到「這個 reviewer 究竟吃了什麼 prompt」的途徑。另有一條路徑不印但推得出來，下一步會用到：每個 reviewer 的隔離家目錄固定是 `<base_dir>/reviewers/<cli>/home`。
+成功時它把本次執行的座標逐行印出來，全部要讀回：`base_dir`、`worktree_dir`，接著每個選中的平台各一行 `reviewer_workdir_<cli>`、一行 `reviewer_home_<cli>`、一行 `prompt_file_<cli>`。`reviewer_home_<cli>` 是那個 reviewer 的隔離家目錄，下一步建立 pane 時要用。`prompt_file_<cli>` 要轉達給使用者——那是他唯一看得到「這個 reviewer 究竟吃了什麼 prompt」的途徑。
 
 ### 第二階段：建立 pane
 
 依版面配置決定怎麼切：預設三個平台切三格、四個平台切 2x2，避開同方向連續切割產生無法閱讀的窄欄。用 `herdr tab create` 開一格新的 tab，再以它回傳的 pane 為起點 `herdr pane split` 出其餘幾格，為每個選中的 cli 各準備一個 pane。**下指令前先確認實際簽章，以各該子命令自己的 `--help` 輸出為準**，不要照記憶湊參數。四項要求：
 
 - `--cwd` 指向對應的 `reviewer_workdir_<cli>`，**不是 worktree**。這是唯一刻意為 reviewer 開放寫入、也是它唯一該寫的目錄，它的輸出檔與唯讀材料副本都在那裡；worktree 那一邊是腳本以 chmod 設成唯讀的，reviewer 靠 prompt 裡的絕對路徑去讀它。「唯一該寫」是意圖，不是機制：放行寫入沒有辦法只給一個目錄，執行目錄根層也自始至終沒有上鎖，兩條都在「已知限制」裡。
-- 每個 pane 都帶 `--env HOME=<base_dir>/reviewers/<cli>/home`，opencode 那個 pane 再多帶一個 `--env OPENCODE_CONFIG=<base_dir>/reviewers/opencode/home/opencode-permission.json`。那份設定檔由 `launch` 階段寫出，時序上晚於建立 pane、早於啟動 opencode，帶的是路徑不是內容，所以此刻它還不存在不影響。
+- 每個 pane 都帶 `--env HOME=` 指向對應的 `reviewer_home_<cli>`，opencode 那個 pane 再多帶一個 `--env OPENCODE_CONFIG=`，值是 `reviewer_home_opencode` 底下的 `opencode-permission.json`。那份設定檔由 `launch` 階段寫出，時序上晚於建立 pane、早於啟動 opencode，帶的是路徑不是內容，所以此刻它還不存在不影響。
 - `--env` 只能在 `pane split` 或 `tab create` 時設定，`agent start` 沒有這個參數——錯過這一步就沒有第二次機會，隔離家目錄與 opencode 的拒絕清單會整個失效，而且不會有任何錯誤訊息。
 - 建立時一律帶 `--no-focus`，讓使用者留在主對話那一格，需要時再自己切過去。
 
