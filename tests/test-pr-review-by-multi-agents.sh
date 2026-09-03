@@ -323,6 +323,53 @@ fi
 PATH="$saved_path"
 
 # ==============================================================
+# _check_agents_selected
+#
+# cmd_launch()'s own cross-check that every --agent named cli was
+# actually selected by the matching prepare invocation (reads back
+# <base_dir>/.roster, cmd_prepare's own record -- see this function's
+# own docstring). Direct unit tests here; the end-to-end proof that
+# cmd_launch() actually calls this before dispatching anything lives in
+# the VERIFY3 fixture further down.
+# ==============================================================
+
+CAS_ROOT="$T/check-agents-selected-fixture"
+mkdir -p "$CAS_ROOT"
+printf 'claude some-model dispatched\ncodex some-model dispatched\n' > "$CAS_ROOT/.roster"
+
+if _check_agents_selected "$CAS_ROOT" claude codex >/dev/null 2>&1; then
+  pass check-agents-selected-accepts-every-selected-cli
+else
+  bad check-agents-selected-accepts-every-selected-cli
+fi
+
+if cas_err="$(_check_agents_selected "$CAS_ROOT" claude opencode 2>&1 1>/dev/null)"; then
+  cas_rc=0
+else
+  cas_rc=$?
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$cas_rc" -eq 2 ] && pass "check-agents-selected-rejects-unselected-cli-with-exit-2" \
+  || bad "check-agents-selected-rejects-unselected-cli-with-exit-2: rc=$cas_rc"
+case "$cas_err" in
+  *'opencode'*) pass check-agents-selected-message-names-unselected-cli ;;
+  *) bad "check-agents-selected-message-names-unselected-cli: $cas_err" ;;
+esac
+
+if cas_noroster_err="$(_check_agents_selected "$T/check-agents-selected-no-such-base-dir" claude 2>&1 1>/dev/null)"; then
+  cas_noroster_rc=0
+else
+  cas_noroster_rc=$?
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$cas_noroster_rc" -eq 2 ] && pass "check-agents-selected-missing-roster-file-exit-2" \
+  || bad "check-agents-selected-missing-roster-file-exit-2: rc=$cas_noroster_rc"
+case "$cas_noroster_err" in
+  *'.roster'*) pass check-agents-selected-missing-roster-file-message-names-roster ;;
+  *) bad "check-agents-selected-missing-roster-file-message-names-roster: $cas_noroster_err" ;;
+esac
+
+# ==============================================================
 # parse_launch_args
 # ==============================================================
 
@@ -1951,6 +1998,38 @@ esac
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ ! -f "$LRI_RECORD_DIR/agent-prompt.lri-pane-oversized.text" ] && pass launch-reviewer-interactive-prompt-too-large-no-prompt-sent || bad launch-reviewer-interactive-prompt-too-large-no-prompt-sent
 
+# --- prompt file missing: reject explicitly, before ever calling `agent
+# prompt` -- the exact silent-pass bug this section exists to catch. This
+# function's only real caller (cmd_launch) invokes it as `if !
+# launch_reviewer_interactive ...; then`, and that call shape is
+# reproduced here (`if VAR="$(launch_reviewer_interactive ...)"; then`)
+# for the same reason: bash exempts a function call from `set -e` for its
+# entire duration when the call itself is an if/while/&&/|| condition, so
+# a bare `wc -c < "$prompt_file"` redirection failure never tripped
+# errexit in that exact caller context -- confirmed against a real bash
+# before this function's own explicit `[ -r "$prompt_file" ]` guard was
+# added. Without that guard, the failed substitution came back empty,
+# `(( "" > PROMPT_BYTE_LIMIT ))` silently read the empty string as 0, and
+# an empty prompt was submitted to herdr as if it were real. ---
+
+if lri_missing_prompt_out="$(launch_reviewer_interactive claude lri-pane-missing-prompt "$LRI_WT" \
+  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/does-not-exist.prompt" 2>"$LRI_ROOT/missing-prompt.stderr")"; then
+  bad "launch-reviewer-interactive-missing-prompt-rejected: printed $lri_missing_prompt_out"
+else
+  pass launch-reviewer-interactive-missing-prompt-rejected
+fi
+lri_missing_prompt_err="$(cat "$LRI_ROOT/missing-prompt.stderr" 2>/dev/null)"
+case "$lri_missing_prompt_err" in
+  *"$LRI_ROOT/does-not-exist.prompt"*) pass launch-reviewer-interactive-missing-prompt-message-names-file ;;
+  *) bad "launch-reviewer-interactive-missing-prompt-message-names-file: $lri_missing_prompt_err" ;;
+esac
+# The load-bearing assertion: prior to the explicit -r guard, this exact
+# scenario reached `herdr agent prompt` and wrote an empty (0-byte) record
+# here instead of never writing one at all -- absence of the file, not
+# just an empty one, is what proves `agent prompt` was never called.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$LRI_RECORD_DIR/agent-prompt.lri-pane-missing-prompt.text" ] && pass launch-reviewer-interactive-missing-prompt-no-prompt-sent || bad "launch-reviewer-interactive-missing-prompt-no-prompt-sent: $(cat "$LRI_RECORD_DIR/agent-prompt.lri-pane-missing-prompt.text" 2>/dev/null)"
+
 unset HERDR_RECORD_DIR
 export PATH="$saved_path"
 # Remove the herdr stub itself, not just drop $STUB_BIN off PATH above:
@@ -2838,6 +2917,79 @@ case "$out" in
 esac
 
 # ==============================================================
+# _extract_reviewer_output
+#
+# The interactive counterpart to _extract_review_content above, and the
+# actual decider both spawn_supervisor_interactive's poll loop and
+# _record_reviewer_result_interactive rely on for "is this reviewer done,
+# and is its output trustworthy" (see its own docstring). SKILL.md's own
+# 產出物位置 section commits to three conditions: the file exists, the end
+# marker's last-line occurrence is the whole file's only one, and the
+# content above it is non-empty.
+# ==============================================================
+
+EXTRACTOUT_FIXTURE_DIR="$T/extract-reviewer-output-fixture"
+mkdir -p "$EXTRACTOUT_FIXTURE_DIR"
+
+cat > "$EXTRACTOUT_FIXTURE_DIR/good.md" <<'REVIEWEOF'
+line one of the review
+line two of the review
+===PR-REVIEW-BY-MULTI-AGENTS-END===
+REVIEWEOF
+out="$(_extract_reviewer_output "$EXTRACTOUT_FIXTURE_DIR/good.md")"
+expected=$'line one of the review\nline two of the review'
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$out" = "$expected" ] && pass extract-reviewer-output-happy-path || bad "extract-reviewer-output-happy-path: $out"
+
+if out="$(_extract_reviewer_output "$EXTRACTOUT_FIXTURE_DIR/does-not-exist.md" 2>/dev/null)"; then
+  bad extract-reviewer-output-missing-file
+else
+  pass extract-reviewer-output-missing-file
+fi
+
+cat > "$EXTRACTOUT_FIXTURE_DIR/no-marker.md" <<'REVIEWEOF'
+still writing, no end marker yet
+REVIEWEOF
+if out="$(_extract_reviewer_output "$EXTRACTOUT_FIXTURE_DIR/no-marker.md" 2>/dev/null)"; then
+  bad extract-reviewer-output-missing-marker
+else
+  pass extract-reviewer-output-missing-marker
+fi
+
+# The bug this section exists to catch: a second, earlier occurrence of
+# the exact marker line, with the real end marker still correctly the
+# file's own last line. The last-line check alone cannot see this -- it
+# never looks past the last line -- so without the uniqueness check added
+# alongside it, this file would pass as "done", and `sed '$d'` would
+# return everything above the *last* line, including the earlier marker
+# line and the real content that follows it verbatim: an untrustworthy
+# duplicate-marker file judged postable, exactly the one failure shape
+# SKILL.md's own contract names as the one that gets bad content onto the
+# PR.
+cat > "$EXTRACTOUT_FIXTURE_DIR/duplicate-marker.md" <<'REVIEWEOF'
+line one of the review
+===PR-REVIEW-BY-MULTI-AGENTS-END===
+line two, written after the marker somehow
+===PR-REVIEW-BY-MULTI-AGENTS-END===
+REVIEWEOF
+if out="$(_extract_reviewer_output "$EXTRACTOUT_FIXTURE_DIR/duplicate-marker.md" 2>/dev/null)"; then
+  bad "extract-reviewer-output-rejects-duplicate-marker: printed $out"
+else
+  pass extract-reviewer-output-rejects-duplicate-marker
+fi
+
+# Adjacent-to-empty case: the marker is the file's only line, so there is
+# no content above it once it is stripped out.
+cat > "$EXTRACTOUT_FIXTURE_DIR/marker-only.md" <<'REVIEWEOF'
+===PR-REVIEW-BY-MULTI-AGENTS-END===
+REVIEWEOF
+if out="$(_extract_reviewer_output "$EXTRACTOUT_FIXTURE_DIR/marker-only.md" 2>/dev/null)"; then
+  bad extract-reviewer-output-rejects-empty-content
+else
+  pass extract-reviewer-output-rejects-empty-content
+fi
+
+# ==============================================================
 # print_summary
 # ==============================================================
 
@@ -3060,7 +3212,7 @@ git init -q -b main "$ORIGIN_ORDER_FIXTURE/work"
 
 assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
 if out="$(cd "$ORIGIN_ORDER_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="origin-order-base-branch" \
-  HOME="$T/origin-order-home" PATH="$STUB_BIN:$saved_path" \
+  HOME="$T/origin-order-home" PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 \
   bash "$RUN_SH" prepare --pr "https://github.com/wrong-owner/wrong-repo/pull/1" --claude 2>&1)"; then
   bad main-e2e-origin-check-rejects-wrong-owner
 else
@@ -3107,7 +3259,7 @@ chmod +x "$GH_MISSING_BIN/claude"
 # on it would make "bash" itself fail to be found (exit 127, "command not
 # found"), which is not what this test is trying to exercise.
 BASH_ABS_PATH="$(command -v bash)"
-if out="$(cd "$GH_MISSING_FIXTURE" && PATH="$GH_MISSING_BIN" "$BASH_ABS_PATH" "$RUN_SH" prepare --claude 2>&1)"; then
+if out="$(cd "$GH_MISSING_FIXTURE" && PATH="$GH_MISSING_BIN" HERDR_ENV=1 "$BASH_ABS_PATH" "$RUN_SH" prepare --claude 2>&1)"; then
   bad main-e2e-gh-missing-fails
 else
   pass main-e2e-gh-missing-fails
@@ -3119,6 +3271,94 @@ esac
 case "$out" in
   *'no PR is associated'*) bad main-e2e-gh-missing-does-not-blame-branch ;;
   *) pass main-e2e-gh-missing-does-not-blame-branch ;;
+esac
+
+# ==============================================================
+# main(): herdr hard gate
+#
+# herdr is a hard prerequisite for both prepare and launch (see
+# _check_herdr_env's own docstring): a run started outside a herdr pane
+# must be rejected before either subcommand does anything else, not
+# discovered only once a later herdr call fails. Both cases below run
+# with PATH=$EMPTY_BIN (no gh, no git, no herdr, nothing) and an isolated
+# HOME, in a cwd that is not even a git repository -- if the gate did not
+# run first, the very next thing either subcommand does (verify_selection
+# or cmd_prepare's own _check_gh_available) would fail with a distinct,
+# different message, so getting exactly the herdr message here is itself
+# proof nothing past the gate ever ran, and the isolated HOME lets this
+# also directly confirm no directory was created under it either.
+# --check-clis is deliberately exempt from this gate (see main()'s own
+# docstring) -- confirmed separately below, working the same with or
+# without HERDR_ENV.
+# ==============================================================
+
+HERDRGATE_ROOT="$T/herdr-gate-fixture"
+HERDRGATE_HOME="$HERDRGATE_ROOT/home"
+mkdir -p "$HERDRGATE_HOME"
+
+if hgp_out="$(cd "$HERDRGATE_ROOT" && env -u HERDR_ENV HOME="$HERDRGATE_HOME" PATH="$EMPTY_BIN" \
+  "$BASH_ABS_PATH" "$RUN_SH" prepare --pr "https://github.com/acme/widgets/pull/1" --claude 2>&1)"; then
+  hgp_rc=0
+else
+  hgp_rc=$?
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$hgp_rc" -eq 4 ] && pass "herdr-gate-prepare-exit-4-without-herdr-env" \
+  || bad "herdr-gate-prepare-exit-4-without-herdr-env: rc=$hgp_rc output=$hgp_out"
+case "$hgp_out" in
+  *'HERDR_ENV'*) pass herdr-gate-prepare-message-names-herdr-env ;;
+  *) bad "herdr-gate-prepare-message-names-herdr-env: $hgp_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$HERDRGATE_HOME/.tmp" ] && pass herdr-gate-prepare-no-tmp-dir-created \
+  || bad "herdr-gate-prepare-no-tmp-dir-created: $(find "$HERDRGATE_HOME/.tmp" 2>/dev/null)"
+
+# HERDR_ENV present but not exactly "1" must be rejected the same way as
+# absent -- this is the other half of "在該環境變數不存在或不等於 1 時"
+# (a stray truthy-looking value like "0" or "true" set by something else
+# must not be mistaken for herdr's own signal).
+if hgp2_out="$(cd "$HERDRGATE_ROOT" && HERDR_ENV=0 HOME="$HERDRGATE_HOME" PATH="$EMPTY_BIN" \
+  "$BASH_ABS_PATH" "$RUN_SH" prepare --pr "https://github.com/acme/widgets/pull/1" --claude 2>&1)"; then
+  hgp2_rc=0
+else
+  hgp2_rc=$?
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$hgp2_rc" -eq 4 ] && pass "herdr-gate-prepare-exit-4-with-non-1-herdr-env" \
+  || bad "herdr-gate-prepare-exit-4-with-non-1-herdr-env: rc=$hgp2_rc output=$hgp2_out"
+
+if hgl_out="$(cd "$HERDRGATE_ROOT" && env -u HERDR_ENV HOME="$HERDRGATE_HOME" PATH="$EMPTY_BIN" \
+  "$BASH_ABS_PATH" "$RUN_SH" launch --base-dir "$HERDRGATE_ROOT/no-such-base-dir" --agent claude=pane-x 2>&1)"; then
+  hgl_rc=0
+else
+  hgl_rc=$?
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$hgl_rc" -eq 4 ] && pass "herdr-gate-launch-exit-4-without-herdr-env" \
+  || bad "herdr-gate-launch-exit-4-without-herdr-env: rc=$hgl_rc output=$hgl_out"
+case "$hgl_out" in
+  *'HERDR_ENV'*) pass herdr-gate-launch-message-names-herdr-env ;;
+  *) bad "herdr-gate-launch-message-names-herdr-env: $hgl_out" ;;
+esac
+# The named --base-dir does not even exist -- if the gate had not fired
+# first, _check_agents_selected would be the next thing to run and would
+# report a distinct "no .roster file" usage error instead of ever
+# touching that path, so its continued absence here is further proof
+# nothing past the gate ran.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$HERDRGATE_ROOT/no-such-base-dir" ] && pass herdr-gate-launch-no-base-dir-touched \
+  || bad herdr-gate-launch-no-base-dir-touched
+
+# --check-clis stays exempt from the gate -- confirmed working identically
+# with HERDR_ENV unset.
+if hgc_out="$(env -u HERDR_ENV PATH="$EMPTY_BIN" "$BASH_ABS_PATH" "$RUN_SH" --check-clis 2>&1)"; then
+  pass herdr-gate-check-clis-unaffected-without-herdr-env
+else
+  bad "herdr-gate-check-clis-unaffected-without-herdr-env: $hgc_out"
+fi
+case "$hgc_out" in
+  *'claude missing'*'codex missing'*'opencode missing'*'agy missing'*) pass herdr-gate-check-clis-still-reports-normally ;;
+  *) bad "herdr-gate-check-clis-still-reports-normally: $hgc_out" ;;
 esac
 
 # ==============================================================
@@ -3257,7 +3497,7 @@ mkdir -p "$E2E_FIXTURE/work/docs"
 printf 'e2e-distinctive-design-doc-marker-content\n' > "$E2E_FIXTURE/work/docs/distinctive-design-doc-marker.md"
 
 assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
-if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" \
+if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 \
   bash "$RUN_SH" prepare \
     --pr "https://github.com/acme9pr/widgets9pr/pull/321" \
     --issue "777" \
@@ -3383,7 +3623,7 @@ for e2e_reviewer_cli in claude codex opencode; do
     > "$E2E_BASE_DIR/reviewers/$e2e_reviewer_cli/workdir/review.md"
 done
 
-if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" \
+if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" HOME="$E2E_HOME" PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 \
   bash "$RUN_SH" launch --base-dir "$E2E_BASE_DIR" \
     --agent claude=pane-claude --agent codex=pane-codex --agent opencode=pane-opencode 2>&1)"; then
   pass main-e2e-launch-succeeds
@@ -3534,7 +3774,7 @@ E2E_HOME2="$T/main-e2e-home2"
 assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
 if out="$(cd "$E2E_FIXTURE/work" \
   && CLAUDE_CONFIG_DIR="" GH_STUB_DERIVE_OK=1 GH_STUB_DERIVED_URL="https://github.com/acme9pr/widgets9pr/pull/321" \
-     GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME2" PATH="$STUB_BIN:$saved_path" \
+     GH_STUB_BASE_REF_NAME="e2e-distinctive-base" HOME="$E2E_HOME2" PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 \
   bash "$RUN_SH" prepare --claude --codex --opencode 2>&1)"; then
   pass main-e2e-empty-args-prepare-succeeds
 else
@@ -3561,7 +3801,7 @@ for e2e_reviewer_cli in claude codex opencode; do
     > "$E2E_BASE_DIR2/reviewers/$e2e_reviewer_cli/workdir/review.md"
 done
 
-if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" HOME="$E2E_HOME2" PATH="$STUB_BIN:$saved_path" \
+if out="$(cd "$E2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" HOME="$E2E_HOME2" PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 \
   bash "$RUN_SH" launch --base-dir "$E2E_BASE_DIR2" \
     --agent claude=pane-claude --agent codex=pane-codex --agent opencode=pane-opencode 2>&1)"; then
   pass main-e2e-empty-args-launch-succeeds
@@ -3716,7 +3956,7 @@ CHMODE2E_HOME="$T/chmod-e2e-home"
 # agy is deliberately absent from CHMODE2E_STUB_BIN (this run never passes
 # --agy), so only the four names it actually provides are checked.
 assert_cli_stub_only "$CHMODE2E_STUB_BIN:$saved_path" "$CHMODE2E_STUB_BIN" claude codex opencode herdr
-if out="$(cd "$CHMODE2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME=main HOME="$CHMODE2E_HOME" PATH="$CHMODE2E_STUB_BIN:$saved_path" \
+if out="$(cd "$CHMODE2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME=main HOME="$CHMODE2E_HOME" PATH="$CHMODE2E_STUB_BIN:$saved_path" HERDR_ENV=1 \
   bash "$RUN_SH" prepare --pr "https://github.com/acme/widgets/pull/50" --claude --codex --opencode 2>&1)"; then
   pass main-e2e-chmod-prepare-succeeds
 else
@@ -3765,7 +4005,7 @@ CHMODE2E_WORKTREE_DIR="$CHMODE2E_BASE_DIR/worktree"
 # `set -e` abort during the herdr PATH-guard proof this task's own report
 # describes, the first time this exact line legitimately failed.
 CHMODE2E_LAUNCH_OUT="$T/chmod-e2e-launch.out"
-if (cd "$CHMODE2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" HOME="$CHMODE2E_HOME" PATH="$CHMODE2E_STUB_BIN:$saved_path" \
+if (cd "$CHMODE2E_FIXTURE/work" && CLAUDE_CONFIG_DIR="" HOME="$CHMODE2E_HOME" PATH="$CHMODE2E_STUB_BIN:$saved_path" HERDR_ENV=1 \
   bash "$RUN_SH" launch --base-dir "$CHMODE2E_BASE_DIR" \
     --agent claude=pane-claude --agent codex=pane-codex --agent opencode=pane-opencode) \
   > "$CHMODE2E_LAUNCH_OUT" 2>&1; then
@@ -3859,7 +4099,7 @@ git init -q -b main "$VERIFY3_FIXTURE/work"
 
 VERIFY3_HOME="$T/verify3-home"
 assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
-if out="$(cd "$VERIFY3_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME=main HOME="$VERIFY3_HOME" PATH="$STUB_BIN:$saved_path" \
+if out="$(cd "$VERIFY3_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME=main HOME="$VERIFY3_HOME" PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 \
   bash "$RUN_SH" prepare --pr "https://github.com/acme/widgets/pull/91" --claude --codex 2>&1)"; then
   pass verify3-prepare-succeeds
 else
@@ -3878,7 +4118,7 @@ VERIFY3_BASE_DIR="$(dirname "${VERIFY3_LOGS_DIR:-/nonexistent}")"
 VERIFY3_MISSING_BIN="$T/verify3-missing-bin"
 mkdir -p "$VERIFY3_MISSING_BIN"
 cp "$STUB_BIN/claude" "$VERIFY3_MISSING_BIN/claude"
-if out="$(cd "$VERIFY3_FIXTURE/work" && PATH="$VERIFY3_MISSING_BIN" "$BASH_ABS_PATH" "$RUN_SH" launch --base-dir "$VERIFY3_BASE_DIR" \
+if out="$(cd "$VERIFY3_FIXTURE/work" && PATH="$VERIFY3_MISSING_BIN" HERDR_ENV=1 "$BASH_ABS_PATH" "$RUN_SH" launch --base-dir "$VERIFY3_BASE_DIR" \
   --agent claude=pane-claude --agent codex=pane-codex 2>&1)"; then
   rc=0
 else
@@ -3894,6 +4134,55 @@ esac
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ ! -f "$VERIFY3_LOGS_DIR/claude.pid" ] && pass "cmd_launch 回傳 3 時連仍在 PATH 上的 claude 也沒有被啟動" \
   || bad "cmd_launch 回傳 3 卻仍啟動了 claude，partial dispatch 沒被擋下"
+
+# --- cmd_launch()'s own --agent cross-check against .roster: opencode is
+# on PATH (the stub set up above provides it) but was never selected by
+# the earlier VERIFY3 prepare call (--claude --codex only), so this must
+# fail as a usage error (exit 2) distinct from verify_selection's own
+# exit 3 above, and it must fail before verify_selection or
+# launch_reviewer_interactive ever run. A herdr stub is added here (and
+# removed again right after) purely as a leak guard for this one
+# assertion: $STUB_BIN has had no herdr stub since it was removed before
+# the CHMODE2E fixture, so this fixture's own PATH falls through to
+# $saved_path -- which has a real herdr installed on this machine -- and
+# without a stub here, a regression that let this cli through would
+# silently start a real herdr pane instead of failing this assertion. ---
+
+HERDR_LEAK_RECORD="$T/verify3-agent-mismatch-herdr-leak"
+rm -f "$HERDR_LEAK_RECORD"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+: >> "$HERDR_LEAK_RECORD"
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+export HERDR_LEAK_RECORD
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
+
+if out="$(cd "$VERIFY3_FIXTURE/work" && HERDR_ENV=1 PATH="$STUB_BIN:$saved_path" "$BASH_ABS_PATH" "$RUN_SH" launch --base-dir "$VERIFY3_BASE_DIR" \
+  --agent claude=pane-claude --agent opencode=pane-opencode 2>&1)"; then
+  rc=0
+else
+  rc=$?
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rc" -eq 2 ] && pass "cmd_launch --agent 點名 prepare 未選中的平台時回傳 2" \
+  || bad "cmd_launch --agent 點名 prepare 未選中的平台時回傳 $rc，應為 2: $out"
+case "$out" in
+  *'opencode'*) pass "cmd_launch 回傳 2 時訊息點名未選中的 opencode" ;;
+  *) bad "cmd_launch 回傳 2 時訊息未點名未選中的 opencode: $out" ;;
+esac
+# The load-bearing assertion: absence of this record, not just an empty
+# one, is what proves herdr was never invoked at all -- if
+# _check_agents_selected's own call site in cmd_launch ever regressed,
+# this would be the first thing to catch a real herdr pane getting
+# started for real.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$HERDR_LEAK_RECORD" ] && pass "cmd_launch --agent 平台不符時 herdr 完全沒被呼叫" \
+  || bad "cmd_launch --agent 平台不符時仍呼叫了 herdr，dispatch 沒被擋下"
+
+rm -f "$STUB_BIN/herdr"
+unset HERDR_LEAK_RECORD
 
 # --- prepare/launch: jq 前置檢查、print_summary 印出執行目錄 ---
 
