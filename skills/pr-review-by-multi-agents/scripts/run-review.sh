@@ -55,7 +55,15 @@ readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 # launch_reviewer_interactive will hand to `herdr agent prompt <TARGET>
 # <TEXT>` -- TEXT has no file/stdin alternative (see that function's own
 # docstring), so the whole prompt has to cross this script's command line as
-# a single argv entry. Chosen with a margin below the two ceilings actually
+# a single argv entry. Enforced twice, deliberately: cmd_prepare's own
+# per-cli loop checks it first, right as each prompt file is written, so an
+# oversized prompt fails before any worktree, herdr tab, or pane is ever
+# built for it; launch_reviewer_interactive checks it again on its own
+# side, both as the last line of defense against a base_dir prepared by an
+# older build (before cmd_prepare's own check existed) and because that
+# check is also this function's own guard against submitting an empty
+# prompt on a failed read (see its own docstring). Chosen with a margin
+# below the two ceilings actually
 # measured against a real binary, not just under the hard OS limit: that
 # limit is 131072 bytes (140000 already fails there), but the largest size
 # ever confirmed to arrive at all four reviewer CLIs intact, unmodified and
@@ -78,6 +86,39 @@ readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 # against a real binary, not assumed) whenever the contract changes
 # meaningfully, rather than trusting this comment to still be accurate.
 readonly PROMPT_BYTE_LIMIT=100000
+
+# RUN_DIR_STALE_GRACE_SECONDS: how long _reap_stale_run_dirs (see its own
+# docstring) waits before trusting a sibling run directory's trailing-PID
+# liveness check again once that directory has no .supervisor.pid of its
+# own yet. That check alone used to be enough -- under the old single-phase
+# design, base_dir's own trailing PID (cmd_prepare's own $$) stayed alive
+# for the whole run. The prepare/launch split broke that: cmd_prepare's
+# process exits as soon as it prints its coordinates, well before
+# cmd_launch ever runs, and .supervisor.pid (the PID that now actually
+# spans the reviewer's whole run) isn't written until cmd_launch's own
+# spawn_supervisor_interactive starts -- near the end of cmd_launch's own
+# per-cli dispatch loop, itself only reachable once whatever built the herdr
+# panes in between the two calls has finished. A sibling reaped during
+# that gap would have its worktree force-removed out from under a run that
+# has every intention of finishing; see cmd_prepare's own .prepared-at
+# write (the timestamp this grace period is measured against) and
+# _reap_stale_run_dirs's own use of both this constant and .supervisor.pid.
+#
+# This value is a reasoned bound, not a measured one -- unlike
+# PROMPT_BYTE_LIMIT above, there is no real binary to run this gap against
+# and clock: its two components are however long the calling agent takes
+# to build herdr tabs/panes after `prepare` returns, plus cmd_launch's own
+# per-cli dispatch loop (a handful of herdr subprocess calls per cli, up to
+# four clis). Ten minutes is chosen to sit comfortably above either
+# component's realistic duration while still being finite -- a base_dir
+# that never reaches `launch` at all (prepared, then abandoned) must still
+# age out and get reaped eventually, the same guarantee SKILL.md already
+# documents for that case. Missing this window on either side is not a
+# correctness bug: too short only means an occasional missed reap, caught
+# by the next run against this same PR; too long only delays that same
+# catch-up by the same margin. Re-measure (or replace with something less
+# guessed) if this gap is ever actually observed to run long.
+readonly RUN_DIR_STALE_GRACE_SECONDS=600
 
 # _fetch_pr_material <owner> <repo> <number> <out_file> <raw_body_file>
 #
@@ -559,6 +600,15 @@ parse_args() {
 # format-checked here, it is handed to herdr as-is and any format error in
 # it surfaces as that command's own failure. Returns 2 on any usage error,
 # printing the reason to stderr, the same convention parse_args uses.
+#
+# Same newline defense parse_args applies to its own values, for the same
+# reason: this function's result crosses back to cmd_launch as printf'd
+# base_dir=/agent= lines, which cmd_launch re-parses line by line, so a
+# newline embedded in either --base-dir or --agent's value (cli is
+# whitelisted below and so cannot carry one, but pane_id is not) could
+# forge an extra line -- e.g. a crafted pane_id injecting its own agent=
+# line to smuggle in a cli/pane_id pair this call never actually named.
+# Rejected here, before either value ever reaches that output.
 parse_launch_args() {
   local base_dir="" cli pane_id agent_val agent
   local -a agents=()
@@ -575,6 +625,12 @@ parse_launch_args() {
           return 2
         fi
         case "$2" in
+          *$'\n'*)
+            printf 'run-review.sh: %s value must not contain a newline\n' "$1" >&2
+            return 2
+            ;;
+        esac
+        case "$2" in
           /*) ;;
           *)
             printf 'run-review.sh: --base-dir must be an absolute path: %s\n' "$2" >&2
@@ -589,6 +645,12 @@ parse_launch_args() {
           printf 'run-review.sh: %s requires a value\n' "$1" >&2
           return 2
         fi
+        case "$2" in
+          *$'\n'*)
+            printf 'run-review.sh: %s value must not contain a newline\n' "$1" >&2
+            return 2
+            ;;
+        esac
         agent_val="$2"
         case "$agent_val" in
           *=*)
@@ -828,6 +890,44 @@ _check_origin_matches() {
   fi
 }
 
+# _supervisor_pid_alive <run_dir>
+#
+# True when <run_dir>/.supervisor.pid names a still-running process --
+# the one PID that actually spans a two-phase run's entire lifetime (see
+# spawn_supervisor_interactive's own docstring on why base_dir's own
+# trailing PID, cmd_prepare's $$, no longer does). Missing file, empty
+# file, or a non-numeric/dead PID inside it all read as "not alive" --
+# callers fall back to other signals rather than trusting a malformed
+# file as proof of liveness.
+_supervisor_pid_alive() {
+  local run_dir="$1" pid
+  [ -s "$run_dir/.supervisor.pid" ] || return 1
+  pid="$(cat "$run_dir/.supervisor.pid" 2>/dev/null)" || return 1
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+# _run_dir_within_stale_grace <run_dir>
+#
+# True when <run_dir>/.prepared-at (written by cmd_prepare, see its own
+# docstring) exists, parses as an epoch-seconds integer, and is younger
+# than RUN_DIR_STALE_GRACE_SECONDS (see that constant's own docstring on
+# what gap this covers and why that duration was chosen). A missing or
+# unparsable .prepared-at -- a run dir predating this file's introduction,
+# or one whose write genuinely never happened -- reads as "not within
+# grace", the same conservative direction _supervisor_pid_alive takes:
+# when this function can't tell, the caller falls back to the older
+# trailing-PID check instead of either trusting or discarding based on a
+# guess.
+_run_dir_within_stale_grace() {
+  local run_dir="$1" prepared_at now
+  [ -s "$run_dir/.prepared-at" ] || return 1
+  prepared_at="$(cat "$run_dir/.prepared-at" 2>/dev/null)" || return 1
+  [[ "$prepared_at" =~ ^[0-9]+$ ]] || return 1
+  now="$(date -u +%s)"
+  (( now - prepared_at < RUN_DIR_STALE_GRACE_SECONDS ))
+}
+
 # _reap_stale_run_dirs <base_dir>
 #
 # Best-effort recovery for run directories left behind by a previous
@@ -844,16 +944,37 @@ _check_origin_matches() {
 # will even let them delete it.
 #
 # Scans <base_dir>'s own siblings (other run directories under the same
-# repo/PR parent directory) for ones whose embedded PID (the trailing
-# -<PID> this script's own base_dir naming always ends in) no longer
-# belongs to a running process, and whose worktree subdirectory still
-# exists. For each one found, restores write access and removes it the
-# same way spawn_supervisor's own successful-path cleanup does. Runs
-# before `git worktree prune` and the stale-ref branch cleanup below, in
-# the same invocation, specifically so that by the time those run, this
-# reap has already made both of them effective for whatever it just
-# cleaned up (registration gone, branch no longer checked out) instead of
-# leaving that branch for a follow-up run to notice.
+# repo/PR parent directory) for ones that are genuinely stale, and whose
+# worktree subdirectory still exists. For each one found, restores write
+# access and removes it the same way spawn_supervisor's own
+# successful-path cleanup does. Runs before `git worktree prune` and the
+# stale-ref branch cleanup below, in the same invocation, specifically so
+# that by the time those run, this reap has already made both of them
+# effective for whatever it just cleaned up (registration gone, branch no
+# longer checked out) instead of leaving that branch for a follow-up run
+# to notice.
+#
+# "Genuinely stale" is decided in this order, not by the trailing-PID
+# check alone any more -- a two-phase run has no single PID that spans its
+# whole lifetime (see _supervisor_pid_alive's own docstring), so that
+# check alone would misjudge a sibling still being reviewed in a herdr
+# pane as abandoned, right when it matters most (see
+# RUN_DIR_STALE_GRACE_SECONDS's own docstring for the exact scenario):
+#   1. _supervisor_pid_alive: a live .supervisor.pid means a reviewer is
+#      genuinely still running under cmd_launch's supervision -- never
+#      stale, full stop, regardless of anything below.
+#   2. A .supervisor.pid file that exists but names a dead process: the
+#      supervisor itself started and died (or finished and left this
+#      worktree behind some other way) -- genuinely stale, same as the
+#      old behavior.
+#   3. No .supervisor.pid yet at all: _run_dir_within_stale_grace decides
+#      whether this might still be sitting in the gap between cmd_prepare
+#      returning and cmd_launch's own supervisor starting. Within grace,
+#      not stale. Past grace (or no .prepared-at to measure from --
+#      including any run dir left over from before this file existed),
+#      fall through to the original trailing-PID kill -0 check, so a
+#      prepared-but-never-launched run dir still eventually gets reaped,
+#      same guarantee this function always gave.
 #
 # Under the two-layer base_dir naming (`~/.tmp/<repo>-pr-<number>/
 # <timestamp>-<pid>`), `dirname "$base_dir"` already names the
@@ -875,9 +996,17 @@ _reap_stale_run_dirs() {
     [ -d "$sibling" ] || continue
     [ "$sibling" != "$base_dir" ] || continue
 
-    sibling_pid="${sibling##*-}"
-    [[ "$sibling_pid" =~ ^[0-9]+$ ]] || continue
-    kill -0 "$sibling_pid" 2>/dev/null && continue
+    _supervisor_pid_alive "$sibling" && continue
+
+    if [ ! -f "$sibling/.supervisor.pid" ] && _run_dir_within_stale_grace "$sibling"; then
+      continue
+    fi
+
+    if [ ! -f "$sibling/.supervisor.pid" ]; then
+      sibling_pid="${sibling##*-}"
+      [[ "$sibling_pid" =~ ^[0-9]+$ ]] || continue
+      kill -0 "$sibling_pid" 2>/dev/null && continue
+    fi
 
     sibling_worktree="$sibling/worktree"
     [ -d "$sibling_worktree" ] || continue
@@ -2165,9 +2294,13 @@ launch_reviewer_interactive() {
   # false (see this function's docstring) -- read the pane's own rendered
   # content instead of trusting either. One retry absorbs the known,
   # harmless "not rendered yet" timing case; two empty reads in a row is
-  # treated as a real failure to reach a confirmable ready state.
+  # treated as a real failure to reach a confirmable ready state. The
+  # `sleep 1` before the retry is load-bearing, not decoration: back-to-back
+  # reads with nothing between them finish in milliseconds and never give
+  # the pane's own rendering the time this retry exists to absorb.
   pane_content="$(herdr pane read "$pane_id" 2>/dev/null)" || pane_content=""
   if [ -z "$pane_content" ]; then
+    sleep 1
     pane_content="$(herdr pane read "$pane_id" 2>/dev/null)" || pane_content=""
   fi
   if [ -z "$pane_content" ]; then
@@ -3150,28 +3283,37 @@ spawn_supervisor_interactive() {
     # or depend on pid= being numeric, so the switch to pid=n/a above
     # changes nothing about how this segment behaves.
     #
-    # One dependency this segment carries that is now a genuinely new
-    # concern, not merely an unmodified copy: `git worktree remove --force
-    # "$worktree_dir"` below has no `-C "$worktree_dir"`/`-C <repo>` of its
-    # own, so it resolves which repository to act on from whatever this
-    # process's *current working directory* happens to be -- it relies on
-    # being run from inside the target repo's checkout. For spawn_supervisor
-    # that was always true by construction: main() runs synchronously from
-    # cmd_prepare()'s single invocation, in the cwd the user already ran
-    # run-review.sh from. cmd_launch() -- this function's own caller -- is
-    # now a *separate* process invocation from cmd_prepare() (the prepare/
-    # launch split), so this same assumption now depends on whoever invokes
-    # `run-review.sh launch` doing so from that same repo's cwd too. That
-    # calling-convention contract ("launch must be invoked from the target
-    # repo's cwd") is documented for callers in this skill's own usage
-    # instructions (a separate task's responsibility); this comment exists
-    # so the dependency itself isn't silently lost sight of here, at the
-    # one line that actually exercises it.
+    # One dependency this segment does NOT carry over unmodified from
+    # spawn_supervisor's own copy: a bare `git worktree remove --force
+    # "$worktree_dir"`, with no `-C <repo>` of its own, resolves which
+    # repository to act on from whatever this process's *current working
+    # directory* happens to be. For spawn_supervisor that was always true
+    # by construction (main() runs synchronously from cmd_prepare()'s
+    # single invocation, in the cwd the user already ran run-review.sh
+    # from), but cmd_launch() -- this function's own caller -- is a
+    # *separate* process invocation from cmd_prepare() (the prepare/launch
+    # split), so a bare form here would depend on whoever invokes
+    # `run-review.sh launch` doing so from that same repo's cwd too, and
+    # silently fail (swallowed by this same line's own `|| true`) whenever
+    # they don't. cmd_prepare() closes that dependency instead of merely
+    # documenting it: it records the repo's own absolute path (resolved
+    # while its own cwd was already confirmed correct, see
+    # _check_origin_matches) into `$base_dir/.repo-path`, and the removal
+    # below reads that back and passes it to `-C` explicitly, so this no
+    # longer depends on cmd_launch's own caller's cwd at all. A missing or
+    # unreadable .repo-path (a base_dir predating this file's introduction)
+    # falls back to the old bare form rather than failing outright, the
+    # same best-effort spirit as this whole line's own `|| true`.
 
     # Undo main()'s `chmod -R a-w` before removing -- `git worktree
     # remove` needs write access to actually delete the tree.
+    local repo_path
     chmod -R u+w "$worktree_dir" 2>/dev/null || true
-    git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+    if repo_path="$(cat "$base_dir/.repo-path" 2>/dev/null)" && [ -n "$repo_path" ]; then
+      git -C "$repo_path" worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+    else
+      git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+    fi
 
     # Synthesis runs after the worktree is gone on purpose: it works only
     # from the review texts already extracted into content files, so it
@@ -3415,8 +3557,29 @@ _dispatch_failed_cleanup() {
   # Undo cmd_prepare()'s `chmod -R a-w` before removing -- see
   # spawn_supervisor's matching step for why `git worktree remove` needs
   # this first.
+  #
+  # Same `-C <repo>` requirement as spawn_supervisor_interactive's own
+  # removal step, and for the same reason (see that function's own
+  # docstring for the full explanation): this function is called both
+  # from cmd_prepare()'s per-CLI loop, where the cwd has already been
+  # confirmed to be this PR's own repo, and from cmd_launch()'s per-CLI
+  # loop, a *separate* process invocation from cmd_prepare() that carries
+  # no such guarantee about its own caller's cwd. Reading `.repo-path`
+  # back here (written by cmd_prepare(), see that function's own
+  # docstring) and passing it to `-C` explicitly makes this removal work
+  # the same way regardless of which of the two loops is calling it, or
+  # what cwd cmd_launch's own invoker used. Falls back to the old bare
+  # form when `.repo-path` is missing or unreadable (a base_dir predating
+  # its introduction), the same best-effort spirit as this whole
+  # function's own `|| true`.
+  local base_dir repo_path
+  base_dir="$(dirname "$worktree_dir")"
   chmod -R u+w "$worktree_dir" 2>/dev/null || true
-  git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+  if repo_path="$(cat "$base_dir/.repo-path" 2>/dev/null)" && [ -n "$repo_path" ]; then
+    git -C "$repo_path" worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+  else
+    git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+  fi
 }
 
 # cmd_prepare --pr <link> [--issue <ref>] [--design <path>] --claude|--codex|--opencode|--agy...
@@ -3432,8 +3595,9 @@ _dispatch_failed_cleanup() {
 # build and write each selected reviewer's own prompt file and write
 # .roster. Every hard precondition (gh missing/not authenticated, PR not
 # found, contract file missing, base ref unresolvable, worktree creation
-# failing) exits 1 -- see each called function's own docstring for what it
-# reports on failure. Two other exit codes are reserved for earlier,
+# failing, a built prompt exceeding PROMPT_BYTE_LIMIT) exits 1 -- see each
+# called function's own docstring for what it reports on failure. Two other
+# exit codes are reserved for earlier,
 # cheaper rejections: parse_args itself exits 2 on a usage error (unknown
 # flag, a value-taking flag with no value, or no platform selected at
 # all), and verify_selection exits 3 when a selected platform isn't on
@@ -3448,6 +3612,7 @@ cmd_prepare() {
   local base_dir logs_dir worktree_dir materials_dir
   local cli model prompt parsed parsed_line
   local reviewer_workdir reviewer_home reviewer_materials f
+  local repo_toplevel prompt_bytes
   local -a all_reviewers=()
 
   # Parsed with pure shell builtins (case/parameter-expansion, a here-string
@@ -3512,6 +3677,29 @@ cmd_prepare() {
   base_dir="$HOME/.tmp/$repo-pr-$number/$(date -u +%Y%m%d%H%M%S)-$$"
   logs_dir="$base_dir/logs"
   mkdir -p "$logs_dir"
+
+  # .prepared-at is the timestamp _run_dir_within_stale_grace reads back on
+  # a later run's own _reap_stale_run_dirs pass -- see that function's own
+  # docstring on the gap this exists to cover. Written as early as
+  # possible, right when base_dir itself first exists, so it stays a
+  # faithful lower bound on this run's age no matter where cmd_prepare or
+  # cmd_launch later fails or how long the caller takes between them.
+  date -u +%s > "$base_dir/.prepared-at"
+
+  # .repo-path records this repo's absolute path for the two worktree
+  # cleanup paths that can run from inside cmd_launch -- a separate
+  # process invocation from this one, and so unable to assume its own
+  # cwd is this repo: spawn_supervisor_interactive's own removal step,
+  # and _dispatch_failed_cleanup's, which cmd_launch's own per-CLI loop
+  # calls on a dispatch failure (see each function's own docstring on
+  # why `git worktree remove` needs telling explicitly now). Safe to
+  # write here: _check_origin_matches has already confirmed the cwd is
+  # this PR's own repo by this point in cmd_prepare.
+  if ! repo_toplevel="$(git rev-parse --show-toplevel)"; then
+    printf 'run-review.sh: failed to resolve the target repo'"'"'s absolute path\n' >&2
+    exit 1
+  fi
+  printf '%s\n' "$repo_toplevel" > "$base_dir/.repo-path"
 
   worktree_dir="$(setup_worktree "$owner" "$repo" "$number" "$base_dir")" || {
     printf 'run-review.sh: failed to set up the review worktree\n' >&2
@@ -3600,6 +3788,29 @@ cmd_prepare() {
     chmod -R a-w "$reviewer_materials" 2>/dev/null || true
 
     printf '%s' "$prompt" > "$logs_dir/$cli.prompt"
+
+    # Checked here, right after writing the file this run's own prompt for
+    # this cli, rather than only later when cmd_launch's own
+    # launch_reviewer_interactive checks it again (see PROMPT_BYTE_LIMIT's
+    # own docstring for why the margin is worth re-measuring, not this
+    # comment). Catching it this early means an oversized prompt fails
+    # before any worktree, herdr tab, or pane ever gets built for it,
+    # instead of after -- launch_reviewer_interactive's own check stays in
+    # place regardless, since a base_dir prepared by an older build (before
+    # this check existed here) still needs it, and it costs nothing to keep
+    # as a second, independent line of defense.
+    prompt_bytes="$(wc -c < "$logs_dir/$cli.prompt")" || {
+      printf 'run-review.sh: failed to read the size of %s prompt file: %s\n' \
+        "$cli" "$logs_dir/$cli.prompt" >&2
+      _dispatch_failed_cleanup "$worktree_dir"
+      exit 1
+    }
+    if (( prompt_bytes > PROMPT_BYTE_LIMIT )); then
+      printf 'run-review.sh: prompt for %s is %d bytes, exceeds limit of %d bytes\n' \
+        "$cli" "$prompt_bytes" "$PROMPT_BYTE_LIMIT" >&2
+      _dispatch_failed_cleanup "$worktree_dir"
+      exit 1
+    fi
   done
 
   # .roster records which model each selected CLI resolved to. Written

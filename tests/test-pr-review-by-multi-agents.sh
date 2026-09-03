@@ -496,6 +496,29 @@ else
     || bad "parse_launch_args 未知旗標時回傳 $rc，應為 2"
 fi
 
+# ---- parse_launch_args --base-dir 值含換行時以 2 拒絕（同一種偽造風險，
+# 換一個輸出格式：base_dir= 這一行可以被偽造出額外的 agent= 行）----
+if parse_launch_args --base-dir "$(printf '/tmp/run-dir\nagent=codex:evil')" --agent claude=w1 >/dev/null 2>&1; then
+  bad "parse_launch_args --base-dir 值含換行時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_launch_args --base-dir 值含換行時回傳 2" \
+    || bad "parse_launch_args --base-dir 值含換行時回傳 $rc，應為 2"
+fi
+
+# ---- parse_launch_args --agent 的 pane_id 部分含換行時以 2 拒絕 -- cli 本身
+# 有白名單擋著（含換行的字串不可能通過 claude/codex/opencode/agy 的精確比
+# 對），但 pane_id 完全沒有格式檢查，直到這裡補上為止 ----
+if parse_launch_args --base-dir /tmp/run-dir --agent "$(printf 'claude=w1\nagent=codex:evil')" >/dev/null 2>&1; then
+  bad "parse_launch_args --agent pane_id 含換行時應失敗"
+else
+  rc=$?
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$rc" -eq 2 ] && pass "parse_launch_args --agent pane_id 含換行時回傳 2" \
+    || bad "parse_launch_args --agent pane_id 含換行時回傳 $rc，應為 2"
+fi
+
 # ==============================================================
 # main() 頂層 dispatch
 #
@@ -1367,6 +1390,50 @@ git -C "$CLEANUP_FIXTURE/work" branch "pr-review-77-$$" main
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet "refs/heads/pr-review-77-$$" && pass setup-worktree-preserves-branch-with-live-pid || bad setup-worktree-preserves-branch-with-live-pid
 
+# --- 缺陷 6：上面那組用 $$（這支測試腳本自己的 PID）當活體分支的 trailing
+# PID，整場測試期間恆為存活，遮蔽了兩階段拆分後的真實情況 -- 那裡的
+# cmd_prepare() 早就已經返回、trailing PID 早就已經死了，真正還活著的
+# 只有 .supervisor.pid 指向的監督行程。這裡重現那個真實形狀：目錄名與
+# 分支名的 trailing PID 都已死，但 base_dir 底下的 .supervisor.pid 指向
+# 一個貨真價實存活的行程。透過 setup_worktree 本身（而不是
+# _reap_stale_run_dirs 單獨）驗證：分支能不能保住，實際上是靠 worktree
+# 沒被回收、git 自己擋下 `git branch -D` 這個既有機制（見這個檔案上面
+# 分支清理迴圈自己的文件），不是分支清理迴圈另外去讀
+# .supervisor.pid -- setup_worktree 是唯一能同時證明兩者的入口。既有的
+# setup-worktree-preserves-branch-with-live-pid 案例原樣保留。---
+( exit 0 ) & cleanup_dead_pid=$!
+wait "$cleanup_dead_pid" 2>/dev/null || true
+
+CLEANUP_SUPERVISOR_ROOT="$T/setup-worktree-cleanup-supervisor"
+mkdir -p "$CLEANUP_SUPERVISOR_ROOT"
+CLEANUP_SUP_STALE_BASE="$CLEANUP_SUPERVISOR_ROOT/1-stale-$cleanup_dead_pid"
+mkdir -p "$CLEANUP_SUP_STALE_BASE"
+# 分支名與目錄名共用同一個死掉的 trailing PID -- 一如真正的 cmd_prepare()
+# 用同一個 $$ 同時命名兩者。
+git -C "$CLEANUP_FIXTURE/work" branch "pr-review-5-$cleanup_dead_pid" HEAD
+(cd "$CLEANUP_FIXTURE/work" && git worktree add -q "$CLEANUP_SUP_STALE_BASE/worktree" "pr-review-5-$cleanup_dead_pid")
+chmod -R a-w "$CLEANUP_SUP_STALE_BASE/worktree"
+sleep 30 & cleanup_supervisor_alive_pid=$!
+printf '%s\n' "$cleanup_supervisor_alive_pid" > "$CLEANUP_SUP_STALE_BASE/.supervisor.pid"
+
+# PR 5 已經有可抓的 pull ref（見這個 fixture 上面的既有設定），所以這次
+# setup_worktree 呼叫本身會成功，額外建出自己的分支與 worktree -- 這裡
+# 不對那次成功本身斷言，只在乎它有沒有連帶動到上面那個 stale sibling。
+(cd "$CLEANUP_FIXTURE/work" && setup_worktree acme widgets 5 "$CLEANUP_SUPERVISOR_ROOT/2-current-$$") >/dev/null 2>&1 || true
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -e "$CLEANUP_SUP_STALE_BASE/worktree" ] && pass "setup-worktree-live-supervisor-pid-preserves-worktree-despite-dead-trailing-pid" \
+  || bad "setup-worktree-live-supervisor-pid-preserves-worktree-despite-dead-trailing-pid: worktree 仍被回收，即使 .supervisor.pid 存活"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet "refs/heads/pr-review-5-$cleanup_dead_pid" && pass "setup-worktree-live-supervisor-pid-preserves-branch-despite-dead-trailing-pid" \
+  || bad "setup-worktree-live-supervisor-pid-preserves-branch-despite-dead-trailing-pid: 分支被強制刪除了，即使 .supervisor.pid 存活"
+
+kill "$cleanup_supervisor_alive_pid" 2>/dev/null || true
+wait "$cleanup_supervisor_alive_pid" 2>/dev/null || true
+chmod -R u+w "$CLEANUP_SUP_STALE_BASE/worktree" 2>/dev/null || true
+(cd "$CLEANUP_FIXTURE/work" && git worktree remove --force "$CLEANUP_SUP_STALE_BASE/worktree") >/dev/null 2>&1 || true
+git -C "$CLEANUP_FIXTURE/work" branch -D "pr-review-5-$cleanup_dead_pid" >/dev/null 2>&1 || true
+
 # ==============================================================
 # _git_status_snapshot
 # ==============================================================
@@ -1981,12 +2048,20 @@ esac
 # known timing artifact (see this function's own docstring) -- one retry
 # must be enough to reach the real content and still send the prompt ---
 
+lri_retry_start="$(date -u +%s)"
 lri_retry_out="$(HERDR_STUB_PANE_EMPTY_READS=1 launch_reviewer_interactive claude lri-pane-retry "$LRI_WT" \
   "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt")"
+lri_retry_elapsed=$(( $(date -u +%s) - lri_retry_start ))
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$lri_retry_out" = "$lri_claude_workdir/review.md" ] && pass launch-reviewer-interactive-pane-read-retry-then-succeeds || bad "launch-reviewer-interactive-pane-read-retry-then-succeeds: $lri_retry_out"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -f "$LRI_RECORD_DIR/agent-prompt.lri-pane-retry.text" ] && pass launch-reviewer-interactive-pane-read-retry-prompt-still-sent || bad launch-reviewer-interactive-pane-read-retry-prompt-still-sent
+# 缺陷回歸：兩次 `herdr pane read` 背靠背在毫秒內完成的話，這個重試根本
+# 吸收不到「畫面還沒渲染完」的時間差（見這個函式自己文件對 `sleep 1` 的
+# 說明）。這裡直接量測掛鐘時間，而不是只看重試最終有沒有成功，因為背靠
+# 背重試在這個測試樁下也一樣會成功 -- 唯一能分辨兩者的是有沒有真的等過。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_retry_elapsed" -ge 1 ] && pass "launch-reviewer-interactive-pane-read-retry-actually-waits" || bad "launch-reviewer-interactive-pane-read-retry-actually-waits: 重試只花了 ${lri_retry_elapsed}s，兩次讀取之間沒有真的等待"
 
 # --- pane readiness: still empty after the one retry is a real failure,
 # not guessed past -- `agent prompt` must never be called in that case ---
@@ -2810,6 +2885,12 @@ git init -q -b main "$REAP_ROOT/work"
   git checkout -q -b branch-b main
   printf 'b\n' >> f.txt
   git commit -aq -m b
+  git checkout -q -b branch-c main
+  printf 'c\n' >> f.txt
+  git commit -aq -m c
+  git checkout -q -b branch-d main
+  printf 'd\n' >> f.txt
+  git commit -aq -m d
   git checkout -q main
 )
 
@@ -2841,6 +2922,68 @@ chmod -R a-w "$REAP_ALIVE_BASE/worktree"
 [ -e "$REAP_ALIVE_BASE/worktree" ] && pass reap-stale-run-dirs-preserves-live-worktree || bad reap-stale-run-dirs-preserves-live-worktree
 chmod -R u+w "$REAP_ALIVE_BASE/worktree" 2>/dev/null || true
 (cd "$REAP_ROOT/work" && git worktree remove --force "$REAP_ALIVE_BASE/worktree") >/dev/null 2>&1 || true
+
+# --- 缺陷 1: 兩階段拆分後，base_dir/分支名尾端的 PID 是 cmd_prepare() 自
+# 己的行程編號，prepare 一返回就死了，但 reviewer 還在 herdr pane 裡跑。
+# 這裡直接重現那個形狀：trailing PID 已死（不是 $$），但 .supervisor.pid
+# 指向一個貨真價實存活的行程 -- 此時絕不能被回收，不論 trailing PID 死
+# 活。用背景 sleep 行程的 PID 而非 $$ 本身，證明判準真的是讀
+# .supervisor.pid 的內容，不是巧合命中測試腳本自己的 PID。---
+sleep 30 & REAP_SUPERVISOR_ALIVE_PID=$!
+
+REAP_SUPERVISED_BASE="$REAP_PR_ROOT/4-supervised-$dead_pid"
+mkdir -p "$REAP_SUPERVISED_BASE"
+(cd "$REAP_ROOT/work" && git worktree add -q "$REAP_SUPERVISED_BASE/worktree" branch-c)
+chmod -R a-w "$REAP_SUPERVISED_BASE/worktree"
+printf '%s\n' "$REAP_SUPERVISOR_ALIVE_PID" > "$REAP_SUPERVISED_BASE/.supervisor.pid"
+
+(cd "$REAP_ROOT/work" && _reap_stale_run_dirs "$REAP_CURRENT_BASE")
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -e "$REAP_SUPERVISED_BASE/worktree" ] && pass "reap-stale-run-dirs-live-supervisor-pid-overrides-dead-trailing-pid" \
+  || bad "reap-stale-run-dirs-live-supervisor-pid-overrides-dead-trailing-pid: worktree 仍被回收，即使 .supervisor.pid 存活"
+
+kill "$REAP_SUPERVISOR_ALIVE_PID" 2>/dev/null || true
+wait "$REAP_SUPERVISOR_ALIVE_PID" 2>/dev/null || true
+chmod -R u+w "$REAP_SUPERVISED_BASE/worktree" 2>/dev/null || true
+(cd "$REAP_ROOT/work" && git worktree remove --force "$REAP_SUPERVISED_BASE/worktree") >/dev/null 2>&1 || true
+
+# --- 缺陷 1 的空窗：cmd_prepare 已返回（trailing PID 已死）、
+# cmd_launch 的 spawn_supervisor_interactive 還沒起來（沒有
+# .supervisor.pid），但 .prepared-at 還很新鮮 -- 落在
+# RUN_DIR_STALE_GRACE_SECONDS 的寬限期內，同樣不得回收。---
+REAP_GAP_BASE="$REAP_PR_ROOT/5-gap-$dead_pid"
+mkdir -p "$REAP_GAP_BASE"
+(cd "$REAP_ROOT/work" && git worktree add -q "$REAP_GAP_BASE/worktree" branch-d)
+chmod -R a-w "$REAP_GAP_BASE/worktree"
+date -u +%s > "$REAP_GAP_BASE/.prepared-at"
+
+(cd "$REAP_ROOT/work" && _reap_stale_run_dirs "$REAP_CURRENT_BASE")
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -e "$REAP_GAP_BASE/worktree" ] && pass "reap-stale-run-dirs-fresh-prepared-at-within-grace-preserves-worktree" \
+  || bad "reap-stale-run-dirs-fresh-prepared-at-within-grace-preserves-worktree: worktree 在寬限期內就被回收了"
+
+# --- 同一個空窗形狀，但 .prepared-at 已經過了寬限期：必須落回原本的
+# trailing-PID 檢查，照舊被回收 -- 這條保住的是「準備了卻從未啟動」的
+# 執行目錄終究會被下一次執行清掉的既有保證（見 RUN_DIR_STALE_GRACE_
+# SECONDS 自己的文件）。branch-d 這時已經被上面那個案例的 worktree
+# 佔用，另開一個獨立分支避免撞名。---
+(cd "$REAP_ROOT/work" && git branch branch-e main)
+REAP_EXPIRED_BASE="$REAP_PR_ROOT/6-expired-$dead_pid"
+mkdir -p "$REAP_EXPIRED_BASE"
+(cd "$REAP_ROOT/work" && git worktree add -q "$REAP_EXPIRED_BASE/worktree" branch-e)
+chmod -R a-w "$REAP_EXPIRED_BASE/worktree"
+printf '%s\n' "$(( $(date -u +%s) - RUN_DIR_STALE_GRACE_SECONDS - 60 ))" > "$REAP_EXPIRED_BASE/.prepared-at"
+
+(cd "$REAP_ROOT/work" && _reap_stale_run_dirs "$REAP_CURRENT_BASE")
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$REAP_EXPIRED_BASE/worktree" ] && pass "reap-stale-run-dirs-expired-prepared-at-falls-back-to-dead-pid-reap" \
+  || bad "reap-stale-run-dirs-expired-prepared-at-falls-back-to-dead-pid-reap: 過了寬限期仍未回收"
+
+chmod -R u+w "$REAP_GAP_BASE/worktree" 2>/dev/null || true
+(cd "$REAP_ROOT/work" && git worktree remove --force "$REAP_GAP_BASE/worktree") >/dev/null 2>&1 || true
 
 # ==============================================================
 # _extract_review_content
@@ -3411,6 +3554,36 @@ case "$dfc_err2" in
   *'before any reviewer was launched'*) pass dispatch-failed-cleanup-no-pid-message ;;
   *) bad dispatch-failed-cleanup-no-pid-message ;;
 esac
+
+# ==============================================================
+# _dispatch_failed_cleanup -- worktree 移除不依賴呼叫端當下的工作目錄
+# (與 spawn_supervisor_interactive 同一缺陷，見下方 SVREPOPATH 區段的說
+# 明；那裡先修好了，這裡當時漏了)
+#
+# cmd_launch() 的逐 cli 派送迴圈在 launch_reviewer_interactive 失敗時呼叫
+# 這個函式，而 cmd_launch() 是與 cmd_prepare() 分開的行程呼叫 -- 修正
+# 前，這裡的裸 `git worktree remove --force` 沒有 `-C`，靠呼叫端當下的工
+# 作目錄解析要清哪個 repo，若從目標 repo 之外呼叫 `run-review.sh
+# launch`，會解析錯 repo、被自己的 `|| true` 靜默吞掉，worktree 永遠不
+# 會被清掉。這裡同樣從一個完全無關、甚至不是 git repo 的目錄呼叫，證明
+# 修正後的清理讀 .repo-path、用 `git -C <repo_path>` 執行，不依賴呼叫端
+# 的 cwd。
+# ==============================================================
+
+DFCREPOPATH_ROOT="$T/dispatch-failed-cleanup-repo-path-fixture"
+DFCREPOPATH_WT="$(_make_worktree_fixture "$DFCREPOPATH_ROOT")"
+# .repo-path is normally written by cmd_prepare() (see its own docstring);
+# this bypasses cmd_prepare()/cmd_launch() entirely, the same reason the
+# SVREPOPATH fixture below seeds it by hand.
+printf '%s\n' "$DFCREPOPATH_ROOT/work" > "$DFCREPOPATH_ROOT/.repo-path"
+
+DFCREPOPATH_ELSEWHERE="$T/not-the-target-repo-dfc"
+mkdir -p "$DFCREPOPATH_ELSEWHERE"
+dfcrepopath_err="$(cd "$DFCREPOPATH_ELSEWHERE" && _dispatch_failed_cleanup "$DFCREPOPATH_WT" claude 2>&1 1>/dev/null)"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$DFCREPOPATH_WT" ] && pass "dispatch-failed-cleanup 從非目標 repo 的工作目錄呼叫仍能清除 worktree" \
+  || bad "dispatch-failed-cleanup 從非目標 repo 的工作目錄呼叫時未能清除 worktree（worktree 仍在: $DFCREPOPATH_WT, stderr: $dfcrepopath_err）"
 
 # ==============================================================
 # prepare/launch end-to-end
@@ -4205,6 +4378,71 @@ esac
 
 rm -f "$STUB_BIN/herdr"
 unset HERDR_LEAK_RECORD
+
+# ==============================================================
+# cmd_prepare(): 超大 prompt 要在 prepare 階段就擋下（缺陷 4）
+#
+# 修正前，PROMPT_BYTE_LIMIT 只在 cmd_launch() 呼叫的
+# launch_reviewer_interactive 裡檢查，那時候 worktree、herdr tab 與 pane
+# 全都已經建好，白做一場。這裡用一份刻意灌大的 reviewer-contract.md 頂替
+# 真正的契約檔，讓 cmd_prepare() 自己的 per-cli 迴圈組出的 prompt 必然超
+# 過門檻 -- 複製 run-review.sh 到一個假的 skill 目錄樹底下，讓
+# resolve_contract_path 的 `readlink -f "${BASH_SOURCE[0]}"` 解析到這個
+# 假樹，是 resolve_contract_path 那組測試已經在用的既有手法，不是新發明
+# 的機制。這個情境完全不會走到任何 herdr 呼叫（cmd_prepare() 本身從不
+# 執行 herdr，只有 cmd_launch() 才會），所以不需要 herdr stub。
+# ==============================================================
+
+OVERSIZED_ROOT="$T/oversized-prompt-e2e-fixture"
+mkdir -p "$OVERSIZED_ROOT/skill/scripts" "$OVERSIZED_ROOT/skill/references"
+cp "$RUN_SH" "$OVERSIZED_ROOT/skill/scripts/run-review.sh"
+head -c "$((PROMPT_BYTE_LIMIT + 50000))" /dev/zero | tr '\0' 'A' > "$OVERSIZED_ROOT/skill/references/reviewer-contract.md"
+
+mkdir -p "$OVERSIZED_ROOT/remotes/acme-oversized" "$OVERSIZED_ROOT/work"
+git init -q -b main --bare "$OVERSIZED_ROOT/remotes/acme-oversized/widgets-oversized.git"
+git init -q -b main "$OVERSIZED_ROOT/work"
+(
+  cd "$OVERSIZED_ROOT/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "https://github.com/acme-oversized/widgets-oversized.git"
+  git config "url.$OVERSIZED_ROOT/remotes/acme-oversized/widgets-oversized.git.insteadOf" "https://github.com/acme-oversized/widgets-oversized.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b feature
+  printf 'feature\n' >> f.txt
+  git commit -aq -m feature
+  git push -q origin feature:refs/pull/1/head
+  git checkout -q main
+)
+
+OVERSIZED_HOME="$T/oversized-prompt-home"
+mkdir -p "$OVERSIZED_HOME"
+
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
+if oversized_out="$(cd "$OVERSIZED_ROOT/work" && CLAUDE_CONFIG_DIR="" HOME="$OVERSIZED_HOME" \
+  PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 \
+  "$BASH_ABS_PATH" "$OVERSIZED_ROOT/skill/scripts/run-review.sh" prepare \
+    --pr "https://github.com/acme-oversized/widgets-oversized/pull/1" --claude 2>&1)"; then
+  bad cmd-prepare-oversized-prompt-rejected
+else
+  pass cmd-prepare-oversized-prompt-rejected
+fi
+case "$oversized_out" in
+  *"exceeds limit of $PROMPT_BYTE_LIMIT bytes"*) pass cmd-prepare-oversized-prompt-message-names-limit ;;
+  *) bad "cmd-prepare-oversized-prompt-message-names-limit: $oversized_out" ;;
+esac
+
+# 缺陷回歸：修正前這道檢查只存在於 launch_reviewer_interactive，此時
+# worktree、herdr tab 與 pane 早就已經建好。這裡直接證明 worktree 從未
+# 留下痕跡 -- 不是「後來被清掉」，是 cmd_prepare() 自己的 per-cli 迴圈在
+# 寫出 prompt 檔的當下就先擋下，走 _dispatch_failed_cleanup。
+OVERSIZED_BASE_DIR="$(find "$OVERSIZED_HOME/.tmp" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | head -1)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$OVERSIZED_BASE_DIR" ] && [ ! -e "$OVERSIZED_BASE_DIR/worktree" ] && pass cmd-prepare-oversized-prompt-worktree-not-left-behind \
+  || bad "cmd-prepare-oversized-prompt-worktree-not-left-behind: $OVERSIZED_BASE_DIR"
 
 # --- prepare/launch: jq 前置檢查、print_summary 印出執行目錄 ---
 
@@ -5118,11 +5356,16 @@ mkdir -p "$SPWSYNI_ROOT/reviewers/claude/workdir" "$SPWSYNI_ROOT/reviewers/agy/w
 
 SPWSYNI_STUB_BIN="$T/spawn-supervisor-interactive-synthesis-stub-bin"
 mkdir -p "$SPWSYNI_STUB_BIN"
-# 只需要 claude 的 stub：見上面文件說明，_select_synthesis_cli 在
-# claude/agy 兩者都 ready 時必定選 claude（傳入順序固定，claude 先於
-# agy 落進 summary.txt）。codex 落在 withheld，不會參與合流挑選，也不
-# 會被啟動，所以不需要它的 stub。agy 雖然 ready，但不會中選、因此也不
-# 會被 launch_synthesis 啟動，同樣不需要它的 stub。
+# 三個都裝上樁，即使目前只有 claude 真的會被啟動：見上面文件說明，
+# _select_synthesis_cli 在 claude/agy 兩者都 ready 時必定選 claude（傳
+# 入順序固定，claude 先於 agy 落進 summary.txt），codex 落在 withheld、
+# 不會參與合流挑選。但這個「必定」是合流挑選邏輯目前的行為，不是這個
+# stub 目錄的職責 -- assert_cli_stub_only 只保護裝了樁的名字，若合流挑
+# 選邏輯日後改變而 agy/codex 的樁不存在，兩者會直接穿透到系統 PATH 上
+# 真正的、已認證的 CLI 二進位。agy 沿用 claude 的樁內容（萬一被意外啟
+# 動，至少不會嘗試真的執行任何動作）；codex 沿用下面 SPWSYN_STUB_BIN
+# 那組已有的「直接崩潰」寫法，同一個理由：不該被啟動的 CLI 若真的被啟
+# 動，樁本身要讓這個情境明顯失敗，而不是安靜地表現得像成功。
 cat > "$SPWSYNI_STUB_BIN/claude" <<'STUB'
 #!/usr/bin/env bash
 echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
@@ -5131,8 +5374,14 @@ echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
 exit 0
 STUB
 chmod +x "$SPWSYNI_STUB_BIN/claude"
+cp "$SPWSYNI_STUB_BIN/claude" "$SPWSYNI_STUB_BIN/agy"
+cat > "$SPWSYNI_STUB_BIN/codex" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$SPWSYNI_STUB_BIN/codex"
 export PATH="$SPWSYNI_STUB_BIN:$saved_path"
-assert_cli_stub_only "$PATH" "$SPWSYNI_STUB_BIN" claude
+assert_cli_stub_only "$PATH" "$SPWSYNI_STUB_BIN" claude agy codex
 
 printf 'claude review body\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$SPWSYNI_ROOT/reviewers/claude/workdir/review.md"
 printf 'agy review body\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$SPWSYNI_ROOT/reviewers/agy/workdir/review.md"
@@ -5334,6 +5583,42 @@ i=0
 until [ -s "$SVIPIPE_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$SVIPIPE_SUMMARY" ] && pass "spawn_supervisor_interactive 背景輪詢最終仍完成收尾" || bad "spawn_supervisor_interactive 背景輪詢從未收尾"
+
+# ==============================================================
+# spawn_supervisor_interactive -- worktree 移除不依賴呼叫端當下的工作
+# 目錄（缺陷 5）
+#
+# 修正前，`git worktree remove --force "$worktree_dir"` 沒有 `-C`，靠呼
+# 叫端當下的工作目錄解析要清哪個 repo；cmd_launch() 是與 cmd_prepare()
+# 分開的行程呼叫，若從別處呼叫，這一行會解析失敗，而失敗又被同一行自
+# 己的 `|| true` 靜默吞掉，worktree 永遠不會被清掉、也不會有任何錯誤訊
+# 息。這裡刻意「不」用其他區段慣用的 `(cd "$ROOT/work" && ...)` 呼叫，
+# 而是從一個完全無關、甚至不是 git repo 的目錄呼叫，證明修正後的清理
+# 讀 .repo-path（cmd_prepare() 正常會寫這個檔案，見它自己的文件）、用
+# `git -C <repo_path>` 執行，不必倚賴呼叫端的 cwd。
+# ==============================================================
+
+SVREPOPATH_ROOT="$T/spawn-supervisor-interactive-repo-path-fixture"
+SVREPOPATH_WT="$(_make_worktree_fixture "$SVREPOPATH_ROOT")"
+mkdir -p "$SVREPOPATH_ROOT/reviewers/claude/workdir"
+printf 'review body\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$SVREPOPATH_ROOT/reviewers/claude/workdir/review.md"
+printf '%s\n' "$(_git_status_snapshot "$SVREPOPATH_WT")" > "$SVREPOPATH_ROOT/.git-status-before-claude"
+printf 'claude claude-e2e-model dispatched\n' > "$SVREPOPATH_ROOT/.roster"
+# .repo-path is normally written by cmd_prepare() (see its own docstring);
+# this bypasses cmd_prepare()/cmd_launch() entirely, the same reason
+# .roster and .git-status-before-claude above are seeded by hand instead.
+printf '%s\n' "$SVREPOPATH_ROOT/work" > "$SVREPOPATH_ROOT/.repo-path"
+SVREPOPATH_SUMMARY="$SVREPOPATH_ROOT/summary.txt"
+
+SVREPOPATH_ELSEWHERE="$T/not-the-target-repo"
+mkdir -p "$SVREPOPATH_ELSEWHERE"
+(cd "$SVREPOPATH_ELSEWHERE" && spawn_supervisor_interactive "$SVREPOPATH_WT" "$SVREPOPATH_SUMMARY" claude)
+
+i=0
+until [ ! -e "$SVREPOPATH_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$SVREPOPATH_WT" ] && pass "spawn_supervisor_interactive 從非目標 repo 的工作目錄呼叫仍能清除 worktree" \
+  || bad "spawn_supervisor_interactive 從非目標 repo 的工作目錄呼叫時未能清除 worktree（worktree 仍在: $SVREPOPATH_WT）"
 
 export PATH="$saved_path"
 
