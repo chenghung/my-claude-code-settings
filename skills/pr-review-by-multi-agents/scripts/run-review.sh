@@ -1506,8 +1506,19 @@ _write_agy_home() {
 # startup files at all, so zsh's first interactive launch triggers the
 # zsh-newuser-install wizard, which swallows the first characters of
 # whatever herdr sends it and surfaces as "timed out waiting for agent
-# startup" -- an empty .zshrc suppresses that wizard. Every sibling
-# *_interactive function below touches .zshrc for this same reason.
+# startup" -- an empty .zshrc suppresses that wizard. The touch that
+# actually protects the pane is cmd_prepare's own, written into <dir>
+# right after mkdir -p first creates it, in the same per-cli loop
+# iteration (see that loop's own comment): the calling agent's herdr pane
+# split -- the gap RUN_DIR_STALE_GRACE_SECONDS's own docstring already
+# measures, between cmd_prepare returning and cmd_launch running -- starts
+# an interactive tty shell with HOME already pointed at <dir> before this
+# function, reached only from cmd_launch, ever runs. This function's own
+# touch below is therefore a redundant, idempotent backup by the time an
+# interactive run reaches it -- kept because it is what this function's
+# own tests, and any caller that invokes it without going through
+# cmd_prepare's loop first, still rely on. Every sibling *_interactive
+# function below touches .zshrc for this same backup reason.
 _write_claude_home_interactive() {
   local dir="$1" reviewer_workdir="$2"
   mkdir -p "$dir/.claude" || return 1
@@ -1525,8 +1536,10 @@ _write_claude_home_interactive() {
 # granted by hand-writing a two-line .codex/config.toml that marks
 # <reviewer_workdir>'s own absolute path -- not the shared worktree path
 # -- as trusted, generated fresh on every call the same way
-# _write_claude_home_interactive's .claude.json is. Also touches .zshrc
-# (see that function's docstring for why).
+# _write_claude_home_interactive's .claude.json is. Also touches .zshrc,
+# as a redundant, idempotent backup of cmd_prepare's own earlier touch
+# (see _write_claude_home_interactive's docstring for why that file
+# matters and which touch is the one actually protecting the pane).
 _write_codex_home_interactive() {
   local dir="$1" reviewer_workdir="$2"
   mkdir -p "$dir/.codex" || return 1
@@ -1542,8 +1555,10 @@ _write_codex_home_interactive() {
 # running in interactive mode. opencode needs no named credential symlink
 # to reach a state where it can accept the review prompt -- it falls back
 # to its own built-in free model ("Big Pickle") -- so the only thing this
-# function writes is .zshrc (see _write_claude_home_interactive's
-# docstring for why that file matters).
+# function writes is .zshrc, a redundant, idempotent backup of
+# cmd_prepare's own earlier touch (see _write_claude_home_interactive's
+# docstring for why that file matters and which touch is the one actually
+# protecting the pane).
 _write_opencode_home_interactive() {
   local dir="$1"
   mkdir -p "$dir" || return 1
@@ -1672,8 +1687,10 @@ JSON
 # inside the worktree -- a different string prefix than "command(git
 # diff)" covers, so that headless-era rule alone would never match here.
 # The second rule, scoped to this exact -C invocation, is what actually
-# lets the reviewer's git diff through. Also touches .zshrc (see
-# _write_claude_home_interactive's docstring for why).
+# lets the reviewer's git diff through. Also touches .zshrc, as a
+# redundant, idempotent backup of cmd_prepare's own earlier touch (see
+# _write_claude_home_interactive's docstring for why that file matters
+# and which touch is the one actually protecting the pane).
 _write_agy_home_interactive() {
   local dir="$1" reviewer_workdir="$2" worktree_dir="$3"
   local real_gemini="$HOME/.gemini" f
@@ -3588,10 +3605,14 @@ _dispatch_failed_cleanup() {
 # and verify every selected reviewer platform is actually installed (see
 # verify_selection), resolve and validate the PR, set up the shared
 # worktree and base ref, create each selected reviewer's own writable
-# working directory and isolated home directory (the home directory is
-# paths only -- the named files a later task writes under it don't exist
-# yet), copy this run's materials into each reviewer's own read-only copy
-# under its working directory (see this function's own per-cli loop), then
+# working directory and isolated home directory (touching an empty
+# .zshrc into the home directory right away too, to suppress zsh's
+# new-user wizard in the herdr pane the calling agent builds against it
+# before cmd_launch ever runs -- see this function's own per-cli loop
+# comment; every other named file under the home directory is still a
+# later task's to write), copy this run's materials into each reviewer's
+# own read-only copy under its working directory (see this function's own
+# per-cli loop), then
 # build and write each selected reviewer's own prompt file and write
 # .roster. Every hard precondition (gh missing/not authenticated, PR not
 # found, contract file missing, base ref unresolvable, worktree creation
@@ -3737,9 +3758,10 @@ cmd_prepare() {
   for cli in "${all_reviewers[@]}"; do
     # reviewer_workdir is this reviewer's own pane working directory
     # (herdr's --cwd target, and where its review.md output file lands);
-    # reviewer_home is its isolated HOME (herdr's --env HOME= target). Only
-    # the paths are established here -- the named files a later task
-    # writes under reviewer_home still don't exist yet.
+    # reviewer_home is its isolated HOME (herdr's --env HOME= target).
+    # Every other named file a later task writes under reviewer_home still
+    # doesn't exist yet -- .zshrc is the one exception, touched into
+    # reviewer_home below, right after mkdir -p creates it.
     reviewer_workdir="$base_dir/reviewers/$cli/workdir"
     reviewer_home="$base_dir/reviewers/$cli/home"
     reviewer_materials="$reviewer_workdir/materials"
@@ -3749,11 +3771,18 @@ cmd_prepare() {
     # _dispatch_failed_cleanup instead of letting set -e abort cmd_prepare()
     # with the worktree left behind and nothing to clean it up -- mkdir -p
     # is folded into this same chain for that reason, not left as a bare
-    # statement. build_prompt is handed reviewer_materials here, not the
-    # shared materials_dir fetch_review_materials wrote to -- see
-    # build_prompt's own docstring on why that per-reviewer copy (made
+    # statement. The .zshrc touch right after it is folded in for the same
+    # reason, into the same reviewer_home mkdir -p just created -- see
+    # _write_claude_home_interactive's own docstring for why an empty
+    # .zshrc has to exist here before the calling agent's herdr pane split
+    # ever starts an interactive shell against this reviewer_home, and why
+    # each *_interactive function below still touches it again as a
+    # redundant, idempotent backup. build_prompt is handed reviewer_materials
+    # here, not the shared materials_dir fetch_review_materials wrote to --
+    # see build_prompt's own docstring on why that per-reviewer copy (made
     # just below) is what makes handing over a path safe at all.
     if ! mkdir -p "$reviewer_workdir" "$reviewer_home" "$reviewer_materials" \
+      || ! touch "$reviewer_home/.zshrc" \
       || ! model="$(resolve_model "$cli")" \
       || ! prompt="$(build_prompt "$contract_path" "$pr_url" "$reviewer_materials" \
              "$cli" "$model" "$worktree_dir" "$base_ref" "$reviewer_workdir/review.md")"; then

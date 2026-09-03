@@ -3739,6 +3739,14 @@ for cli in claude codex opencode; do
   [ -d "$E2E_BASE_DIR/reviewers/$cli/workdir" ] && pass "main-e2e-reviewer-workdir-created-$cli" || bad "main-e2e-reviewer-workdir-created-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
   [ -d "$E2E_BASE_DIR/reviewers/$cli/home" ] && pass "main-e2e-reviewer-home-created-$cli" || bad "main-e2e-reviewer-home-created-$cli"
+  # cmd_prepare() also touches an empty .zshrc into reviewer_home right
+  # away, in the same per-cli loop iteration that just created it above --
+  # before cmd_launch ever runs -- to suppress zsh's new-user wizard in
+  # the herdr pane the calling agent builds against reviewer_home in
+  # between prepare and launch (see cmd_prepare's own per-cli loop comment
+  # and _write_claude_home_interactive's own docstring in run-review.sh).
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ -f "$E2E_BASE_DIR/reviewers/$cli/home/.zshrc" ] && pass "main-e2e-reviewer-home-zshrc-created-$cli" || bad "main-e2e-reviewer-home-zshrc-created-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
   grep -qxF "reviewer_workdir_$cli=$E2E_BASE_DIR/reviewers/$cli/workdir" <<<"$out" && pass "main-e2e-prepare-prints-reviewer-workdir-$cli" || bad "main-e2e-prepare-prints-reviewer-workdir-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
