@@ -1173,7 +1173,7 @@ resolve_model() {
       # the one deliberate exception to this script's "never hardcode a
       # model" rule. The `-high` suffix is agy's own encoding of reasoning
       # effort, which is why launch_reviewer passes no --effort flag.
-      value="gemini-3.7-flash-high"
+      value="gemini-3.8-flash-high"
       ;;
     *)
       ;;
@@ -2116,7 +2116,7 @@ launch_reviewer() {
       # readable by other accounts on the same machine via the process
       # table, which stdin is not.
       cmd=(agy --add-dir "$worktree_dir" --print-timeout 120m \
-        --model gemini-3.7-flash-high)
+        --model gemini-3.8-flash-high)
       ;;
     *)
       printf 'launch_reviewer: unknown reviewer CLI: %s\n' "$cli_name" >&2
@@ -2339,22 +2339,35 @@ launch_reviewer_interactive() {
     return 1
   }
 
+  # No leading executable name after `--` in any of the four branches
+  # below: herdr already resolves the executable to run from --kind (its
+  # own --help states --kind as "Supported agent kind and canonical
+  # executable"), so AGENT_ARG is the agent's own argument list only, not
+  # argv[0]. Confirmed against the real binary (herdr 0.8.2): starting agy
+  # with AGENT_ARG carrying only --add-dir/--model (no leading "agy") came
+  # back with argv ["agy","--add-dir",...,"--model",...] and a real,
+  # running process to match -- herdr prepends the executable itself.
+  # Passing the name here a second time is not a no-op: agy rejects it
+  # outright ("unexpected argument \"agy\""), while claude/codex silently
+  # swallow it as their prompt's positional argument and opencode as its
+  # project-directory positional argument -- neither of those two errors,
+  # so this comment is the only record of why the name is never repeated.
   case "$cli_name" in
     claude)
       cmd=(herdr agent start "$agent_name" --kind claude --pane "$pane_id" \
-        -- claude --disallowedTools "WebFetch")
+        -- --disallowedTools "WebFetch")
       ;;
     codex)
       cmd=(herdr agent start "$agent_name" --kind codex --pane "$pane_id" \
-        -- codex -C "$reviewer_workdir")
+        -- -C "$reviewer_workdir")
       ;;
     opencode)
       cmd=(herdr agent start "$agent_name" --kind opencode --pane "$pane_id" \
-        -- opencode "$reviewer_workdir")
+        -- "$reviewer_workdir")
       ;;
     agy)
       cmd=(herdr agent start "$agent_name" --kind agy --pane "$pane_id" \
-        -- agy --add-dir "$reviewer_workdir" --model gemini-3.7-flash-high)
+        -- --add-dir "$reviewer_workdir" --model gemini-3.8-flash-high)
       ;;
   esac
 
@@ -3054,7 +3067,7 @@ launch_synthesis() {
       # omitting the flag entirely (not supplying it with no value) is
       # what makes agy read the prompt from stdin and run
       # non-interactively.
-      cmd=(agy --print-timeout 120m --model gemini-3.7-flash-high)
+      cmd=(agy --print-timeout 120m --model gemini-3.8-flash-high)
       env_prefix=(env "HOME=$agy_home")
       ;;
     *)

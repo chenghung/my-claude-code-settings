@@ -710,8 +710,8 @@ rc=$?
 # $HOME's config must never affect this value ---
 
 out="$(resolve_model agy)"
-if [ "$out" = "gemini-3.7-flash-high" ]; then
-  pass "resolve_model agy 回傳 gemini-3.7-flash-high"
+if [ "$out" = "gemini-3.8-flash-high" ]; then
+  pass "resolve_model agy 回傳 gemini-3.8-flash-high"
 else
   bad "resolve_model agy 回傳 $out"
 fi
@@ -1922,6 +1922,18 @@ lri_claude_out="$(launch_reviewer_interactive claude w14:pZ "$LRI_WT" \
 
 claude_start_argv="$LRI_RECORD_DIR/agent-start.claude.argv"
 mapfile -t lri_claude_argv < "$claude_start_argv"
+# Regression guard: herdr's own --kind already resolves the executable to
+# run (its --help names --kind "Supported agent kind and canonical
+# executable"), so the token right after `--` must be claude's own first
+# flag, not "claude" a second time -- a real claude binary would silently
+# swallow that duplicate as a positional prompt argument instead of
+# erroring (see this section's own herdr stub docstring).
+lri_claude_dashdash_idx=-1
+for idx in "${!lri_claude_argv[@]}"; do
+  [ "${lri_claude_argv[$idx]}" = "--" ] && lri_claude_dashdash_idx=$idx
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_claude_dashdash_idx" -ge 0 ] && [ "${lri_claude_argv[$((lri_claude_dashdash_idx + 1))]:-}" = "--disallowedTools" ] && pass launch-reviewer-interactive-claude-no-duplicate-executable-name || bad "launch-reviewer-interactive-claude-no-duplicate-executable-name: $(cat "$claude_start_argv")"
 case "$(cat "$claude_start_argv")" in
   *'--disallowedTools'*'WebFetch'*) pass launch-reviewer-interactive-claude-disallows-webfetch ;;
   *) bad "launch-reviewer-interactive-claude-disallows-webfetch: $(cat "$claude_start_argv")" ;;
@@ -1966,6 +1978,16 @@ lri_codex_out="$(launch_reviewer_interactive codex w1X:pA "$LRI_WT" \
 
 codex_start_argv="$LRI_RECORD_DIR/agent-start.codex.argv"
 mapfile -t lri_codex_argv < "$codex_start_argv"
+# Regression guard: the token right after `--` must be codex's own first
+# flag, not "codex" a second time (see the claude section above for why
+# this is checked explicitly rather than left to the flag checks below,
+# none of which would notice a leading duplicate).
+lri_codex_dashdash_idx=-1
+for idx in "${!lri_codex_argv[@]}"; do
+  [ "${lri_codex_argv[$idx]}" = "--" ] && lri_codex_dashdash_idx=$idx
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_codex_dashdash_idx" -ge 0 ] && [ "${lri_codex_argv[$((lri_codex_dashdash_idx + 1))]:-}" = "-C" ] && pass launch-reviewer-interactive-codex-no-duplicate-executable-name || bad "launch-reviewer-interactive-codex-no-duplicate-executable-name: $(cat "$codex_start_argv")"
 lri_codex_dash_s_found=0
 for a in "${lri_codex_argv[@]}"; do
   case "$a" in
@@ -1998,6 +2020,17 @@ lri_opencode_out="$(launch_reviewer_interactive opencode w2:p12 "$LRI_WT" \
 
 opencode_start_argv="$LRI_RECORD_DIR/agent-start.opencode.argv"
 mapfile -t lri_opencode_argv < "$opencode_start_argv"
+# Regression guard: the token right after `--` must be the positional
+# workdir itself, not "opencode" a second time -- a real opencode binary
+# would silently swallow that duplicate as its own project-directory
+# positional argument instead of erroring (see the claude section above
+# for why this needs its own explicit check).
+lri_opencode_dashdash_idx=-1
+for idx in "${!lri_opencode_argv[@]}"; do
+  [ "${lri_opencode_argv[$idx]}" = "--" ] && lri_opencode_dashdash_idx=$idx
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_opencode_dashdash_idx" -ge 0 ] && [ "${lri_opencode_argv[$((lri_opencode_dashdash_idx + 1))]:-}" = "$lri_opencode_workdir" ] && pass launch-reviewer-interactive-opencode-no-duplicate-executable-name || bad "launch-reviewer-interactive-opencode-no-duplicate-executable-name: $(cat "$opencode_start_argv")"
 lri_opencode_run_found=0
 lri_opencode_dir_found=0
 for a in "${lri_opencode_argv[@]}"; do
@@ -2039,6 +2072,18 @@ lri_agy_out="$(launch_reviewer_interactive agy w28:p1 "$LRI_WT" \
 
 agy_start_argv="$LRI_RECORD_DIR/agent-start.agy.argv"
 mapfile -t lri_agy_argv < "$agy_start_argv"
+# Regression guard: the token right after `--` must be agy's own first
+# flag, not "agy" a second time -- unlike the other three CLIs, a real agy
+# binary rejects this outright ("unexpected argument \"agy\"") instead of
+# silently swallowing it, which is the failure this exact assertion
+# reproduces against the stub (see the claude section above for why this
+# needs its own explicit check).
+lri_agy_dashdash_idx=-1
+for idx in "${!lri_agy_argv[@]}"; do
+  [ "${lri_agy_argv[$idx]}" = "--" ] && lri_agy_dashdash_idx=$idx
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_agy_dashdash_idx" -ge 0 ] && [ "${lri_agy_argv[$((lri_agy_dashdash_idx + 1))]:-}" = "--add-dir" ] && pass launch-reviewer-interactive-agy-no-duplicate-executable-name || bad "launch-reviewer-interactive-agy-no-duplicate-executable-name: $(cat "$agy_start_argv")"
 case "$(cat "$agy_start_argv")" in
   *'--print-timeout'*) bad "launch-reviewer-interactive-agy-no-print-timeout: $(cat "$agy_start_argv")" ;;
   *) pass launch-reviewer-interactive-agy-no-print-timeout ;;
@@ -2313,7 +2358,7 @@ case "$(cat "$LAUNCH_RECORD_DIR/agy.argv")" in
 esac
 
 case "$(cat "$LAUNCH_RECORD_DIR/agy.argv")" in
-  *'--model'*'gemini-3.7-flash-high'*) pass launch-reviewer-agy-model-flag ;;
+  *'--model'*'gemini-3.8-flash-high'*) pass launch-reviewer-agy-model-flag ;;
   *) bad launch-reviewer-agy-model-flag ;;
 esac
 
@@ -4638,7 +4683,7 @@ printf 'REVIEW-FROM-OPENCODE-WITHHELD\n' > "$T/synth/.comment-body-444.md"
 # all -- a line ending in anything else (e.g. "completed"/"failed") would
 # silently never match, always falling through to the missing-entry
 # 未提供 case regardless of content.
-printf 'claude opus-5 dispatched\nagy gemini-3.7-flash-high dispatched\ncodex unknown-model dispatched\nopencode qwen3-max dispatched\n' \
+printf 'claude opus-5 dispatched\nagy gemini-3.8-flash-high dispatched\ncodex unknown-model dispatched\nopencode qwen3-max dispatched\n' \
   > "$T/synth/roster.txt"
 
 # ---- _count_ready 正確計數 ----
@@ -4757,7 +4802,7 @@ case "$out" in
   *) bad "build_synthesis_prompt 名單未把 claude 的 ready 譯成完成" ;;
 esac
 case "$out" in
-  *'agy / gemini-3.7-flash-high：完成'*) pass "build_synthesis_prompt 名單把 agy 的 ready 譯成完成" ;;
+  *'agy / gemini-3.8-flash-high：完成'*) pass "build_synthesis_prompt 名單把 agy 的 ready 譯成完成" ;;
   *) bad "build_synthesis_prompt 名單未把 agy 的 ready 譯成完成" ;;
 esac
 case "$out" in
