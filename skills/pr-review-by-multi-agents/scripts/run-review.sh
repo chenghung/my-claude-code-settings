@@ -2183,6 +2183,49 @@ launch_reviewer() {
   printf '%s\n' "$pid"
 }
 
+# _derive_agent_name <cli_name> <pane_id>
+#
+# Prints the name to hand `herdr agent start` for the reviewer this run
+# puts in <pane_id>, and returns 0; prints nothing and returns non-zero
+# when the digest cannot be computed at all.
+#
+# herdr constrains that name two ways at once, both stated in its own
+# documentation: it must match [a-z][a-z0-9_-]{0,31}, and it must be
+# unique among live agents. A pane id satisfies neither. Its literal
+# shape is wNN:pM -- live examples w2:p12, w14:pT, w1X:pA, w28:p1 -- so
+# it always carries a colon, and it carries uppercase in *either*
+# segment, not just the pane one. Both are rejected outright, and the
+# rejection lands before --pane is ever resolved: probed against herdr
+# 0.8.2, an illegal name returns invalid_agent_name even when --pane
+# names a pane that does not exist, while a legal name reaches
+# agent_pane_not_found. That is why concatenating cli name and pane id,
+# which this function replaces, failed at the very first reviewer of
+# every run rather than somewhere deeper.
+#
+# A digest, rather than a lowercasing sanitizer, is what holds up the
+# uniqueness half of that contract. herdr documents its public IDs as
+# "opaque stable handles", so their alphabet is not part of any contract
+# and nothing promises two live panes can never differ by case alone --
+# folding case would collapse such a pair onto one name and break the
+# uniqueness the pane id was being used for in the first place. A digest
+# stays injective whatever alphabet herdr moves to.
+#
+# Being unreadable costs nothing here: this script never targets an agent
+# by name (`herdr agent prompt` takes the pane id -- see
+# launch_reviewer_interactive's own docstring), `herdr agent list` has no
+# name field to render it in, and every failure message on this path
+# already prints the real pane id.
+#
+# The length ceiling is met by construction, for any pane id whatsoever:
+# the longest cli name is `opencode` at 8, plus a separator, plus 12
+# digest characters, is 21 of the 32 allowed. The leading character is
+# the cli name's own, always lowercase.
+_derive_agent_name() {
+  local cli_name="$1" pane_id="$2" digest
+  digest="$(printf '%s' "$pane_id" | sha256sum)" || return 1
+  printf '%s-%s\n' "$cli_name" "${digest:0:12}"
+}
+
 # launch_reviewer_interactive <cli> <pane_id> <worktree_dir> <reviewer_workdir> <reviewer_home> <prompt_file>
 #
 # The interactive counterpart to launch_reviewer above (see that function's
@@ -2266,7 +2309,7 @@ launch_reviewer_interactive() {
   local cli_name="$1" pane_id="$2" worktree_dir="$3"
   local reviewer_workdir="$4" reviewer_home="$5" prompt_file="$6"
   local output_file="$reviewer_workdir/review.md"
-  local base_dir before_snapshot pane_content prompt_bytes
+  local base_dir before_snapshot pane_content prompt_bytes agent_name
   local -a cmd=()
 
   case "$cli_name" in
@@ -2283,21 +2326,27 @@ launch_reviewer_interactive() {
       ;;
   esac
 
+  agent_name="$(_derive_agent_name "$cli_name" "$pane_id")" || {
+    printf 'launch_reviewer_interactive: failed to derive a herdr agent name for %s in pane %s\n' \
+      "$cli_name" "$pane_id" >&2
+    return 1
+  }
+
   case "$cli_name" in
     claude)
-      cmd=(herdr agent start "$cli_name-$pane_id" --kind claude --pane "$pane_id" \
+      cmd=(herdr agent start "$agent_name" --kind claude --pane "$pane_id" \
         -- claude --disallowedTools "WebFetch")
       ;;
     codex)
-      cmd=(herdr agent start "$cli_name-$pane_id" --kind codex --pane "$pane_id" \
+      cmd=(herdr agent start "$agent_name" --kind codex --pane "$pane_id" \
         -- codex -C "$reviewer_workdir")
       ;;
     opencode)
-      cmd=(herdr agent start "$cli_name-$pane_id" --kind opencode --pane "$pane_id" \
+      cmd=(herdr agent start "$agent_name" --kind opencode --pane "$pane_id" \
         -- opencode "$reviewer_workdir")
       ;;
     agy)
-      cmd=(herdr agent start "$cli_name-$pane_id" --kind agy --pane "$pane_id" \
+      cmd=(herdr agent start "$agent_name" --kind agy --pane "$pane_id" \
         -- agy --add-dir "$reviewer_workdir" --model gemini-3.7-flash-high)
       ;;
   esac
