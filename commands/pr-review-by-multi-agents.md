@@ -17,8 +17,8 @@ issue 不必在此指定，由 skill 自行推導。
 
 ## 會動到什麼
 
-會動到的：目標 PR 上新增一則 AI review comment；當前 repo 中 fetch base 分支與 pull ref 並強制更新 base 的遠端追蹤 ref、建立 worktree 與本地分支、強制刪除同形狀的陳舊分支（派出前先請你確認）、清掉前次執行殘留的 worktree 登記；家目錄下建立產出物目錄。收尾會清掉本次的 worktree 與分支，但有清不掉而留下的情形。
+會動到的：目標 PR 上新增一則 AI review comment（合流沒產出時退回逐則張貼，可能各平台各一則）；當前 repo 中 fetch base 分支與 pull ref 並強制更新 base 的遠端追蹤 ref、建立 worktree 與本地分支、強制刪除同形狀的陳舊分支（派出前先請你確認）、清掉前次執行殘留的 worktree 登記；家目錄下建立產出物目錄。收尾會清掉本次的 worktree 與分支，但有清不掉而留下的情形。
 
-不會動到的：不 approve、不 merge、不 close PR 或 issue；不修改 PR 的程式碼與倉庫中的既有檔案——後兩項靠契約與檔案權限，不是機制保證。
+不會動到的：不 approve、不 merge、不 close PR 或 issue；不修改 PR 的程式碼（擋著的只有 worktree 的唯讀權限位元，同一個使用者身分改得回去），也不修改你 repo 裡的既有檔案（只有契約擋著，那裡沒有任何一層鎖）。
 
 詳細清單與其界線見 `pr-review-by-multi-agents` skill 定義。

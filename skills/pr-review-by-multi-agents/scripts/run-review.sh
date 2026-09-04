@@ -76,15 +76,22 @@ readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 # plus a small, near-fixed coordinates block, not the contract plus
 # whatever size the PR/issue/design materials happen to be. Materials no
 # longer growing this prompt with PR size is not the same as this prompt
-# being safely small -- a real end-to-end run, measured against the
-# reviewer contract's actual current size, produced a ~96018-byte prompt,
-# already 96% of this limit with the contract alone. This check has
-# accordingly stopped being a guard against large PRs and become a guard
-# against the contract itself growing further: since the contract already
-# once forced this exact redesign by growing past a comfortable margin,
-# re-measure this margin (the same way the ceilings above were measured
-# against a real binary, not assumed) whenever the contract changes
-# meaningfully, rather than trusting this comment to still be accurate.
+# being safely small. This check has accordingly stopped being a guard
+# against large PRs and become a guard against the contract itself growing
+# further.
+#
+# Measured 2026-09-04 by calling build_prompt against the current contract:
+# contract 51335 bytes, coordinates block 479, prompt 51814 -- 51.8% of this
+# limit, 48186 bytes of headroom. Two earlier readings, both real, show why
+# this comment cannot be trusted on its own: an undated ~96018 from a shorter
+# contract, and 97939 (97.9%, only 2061 bytes of headroom) measured against
+# the contract as it stood immediately before the 2026-09 slimming. The
+# contract grew 1921 bytes between those two readings without either number
+# being updated. So: re-measure this margin (the same way the ceilings above
+# were measured against a real binary, not assumed) whenever the contract
+# changes meaningfully, and pin the measurement after the last edit -- three
+# separate figures in this file family were overtaken by a later edit within
+# the same round of work.
 readonly PROMPT_BYTE_LIMIT=100000
 
 # RUN_DIR_STALE_GRACE_SECONDS: how long _reap_stale_run_dirs (see its own
