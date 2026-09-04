@@ -17,7 +17,7 @@
 # of cmd_prepare()'s own per-reviewer copy, see its docstring), and a
 # material fetch_review_materials never wrote there is simply absent from
 # that copy too: the reviewer's own directory listing is what tells it a
-# material was never provided (see reviewer-contract.md's own 真相來源
+# material was never provided (see reviewer-contract.md's own 事實依據
 # section), not anything this script renders. A `--check-clis` mode reports
 # which of the four platform CLIs are on PATH and exits before any other
 # check runs (see check_clis); agy is recognized there, as a platform flag, and by
@@ -290,7 +290,7 @@ _fetch_issue_material() {
 # cmd_prepare()'s own per-reviewer copy step (see its docstring) then
 # simply has nothing to copy for it -- the reviewer contract has the
 # reviewer treat a missing file in its own copy directory as explicitly
-# not provided (see reviewer-contract.md's own 真相來源 section), which is
+# not provided (see reviewer-contract.md's own 事實依據 section), which is
 # not anything build_prompt or this function renders.
 #
 # <issue_arg> is the caller's explicit override. When empty, the issue is
@@ -1182,7 +1182,7 @@ resolve_model() {
 # contract's full text verbatim, then this run's coordinates. No material
 # content is embedded here -- materials_dir is a coordinate value only,
 # labeled 材料檔目錄絕對路徑 (the fixed key name the reviewer contract's own
-# 真相來源 section commits to), pointing the reviewer at the directory it
+# 事實依據 section commits to), pointing the reviewer at the directory it
 # must read pr.md/issue.md/design.md from itself. output_file is this
 # reviewer's own review.md path under its reviewer-specific writable
 # directory (see cmd_prepare's own reviewer_workdir) -- the coordinate
@@ -1865,7 +1865,7 @@ _write_agy_home_interactive() {
 #     requests included), so the carve-out is closer to "no local write"
 #     than "read-only" in the ordinary sense. But a whole-tool `Bash` deny
 #     also blocks the contract's own pinned `git -C <worktree> diff
-#     <base-ref>...HEAD` (see reviewer-contract.md's "真相來源" section) --
+#     <base-ref>...HEAD` (see reviewer-contract.md's "事實依據" section) --
 #     confirmed by the same probe failing identically for that command --
 #     which this reviewer has no other way to run: build_prompt does not
 #     embed the diff itself, so claude needs Bash for that one command to
@@ -2481,7 +2481,7 @@ _extract_review_content() {
 # Returns 1, printing nothing, when the file is empty/missing, its last
 # line isn't the marker verbatim, the marker appears anywhere else in the
 # file besides that last line, or the content left after stripping the
-# marker is empty -- the single definition SKILL.md's own 產出物位置
+# marker is empty -- the single definition SKILL.md's own 回報與張貼
 # section commits to (file exists, the marker's last-line occurrence is
 # the whole file's only one, content above it is non-empty), all three
 # checked here since this is the actual decider spawn_supervisor_interactive's

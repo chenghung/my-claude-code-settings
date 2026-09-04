@@ -3100,7 +3100,7 @@ esac
 # actual decider both spawn_supervisor_interactive's poll loop and
 # _record_reviewer_result_interactive rely on for "is this reviewer done,
 # and is its output trustworthy" (see its own docstring). SKILL.md's own
-# 產出物位置 section commits to three conditions: the file exists, the end
+# 回報與張貼 section commits to three conditions: the file exists, the end
 # marker's last-line occurrence is the whole file's only one, and the
 # content above it is non-empty.
 # ==============================================================
