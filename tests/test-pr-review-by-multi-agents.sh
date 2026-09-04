@@ -1820,7 +1820,7 @@ fi
 # cli its own recording file via $0's basename. `agent prompt`'s TARGET
 # argument (position 3) becomes part of its own recording filename for the
 # same reason, which doubles as this suite's check that TARGET really is
-# the pane id and not the `cli-pane_id` agent name `agent start` was given
+# the pane id and not the `<cli>-<digest>` agent name `agent start` was given
 # -- a wrong TARGET would record under a filename these tests never read
 # back from, so the assertion would fail by absence rather than a specific
 # check having to be written for it.
@@ -1847,6 +1847,18 @@ case "${1:-}" in
 agent)
   case "${2:-}" in
   start)
+    # Real herdr validates the agent name before it ever resolves --pane:
+    # probed against herdr 0.8.2, an illegal name returns
+    # invalid_agent_name even when --pane names a pane that does not
+    # exist, while a legal name gets all the way to agent_pane_not_found.
+    # This stub enforces the same rule in the same order, so a caller that
+    # composes an illegal name fails here instead of recording argv and
+    # going green. The message text is a paraphrase; the error code is not.
+    name="${3:-}"
+    if ! [[ "$name" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
+      printf '{"error":{"code":"invalid_agent_name","message":"agent name must match [a-z][a-z0-9_-]{0,31}"},"id":"cli:agent:start"}\n' >&2
+      exit 1
+    fi
     kind=""
     prev=""
     for a in "$@"; do
@@ -1903,7 +1915,7 @@ lri_claude_home="$LRI_ROOT/reviewers/claude/home"
 mkdir -p "$lri_claude_workdir" "$lri_claude_home"
 printf 'claude review prompt' > "$LRI_ROOT/claude.prompt"
 
-lri_claude_out="$(launch_reviewer_interactive claude lri-pane-claude "$LRI_WT" \
+lri_claude_out="$(launch_reviewer_interactive claude w14:pZ "$LRI_WT" \
   "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$lri_claude_out" = "$lri_claude_workdir/review.md" ] && pass launch-reviewer-interactive-claude-prints-output-file || bad "launch-reviewer-interactive-claude-prints-output-file: $lri_claude_out"
@@ -1937,7 +1949,7 @@ esac
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -f "$LRI_ROOT/.git-status-before-claude" ] && pass launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name || bad launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$LRI_RECORD_DIR/agent-prompt.lri-pane-claude.text" 2>/dev/null)" = "claude review prompt" ] && pass launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content || bad launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content
+[ "$(cat "$LRI_RECORD_DIR/agent-prompt.w14:pZ.text" 2>/dev/null)" = "claude review prompt" ] && pass launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content || bad launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content
 
 # --- codex: no -s (the sandbox flag is launch_reviewer's own headless-only
 # concern; herdr's own --pane already scopes this to one interactive pane) ---
@@ -1947,7 +1959,7 @@ lri_codex_home="$LRI_ROOT/reviewers/codex/home"
 mkdir -p "$lri_codex_workdir" "$lri_codex_home"
 printf 'codex review prompt' > "$LRI_ROOT/codex.prompt"
 
-lri_codex_out="$(launch_reviewer_interactive codex lri-pane-codex "$LRI_WT" \
+lri_codex_out="$(launch_reviewer_interactive codex w1X:pA "$LRI_WT" \
   "$lri_codex_workdir" "$lri_codex_home" "$LRI_ROOT/codex.prompt")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$lri_codex_out" = "$lri_codex_workdir/review.md" ] && pass launch-reviewer-interactive-codex-prints-output-file || bad "launch-reviewer-interactive-codex-prints-output-file: $lri_codex_out"
@@ -1979,7 +1991,7 @@ lri_opencode_home="$LRI_ROOT/reviewers/opencode/home"
 mkdir -p "$lri_opencode_workdir" "$lri_opencode_home"
 printf 'opencode review prompt' > "$LRI_ROOT/opencode.prompt"
 
-lri_opencode_out="$(launch_reviewer_interactive opencode lri-pane-opencode "$LRI_WT" \
+lri_opencode_out="$(launch_reviewer_interactive opencode w2:p12 "$LRI_WT" \
   "$lri_opencode_workdir" "$lri_opencode_home" "$LRI_ROOT/opencode.prompt")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$lri_opencode_out" = "$lri_opencode_workdir/review.md" ] && pass launch-reviewer-interactive-opencode-prints-output-file || bad "launch-reviewer-interactive-opencode-prints-output-file: $lri_opencode_out"
@@ -2020,7 +2032,7 @@ lri_agy_home="$LRI_ROOT/reviewers/agy/home"
 mkdir -p "$lri_agy_workdir" "$lri_agy_home"
 printf 'agy review prompt' > "$LRI_ROOT/agy.prompt"
 
-lri_agy_out="$(launch_reviewer_interactive agy lri-pane-agy "$LRI_WT" \
+lri_agy_out="$(launch_reviewer_interactive agy w28:p1 "$LRI_WT" \
   "$lri_agy_workdir" "$lri_agy_home" "$LRI_ROOT/agy.prompt")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$lri_agy_out" = "$lri_agy_workdir/review.md" ] && pass launch-reviewer-interactive-agy-prints-output-file || bad "launch-reviewer-interactive-agy-prints-output-file: $lri_agy_out"
@@ -2049,13 +2061,13 @@ esac
 # must be enough to reach the real content and still send the prompt ---
 
 lri_retry_start="$(date -u +%s)"
-lri_retry_out="$(HERDR_STUB_PANE_EMPTY_READS=1 launch_reviewer_interactive claude lri-pane-retry "$LRI_WT" \
+lri_retry_out="$(HERDR_STUB_PANE_EMPTY_READS=1 launch_reviewer_interactive claude w14:pR "$LRI_WT" \
   "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt")"
 lri_retry_elapsed=$(( $(date -u +%s) - lri_retry_start ))
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$lri_retry_out" = "$lri_claude_workdir/review.md" ] && pass launch-reviewer-interactive-pane-read-retry-then-succeeds || bad "launch-reviewer-interactive-pane-read-retry-then-succeeds: $lri_retry_out"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$LRI_RECORD_DIR/agent-prompt.lri-pane-retry.text" ] && pass launch-reviewer-interactive-pane-read-retry-prompt-still-sent || bad launch-reviewer-interactive-pane-read-retry-prompt-still-sent
+[ -f "$LRI_RECORD_DIR/agent-prompt.w14:pR.text" ] && pass launch-reviewer-interactive-pane-read-retry-prompt-still-sent || bad launch-reviewer-interactive-pane-read-retry-prompt-still-sent
 # 缺陷回歸：兩次 `herdr pane read` 背靠背在毫秒內完成的話，這個重試根本
 # 吸收不到「畫面還沒渲染完」的時間差（見這個函式自己文件對 `sleep 1` 的
 # 說明）。這裡直接量測掛鐘時間，而不是只看重試最終有沒有成功，因為背靠
@@ -2066,14 +2078,14 @@ lri_retry_elapsed=$(( $(date -u +%s) - lri_retry_start ))
 # --- pane readiness: still empty after the one retry is a real failure,
 # not guessed past -- `agent prompt` must never be called in that case ---
 
-if lri_neverready_out="$(HERDR_STUB_PANE_EMPTY_READS=99 launch_reviewer_interactive claude lri-pane-neverready "$LRI_WT" \
+if lri_neverready_out="$(HERDR_STUB_PANE_EMPTY_READS=99 launch_reviewer_interactive claude w14:pN "$LRI_WT" \
   "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt" 2>"$LRI_ROOT/neverready.stderr")"; then
   bad "launch-reviewer-interactive-pane-never-ready-rejected: printed $lri_neverready_out"
 else
   pass launch-reviewer-interactive-pane-never-ready-rejected
 fi
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$LRI_RECORD_DIR/agent-prompt.lri-pane-neverready.text" ] && pass launch-reviewer-interactive-pane-never-ready-no-prompt-sent || bad launch-reviewer-interactive-pane-never-ready-no-prompt-sent
+[ ! -f "$LRI_RECORD_DIR/agent-prompt.w14:pN.text" ] && pass launch-reviewer-interactive-pane-never-ready-no-prompt-sent || bad launch-reviewer-interactive-pane-never-ready-no-prompt-sent
 
 # --- prompt size limit: reject before ever calling `agent prompt`, with
 # both the actual size and the limit in the failure message ---
@@ -2081,7 +2093,7 @@ fi
 lri_oversized_bytes=$((PROMPT_BYTE_LIMIT + 1))
 head -c "$lri_oversized_bytes" /dev/zero > "$LRI_ROOT/oversized.prompt"
 
-if lri_oversized_out="$(launch_reviewer_interactive claude lri-pane-oversized "$LRI_WT" \
+if lri_oversized_out="$(launch_reviewer_interactive claude w14:pO "$LRI_WT" \
   "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/oversized.prompt" 2>"$LRI_ROOT/oversized.stderr")"; then
   bad "launch-reviewer-interactive-prompt-too-large-rejected: printed $lri_oversized_out"
 else
@@ -2093,7 +2105,7 @@ case "$lri_oversized_err" in
   *) bad "launch-reviewer-interactive-prompt-too-large-message-has-both-sizes: $lri_oversized_err" ;;
 esac
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$LRI_RECORD_DIR/agent-prompt.lri-pane-oversized.text" ] && pass launch-reviewer-interactive-prompt-too-large-no-prompt-sent || bad launch-reviewer-interactive-prompt-too-large-no-prompt-sent
+[ ! -f "$LRI_RECORD_DIR/agent-prompt.w14:pO.text" ] && pass launch-reviewer-interactive-prompt-too-large-no-prompt-sent || bad launch-reviewer-interactive-prompt-too-large-no-prompt-sent
 
 # --- prompt file missing: reject explicitly, before ever calling `agent
 # prompt` -- the exact silent-pass bug this section exists to catch. This
@@ -2109,7 +2121,7 @@ esac
 # `(( "" > PROMPT_BYTE_LIMIT ))` silently read the empty string as 0, and
 # an empty prompt was submitted to herdr as if it were real. ---
 
-if lri_missing_prompt_out="$(launch_reviewer_interactive claude lri-pane-missing-prompt "$LRI_WT" \
+if lri_missing_prompt_out="$(launch_reviewer_interactive claude w14:pM "$LRI_WT" \
   "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/does-not-exist.prompt" 2>"$LRI_ROOT/missing-prompt.stderr")"; then
   bad "launch-reviewer-interactive-missing-prompt-rejected: printed $lri_missing_prompt_out"
 else
@@ -2125,7 +2137,7 @@ esac
 # here instead of never writing one at all -- absence of the file, not
 # just an empty one, is what proves `agent prompt` was never called.
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$LRI_RECORD_DIR/agent-prompt.lri-pane-missing-prompt.text" ] && pass launch-reviewer-interactive-missing-prompt-no-prompt-sent || bad "launch-reviewer-interactive-missing-prompt-no-prompt-sent: $(cat "$LRI_RECORD_DIR/agent-prompt.lri-pane-missing-prompt.text" 2>/dev/null)"
+[ ! -f "$LRI_RECORD_DIR/agent-prompt.w14:pM.text" ] && pass launch-reviewer-interactive-missing-prompt-no-prompt-sent || bad "launch-reviewer-interactive-missing-prompt-no-prompt-sent: $(cat "$LRI_RECORD_DIR/agent-prompt.w14:pM.text" 2>/dev/null)"
 
 unset HERDR_RECORD_DIR
 export PATH="$saved_path"
