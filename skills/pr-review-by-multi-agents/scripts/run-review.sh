@@ -17,7 +17,7 @@
 # of cmd_prepare()'s own per-reviewer copy, see its docstring), and a
 # material fetch_review_materials never wrote there is simply absent from
 # that copy too: the reviewer's own directory listing is what tells it a
-# material was never provided (see reviewer-contract.md's own 真相來源
+# material was never provided (see reviewer-contract.md's own 事實依據
 # section), not anything this script renders. A `--check-clis` mode reports
 # which of the four platform CLIs are on PATH and exits before any other
 # check runs (see check_clis); agy is recognized there, as a platform flag, and by
@@ -76,15 +76,22 @@ readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 # plus a small, near-fixed coordinates block, not the contract plus
 # whatever size the PR/issue/design materials happen to be. Materials no
 # longer growing this prompt with PR size is not the same as this prompt
-# being safely small -- a real end-to-end run, measured against the
-# reviewer contract's actual current size, produced a ~96018-byte prompt,
-# already 96% of this limit with the contract alone. This check has
-# accordingly stopped being a guard against large PRs and become a guard
-# against the contract itself growing further: since the contract already
-# once forced this exact redesign by growing past a comfortable margin,
-# re-measure this margin (the same way the ceilings above were measured
-# against a real binary, not assumed) whenever the contract changes
-# meaningfully, rather than trusting this comment to still be accurate.
+# being safely small. This check has accordingly stopped being a guard
+# against large PRs and become a guard against the contract itself growing
+# further.
+#
+# Measured 2026-09-04 by calling build_prompt against the current contract:
+# contract 51335 bytes, coordinates block 479, prompt 51814 -- 51.8% of this
+# limit, 48186 bytes of headroom. Two earlier readings, both real, show why
+# this comment cannot be trusted on its own: an undated ~96018 from a shorter
+# contract, and 97939 (97.9%, only 2061 bytes of headroom) measured against
+# the contract as it stood immediately before the 2026-09 slimming. The
+# contract grew 1921 bytes between those two readings without either number
+# being updated. So: re-measure this margin (the same way the ceilings above
+# were measured against a real binary, not assumed) whenever the contract
+# changes meaningfully, and pin the measurement after the last edit -- three
+# separate figures in this file family were overtaken by a later edit within
+# the same round of work.
 readonly PROMPT_BYTE_LIMIT=100000
 
 # RUN_DIR_STALE_GRACE_SECONDS: how long _reap_stale_run_dirs (see its own
@@ -290,7 +297,7 @@ _fetch_issue_material() {
 # cmd_prepare()'s own per-reviewer copy step (see its docstring) then
 # simply has nothing to copy for it -- the reviewer contract has the
 # reviewer treat a missing file in its own copy directory as explicitly
-# not provided (see reviewer-contract.md's own 真相來源 section), which is
+# not provided (see reviewer-contract.md's own 事實依據 section), which is
 # not anything build_prompt or this function renders.
 #
 # <issue_arg> is the caller's explicit override. When empty, the issue is
@@ -1182,7 +1189,7 @@ resolve_model() {
 # contract's full text verbatim, then this run's coordinates. No material
 # content is embedded here -- materials_dir is a coordinate value only,
 # labeled 材料檔目錄絕對路徑 (the fixed key name the reviewer contract's own
-# 真相來源 section commits to), pointing the reviewer at the directory it
+# 事實依據 section commits to), pointing the reviewer at the directory it
 # must read pr.md/issue.md/design.md from itself. output_file is this
 # reviewer's own review.md path under its reviewer-specific writable
 # directory (see cmd_prepare's own reviewer_workdir) -- the coordinate
@@ -1865,7 +1872,7 @@ _write_agy_home_interactive() {
 #     requests included), so the carve-out is closer to "no local write"
 #     than "read-only" in the ordinary sense. But a whole-tool `Bash` deny
 #     also blocks the contract's own pinned `git -C <worktree> diff
-#     <base-ref>...HEAD` (see reviewer-contract.md's "真相來源" section) --
+#     <base-ref>...HEAD` (see reviewer-contract.md's "事實依據" section) --
 #     confirmed by the same probe failing identically for that command --
 #     which this reviewer has no other way to run: build_prompt does not
 #     embed the diff itself, so claude needs Bash for that one command to
@@ -2481,7 +2488,7 @@ _extract_review_content() {
 # Returns 1, printing nothing, when the file is empty/missing, its last
 # line isn't the marker verbatim, the marker appears anywhere else in the
 # file besides that last line, or the content left after stripping the
-# marker is empty -- the single definition SKILL.md's own 產出物位置
+# marker is empty -- the single definition SKILL.md's own 回報與張貼
 # section commits to (file exists, the marker's last-line occurrence is
 # the whole file's only one, content above it is non-empty), all three
 # checked here since this is the actual decider spawn_supervisor_interactive's
