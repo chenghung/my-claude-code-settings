@@ -2,7 +2,7 @@
 
 本檔是 `pr-review-by-multi-agents` 的理由層。`SKILL.md` 只寫規則，規則為什麼是這樣、外部 CLI 的實際行為量測結果、被否決過的替代方案都記在這裡。
 
-執行流程時不需要載入本檔。遇到症狀要對照時才打開：PR 上的內容與輸出檔對不上、某個 reviewer 一直卡著、worktree 沒被清掉、分支被誤刪等。
+執行流程時不需要載入本檔。什麼時候該打開它，以 `SKILL.md` 的 Reference 載入時機表那一列為準，這裡不複述那份症狀清單。
 
 涉及外部 CLI 或 git 實際行為的每一項都標出憑據等級：「實測」指以真實二進位跑過同型探測，「推斷」指從其他已知行為推得、沒有直接量測，「未查證」指沒有測過也推不出來。三者不得互相代換。
 
@@ -51,6 +51,18 @@ frontmatter 原本明列「由單一 agent 執行的審查」不觸發本 skill�
 ### 為什麼腳本拆成 prepare 與 launch 兩階段
 
 中間夾著一段只有 main agent 做得到的工作——依版面配置建立 herdr 的 tab 與 pane。拆開換來三件事：pane 的工作目錄從一開始就是對的，不必在 pane 裡送 `cd` 去搶 shell 提示符的時序；前置檢查失敗發生在任何 pane 存在之前，不會留下一排空 pane 要收拾；準備了卻沒有啟動的那一次留下的殘骸落在陳舊 worktree 回收的涵蓋範圍內。
+
+### 建立 tab 為什麼要指定 workspace
+
+`herdr tab create` 的落點預設由 UI 焦點決定，不是由呼叫端所在的位置決定，所以那一步一定要帶 `--workspace`。以下都是對真實 herdr 二進位（0.8.2）的量測。
+
+`tab create --help` 的簽章確有 `--workspace` 這個選項，值是 workspace ID（實測）。省略它時，tab 落在當下 UI 焦點所在的 workspace（實測）：把 caller context 的三個環境變數 `HERDR_WORKSPACE_ID`、`HERDR_TAB_ID`、`HERDR_PANE_ID` 全部偽造成另一個 workspace 的值再呼叫，tab 仍然落在當時焦點所在的那個 workspace，可見這個子命令根本不讀 caller context——換句話說，落點錯掉時沒有任何呼叫端能設定的環境訊號救得回來。帶 `--workspace` 指向呼叫端自己的 workspace 時落點正確（實測）：探測當時焦點在別的 workspace，tab 仍落在呼叫端這一邊。
+
+`HERDR_WORKSPACE_ID` 確實存在於真實 herdr pane 的環境裡（實測：在一個 herdr pane 中直接印出環境，得到 `HERDR_ENV=1`、`HERDR_PANE_ID=w2E:p1`、`HERDR_TAB_ID=w2E:t1`、`HERDR_WORKSPACE_ID=w2E`，另有 `HERDR_SOCKET_PATH` 與 `HERDR_BIN_PATH`；workspace 那一個的值與該 pane 實際所屬的 workspace 相符），與環境閘門讀的 `HERDR_ENV`、收尾守衛讀的 `HERDR_TAB_ID` 同屬 herdr 注入每個 pane 的 caller context。本 repo 內另外兩處記錄列的變數組都不含它，**不要拿它們當作這個變數不存在的證據**：倉庫根層的 `hooks/herdr-agent-state.sh` 只檢查它自己要用的那三個（`HERDR_ENV`、`HERDR_SOCKET_PATH`、`HERDR_PANE_ID`），本 skill 的 `scripts/run-review.sh` 那段註解記的是當初為 `HERDR_ENV` 那道閘門一併確認到的幾個，兩處都不是窮舉。
+
+**因此不為它加空值守衛，也不把它併進 `HERDR_ENV` 那道閘門**：那個變數若真的是空字串，herdr 當場以 `workspace_not_found` 失敗、結束碼 `1`（實測），不會靜默改落到別處。**這個論證吃 `SKILL.md` 第二階段那條失敗出口**——`tab create` 失敗一律停下回報、不得拿掉 `--workspace` 重試。有那條出口在，守衛只是把同一個停下點提早到呼叫之前，買不到額外的保護；少了它，守衛也補不上缺口，因為守衛判的是空值，判不了那次重試——ID 解不到那一種，拿掉旗標的重試會成功（推斷；實測只到上面那兩點，整個 workspace 相關失敗類別沒有量測），而它成功之後只是安靜地落錯 workspace。
+
+`pane split` 不在這個問題的射程內（實測）：它帶的是明確的 pane ID，而那個 ID 取自 `tab create` 的 JSON 回應——焦點位於另一個 workspace（`w2F`）時對指名的 `w2E:pC` 下切割，回傳的新 pane 是 `w2E:pD`，tab 與 workspace 都跟著被切的那個 pane 走。整段流程裡會被焦點牽著走的只有 `tab create` 這一處。
 
 ### 陳舊執行目錄的三層判準與 600 秒寬限期
 
@@ -114,7 +126,7 @@ reviewer 那幾行的 worktree 狀態是在移除**之前**就算完的，而腳
 
 ### 回音室標記的第二個用途
 
-`<!-- pr-review-by-multi-agents -->` 除了過濾回音室之外，讓事後補貼時有東西可以核對。刻意不做獨立的 slash command 參數或模式，一段指引就夠；代價是這條路徑得使用者主動開口。
+`<!-- pr-review-by-multi-agents -->` 除了過濾回音室之外，讓事後補貼時有東西可以核對。刻意不做獨立的 slash command 參數或模式，`references/backfill-posting.md` 那份指引就夠；代價是這條路徑得使用者主動開口。
 
 ### 單則張貼的代價
 
@@ -122,7 +134,7 @@ reviewer 那幾行的 worktree 狀態是在移除**之前**就算完的，而腳
 
 ## 已知限制
 
-互動模式與無頭模式是兩組不同的量測條件，多項結論方向相反，所以底下這些量測不能拿去套用在合流那一路（它仍是無頭執行），反之亦然——凡是兩路都提到的，各自標明是哪一路。要重新確認只能對真實二進位重跑同型探測，讀腳本或官方說明推不回來。遇到對應症狀時直接對照本節，不要當成待修的 bug 追。
+互動模式與無頭模式是兩組不同的量測條件，多項結論方向相反，所以底下這些量測不能拿去套用在合流那一路（它仍是無頭執行），反之亦然——凡是兩路都提到的，各自標明是哪一路。要重新確認只能對真實二進位重跑同型探測，讀腳本或官方說明推不回來。
 
 ### 四個平台在互動 reviewer 那一路的能力現況
 
