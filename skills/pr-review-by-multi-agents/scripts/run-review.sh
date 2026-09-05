@@ -47,9 +47,9 @@
 # prompt assembly); and, below, launching each reviewer CLI with its own
 # least-privilege sandbox/permission flags, supervising them to completion,
 # synthesizing the trustworthy reviews into the single comment that
-# eventually gets posted, and reporting a summary -- main() only dispatches
-# to cmd_prepare() and cmd_launch(), which together string all of the
-# above into the complete two-phase pipeline.
+# eventually gets posted, and reporting a summary -- see main()'s own
+# docstring further down for how each of its five subcommands (prepare,
+# launch, run, wait, cleanup) draws on the pieces above.
 set -euo pipefail
 
 # IFS is intentionally left at its bash default here. Nothing in this file
@@ -1756,11 +1756,14 @@ _write_agy_home_interactive() {
 # uniqueness the pane id was being used for in the first place. A digest
 # stays injective whatever alphabet herdr moves to.
 #
-# Being unreadable costs nothing here: this script never targets an agent
-# by name (`herdr agent prompt` takes the pane id -- see
-# launch_reviewer_interactive's own docstring), `herdr agent list` has no
-# name field to render it in, and every failure message on this path
-# already prints the real pane id.
+# Being unreadable costs nothing here: launch_reviewer_interactive's own
+# `herdr agent prompt` call still targets the pane id, not this name (see
+# that function's own docstring), and every failure message on this path
+# already prints the real pane id. cmd_wait's own _wait_agent_states is the
+# one place a name coming out of this function is later read back by
+# name -- but even there it only ever matches the "<cli>-" prefix (see
+# that function's own docstring), never the digest suffix, so that suffix
+# staying unreadable costs nothing either.
 #
 # The length ceiling is met by construction, for any pane id whatsoever:
 # the longest cli name is `opencode` at 8, plus a separator, plus 12
@@ -3265,15 +3268,35 @@ cmd_prepare() {
   # fine-grained enough to rule that out.
   base_dir="$HOME/.tmp/$repo-pr-$number/$(date -u +%Y%m%d%H%M%S)-$$"
   logs_dir="$base_dir/logs"
-  mkdir -p "$logs_dir"
+  # Checked explicitly, not left as a bare statement: cmd_run wraps this
+  # whole function in `prepare_out="$(cmd_prepare "$@")" || return $?`, and
+  # a failure inside a command substitution that is itself part of a `||`
+  # list does not trip `set -e` there even with `shopt -s
+  # inherit_errexit` -- measured against a real bash 4.3: inherit_errexit
+  # aborts the substitution correctly with no conditional around it, but
+  # silently runs past the failing line and returns success once one is
+  # added. Every write below this point gets the same explicit check for
+  # the same reason.
+  mkdir -p "$logs_dir" || {
+    printf 'run-review.sh: failed to create %s\n' "$logs_dir" >&2
+    exit 1
+  }
 
   # .prepared-at is the timestamp _run_dir_within_stale_grace reads back on
   # a later run's own _reap_stale_run_dirs pass -- see that function's own
   # docstring on the gap this exists to cover. Written as early as
   # possible, right when base_dir itself first exists, so it stays a
   # faithful lower bound on this run's age no matter where cmd_prepare or
-  # cmd_launch later fails or how long the caller takes between them.
-  date -u +%s > "$base_dir/.prepared-at"
+  # cmd_launch later fails or how long the caller takes between them. A
+  # silent failure here is not merely a missed timestamp: a later run
+  # against the same PR would then find this run's directory outside the
+  # stale grace and force-remove its worktree out from under a reviewer
+  # that is still running (see _run_dir_within_stale_grace's own
+  # docstring).
+  date -u +%s > "$base_dir/.prepared-at" || {
+    printf 'run-review.sh: failed to write %s\n' "$base_dir/.prepared-at" >&2
+    exit 1
+  }
 
   # .repo-path records this repo's absolute path for the two worktree
   # cleanup paths that can run from inside cmd_launch -- a separate
@@ -3288,7 +3311,10 @@ cmd_prepare() {
     printf 'run-review.sh: failed to resolve the target repo'"'"'s absolute path\n' >&2
     exit 1
   fi
-  printf '%s\n' "$repo_toplevel" > "$base_dir/.repo-path"
+  printf '%s\n' "$repo_toplevel" > "$base_dir/.repo-path" || {
+    printf 'run-review.sh: failed to write %s\n' "$base_dir/.repo-path" >&2
+    exit 1
+  }
 
   worktree_dir="$(setup_worktree "$owner" "$repo" "$number" "$base_dir")" || {
     printf 'run-review.sh: failed to set up the review worktree\n' >&2
@@ -3387,7 +3413,18 @@ cmd_prepare() {
     # standing between a reviewer and a write.
     chmod -R a-w "$reviewer_materials" 2>/dev/null || true
 
-    printf '%s' "$prompt" > "$logs_dir/$cli.prompt"
+    # Checked explicitly, same reason as every other step in this loop: a
+    # silent failure here is not merely a missing file -- if the write
+    # fails partway (a truncated write, not just a missing one), this
+    # cli's own reviewer still gets dispatched against whatever partial
+    # prompt made it to disk, since the size check just below only rejects
+    # a prompt that is too large, never one that is suspiciously small.
+    printf '%s' "$prompt" > "$logs_dir/$cli.prompt" || {
+      printf 'run-review.sh: failed to write the prompt file for %s: %s\n' \
+        "$cli" "$logs_dir/$cli.prompt" >&2
+      _dispatch_failed_cleanup "$worktree_dir"
+      exit 1
+    }
 
     # Checked here, right after writing the file this run's own prompt for
     # this cli, rather than only later when cmd_launch's own
@@ -3421,7 +3458,11 @@ cmd_prepare() {
   # is also the disclosure data build_synthesis_prompt reads back out of
   # .roster long after every reviewer is done and there is nowhere left to
   # look a model name up.
-  : > "$base_dir/.roster"
+  : > "$base_dir/.roster" || {
+    printf 'run-review.sh: failed to reset %s\n' "$base_dir/.roster" >&2
+    _dispatch_failed_cleanup "$worktree_dir"
+    exit 1
+  }
   for cli in "${all_reviewers[@]}"; do
     printf '%s %s dispatched\n' "$cli" "$(resolve_model "$cli")" >> "$base_dir/.roster"
   done

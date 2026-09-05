@@ -1606,14 +1606,19 @@ fi
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$ENVSCRUB" ] && pass "_write_env_scrubbing_zshrc 寫出非空檔案" || bad "_write_env_scrubbing_zshrc 寫出空檔案"
 
-# 白名單每一項都必須出現在產生的清單裡
+# 白名單每一項都必須出現在 _rr_keep 陣列本身，而不是整份產生檔案（含註解）
+# 的任何角落。先把陣列區塊切出來、砍掉每一行的 # 註解，只對切剩的陣列
+# 內容比對 -- 對整份檔案找關鍵字等於形同虛設：陣列正上方那段檔頭註解、
+# 以及 OPENCODE_CONFIG 前面說明它為何在清單上的那段註解，本來就會提到
+# 變數名，把某個變數名從陣列搬進註解，這樣的斷言仍然會通過。
+envscrub_array="$(sed -n '/^_rr_keep=($/,/^)$/p' "$ENVSCRUB" | sed 's/#.*//')"
 envscrub_missing=""
 for v in PATH HOME SHELL TERM TERMINFO COLORTERM LANG LC_ALL USER LOGNAME \
          PWD OLDPWD TMPDIR XDG_RUNTIME_DIR DISPLAY WAYLAND_DISPLAY \
          DBUS_SESSION_BUS_ADDRESS HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID \
          HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_BIN_PATH SSH_AUTH_SOCK \
          ZDOTDIR SHLVL OPENCODE_CONFIG; do
-  grep -qw -- "$v" "$ENVSCRUB" || envscrub_missing="$envscrub_missing $v"
+  printf '%s\n' "$envscrub_array" | grep -qw -- "$v" || envscrub_missing="$envscrub_missing $v"
 done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -z "$envscrub_missing" ] && pass "_write_env_scrubbing_zshrc 白名單完整" || bad "_write_env_scrubbing_zshrc 白名單缺項:$envscrub_missing"
@@ -1757,6 +1762,30 @@ fi
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$agy_home_i/.zshrc" ] && pass "_write_agy_home_interactive 建立非空 .zshrc" || bad "_write_agy_home_interactive 未建立非空 .zshrc"
+
+# ==============================================================
+# _derive_agent_name
+#
+# 這裡印出的 "<cli>-<digest>" 前綴是承重的：cmd_wait 自己的
+# _wait_agent_states 就是靠 "$cli-" 這個前綴去 herdr agent list 裡挑出這次
+# run 自己派出的 agent（見那個函式自己的 docstring）。挑錯 agent 不會報
+# 任何錯誤，只會讓 cmd_wait 誤判成 unknown 或撞到另一個不相干的 agent，
+# 所以這個前綴格式需要自己的直接斷言，不能只靠下面 launch_reviewer_
+# interactive 那組間接驗證 argv 的測試。
+# ==============================================================
+
+derive_name_claude="$(_derive_agent_name claude wT:p1)"
+if [[ "$derive_name_claude" =~ ^claude-[0-9a-f]{12}$ ]]; then
+  pass "_derive_agent_name 印出 <cli>-<12 位十六進位 digest> 格式"
+else
+  bad "_derive_agent_name 格式不符: $derive_name_claude"
+fi
+
+# 不同 cli、同一個 pane id 要得出不同名稱（cli 名稱本身就是前綴的一部
+# 分），否則 _wait_agent_states 的前綴比對會在兩個 reviewer 之間撞名。
+derive_name_agy="$(_derive_agent_name agy wT:p1)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$derive_name_claude" != "$derive_name_agy" ] && pass "_derive_agent_name 不同 cli 得到不同名稱" || bad "_derive_agent_name 不同 cli 卻撞名: $derive_name_claude"
 
 # ==============================================================
 # launch_reviewer_interactive
@@ -3128,7 +3157,7 @@ for cli in claude codex opencode; do
   # cmd_prepare's own per-cli loop comment and _write_env_scrubbing_zshrc's
   # own docstring in run-review.sh).
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ -f "$E2E_BASE_DIR/reviewers/$cli/home/.zshrc" ] && pass "main-e2e-reviewer-home-zshrc-created-$cli" || bad "main-e2e-reviewer-home-zshrc-created-$cli"
+  [ -s "$E2E_BASE_DIR/reviewers/$cli/home/.zshrc" ] && pass "main-e2e-reviewer-home-zshrc-created-$cli" || bad "main-e2e-reviewer-home-zshrc-created-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
   grep -qxF "reviewer_workdir_$cli=$E2E_BASE_DIR/reviewers/$cli/workdir" <<<"$out" && pass "main-e2e-prepare-prints-reviewer-workdir-$cli" || bad "main-e2e-prepare-prints-reviewer-workdir-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -5412,18 +5441,25 @@ case "$(cat "$PANES_ROOT/panes.calls")" in
   *'--no-focus'*) pass "_build_reviewer_panes 帶 --no-focus" ;;
   *) bad "_build_reviewer_panes 未帶 --no-focus" ;;
 esac
-# 每個 pane 都要帶隔離家目錄；--env 只能在建 pane 當下設定，錯過沒有第二次機會
-panes_env_count="$(rg -c -- '--env HOME=' "$PANES_ROOT/panes.calls" || echo 0)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$panes_env_count" -ge 2 ] && pass "_build_reviewer_panes 每個 pane 都帶 --env HOME=" || bad "_build_reviewer_panes 帶 HOME 的 pane 數不足: $panes_env_count"
-# 每個 pane 也都要把 ZDOTDIR 釘死在同一個隔離家目錄，同樣只能在建 pane
-# 當下設定：pane 若從 herdr 背景服務行程繼承到別的 ZDOTDIR，zsh 會改讀
-# 那個目錄底下的啟動檔，我們寫進隔離家目錄的 .zshrc 一次都不會被
-# source，且不會有任何錯誤訊息 -- 見 _build_reviewer_panes 自己 docstring
-# 這一條 trap 的說明。
-panes_zdotdir_count="$(rg -c -- '--env ZDOTDIR=' "$PANES_ROOT/panes.calls" || echo 0)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$panes_zdotdir_count" -ge 2 ] && pass "_build_reviewer_panes 每個 pane 都帶 --env ZDOTDIR=" || bad "_build_reviewer_panes 帶 ZDOTDIR 的 pane 數不足: $panes_zdotdir_count"
+# 每個 pane 都要帶隔離家目錄，且 HOME/ZDOTDIR 的值必須是這個 cli 自己專屬
+# 的路徑 -- 不是只數 --env HOME=/--env ZDOTDIR= 這兩個旗標出現幾次：計數
+# 擋不住四家 reviewer 被改成共用同一個家目錄（憑證與設定互相踩踏），也擋
+# 不住 ZDOTDIR 被錯誤路徑覆蓋（pane 若從 herdr 背景服務行程繼承到別的
+# ZDOTDIR，zsh 會改讀那個目錄底下的啟動檔，我們寫進隔離家目錄的 .zshrc
+# 一次都不會被 source，且不會有任何錯誤訊息 -- 見 _build_reviewer_panes
+# 自己 docstring 這一條 trap 的說明）；兩種情況下計數仍然是 2，斷言仍然會
+# 通過。改成逐一比對每個 cli 自己那行 pane split 呼叫，確認 HOME 與
+# ZDOTDIR 都恰好等於 $PANES_ROOT/reviewers/<cli>/home 這個絕對路徑。
+for panes_check_cli in claude agy; do
+  panes_check_home="$PANES_ROOT/reviewers/$panes_check_cli/home"
+  panes_check_line="$(grep -F -- "--cwd $PANES_ROOT/reviewers/$panes_check_cli/workdir" "$PANES_ROOT/panes.calls")"
+  case "$panes_check_line" in
+    *"--env HOME=$panes_check_home --env ZDOTDIR=$panes_check_home"*)
+      pass "_build_reviewer_panes $panes_check_cli 的 HOME 與 ZDOTDIR 都指到自己專屬的隔離家目錄" ;;
+    *)
+      bad "_build_reviewer_panes $panes_check_cli 的 HOME/ZDOTDIR 不正確: $panes_check_line" ;;
+  esac
+done
 # opencode 另需 OPENCODE_CONFIG，同樣只能在建 pane 當下設定
 : > "$PANES_ROOT/panes.calls"
 PATH="$PANES_STUB:$saved_path" HERDR_WORKSPACE_ID=wT \
@@ -5537,6 +5573,89 @@ esac
   || bad "cmd_run 前置檢查失敗時仍呼叫了 herdr，排序保證失效"
 
 unset RUNORDER_HERDR_LEAK_RECORD
+rm -f "$STUB_BIN/herdr"
+
+# ==============================================================
+# cmd_run：cmd_prepare() 裸寫入失敗必須顯式中止，不能被 errexit 悄悄吃掉
+#
+# cmd_run 把 cmd_prepare 包在 `prepare_out="$(cmd_prepare "$@")" || return
+# $?` 這種命令替換 + 條件判斷裡：這個賦值本身落在 || 清單裡，即使開
+# inherit_errexit，errexit 在這種脈絡下也救不回來（實測：沒有條件判斷時
+# inherit_errexit 會正確中止，一旦加上條件判斷，命令替換內部一路跑過失敗
+# 那一行、整個賦值仍回傳成功）。這正是 RUNORDER 那組測試不會踩到的縫隙：
+# 那裡的失敗（prompt 超過門檻）本來就是顯式 `exit 1`，不管有沒有條件包著
+# 都會中止；裸寫入（例如建立 logs_dir 用的 mkdir -p）失敗時如果不顯式
+# 檢查，靠的是 set -e 自己冒出來的中止，而那個中止正是這裡會被吃掉的。
+# 所以這裡跟 RUNORDER 一樣，用 `run` 子命令（不是單獨呼叫 `prepare`）當
+# 獨立行程呼叫，同樣用一個 herdr 紀錄檔證明 cmd_run 真的整個中止、從未
+# 呼叫過 herdr（而不是吞掉失敗後靜默略過、繼續往下派工）。
+# ==============================================================
+
+WFRUN_ROOT="$T/write-failure-run-fixture"
+mkdir -p "$WFRUN_ROOT/remotes/wfrun-org" "$WFRUN_ROOT/work"
+git init -q -b main --bare "$WFRUN_ROOT/remotes/wfrun-org/wfrun-repo.git"
+git init -q -b main "$WFRUN_ROOT/work"
+(
+  cd "$WFRUN_ROOT/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "https://github.com/wfrun-org/wfrun-repo.git"
+  git config "url.$WFRUN_ROOT/remotes/wfrun-org/wfrun-repo.git.insteadOf" "https://github.com/wfrun-org/wfrun-repo.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b feature
+  printf 'feature\n' >> f.txt
+  git commit -aq -m feature
+  git push -q origin feature:refs/pull/1/head
+  git checkout -q main
+)
+
+WFRUN_HOME="$T/write-failure-run-home"
+mkdir -p "$WFRUN_HOME"
+# $HOME/.tmp 存在但是個普通檔案而非目錄 -- base_dir/logs_dir 的祖先路徑
+# 因此無法被 mkdir -p 建立，正是 cmd_prepare() 第一個裸寫入會踩到的失敗。
+: > "$WFRUN_HOME/.tmp"
+
+WFRUN_HERDR_LEAK_RECORD="$T/write-failure-run-herdr-leak"
+rm -f "$WFRUN_HERDR_LEAK_RECORD"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+: >> "$WFRUN_HERDR_LEAK_RECORD"
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+export WFRUN_HERDR_LEAK_RECORD
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
+
+if wfrun_out="$(cd "$WFRUN_ROOT/work" && CLAUDE_CONFIG_DIR="" HOME="$WFRUN_HOME" \
+  PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 HERDR_WORKSPACE_ID=wfrunWs \
+  bash "$RUN_SH" run --pr "https://github.com/wfrun-org/wfrun-repo/pull/1" --claude 2>&1)"; then
+  bad "cmd_run logs_dir 建立失敗時應失敗卻回傳成功: $wfrun_out"
+else
+  pass "cmd_run logs_dir 建立失敗時顯式中止"
+fi
+case "$wfrun_out" in
+  *"failed to create"*) pass "cmd_run 失敗訊息點名 logs_dir 建立失敗" ;;
+  *) bad "cmd_run 失敗訊息未點名 logs_dir 建立失敗: $wfrun_out" ;;
+esac
+# 排序保證：跟 RUNORDER 那組一樣，不是「紀錄檔是空的」，是紀錄檔根本不
+# 存在 -- 證明 herdr 從頭到尾沒被呼叫過一次。這條連同上面 exit code 那條
+# 是這整段測試的安全網，不是能單獨挑出 mkdir -p 這一個裸寫入的 mutation
+# 探針：$HOME/.tmp 被擋住後，base_dir 底下任何路徑都建不出來，就算把
+# mkdir -p 這裡的顯式檢查還原成裸寫入，緊接在後的 setup_worktree（原本
+# 就有的 `|| { ...; exit 1; }`）一樣會因為同一個根因而失敗，一樣會顯式
+# 中止、一樣不會呼叫到 herdr -- 這兩條測的是「整個 cmd_prepare() 對
+# base_dir 底下任何寫入失敗都不會靜默略過」這個整體安全性，真正能單獨
+# 分辨「這一行有沒有自己的顯式檢查」的是上面那條比對錯誤訊息文字的斷言
+# （mkdir -p 缺了檢查時，訊息會從 "failed to create ... logs_dir" 變成
+# 下一步 .prepared-at 或 setup_worktree 自己的訊息）。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$WFRUN_HERDR_LEAK_RECORD" ] && pass "cmd_run logs_dir 建立失敗時 herdr 完全沒被呼叫（排序保證）" \
+  || bad "cmd_run logs_dir 建立失敗時仍呼叫了 herdr，等於靜默略過繼續派工"
+
+unset WFRUN_HERDR_LEAK_RECORD
 rm -f "$STUB_BIN/herdr"
 
 # ==============================================================
