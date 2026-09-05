@@ -5213,4 +5213,125 @@ fi
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 git -C "$CLEANBR_GITOK" show-ref --verify --quiet refs/heads/pr-review-42-13579 && pass "cmd_cleanup 沒有誤刪名字相近的另一個分支 pr-review-42-13579" || bad "cmd_cleanup 誤刪了不該碰的分支 pr-review-42-13579"
 
+# ==============================================================
+# cmd_wait
+#
+# 規則層原本要求編排端自行組裝一個輪詢迴圈，並在兩個平台上維護兩套
+# 語意（Claude Code 有 blocked 重新武裝、codex/opencode 沒有），兩者
+# 只靠規則層的文字互相參照維持一致。收進腳本後兩邊差異只剩「要不要
+# 背景執行」。
+# ==============================================================
+
+WAIT_ROOT="$T/wait"
+mkdir -p "$WAIT_ROOT"
+
+# --- 摘要檔新增一行 → event=summary_line ---
+printf 'claude n/a n/a 2026-09-05T00:00:00Z ok ready /tmp/x.md\n' > "$WAIT_ROOT/summary.txt"
+( sleep 1; printf 'agy n/a n/a 2026-09-05T00:00:01Z ok ready /tmp/y.md\n' >> "$WAIT_ROOT/summary.txt" ) &
+wait_out="$(cmd_wait --base-dir "$WAIT_ROOT" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+case "$wait_out" in
+  'event=summary_line cli=agy') pass "cmd_wait 摘要檔新增一行時回傳 summary_line 事件" ;;
+  *) bad "cmd_wait 摘要檔事件不正確: $wait_out" ;;
+esac
+
+# ==============================================================
+# cmd_wait -- event=blocked 與 --reported-blocked 過濾
+#
+# 這兩條斷言補上原計畫測試漏掉的第四個返回條件：blocked 恰好是四個
+# 事件裡語意最細的一個，因為它正是這次要從規則層收進腳本的那套狀態
+# 機的核心（「blocked 錨點與重新武裝」)。
+#
+# herdr 是真的裝在這台機器上的二進位（不像四個 AI CLI 那樣可能沒
+# 裝），沒有替身時名稱會直接解析到它、對它送出真正的 `agent list`
+# 查詢 -- 這正是 assert_cli_stub_only 存在的理由（見它自己的docstring：
+# 「This has already happened twice while developing this suite.」)，
+# 所以這裡建立替身之後立刻呼叫它驗證替身確實遮蔽住了 herdr。
+#
+# 替身回傳的 JSON 刻意混入一個沒有 name 欄位的 agent，模擬同一台機器
+# 上任何其他被 herdr 自動發現、非本次 run 啟動的 agent（真實情境，不
+# 是假設 -- 這台開發機自己的 `herdr agent list` 現在就回傳好幾個這種
+# agent）。對真實 herdr 二進位（0.8.2）探測過：這種 agent 的 .name 是
+# null，`null | startswith(...)` 是 jq 的執行期錯誤而不是「不相符」--
+# _wait_agent_states 若沒有 `(.name // "")` 這層防護，這個沒有名字的
+# agent 存在就會讓 agent list 查詢對「每一個」cli 都失敗，症狀是
+# blocked 永遠偵測不到、而且不只發生在它自己那個名額上。
+# ==============================================================
+
+WAIT_BLOCKED="$T/wait-blocked"
+mkdir -p "$WAIT_BLOCKED"
+printf 'codex some-model dispatched\nopencode some-model dispatched\n' > "$WAIT_BLOCKED/.roster"
+
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+agent)
+  case "${2:-}" in
+  list) printf '%s' "$WAIT_HERDR_AGENT_LIST_JSON"; exit 0 ;;
+  esac
+  ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$STUB_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$STUB_BIN" herdr
+# codex: blocked（應觸發）；opencode: working（不應觸發）；第三個
+# agent 沒有 name 欄位（模擬無關 agent，驗證 (.name // "") 防護）。
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"codex-aaaaaaaaaaaa","agent_status":"blocked"},{"name":"opencode-bbbbbbbbbbbb","agent_status":"working"},{"agent_status":"blocked"}]}}'
+
+# --- 某 cli 進入 blocked → event=blocked cli=<正確的 cli 名稱> ---
+wait_blocked_out="$(cmd_wait --base-dir "$WAIT_BLOCKED" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+case "$wait_blocked_out" in
+  'event=blocked cli=codex') pass "cmd_wait 某 cli 進入 blocked 時回傳 blocked 事件並帶正確 cli 名稱" ;;
+  *) bad "cmd_wait blocked 事件不正確（可能是 (.name // \"\") 防護沒生效，或 cli 判斷錯誤）: $wait_blocked_out" ;;
+esac
+
+# --- --reported-blocked 點名的 cli 不會再次觸發 blocked，改在死線到達 ---
+wait_blocked_filtered_out="$(cmd_wait --base-dir "$WAIT_BLOCKED" --deadline-at "$(( $(date +%s) + 3 ))" --reported-blocked codex 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_blocked_filtered_out" = 'event=deadline' ] && pass "cmd_wait --reported-blocked 點名的 cli 不會再次觸發 blocked 事件" || bad "cmd_wait --reported-blocked 過濾失敗: $wait_blocked_filtered_out"
+
+unset WAIT_HERDR_AGENT_LIST_JSON
+export PATH="$saved_path"
+rm -f "$STUB_BIN/herdr"
+
+# --- 死線到達 → event=deadline，且不得早退也不得晚於死線太多 ---
+WAIT_DL="$T/wait-deadline"
+mkdir -p "$WAIT_DL"
+: > "$WAIT_DL/summary.txt"
+wait_dl_start=$(date +%s)
+wait_dl_out="$(cmd_wait --base-dir "$WAIT_DL" --deadline-at "$(( wait_dl_start + 3 ))" 2>/dev/null)"
+wait_dl_elapsed=$(( $(date +%s) - wait_dl_start ))
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_dl_out" = 'event=deadline' ] && pass "cmd_wait 死線到達回傳 deadline 事件" || bad "cmd_wait 死線事件不正確: $wait_dl_out"
+if [ "$wait_dl_elapsed" -ge 3 ] && [ "$wait_dl_elapsed" -le 9 ]; then
+  pass "cmd_wait 死線前不早退、到達後不久即返回（$wait_dl_elapsed 秒）"
+else
+  bad "cmd_wait 死線時序不正確: $wait_dl_elapsed 秒"
+fi
+
+# --- 心跳時點 → event=heartbeat，且心跳早於死線時先返回心跳 ---
+WAIT_HB="$T/wait-heartbeat"
+mkdir -p "$WAIT_HB"; : > "$WAIT_HB/summary.txt"
+wait_hb_now=$(date +%s)
+wait_hb_out="$(cmd_wait --base-dir "$WAIT_HB" --heartbeat-at "$(( wait_hb_now + 2 ))" --deadline-at "$(( wait_hb_now + 60 ))" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_hb_out" = 'event=heartbeat' ] && pass "cmd_wait 心跳時點回傳 heartbeat 事件" || bad "cmd_wait 心跳事件不正確: $wait_hb_out"
+
+# --- 摘要檔還不存在時當成零行、不視為錯誤 ---
+WAIT_NF="$T/wait-nofile"
+mkdir -p "$WAIT_NF"
+wait_nf_now=$(date +%s)
+wait_nf_out="$(cmd_wait --base-dir "$WAIT_NF" --deadline-at "$(( wait_nf_now + 3 ))" 2>/dev/null)"; wait_nf_rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_nf_out" = 'event=deadline' ] && [ "$wait_nf_rc" -eq 0 ] && pass "cmd_wait 摘要檔不存在時當成零行繼續等" || bad "cmd_wait 摘要檔不存在時處置不正確: $wait_nf_out rc=$wait_nf_rc"
+
+# --- 用法錯誤 ---
+if ( cmd_wait --base-dir "$WAIT_ROOT" 2>/dev/null ); then
+  bad "cmd_wait 缺 --deadline-at 應以結束碼 2 拒絕"
+else
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$?" -eq 2 ] && pass "cmd_wait 缺 --deadline-at 以結束碼 2 拒絕" || bad "cmd_wait 缺 --deadline-at 的結束碼不是 2"
+fi
+
 exit $fail

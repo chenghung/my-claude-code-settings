@@ -2,12 +2,18 @@
 # Orchestrates parallel PR code review by claude, codex, opencode, and agy
 # CLIs.
 #
-# Command line: three subcommands. `run-review.sh prepare --pr <link>
+# Command line: four subcommands. `run-review.sh prepare --pr <link>
 # [--issue <ref>] [--design <path>] --claude|--codex|--opencode|--agy` (one
 # or more platform flags; see parse_args) runs every precondition check and
 # writes each selected CLI's prompt file. `run-review.sh launch --base-dir
 # <path> --agent <cli>=<pane_id>...` (one or more; see parse_launch_args)
-# launches the reviewers `prepare` already set up. `run-review.sh cleanup
+# launches the reviewers `prepare` already set up. `run-review.sh wait
+# --base-dir <path> --deadline-at <epoch> [--heartbeat-at <epoch>]
+# [--reported-blocked <cli>]...` (see cmd_wait) blocks one turn of the
+# caller's own poll loop, returning exactly one event line -- a new summary
+# line, a newly blocked reviewer, the heartbeat time, or the deadline --
+# for the caller to interpret; it never decides what to do about the event
+# itself. `run-review.sh cleanup
 # --base-dir <path>` (see cmd_cleanup) tears a finished run down --
 # removing its worktree and run directory and force-deleting the local
 # branch `prepare` created for it, deriving both the branch name and the
@@ -527,10 +533,10 @@ check_clis() {
 # in a real herdr pane's environment. herdr is a hard prerequisite for
 # prepare and launch: every reviewer either of them ends up dispatching
 # runs interactively inside a herdr pane (see SKILL.md), so a run started
-# outside one cannot succeed no matter what flags follow it. All three of
-# main()'s prepare/launch/cleanup branches call this before doing anything
-# else -- see main()'s own docstring on why --check-clis is deliberately
-# exempt.
+# outside one cannot succeed no matter what flags follow it. All four of
+# main()'s prepare/launch/wait/cleanup branches call this before doing
+# anything else -- see main()'s own docstring on why --check-clis is
+# deliberately exempt.
 # Prints a reason and returns 1 on failure; prints nothing and returns 0
 # when HERDR_ENV is exactly "1".
 _check_herdr_env() {
@@ -3691,22 +3697,144 @@ _cleanup_delete_branch() {
   fi
 }
 
-# main --check-clis | prepare <flags>... | launch <flags>... | cleanup <flags>...
+# cmd_wait --base-dir <path> --deadline-at <epoch> [--heartbeat-at <epoch>]
+#          [--reported-blocked <cli>]...
+#
+# One turn of the orchestrator's wait loop, moved here out of SKILL.md.
+# Blocks until exactly one of four things happens, prints a single
+# structured event line, and returns 0. The caller decides what to DO about
+# the event -- what to report, whether to ask the user to terminate a
+# suspected hang, whether to extend the deadline. None of that judgement
+# moves into this script; only the blocking, the polling and the deadline
+# arithmetic do.
+#
+# Why this exists: SKILL.md carried two versions of this loop, one for
+# hosts with a background wake-up mechanism and one for hosts without, and
+# the two differed in whether the `blocked` anchor gets re-armed. Those two
+# semantics were kept in agreement only by prose cross-referencing prose.
+# With the loop here, the difference between the two hosts collapses to
+# whether the caller backgrounds this command.
+#
+# --reported-blocked names clis the caller has already told the user about;
+# this call will not return a `blocked` event for them. That is the anchor
+# half of the old rule made explicit as a parameter. The re-arm half stays
+# with the caller, because only the caller knows whether it has since
+# sampled that cli as no longer blocked.
+#
+# The 5-second poll interval is not a latency target: reviews and the merge
+# both take minutes, so this only bounds how long a signal waits to be
+# seen. A missing summary file counts as zero lines rather than an error --
+# the supervisor creates it, and there is a short race between this script
+# printing its coordinates and that file appearing.
+cmd_wait() {
+  local base_dir="" deadline_at="" heartbeat_at="" summary_file
+  local -a reported_blocked=()
+  local baseline_lines now current_lines new_cli cli status
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --base-dir)         [ "$#" -ge 2 ] || { printf 'run-review.sh: --base-dir requires a value\n' >&2; exit 2; }; base_dir="$2"; shift 2 ;;
+      --deadline-at)      [ "$#" -ge 2 ] || { printf 'run-review.sh: --deadline-at requires a value\n' >&2; exit 2; }; deadline_at="$2"; shift 2 ;;
+      --heartbeat-at)     [ "$#" -ge 2 ] || { printf 'run-review.sh: --heartbeat-at requires a value\n' >&2; exit 2; }; heartbeat_at="$2"; shift 2 ;;
+      --reported-blocked) [ "$#" -ge 2 ] || { printf 'run-review.sh: --reported-blocked requires a value\n' >&2; exit 2; }; reported_blocked+=("$2"); shift 2 ;;
+      *) printf 'run-review.sh: unknown flag for wait: %s\n' "$1" >&2; exit 2 ;;
+    esac
+  done
+  [ -n "$base_dir" ] || { printf 'run-review.sh: wait requires --base-dir\n' >&2; exit 2; }
+  [ -n "$deadline_at" ] || { printf 'run-review.sh: wait requires --deadline-at\n' >&2; exit 2; }
+  case "$deadline_at" in ''|*[!0-9]*) printf 'run-review.sh: --deadline-at must be an epoch second\n' >&2; exit 2 ;; esac
+
+  summary_file="$base_dir/summary.txt"
+  baseline_lines="$(wc -l < "$summary_file" 2>/dev/null || printf '0')"
+
+  while :; do
+    now="$(date +%s)"
+    if [ "$now" -ge "$deadline_at" ]; then printf 'event=deadline\n'; return 0; fi
+    if [ -n "$heartbeat_at" ] && [ "$now" -ge "$heartbeat_at" ]; then printf 'event=heartbeat\n'; return 0; fi
+
+    current_lines="$(wc -l < "$summary_file" 2>/dev/null || printf '0')"
+    if [ "$current_lines" -gt "$baseline_lines" ]; then
+      new_cli="$(sed -n "$(( baseline_lines + 1 ))p" "$summary_file" | awk '{print $1}')"
+      printf 'event=summary_line cli=%s\n' "$new_cli"
+      return 0
+    fi
+
+    while IFS= read -r line; do
+      cli="${line%% *}"; status="${line##* }"
+      [ "$status" = blocked ] || continue
+      _wait_already_reported "$cli" "${reported_blocked[@]+"${reported_blocked[@]}"}" && continue
+      printf 'event=blocked cli=%s\n' "$cli"
+      return 0
+    done < <(_wait_agent_states "$base_dir")
+
+    sleep 5
+  done
+}
+
+# _wait_already_reported <cli> [reported...]
+# Returns 0 when <cli> is in the reported list, 1 otherwise.
+_wait_already_reported() {
+  local needle="$1"; shift
+  local c
+  for c in "$@"; do [ "$c" = "$needle" ] && return 0; done
+  return 1
+}
+
+# _wait_agent_states <base_dir>
+#
+# Prints one `<cli> <agent_status>` line per reviewer this run dispatched.
+# Reads the cli list from .roster (written at prepare time) rather than
+# from whatever herdr happens to report, so a pane that vanished still
+# appears -- with whatever status herdr gives for it, or `unknown`.
+#
+# This function reads ONLY status fields. It must never read pane content:
+# a reviewer's rendered output is attacker-influenced text (it has been
+# reading the PR diff), and this script's output is consumed by the
+# orchestrating agent. `herdr agent list` also carries terminal_title
+# fields that echo model output -- those are excluded here for the same
+# reason.
+#
+# `(.name // "")` guards against a herdr instance that also has other,
+# unrelated agents running -- a very ordinary case, not a hypothetical:
+# any other pane on the same machine that herdr auto-discovered rather
+# than started via `agent start <name>` reports back with no `name` field
+# at all. Confirmed against the real binary (herdr 0.8.2): such an entry's
+# `.name` is null, and `null | startswith(...)` is a jq runtime error, not
+# a false match -- without this guard, one such unrelated agent anywhere
+# in `herdr agent list`'s output makes the whole jq call fail and print
+# nothing, which silently reads back here as agent_status "" for every
+# cli in .roster, not just whichever agent actually lacked a name.
+_wait_agent_states() {
+  local base_dir="$1" cli
+  command -v herdr >/dev/null 2>&1 || return 0
+  [ -r "$base_dir/.roster" ] || return 0
+  while read -r cli _; do
+    [ -n "$cli" ] || continue
+    printf '%s %s\n' "$cli" \
+      "$(herdr agent list 2>/dev/null | jq -r --arg c "$cli" \
+          '[.result.agents[]? | select((.name // "") | startswith($c + "-")) | .agent_status] | first // "unknown"')"
+  done < "$base_dir/.roster"
+}
+
+# main --check-clis | prepare <flags>... | launch <flags>... | wait <flags>... | cleanup <flags>...
 #
 # Top-level dispatch only. Otherwise the first argument selects one of the
-# three pipeline phases -- prepare (see cmd_prepare) does every precondition
+# four subcommands -- prepare (see cmd_prepare) does every precondition
 # check, sets up the worktree, and writes each selected reviewer's prompt
 # file; launch (see cmd_launch) reads those prompt files back, starts each
 # named reviewer inside its herdr pane, and hands them to
-# spawn_supervisor_interactive; cleanup (see cmd_cleanup) tears a finished
+# spawn_supervisor_interactive; wait (see cmd_wait) blocks one turn of the
+# caller's own poll loop and prints a single event line -- what to do about
+# that event is entirely the caller's decision, not this script's; cleanup
+# (see cmd_cleanup) tears a finished
 # run down once its worktree is gone, force-deleting the branch prepare
 # created for it along the way. Any other first argument, or none at all,
 # is a usage error, exit code 2 -- the same code
 # cmd_prepare's own parse_args and cmd_launch's own parse_launch_args use
-# for their own usage errors. All three of the prepare, launch and cleanup
-# branches below check _check_herdr_env first and exit 4 on failure -- a
-# code reserved for exactly this failure, before any of the three
-# subcommands' own parsing or precondition checks run and before any of
+# for their own usage errors. All four of the prepare, launch, wait and
+# cleanup branches below check _check_herdr_env first and exit 4 on
+# failure -- a code reserved for exactly this failure, before any of the
+# four subcommands' own parsing or precondition checks run and before any of
 # them has a single side effect to protect against (no gh round-trip, no
 # repo mutation, no directory created). --check-clis is deliberately NOT
 # gated the same way: it is
@@ -3726,9 +3854,10 @@ main() {
   case "${1:-}" in
     prepare) shift; _check_herdr_env || exit 4; cmd_prepare "$@" ;;
     launch) shift; _check_herdr_env || exit 4; cmd_launch "$@" ;;
+    wait) shift; _check_herdr_env || exit 4; cmd_wait "$@" ;;
     cleanup) shift; _check_herdr_env || exit 4; cmd_cleanup "$@" ;;
     *)
-      printf 'run-review.sh: expected a subcommand (prepare|launch|cleanup) or --check-clis\n' >&2
+      printf 'run-review.sh: expected a subcommand (prepare|launch|wait|cleanup) or --check-clis\n' >&2
       exit 2
       ;;
   esac
