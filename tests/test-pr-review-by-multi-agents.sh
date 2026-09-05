@@ -1612,7 +1612,7 @@ for v in PATH HOME SHELL TERM TERMINFO COLORTERM LANG LC_ALL USER LOGNAME \
          PWD OLDPWD TMPDIR XDG_RUNTIME_DIR DISPLAY WAYLAND_DISPLAY \
          DBUS_SESSION_BUS_ADDRESS HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID \
          HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_BIN_PATH SSH_AUTH_SOCK \
-         ZDOTDIR SHLVL; do
+         ZDOTDIR SHLVL OPENCODE_CONFIG; do
   grep -qw -- "$v" "$ENVSCRUB" || envscrub_missing="$envscrub_missing $v"
 done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -1634,6 +1634,25 @@ if command -v zsh >/dev/null 2>&1; then
   esac
 else
   pass "_write_env_scrubbing_zshrc 行為測試略過（本機無 zsh）"
+fi
+
+# OPENCODE_CONFIG 不是使用者環境帶進來的變數：它是 run-review.sh 自己在
+# 建立 opencode 的 pane 時透過 --env 設進去的（見 _build_reviewer_panes），
+# opencode 的權限拒絕清單完全靠它才能生效。這個回歸測試要抓的正是：清理腳本
+# 曾經把它跟其他非白名單變數一起清掉，opencode 因而在沒有拒絕清單、且無任何
+# 錯誤訊息的情況下啟動。同一個 zsh 呼叫裡同時帶一個假機密與一個假
+# OPENCODE_CONFIG 值，驗證前者被清掉、後者被保留。
+if command -v zsh >/dev/null 2>&1; then
+  envscrub_oc_out="$(FAKE_SECRET_TOKEN=leakme \
+    OPENCODE_CONFIG=/fake/opencode-permission.json \
+    HOME="$T/envscrub" zsh -c \
+    "source '$ENVSCRUB'; printf 'SECRET=[%s] OC=[%s]\n' \"\$FAKE_SECRET_TOKEN\" \"\$OPENCODE_CONFIG\"" 2>/dev/null)"
+  case "$envscrub_oc_out" in
+    'SECRET=[] OC=[/fake/opencode-permission.json]') pass "_write_env_scrubbing_zshrc 保留 OPENCODE_CONFIG 且清掉非白名單變數" ;;
+    *) bad "_write_env_scrubbing_zshrc 未保留 OPENCODE_CONFIG: $envscrub_oc_out" ;;
+  esac
+else
+  pass "_write_env_scrubbing_zshrc OPENCODE_CONFIG 保留測試略過（本機無 zsh）"
 fi
 
 # ==============================================================

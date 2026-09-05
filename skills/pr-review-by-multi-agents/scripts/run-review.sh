@@ -1405,6 +1405,24 @@ _write_agy_home() {
 # stale with no signal) and disclosure-only (leaves the exfiltration
 # surface intact, only better understood).
 #
+# OPENCODE_CONFIG on the keep-list needs a different justification from
+# every other entry, because it is not something the user's shell startup
+# files exported: this script sets it itself, via --env at pane-creation
+# time (see _build_reviewer_panes), to point the opencode reviewer at its
+# own permission deny-list config file. It reaches this scrub only because
+# this script put it there, not because the user's environment carried it
+# in -- so unsetting it does not narrow what escapes the user's shell into
+# the pane at all. What it does do is delete opencode's permission
+# enforcement for the run: opencode still starts, with no error anywhere,
+# but without OPENCODE_CONFIG it reads no deny list, so the bash-command
+# denials that config exists to enforce -- version-control writes, every
+# state-changing `gh` subcommand, common exfiltration commands
+# (curl/wget/nc), and permission/privilege-escalation commands
+# (chmod/sudo) -- all silently go unblocked. A future pass that slims this
+# list down to "only user-environment variables" must not remove
+# OPENCODE_CONFIG on that reasoning; it was never a user-environment
+# variable to begin with.
+#
 # The list below is a verified STARTING POINT, not a proven
 # necessary-and-sufficient set: with these kept, all four CLIs start and
 # claude writes its output file unattended (measured). A CLI may still have
@@ -1430,6 +1448,10 @@ _rr_keep=(
   HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID
   HERDR_SOCKET_PATH HERDR_BIN_PATH
   SSH_AUTH_SOCK ZDOTDIR SHLVL _
+  # Not a user-environment variable -- run-review.sh sets this itself at
+  # pane-creation time so opencode can find its own permission deny-list
+  # config; see _write_env_scrubbing_zshrc's own docstring before removing it.
+  OPENCODE_CONFIG
 )
 for _rr_v in ${(k)parameters}; do
   [[ ${parameters[$_rr_v]} == *export* ]] || continue
