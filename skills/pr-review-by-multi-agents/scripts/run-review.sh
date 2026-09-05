@@ -540,8 +540,8 @@ check_clis() {
 # in a real herdr pane's environment. herdr is a hard prerequisite for
 # prepare and launch: every reviewer either of them ends up dispatching
 # runs interactively inside a herdr pane (see SKILL.md), so a run started
-# outside one cannot succeed no matter what flags follow it. All four of
-# main()'s prepare/launch/wait/cleanup branches call this before doing
+# outside one cannot succeed no matter what flags follow it. All five of
+# main()'s prepare/launch/run/wait/cleanup branches call this before doing
 # anything else -- see main()'s own docstring on why --check-clis is
 # deliberately exempt.
 # Prints a reason and returns 1 on failure; prints nothing and returns 0
@@ -3761,7 +3761,12 @@ cmd_wait() {
 
     current_lines="$(wc -l < "$summary_file" 2>/dev/null || printf '0')"
     if [ "$current_lines" -gt "$baseline_lines" ]; then
-      new_cli="$(sed -n "$(( baseline_lines + 1 ))p" "$summary_file" | awk '{print $1}')"
+      # The summary line's own first field is already "cli=<name>" (see
+      # _record_reviewer_result_interactive/_record_synthesis_result), so
+      # this must extract just <name> -- the same way _first_ready_cli and
+      # _select_synthesis_cli already do -- not the whole "cli=<name>"
+      # token, or the printf below would double the "cli=" prefix.
+      new_cli="$(sed -n "$(( baseline_lines + 1 ))p" "$summary_file" | sed -n 's/^cli=\([^ ]*\).*/\1/p')"
       printf 'event=summary_line cli=%s\n' "$new_cli"
       return 0
     fi
@@ -3831,7 +3836,7 @@ _wait_agent_states() {
 # orchestrating agent carried out by hand -- all of it deterministic herdr
 # calls that need no model judgement.
 #
-# Three of those rules are traps rather than preferences, and each one
+# Four of those rules are traps rather than preferences, and each one
 # fails silently when broken:
 #
 #   - --workspace on `tab create` is mandatory. Without it the tab lands in
@@ -3847,6 +3852,27 @@ _wait_agent_states() {
 #     with no error anywhere pointing at why.
 #   - IDs come from each command's own JSON response, never from screen
 #     order or documentation examples.
+#   - Each pane inherits the herdr daemon's own environment, not this
+#     script's or its caller's (see _write_env_scrubbing_zshrc's own
+#     docstring for the same fact, measured there). When the user's own
+#     shell startup files export ZDOTDIR, that value reaches every pane
+#     this call creates regardless of the --env HOME= below: zsh resolves
+#     its own startup-file directory from ZDOTDIR when present, falling
+#     back to HOME only when ZDOTDIR is unset -- so a pane inheriting a
+#     foreign ZDOTDIR reads its zsh startup files from wherever THAT
+#     points, never from the isolated HOME's own .zshrc. Confirmed against
+#     a real pane: cleanup fires when HOME points at the directory holding
+#     it, and stops firing -- with no error anywhere -- the moment ZDOTDIR
+#     is exported pointing elsewhere. Removing ZDOTDIR from
+#     _write_env_scrubbing_zshrc's own keep-list does NOT fix this: that
+#     keep-list lives inside the very .zshrc a foreign ZDOTDIR prevents
+#     from ever being read, so editing it changes nothing about which file
+#     zsh actually opens. The fix has to happen here, at pane-creation
+#     time, the same way HOME itself is pinned: --env ZDOTDIR=<same
+#     isolated home dir> below forces every pane's own ZDOTDIR to the
+#     directory holding its isolated .zshrc, so that file is what zsh
+#     resolves and sources no matter what the daemon's own environment
+#     carries.
 #
 # --no-focus everywhere: the user stays in the pane they were in.
 #
@@ -3883,7 +3909,14 @@ _build_reviewer_panes() {
   printf 'tab_id=%s\n' "$tab_id"
 
   for cli in "$@"; do
-    env_args=(--env "HOME=$base_dir/reviewers/$cli/home")
+    # ZDOTDIR is pinned to the same isolated home as HOME, not merely left
+    # unset, so a ZDOTDIR the pane would otherwise inherit from the herdr
+    # daemon's own environment can never redirect zsh away from this
+    # HOME's own .zshrc -- see this function's own docstring for why a
+    # foreign inherited ZDOTDIR makes that .zshrc silently never get
+    # sourced at all, and why unsetting it from that .zshrc's own
+    # keep-list cannot fix it.
+    env_args=(--env "HOME=$base_dir/reviewers/$cli/home" --env "ZDOTDIR=$base_dir/reviewers/$cli/home")
     [ "$cli" = opencode ] && env_args+=(--env "OPENCODE_CONFIG=$base_dir/reviewers/opencode/home/opencode-permission.json")
     # Alternate split direction so four panes land as a 2x2 rather than
     # four narrow columns.

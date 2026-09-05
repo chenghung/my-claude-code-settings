@@ -5226,13 +5226,30 @@ WAIT_ROOT="$T/wait"
 mkdir -p "$WAIT_ROOT"
 
 # --- 摘要檔新增一行 → event=summary_line ---
-printf 'claude n/a n/a 2026-09-05T00:00:00Z ok ready /tmp/x.md\n' > "$WAIT_ROOT/summary.txt"
-( sleep 1; printf 'agy n/a n/a 2026-09-05T00:00:01Z ok ready /tmp/y.md\n' >> "$WAIT_ROOT/summary.txt" ) &
+#
+# 這裡的摘要行必須照 _record_reviewer_result_interactive／
+# _record_synthesis_result 實際寫入的七欄 key=value 格式（cli=.../pid=.../
+# exit=.../ended_at=.../worktree_status=.../content_status=.../
+# content_file=...），不能用不帶 key 的裸值。這條 fixture 先前確實寫成裸
+# 值（"claude n/a n/a ..."），cmd_wait 當時用 awk 直接印出第一欄，對真實
+# 格式會得到帶 "cli=" 前綴的完整字串、再套進 "cli=%s" 而重複前綴，但對
+# 這個裸值 fixture 第一欄剛好就是純 cli 名稱、沒有前綴可重複，於是下面
+# 這條本來就是精確比對（非子字串、非萬用字元）的斷言，因為 fixture 本身
+# 失真而沒有機會踩到那個重複前綴的缺陷。改用真實格式後，同一條精確比對
+# 就足以攔下重複前綴的回歸。
+printf 'cli=claude pid=n/a exit=n/a ended_at=2026-09-05T00:00:00Z worktree_status=ok content_status=ready content_file=/tmp/x.md\n' > "$WAIT_ROOT/summary.txt"
+( sleep 1; printf 'cli=agy pid=n/a exit=n/a ended_at=2026-09-05T00:00:01Z worktree_status=ok content_status=ready content_file=/tmp/y.md\n' >> "$WAIT_ROOT/summary.txt" ) &
 wait_out="$(cmd_wait --base-dir "$WAIT_ROOT" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
 case "$wait_out" in
-  'event=summary_line cli=agy') pass "cmd_wait 摘要檔新增一行時回傳 summary_line 事件" ;;
-  *) bad "cmd_wait 摘要檔事件不正確: $wait_out" ;;
+  'event=summary_line cli=agy') pass "cmd_wait 摘要檔新增一行時回傳 summary_line 事件，cli 前綴只有一層" ;;
+  *) bad "cmd_wait 摘要檔事件不正確（若含 cli=cli= 就是前綴重複的回歸）: $wait_out" ;;
 esac
+# 額外用正則再驗一次事件行的形狀，不寫死 "agy" 這個值本身，直接排除
+# "cli=cli=" 這種重複前綴的可能，即使日後這個字面比對被改鬆也還有這一
+# 道防線。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[[ "$wait_out" =~ ^event=summary_line\ cli=[a-z]+$ ]] && pass "cmd_wait summary_line 事件行的格式恰好是 event=summary_line cli=<name>，沒有重複前綴" \
+  || bad "cmd_wait summary_line 事件行格式不正確（可能重複了 cli= 前綴）: $wait_out"
 
 # ==============================================================
 # cmd_wait -- event=blocked 與 --reported-blocked 過濾
@@ -5380,6 +5397,14 @@ esac
 panes_env_count="$(rg -c -- '--env HOME=' "$PANES_ROOT/panes.calls" || echo 0)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$panes_env_count" -ge 2 ] && pass "_build_reviewer_panes 每個 pane 都帶 --env HOME=" || bad "_build_reviewer_panes 帶 HOME 的 pane 數不足: $panes_env_count"
+# 每個 pane 也都要把 ZDOTDIR 釘死在同一個隔離家目錄，同樣只能在建 pane
+# 當下設定：pane 若從 herdr 背景服務行程繼承到別的 ZDOTDIR，zsh 會改讀
+# 那個目錄底下的啟動檔，我們寫進隔離家目錄的 .zshrc 一次都不會被
+# source，且不會有任何錯誤訊息 -- 見 _build_reviewer_panes 自己 docstring
+# 這一條 trap 的說明。
+panes_zdotdir_count="$(rg -c -- '--env ZDOTDIR=' "$PANES_ROOT/panes.calls" || echo 0)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_zdotdir_count" -ge 2 ] && pass "_build_reviewer_panes 每個 pane 都帶 --env ZDOTDIR=" || bad "_build_reviewer_panes 帶 ZDOTDIR 的 pane 數不足: $panes_zdotdir_count"
 # opencode 另需 OPENCODE_CONFIG，同樣只能在建 pane 當下設定
 : > "$PANES_ROOT/panes.calls"
 PATH="$PANES_STUB:$saved_path" HERDR_WORKSPACE_ID=wT \
