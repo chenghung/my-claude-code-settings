@@ -51,11 +51,16 @@ set -euo pipefail
 # diff 與 comments，它加不加、加成什麼樣子都不可信。
 readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 
-# PROMPT_BYTE_LIMIT: the largest prompt_file size, in bytes, that
-# launch_reviewer_interactive will hand to `herdr agent prompt <TARGET>
-# <TEXT>` -- TEXT has no file/stdin alternative (see that function's own
-# docstring), so the whole prompt has to cross this script's command line as
-# a single argv entry. Enforced twice, deliberately: cmd_prepare's own
+# PROMPT_BYTE_LIMIT: the largest prompt_file size, in bytes,
+# launch_reviewer_interactive will accept before rejecting the reviewer
+# launch outright. For codex/opencode/agy, this is also the largest size
+# that ever crosses `herdr agent prompt <TARGET> <TEXT>`'s own command
+# line as TEXT: that call has no file/stdin alternative (see that
+# function's own docstring), so their whole prompt has to cross this
+# script's command line as a single argv entry. Claude is the deliberate
+# exception task 4 introduced -- see this docstring's own claude
+# paragraph further down for what crossing this limit means there
+# instead. Enforced twice, deliberately: cmd_prepare's own
 # per-cli loop checks it first, right as each prompt file is written, so an
 # oversized prompt fails before any worktree, herdr tab, or pane is ever
 # built for it; launch_reviewer_interactive checks it again on its own
