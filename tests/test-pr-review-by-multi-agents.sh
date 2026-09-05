@@ -2125,6 +2125,81 @@ case "$(cat "$lri_opencode_home/opencode-permission.json" 2>/dev/null)" in
   *) pass launch-reviewer-interactive-opencode-permission-config-allows-edit ;;
 esac
 
+# 互動版拒絕清單的內容本身：無頭版那條路徑被刪除時，原本鎖著這份清單
+# 逐項內容的 21 條斷言（無頭版權限設定檔寫入函式自己的測試）一併消
+# 失，而生產路徑實際在用的
+# _write_opencode_permission_config_interactive 帶著同一份清單，這裡卻
+# 一次都沒被具名引用過。上面兩則斷言只驗過檔案存在與 edit 沒被擋，清單
+# 其餘項目（擋外連的指令、版本控制工具的寫入操作、gh 的狀態變更子命
+# 令、變更權限與提權）完全沒有回歸保護：日後誰漏掉或改寬其中一條，這
+# 裡不會變紅，而 opencode reviewer 會在少一道防線的情況下讀取外部可控
+# 的 diff，症狀是完全靜默的。不逐條照抄被刪的 21 條，但每一類都留一到
+# 三個代表項目，且斷言比對的是清單裡實際的字串內容，不只是檔案有沒有
+# 寫出來。
+lri_opencode_permission_content="$(cat "$lri_opencode_home/opencode-permission.json" 2>/dev/null)"
+
+# 擋外連
+case "$lri_opencode_permission_content" in
+  *'"curl*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-curl ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-curl ;;
+esac
+case "$lri_opencode_permission_content" in
+  *'"wget*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-wget ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-wget ;;
+esac
+case "$lri_opencode_permission_content" in
+  *'"nc*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-nc ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-nc ;;
+esac
+
+# 版本控制工具的寫入操作
+case "$lri_opencode_permission_content" in
+  *'"git push*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-git-push ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-git-push ;;
+esac
+case "$lri_opencode_permission_content" in
+  *'"git commit*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-git-commit ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-git-commit ;;
+esac
+# git fetch* 是這份清單裡少數對真實 opencode 二進位實測過的一條（見
+# _write_opencode_permission_config_interactive 自己的文件），不是單純
+# 依樣畫葫蘆。
+case "$lri_opencode_permission_content" in
+  *'"git fetch*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-git-fetch ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-git-fetch ;;
+esac
+
+# GitHub 命令列工具的狀態變更子命令
+case "$lri_opencode_permission_content" in
+  *'"gh pr comment*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-pr-comment ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-pr-comment ;;
+esac
+case "$lri_opencode_permission_content" in
+  *'"gh issue edit*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-issue-edit ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-issue-edit ;;
+esac
+case "$lri_opencode_permission_content" in
+  *'"gh api -X POST*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-api-post ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-api-post ;;
+esac
+
+# 變更權限與提權
+case "$lri_opencode_permission_content" in
+  *'"chmod *": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-chmod ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-chmod ;;
+esac
+case "$lri_opencode_permission_content" in
+  *'"sudo*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-sudo ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-sudo ;;
+esac
+
+# 整份清單仍是合法 JSON，不是斷言比對到的片段恰好長得像字串、檔案其實
+# 已經壞掉
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+jq empty "$lri_opencode_home/opencode-permission.json" >/dev/null 2>&1 \
+  && pass launch-reviewer-interactive-opencode-permission-config-valid-json \
+  || bad launch-reviewer-interactive-opencode-permission-config-valid-json
+
 # --- agy: no --print-timeout (no interactive-mode equivalent exists);
 # --add-dir names only reviewer_workdir, never the worktree path too ---
 
@@ -4688,6 +4763,27 @@ case "$SPWSYNI_L3" in
   *) bad "spawn_supervisor_interactive codex 那一行不對: $SPWSYNI_L3" ;;
 esac
 
+# 回音室標記首行斷言：目前只驗過合流那一份（.comment-body-synthesis.md，
+# 見下面 _record_synthesis_result 那一段），逐則張貼退路每個 cli 各自
+# 那一份（_record_reviewer_result_interactive 寫出的
+# .comment-body-<cli>.md）完全沒有對應斷言。標記的作用是讓下一次針對
+# 同一個 PR 的執行過濾掉自己上一輪的產出，少了它，前一輪的 review 全文
+# 會被當成 PR 討論串的材料重新餵回 reviewer，形成回音室。claude、agy 兩
+# 份 ready、codex 那份 withheld 在這個 fixture 裡都已經由
+# spawn_supervisor_interactive 寫出，三份都要驗。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(head -1 "$SPWSYNI_ROOT/.comment-body-claude.md")" = '<!-- pr-review-by-multi-agents -->' ] \
+  && pass "spawn_supervisor_interactive claude 逐則張貼內容檔第一行是回音室標記" \
+  || bad "spawn_supervisor_interactive claude 逐則張貼內容檔缺回音室標記"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(head -1 "$SPWSYNI_ROOT/.comment-body-agy.md")" = '<!-- pr-review-by-multi-agents -->' ] \
+  && pass "spawn_supervisor_interactive agy 逐則張貼內容檔第一行是回音室標記" \
+  || bad "spawn_supervisor_interactive agy 逐則張貼內容檔缺回音室標記"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(head -1 "$SPWSYNI_ROOT/.comment-body-codex.md")" = '<!-- pr-review-by-multi-agents -->' ] \
+  && pass "spawn_supervisor_interactive codex（withheld）逐則張貼內容檔第一行仍是回音室標記" \
+  || bad "spawn_supervisor_interactive codex（withheld）逐則張貼內容檔缺回音室標記"
+
 SPWSYNI_L4="$(sed -n 4p "$SPWSYNI_SUMMARY")"
 case "$SPWSYNI_L4" in
   'cli=synthesis:claude '*) pass "spawn_supervisor_interactive 合流那一行的 cli 欄以 synthesis:claude 開頭" ;;
@@ -4892,8 +4988,8 @@ until [ ! -e "$SVREPOPATH_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1));
 #
 # 無頭版原有的 spawn-supervisor-writes-pid-file / spawn-supervisor-pid-
 # file-is-not-caller / spawn-supervisor-survives-sighup /
-# spawn-supervisor-removes-worktree-after-sighup 這幾個案例隨無頭版
-# spawn_supervisor 一併被刪除；但 .supervisor.pid 的寫入（trap '' HUP
+# spawn-supervisor-removes-worktree-after-sighup 這幾個案例隨無頭版監督
+# 行程實作一併被刪除；但 .supervisor.pid 的寫入（trap '' HUP
 # 之後、輪詢迴圈開始之前，把 $BASHPID 寫進 base_dir/.supervisor.pid）與
 # HUP 忽略是從無頭版逐字複製過來的，這個檔案裡其餘提到 .supervisor.pid
 # 的斷言全是讀取側（printf 一個假的 pid 檔去測 setup_worktree 與
@@ -5496,6 +5592,54 @@ panes_agy_pane_id="$(sed -n 's/^pane_id_agy=//p' "$PANES_ROOT/panes.out")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$panes_claude_pane_id" != "$panes_agy_pane_id" ] && pass "_build_reviewer_panes claude 與 agy 拿到不同的 pane" \
   || bad "_build_reviewer_panes claude 與 agy 拿到相同的 pane: $panes_claude_pane_id"
+
+# ---- 決定一的迴歸斷言：面積不再逐次減半 -- 見 _build_reviewer_panes 自
+# 己 docstring 對這個 bug 的說明。派滿四個 cli，逐一比對四次 pane split
+# 呼叫各自的切割目標與 --ratio：目標不能從頭到尾都是 root pane（那正是
+# 面積遞減的成因），--ratio 也不能維持隱含的 0.5 不變（那是即使換了切
+# 割目標、換湯不換藥仍然減半的成因，見 docstring 那段「重接到別的 pane
+# 一樣會半半半半」的說明）。單靠「兩個 cli 拿到不同 pane」（決定二那組
+# 斷言）擋不住這個 bug：面積差到 1/2 比 1/16 時，兩個 pane_id 依然不同，
+# 舊 bug 一樣會通過那組斷言。----
+: > "$PANES_ROOT/panes.calls"
+PATH="$PANES_STUB:$saved_path" HERDR_WORKSPACE_ID=wT \
+  _build_reviewer_panes "$PANES_ROOT" claude codex opencode agy > "$PANES_ROOT/panes-area.out" 2>&1
+
+mapfile -t panes_area_splits < <(grep '^pane split ' "$PANES_ROOT/panes.calls")
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "${#panes_area_splits[@]}" -eq 4 ] && pass "_build_reviewer_panes 四個 cli 各觸發一次 pane split" \
+  || bad "_build_reviewer_panes 四個 cli 觸發的 pane split 次數不對: ${#panes_area_splits[@]}"
+
+panes_area_claude_pane="$(sed -n 's/^pane_id_claude=//p' "$PANES_ROOT/panes-area.out")"
+panes_area_target_1="$(awk '{print $3}' <<<"${panes_area_splits[0]:-}")"
+panes_area_target_2="$(awk '{print $3}' <<<"${panes_area_splits[1]:-}")"
+panes_area_target_3="$(awk '{print $3}' <<<"${panes_area_splits[2]:-}")"
+panes_area_target_4="$(awk '{print $3}' <<<"${panes_area_splits[3]:-}")"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_area_target_1" = "wT:p1" ] && pass "_build_reviewer_panes 第一刀切 root pane 本身" \
+  || bad "_build_reviewer_panes 第一刀沒有切 root pane: $panes_area_target_1"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_area_target_2" != "wT:p1" ] && [ "$panes_area_target_3" != "wT:p1" ] && [ "$panes_area_target_4" != "wT:p1" ] \
+  && pass "_build_reviewer_panes 第二刀之後不再連續切同一格 root pane" \
+  || bad "_build_reviewer_panes 仍然連續切同一格 root pane，面積會逐次減半: $panes_area_target_2 / $panes_area_target_3 / $panes_area_target_4"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_area_target_2" = "$panes_area_claude_pane" ] && [ "$panes_area_target_3" = "$panes_area_claude_pane" ] && [ "$panes_area_target_4" = "$panes_area_claude_pane" ] \
+  && pass "_build_reviewer_panes 第二刀起改切 claude 自己那格，切割目標確實換過" \
+  || bad "_build_reviewer_panes 第二刀之後的切割目標不是 claude 的 pane（$panes_area_claude_pane）: $panes_area_target_2 / $panes_area_target_3 / $panes_area_target_4"
+
+panes_area_ratio_1="$(sed -n 's/.*--ratio \([^ ]*\) .*/\1/p' <<<"${panes_area_splits[0]:-}")"
+panes_area_ratio_2="$(sed -n 's/.*--ratio \([^ ]*\) .*/\1/p' <<<"${panes_area_splits[1]:-}")"
+panes_area_ratio_3="$(sed -n 's/.*--ratio \([^ ]*\) .*/\1/p' <<<"${panes_area_splits[2]:-}")"
+panes_area_ratio_4="$(sed -n 's/.*--ratio \([^ ]*\) .*/\1/p' <<<"${panes_area_splits[3]:-}")"
+panes_area_ratios="$panes_area_ratio_1 $panes_area_ratio_2 $panes_area_ratio_3 $panes_area_ratio_4"
+# 四刀依序是 0.2/0.75/0.6667/0.5：讓四個 reviewer 與留空的 root pane 五
+# 等份平分整個 tab（各 1/5），不是隱含 0.5 造成的 1/2、1/4、1/8、1/16
+# 遞減。改回「每刀都不帶 --ratio」（等同隱含 0.5）會讓這四個值全部變成
+# 空字串，這則斷言必定失敗。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_area_ratios" = "0.2 0.75 0.6667 0.5" ] && pass "_build_reviewer_panes 四刀的 --ratio 依序讓五份等分，面積不再減半" \
+  || bad "_build_reviewer_panes 四刀的 --ratio 不是等分五份的序列: $panes_area_ratios"
 
 unset HERDR_RECORD_DIR
 

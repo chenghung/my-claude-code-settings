@@ -3954,10 +3954,59 @@ _wait_agent_states() {
 # for that logic to go stale in, especially given the trap above: a bug
 # that only affects the two-line-shorter tab-create copy would silently
 # strip isolation from whichever cli happens to be first.
+#
+# Split ratio: this is what actually stops the area from decaying, not
+# which pane_id gets passed as the split target. Every split below hands
+# one cli its own fresh pane while the rest of the tab stays undecided --
+# but a flat 50/50 cut applied to "whatever's still undecided", repeated
+# once per cli, halves the remainder every single time (1/2, 1/4, 1/8,
+# 1/16 of the tab for four clis), because the ratio never adjusts to how
+# many shares still have to come out of it. That decay does not depend on
+# root_pane specifically: re-anchoring the same fixed-0.5-ratio chain on a
+# different pane each time (e.g. always splitting whichever pane was just
+# created, instead of always root_pane) reproduces the identical 1/2,
+# 1/4, 1/8, 1/16 sequence under a different pane_id -- verified by hand.
+# The only thing that stops the decay is computing each split's ratio
+# from how many equal shares are left: every split below carves off
+# exactly 1/(number of selected clis + 1) of the ORIGINAL tab area, so
+# the N reviewer panes and the tab's own root_pane (which, per the
+# disposition above, never becomes a cli's own pane) all end up the same
+# size no matter how many clis were selected or in what order.
+#
+# root_pane is special-cased for exactly one split (i == 0) because it is
+# the one pane here that can never keep playing "whatever's still
+# undecided": it has no per-cli env of its own (env_args below is only
+# ever attached at split time, and root_pane's env came from `tab
+# create`, before any cli was known), so it cannot be split again later
+# without silently handing some cli a pane that never got its isolated
+# HOME. It takes its own final 1/(N+1) share on that first cut and hands
+# the rest away in one piece to the first cli's pane, which then plays
+# root_pane's old role -- the shrinking "everything not yet decided"
+# pane -- for every remaining split (reservoir_pane below). This is the
+# one place the split target actually changes, and it changes once.
+#
+# Alternating split direction (down/right by loop position) is the
+# unrelated, pre-existing half of this: it stops a run of same-direction
+# cuts from producing a long, narrow strip even when every piece's AREA
+# is already correct (four "right" cuts in a row would give four
+# equal-area but pathologically thin columns). The ratio math above
+# guards against a piece being too small; alternating direction guards
+# against a correctly-sized piece being the wrong shape. Fixing one does
+# not fix the other.
 _build_reviewer_panes() {
   local base_dir="$1"; shift
   local tab_json tab_id root_pane pane_json pane_id cli direction i=0
+  local total="$#" split_target ratio reservoir_pane
   local -a env_args
+  # Index 0 is unused (never a valid cli count). first_split_keep[N] is
+  # the fraction root_pane keeps on its one and only split when N clis
+  # were selected -- 1/(N+1), i.e. its own fair share of an (N+1)-way
+  # split of the tab (see docstring above).
+  local -a first_split_keep=(0 0.5 0.3333 0.25 0.2)
+  # Index 0 is unused. step_keep[k] is the fraction reservoir_pane keeps
+  # while k equal shares -- including the one being carved out by this
+  # split -- still have to come out of it, i.e. (k-1)/k.
+  local -a step_keep=(0 0.5 0.6667 0.75 0.8)
 
   tab_json="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --no-focus 2>&1)" || {
     printf '_build_reviewer_panes: herdr tab create failed: %s\n' "$tab_json" >&2
@@ -3981,10 +4030,17 @@ _build_reviewer_panes() {
     # keep-list cannot fix it.
     env_args=(--env "HOME=$base_dir/reviewers/$cli/home" --env "ZDOTDIR=$base_dir/reviewers/$cli/home")
     [ "$cli" = opencode ] && env_args+=(--env "OPENCODE_CONFIG=$base_dir/reviewers/opencode/home/opencode-permission.json")
-    # Alternate split direction so four panes land as a 2x2 rather than
-    # four narrow columns.
+    if [ "$i" -eq 0 ]; then
+      split_target="$root_pane"
+      ratio="${first_split_keep[$total]}"
+    else
+      split_target="$reservoir_pane"
+      ratio="${step_keep[$((total - i))]}"
+    fi
+    # Alternate split direction (see docstring above for what this does
+    # and does not fix) so consecutive cuts don't stack into a strip.
     if [ $((i % 2)) -eq 1 ]; then direction=right; else direction=down; fi
-    pane_json="$(herdr pane split "$root_pane" --direction "$direction" --no-focus \
+    pane_json="$(herdr pane split "$split_target" --direction "$direction" --ratio "$ratio" --no-focus \
       --cwd "$base_dir/reviewers/$cli/workdir" "${env_args[@]}" 2>&1)" || {
       printf '_build_reviewer_panes: herdr pane split failed for %s: %s\n' "$cli" "$pane_json" >&2
       return 1
@@ -3994,6 +4050,7 @@ _build_reviewer_panes() {
       printf '_build_reviewer_panes: no pane_id for %s in: %s\n' "$cli" "$pane_json" >&2
       return 1
     }
+    [ "$i" -eq 0 ] && reservoir_pane="$pane_id"
     printf 'pane_id_%s=%s\n' "$cli" "$pane_id"
     i=$((i + 1))
   done
