@@ -21,7 +21,7 @@
 # section), not anything this script renders. A `--check-clis` mode reports
 # which of the four platform CLIs are on PATH and exits before any other
 # check runs (see check_clis); agy is recognized there, as a platform flag, and by
-# launch_reviewer's own dispatch case, same as the other three.
+# launch_reviewer_interactive's own dispatch case, same as the other three.
 #
 # This file defines, in order: whether to run at all and how many reviewer
 # CLIs are available (input parsing and preflight checks); the code
@@ -320,9 +320,10 @@ _fetch_issue_material() {
 # The final `chmod -R a-w` is the same second-layer defense cmd_prepare()
 # and cmd_launch() already apply to the worktree and logs dir respectively:
 # a reviewer CLI that writes despite
-# its own sandbox flags (see launch_reviewer's docstring on why those are
-# not the guarantee) could otherwise rewrite the very requirements it is
-# being judged against, and every later reviewer in the same run would read
+# its own sandbox flags (see launch_reviewer_interactive's docstring on why
+# those are not the guarantee) could otherwise rewrite the very
+# requirements it is being judged against, and every later reviewer in the
+# same run would read
 # the tampered version with nothing recording that it changed.
 fetch_review_materials() {
   local owner="$1" repo="$2" number="$3" issue_arg="$4"
@@ -601,7 +602,7 @@ parse_args() {
 # each value must be <cli>=<pane_id> with <cli> one of
 # claude/codex/opencode/agy, and no <cli> may repeat across separate
 # --agent flags -- cmd_launch has no other guard against that, and a
-# repeated cli would make it call launch_reviewer twice for the same
+# repeated cli would make it call launch_reviewer_interactive twice for the same
 # platform, the second call's log/pid writes silently clobbering the
 # first's. pane_id itself is not
 # format-checked here, it is handed to herdr as-is and any format error in
@@ -938,7 +939,7 @@ _run_dir_within_stale_grace() {
 # _reap_stale_run_dirs <base_dir>
 #
 # Best-effort recovery for run directories left behind by a previous
-# invocation whose spawn_supervisor died non-gracefully (SIGKILL, machine
+# invocation whose spawn_supervisor_interactive died non-gracefully (SIGKILL, machine
 # reboot) before it could restore write access to the worktree and remove
 # it. Neither `git worktree prune` (only clears registrations whose
 # directory is already gone -- this one's directory is very much still
@@ -953,7 +954,7 @@ _run_dir_within_stale_grace() {
 # Scans <base_dir>'s own siblings (other run directories under the same
 # repo/PR parent directory) for ones that are genuinely stale, and whose
 # worktree subdirectory still exists. For each one found, restores write
-# access and removes it the same way spawn_supervisor's own
+# access and removes it the same way spawn_supervisor_interactive's own
 # successful-path cleanup does. Runs before `git worktree prune` and the
 # stale-ref branch cleanup below, in the same invocation, specifically so
 # that by the time those run, this reap has already made both of them
@@ -1172,7 +1173,7 @@ resolve_model() {
       # posts requires a real platform/model value per finding, so agy is
       # the one deliberate exception to this script's "never hardcode a
       # model" rule. The `-high` suffix is agy's own encoding of reasoning
-      # effort, which is why launch_reviewer passes no --effort flag.
+      # effort, which is why launch_reviewer_interactive passes no --effort flag.
       value="gemini-3.8-flash-high"
       ;;
     *)
@@ -1272,177 +1273,6 @@ _git_status_snapshot() {
   head_sha="$(git -C "$worktree_dir" rev-parse HEAD 2>/dev/null)" || head_sha=""
 
   printf '%s\nHEAD:%s\n' "$status_output" "$head_sha"
-}
-
-# _write_opencode_permission_config <path>
-#
-# Writes opencode's own permission config (consulted via the OPENCODE_CONFIG
-# env var -- see launch_reviewer) to <path>: the built-in `edit` tool is
-# denied outright, and `bash` denies every GitHub-state-changing `gh`
-# operation this reviewer could plausibly reach by name (`gh pr`/`gh
-# issue`/`gh repo`/`gh label`/`gh release`/`gh secret`/`gh variable`/
-# `gh workflow`/`gh auth login`|`logout`, plus non-GET `gh api` calls),
-# including `gh pr comment*` -- this reviewer no longer posts anything
-# itself (see launch_reviewer's docstring on why: it prints its review to
-# stdout and a separate layer posts it), so there is no longer any `gh`
-# write this config needs to leave open. This list is deliberately broad
-# rather than an exhaustive enumeration of gh's entire command surface --
-# see launch_reviewer's docstring on why a bash-pattern blacklist is a
-# first line of defense here, not the actual guarantee (the OS-level
-# chmod is), so widening it further than "every gh write command a code
-# reviewer could plausibly be steered into running" has diminishing
-# return. Read commands, including the contract's pinned `git diff`
-# command, `gh issue view`/`gh issue list` (the contract lists issue
-# content as fit-for-requirements-conformance-axis material, so a
-# reviewer needs to actually be able to read it), and a plain `gh api` GET
-# request, are never listed here at all -- they fall through to
-# launch_reviewer's `--auto` flag, which auto-approves anything not
-# explicitly denied. `gh issue*` and `gh api*` bare prefixes are
-# deliberately NOT used as blanket deny patterns for this reason: an
-# earlier version did, and it silently denied those same read commands
-# too, degrading the requirements-conformance axis to "issue material not
-# provided" for a reason opaque to whoever later reads that comment on
-# the PR. Each `gh` deny below instead names a specific mutating
-# subcommand or HTTP write method it blocks. This
-# deliberately has no catch-all "*": "allow" entry: an earlier version did,
-# but opencode's actual precedence rule for multiple *matching* bash
-# patterns (does the first match win, the last one, or the most specific
-# one?) could not be confirmed against the compiled binary, and an
-# explicit catch-all sharing key-space with the deny patterns makes the
-# correctness of every deny below depend on guessing that rule right. With
-# no catch-all, a command either matches exactly one of the deny patterns
-# below (denied, unambiguous) or matches none of them (falls through to
-# --auto's own default-allow, equally unambiguous) -- correct regardless
-# of which precedence rule opencode actually implements, at zero extra
-# cost over the catch-all version.
-#
-# `git fetch*` closes a gap the same security review that removed
-# claude's WebFetch grant (see launch_reviewer's docstring) found here
-# too: the contract forbids fetch by name, alongside commit/push, because
-# it updates a local remote-tracking ref and leaves a persistent trace
-# even though it reads from the remote rather than writing to it --
-# without this entry it fell through to --auto's own default-allow like
-# any other unlisted command. Confirmed empirically, not just by pattern-
-# reading: a real `opencode run --auto` invocation with this exact entry
-# present, asked to run `git fetch origin --verbose` in a scratch repo,
-# had the Bash tool call refused before execution, with opencode's own
-# denial message quoting `{"permission":"bash","pattern":"git
-# fetch*","action":"deny"}` as the matching rule -- the same
-# suffix-wildcard shape already relied on for `git push*`/`git commit*`
-# above, now confirmed to actually match a real invocation rather than
-# merely look plausible on the page.
-#
-# `curl*`/`wget*`/`nc*` close the gap a follow-up security review found in
-# this same list: nothing here matched a generic outbound HTTP/TCP command,
-# so the same exfiltration path `WebFetch` closed for claude (see
-# launch_reviewer's docstring) was still wide open for opencode, which has
-# no equivalent named fetch tool to remove -- every path out is a `bash`
-# command instead, and this list is the only enforcement point available.
-# `nc*` also covers `ncat` invocations (`ncat` itself starts with the
-# literal prefix "nc", which this glob suffix-matches), so no separate
-# `ncat*` entry is needed. Confirmed empirically against a real
-# `opencode run --auto` invocation with these three entries present: asked
-# to run a plain `curl -s http://127.0.0.1:<port>/...` against a listener
-# on loopback, the Bash tool call was refused before execution, with
-# opencode's own denial message quoting `{"permission":"bash","pattern":
-# "curl*","action":"deny"}` as the matching rule, and the listener recorded
-# no hit; the same was independently confirmed for `wget*` and `nc*`. As
-# with the `rm`/`mv`/`chmod` entries above, this is a named list of the
-# specific tools a code reviewer could plausibly be steered into running,
-# not an exhaustive enumeration of every way a shell command can reach the
-# network (a Python one-liner using `urllib`, `/dev/tcp` redirection, `ssh`,
-# `openssl s_client`, DNS exfiltration via `dig`/`nslookup`, etc. are all
-# still unlisted and still fall through to --auto's default-allow) -- the
-# same bounded-list limitation already noted above for local writes applies
-# here with no OS-level backstop equivalent to the worktree's chmod, since
-# there is no filesystem permission that can restrict outbound network
-# access the way `chmod -R a-w` restricts writes. This residual gap is
-# recorded, not closed: no mechanism this script has access to enforces it
-# further without adding infrastructure (e.g. network-namespace isolation)
-# well outside this list's existing pattern.
-#
-# Rules are static and contain no interpolated content, so a plain quoted
-# heredoc (no variable/command expansion) is safe here, unlike
-# build_prompt's contract text which is untrusted external content
-# assembled with printf instead.
-_write_opencode_permission_config() {
-  local path="$1"
-
-  cat > "$path" <<'JSON'
-{
-  "$schema": "https://opencode.ai/config.json",
-  "permission": {
-    "edit": "deny",
-    "bash": {
-      "git add*": "deny",
-      "git commit*": "deny",
-      "git push*": "deny",
-      "git fetch*": "deny",
-      "git checkout*": "deny",
-      "git reset*": "deny",
-      "git rebase*": "deny",
-      "git merge*": "deny",
-      "git rm*": "deny",
-      "git branch -D*": "deny",
-      "rm *": "deny",
-      "mv *": "deny",
-      "chmod *": "deny",
-      "sudo*": "deny",
-      "curl*": "deny",
-      "wget*": "deny",
-      "nc*": "deny",
-      "gh api -X POST*": "deny",
-      "gh api -X PUT*": "deny",
-      "gh api -X PATCH*": "deny",
-      "gh api -X DELETE*": "deny",
-      "gh api --method POST*": "deny",
-      "gh api --method PUT*": "deny",
-      "gh api --method PATCH*": "deny",
-      "gh api --method DELETE*": "deny",
-      "gh pr edit*": "deny",
-      "gh pr review*": "deny",
-      "gh pr merge*": "deny",
-      "gh pr close*": "deny",
-      "gh pr reopen*": "deny",
-      "gh pr comment*": "deny",
-      "gh pr create*": "deny",
-      "gh pr ready*": "deny",
-      "gh pr checkout*": "deny",
-      "gh issue close*": "deny",
-      "gh issue comment*": "deny",
-      "gh issue create*": "deny",
-      "gh issue delete*": "deny",
-      "gh issue edit*": "deny",
-      "gh issue lock*": "deny",
-      "gh issue pin*": "deny",
-      "gh issue reopen*": "deny",
-      "gh issue transfer*": "deny",
-      "gh issue unlock*": "deny",
-      "gh issue unpin*": "deny",
-      "gh repo create*": "deny",
-      "gh repo delete*": "deny",
-      "gh repo edit*": "deny",
-      "gh repo rename*": "deny",
-      "gh repo archive*": "deny",
-      "gh label create*": "deny",
-      "gh label edit*": "deny",
-      "gh label delete*": "deny",
-      "gh release create*": "deny",
-      "gh release edit*": "deny",
-      "gh release delete*": "deny",
-      "gh secret set*": "deny",
-      "gh secret delete*": "deny",
-      "gh variable set*": "deny",
-      "gh variable delete*": "deny",
-      "gh workflow run*": "deny",
-      "gh workflow enable*": "deny",
-      "gh workflow disable*": "deny",
-      "gh auth logout*": "deny",
-      "gh auth login*": "deny"
-    }
-  }
-}
-JSON
 }
 
 # _write_agy_home <dir>
@@ -1588,8 +1418,8 @@ _write_opencode_home_interactive() {
 
 # _write_opencode_permission_config_interactive <path>
 #
-# Same deny list as _write_opencode_permission_config (see that function's
-# own docstring for the rationale behind every entry below), minus the
+# Same deny list as the now-removed headless config writer (see below for
+# the rationale behind every entry), minus the
 # top-level `"edit": "deny"` line. That line exists in the headless config
 # to close off the one write path this skill's headless reviewer never
 # needs (it prints its review to stdout instead); this interactive
@@ -1602,11 +1432,10 @@ _write_opencode_home_interactive() {
 # -D, rm/mv/chmod, sudo, curl/wget/nc, and every state-changing `gh`
 # subcommand -- is unrelated to file writes and stays exactly as-is.
 #
-# Relocated from _write_opencode_permission_config's own docstring ahead of
-# that function's removal, since it is "that function's own docstring for
-# the rationale behind every entry below" the paragraph above points to.
-# Three of the shared entries were confirmed empirically against a real
-# binary, not left as pattern-reading alone:
+# Relocated from that now-removed headless config writer's own docstring
+# ahead of its removal, since it is the rationale the paragraph above
+# points to. Three of the shared entries were confirmed empirically
+# against a real binary, not left as pattern-reading alone:
 #   - `git fetch*`: confirmed empirically, not just by pattern-reading -- a
 #     real `opencode run --auto` invocation with this exact entry present,
 #     asked to run `git fetch origin --verbose` in a scratch repo, had the
@@ -1765,490 +1594,6 @@ _write_agy_home_interactive() {
   touch "$dir/.zshrc" || return 1
 }
 
-# launch_reviewer <cli_name> <worktree_dir> <log_file>
-#
-# Starts one reviewer CLI as a detached, nohup'd background process whose
-# working directory is <worktree_dir> and whose prompt is this function's
-# own stdin (the caller redirects it in, e.g. `launch_reviewer ... <
-# prompt_file`). All four reviewer CLIs were confirmed during preflight
-# probing to read their prompt from stdin when given no positional prompt
-# argument: `claude -p`, `codex exec`, and `opencode run` (without a
-# `message` argument) all do this -- that probe result is recorded here
-# rather than only in .tmp/probe-results.md, since that file is gitignored
-# and won't exist for anyone who didn't run the probe themselves. agy
-# reaches the same place by a differently-shaped route: it has no
-# positional prompt argument at all, only a `-p`/`--print` flag, and a
-# bare unattached `-p` errors outright rather than falling through to
-# stdin -- so its own branch below simply never passes that flag, which
-# is what makes it read from stdin here (see that branch's own comment
-# for the confirming probe). Stdout
-# goes to <log_file> (the reviewer's full review text, wrapped in the
-# contract's own BEGIN/END markers -- _record_reviewer_result's own
-# extraction step, not any AI-driven layer, parses this file by those
-# markers); stderr goes to a separate `<log_file>.stderr` file, not merged
-# into the same one, so a stderr write can never end up interleaved with --
-# and never risks displacing -- a marker line in the file that step
-# actually parses. Prints the launched process's PID to stdout on success.
-#
-# The reviewer is never given any tool that can write anything, anywhere
-# (see the claude/codex/opencode/agy bullets below): it reports its
-# findings by printing them to stdout instead of posting them itself, and
-# spawn_supervisor -- a plain shell subprocess this script forked, not an
-# AI agent -- reads that stdout back from the log once this reviewer
-# finishes and extracts it into a content file for the calling agent to
-# post (see spawn_supervisor's own docstring on why posting itself is no
-# longer any part of this pipeline). This is deliberate, not merely
-# convenient: the PR diff and the PR/issue/design content this reviewer
-# reads are external, attacker-controllable input that flows straight
-# into the reviewer's own context, i.e. a
-# textbook indirect-prompt-injection surface -- and the repo this skill
-# itself operates against is very often the user's own AI tool
-# configuration. Giving the reviewer no write capability at all, rather
-# than trying to scope one down to just what the contract needs, removes
-# an entire class of "the injected content talked the model into doing
-# something bad with a tool it technically still had" outcomes.
-#
-# Each CLI gets its own least-privilege enforcement, using that CLI's own
-# mechanism rather than trusting the reviewer contract's natural-language
-# read-only rule alone (the contract itself only binds the reviewer CLI's
-# behavior; nothing about it stops the CLI's host environment from already
-# having git/gh/sed pre-approved, which is exactly the gap this closes).
-# None of these four mechanisms turned out, on real testing, to reliably
-# stop a write into the *worktree* on their own (see the OS-level chmod
-# note further below) -- they're kept regardless as each CLI's own first
-# line of defense, shaping what it can even attempt, with chmod as the
-# backstop that actually has to hold:
-#   - claude: `--permission-mode dontAsk` (auto-denies anything not
-#     explicitly allowed, except read-only Bash commands) plus an explicit
-#     `--allowedTools` whitelist naming only Read/Grep/Glob -- no Bash
-#     pattern at all, since this reviewer never needs to run `gh`, and no
-#     `Write`; `--disallowedTools` covers Edit/Write/NotebookEdit.
-#
-#     `WebFetch` was on this allowlist until a security review of this
-#     exact prompt shape flagged it: the PR body, every PR/issue comment,
-#     and the design doc are all material the reviewer contract has this
-#     reviewer read for itself (see build_prompt's own docstring on why
-#     that materials directory is safe to hand over as a path), all of it
-#     writable by any GitHub user and none of it trustworthy, so an
-#     unrestricted fetch tool is not merely a passive contract violation
-#     here -- injected text in any of that material could direct the model
-#     to encode whatever it just read into a URL and fetch it, exfiltrating
-#     it to an attacker-controlled host. Nothing the contract asks of this
-#     reviewer needs network access: every material it is meant to judge is
-#     already sitting on disk for it to read, and the code under review is
-#     already sitting in the worktree, so there is nothing left for a fetch
-#     tool to legitimately reach. No replacement tool was added in its
-#     place -- the reviewer simply gets none.
-#
-#     Two things here are empirically verified facts about a real claude
-#     binary, not inferred from --help text (which, on the first point,
-#     suggests the opposite would happen; on the second, actively
-#     recommends a syntax that turned out not to work) -- if either ever
-#     needs re-verifying against a future claude release, re-run the same
-#     kind of probe rather than trusting this comment or the official text
-#     alone:
-#       1. dontAsk auto-denies anything not on --allowedTools *except*
-#          read-only Bash commands, which it lets through uncondition-
-#          ally -- confirmed by asking it to run the contract's pinned
-#          `git diff <base>...HEAD` with this exact allowedTools/
-#          disallowedTools pair (no Bash pattern for `git diff` in the
-#          allow list at all) and getting real diff output back.
-#       2. There is no way to scope the `Write` tool to a specific path via
-#          `--allowedTools`/`--disallowedTools`: `Write(<path>/**)` is
-#          rejected outright at startup with "is not matched by file
-#          permission checks -- only Edit(path) rules are. Use Edit(...)
-#          instead" -- but that suggestion doesn't actually work either;
-#          an `Edit(<worktree>/**)` disallow rule, combined with a bare
-#          `Write` allow, still let a real claude process write into that
-#          worktree in a real test run. `Write` in claude's tool-permission
-#          model is all-or-nothing: either the whole tool is allowed
-#          (anywhere the process can reach) or it isn't -- which is why
-#          `Write` is fully disallowed here rather than scoped, and why
-#          the worktree is separately protected at the OS level below.
-#
-#     Known residual gap, found while re-verifying this after `Write` was
-#     removed, not yet closed: dontAsk's "read-only Bash commands are
-#     always allowed" carve-out from point 1 above is broader than
-#     strictly read-only in practice. A real run, with no `gh` pattern on
-#     either --allowedTools or --disallowedTools (and even with an
-#     explicit `Bash(gh pr comment:*)` added to --disallowedTools), still
-#     let `gh pr comment ...` actually *execute* via the Bash tool -- it
-#     only failed for an unrelated environmental reason (the test repo
-#     had no configured git remote for `gh` to resolve a target from),
-#     not because claude's permission layer blocked it. In this script's
-#     real usage, setup_worktree always configures a real `origin` remote
-#     pointing at the actual PR's repo, so this path is not purely
-#     theoretical. This means neither omitting a Bash pattern from
-#     --allowedTools nor adding one to --disallowedTools reliably stops
-#     dontAsk from letting a `gh` write command run, if the model decides
-#     (on its own, or steered by injected PR/issue content) to try one --
-#     the actual backstop against that is that gh commands need network
-#     access plus a credential gh will accept, and this script isolates
-#     neither cleanly. Network: nothing here touches it. Credentials: gh
-#     takes them from two places, and the HOME override reaches only one.
-#     Stored credentials live under the home directory, so the override
-#     does move where gh looks -- whether gh then fails to find any is
-#     NOT measured, so do not read the override as closing that path.
-#     The other place is the environment, and it is wider than the two
-#     names one first reaches for: `gh help environment` on the real
-#     binary documents four token variables (GH_TOKEN and GITHUB_TOKEN,
-#     plus the two enterprise-specific ones), all taking precedence over
-#     stored credentials, alongside a config-directory variable and a
-#     host variable. The config-directory one matters separately: once it
-#     is set, where gh looks for stored credentials stops depending on
-#     HOME at all, so the override above stops being relevant to that
-#     path too. A pane inherits its environment from the herdr daemon
-#     rather than from this script's own process (measured; see
-#     rationale.md's own isolation bullet), so nothing here can clear any
-#     of them. None of those variables was present on the machine this
-#     was measured on -- that is a property of that machine, not a
-#     guarantee this script provides. Recorded here rather than
-#     silently worked around, since no fix was in scope for the change
-#     that surfaced it.
-#
-#     Follow-up security review, this round: confirmed the gap above is
-#     not specific to `gh` -- it is the general exfiltration path removing
-#     `WebFetch` was meant to close, still open through Bash. A real run
-#     with this function's exact flags, asked to run a plain
-#     `curl -s http://127.0.0.1:<port>/...` against a local listener, had
-#     the request actually reach the listener; no `WebFetch` tool was ever
-#     invoked or needed. Four permission shapes were tried against the
-#     same probe, all with a real claude binary, all reaching the
-#     listener: (1) this function's actual flags (no Bash pattern anywhere);
-#     (2) `--permission-mode auto` with `Bash(git diff:*)` added to
-#     --allowedTools (testing whether naming one Bash pattern switches Bash
-#     to allowlist-only -- it does not: an unrelated `curl` call was still
-#     let through by the same carve-out); (3) `--permission-mode manual`
-#     with the same addition (same result); (4) `--disallowedTools` with an
-#     explicit `Bash(curl:*)` entry added (same non-effect already
-#     documented above for `Bash(gh pr comment:*)`, now confirmed for a
-#     different command too, so this is the carve-out's general behavior,
-#     not a `gh`-specific quirk). The only flag combination that did stop
-#     it was disallowing the whole `Bash` tool with no pattern at all
-#     (`--disallowedTools "... Bash"`) -- confirmed separately with a
-#     `touch` probe, which the carve-out does *not* let through (it only
-#     appears to cover commands with no local filesystem write, network
-#     requests included), so the carve-out is closer to "no local write"
-#     than "read-only" in the ordinary sense. But a whole-tool `Bash` deny
-#     also blocks the contract's own pinned `git -C <worktree> diff
-#     <base-ref>...HEAD` (see reviewer-contract.md's "事實依據" section) --
-#     confirmed by the same probe failing identically for that command --
-#     which this reviewer has no other way to run: build_prompt does not
-#     embed the diff itself, so claude needs Bash for that one command to
-#     function at all. Closing this gap for claude would require either a
-#     mechanism this script's flags do not have (scoping Bash to exactly
-#     one command, which the four attempts above rule out) or moving diff
-#     computation out of the reviewer's own Bash call and into the caller,
-#     which is a reviewer-contract.md change outside this script's own
-#     scope. Left open and recorded here rather than papered over: this
-#     reviewer's Bash access, while restricted to no local writes, is not
-#     restricted to no outbound network access, and nothing in this
-#     function closes that.
-#   - codex: `-s read-only`, the most restrictive of codex's three sandbox
-#     modes (the other two, `workspace-write` and
-#     `--dangerously-bypass-approvals-and-sandbox`, grant filesystem writes
-#     codex doesn't need for reviewing) and the one that best matches the
-#     contract's own read-only requirement. It was tried first, before
-#     either of the more permissive modes, specifically because it's the
-#     most restrictive; sandbox probing confirmed `gh` still reaches the
-#     network under it (read-only blocks local filesystem writes only, not
-#     network I/O), so there was no need to fall back to a less restrictive
-#     mode. (The worktree write-attempt this same probing later surfaced --
-#     see the OS-level chmod protection below -- means codex's sandbox
-#     alone turned out not to fully enforce that filesystem restriction in
-#     `codex exec`'s non-interactive mode; this flag is kept anyway as a
-#     first line of defense, on top of the chmod backstop that now carries
-#     the real guarantee.) This round's follow-up review reconfirmed the
-#     network side directly rather than only by inference from the `gh`
-#     finding above: a real `codex exec -s read-only` run, asked to run a
-#     plain `curl -s http://127.0.0.1:<port>/...` against a local listener,
-#     had the request reach it. `codex exec` has no flag this script can
-#     add to restrict outbound network access independently of the
-#     filesystem sandbox -- `-s read-only` is already the most restrictive
-#     of the three modes, and none of them are network-scoped. Left open
-#     and recorded here, same as claude's Bash gap above: this is the same
-#     exfiltration path, just reached through codex's shell tool instead of
-#     a fetch tool.
-#   - opencode: no CLI-level permission flag exists, so the restriction
-#     lives in a scratch, run-specific config file (see
-#     _write_opencode_permission_config) pointed at via the OPENCODE_CONFIG
-#     env var; `--auto` is required alongside it so permissions this config
-#     leaves unset (i.e. everything not on the explicit deny list) don't
-#     block waiting for a human who, in this headless run, will never
-#     answer. Since this reviewer no longer posts anything itself, `gh pr
-#     comment` is now denied too, alongside every other state-changing `gh`
-#     verb this config lists -- there is no longer any `gh` write this
-#     reviewer needs, so none is left allowed. That config's `bash` deny
-#     list is necessarily a list of specific risky verbs (git commit, rm,
-#     sudo, the various `gh` write subcommands, ...), not an exhaustive
-#     one -- a real test run confirmed a plain shell redirect
-#     (`printf ... > file`, which matches none of those specific patterns)
-#     writes successfully wherever the underlying shell can reach,
-#     including into the worktree. No bash-pattern blacklist can close
-#     that off completely (there is no bounded list of every way a shell
-#     command can write a file), which is the other reason the worktree
-#     gets OS-level protection below rather than depending on this list
-#     alone.
-#   - agy: an isolated HOME directory (see _write_agy_home) whose
-#     antigravity-cli settings.json permissions.allow lists only
-#     `command(git diff)` -- the one command this reviewer's contract
-#     actually needs it to run. In headless mode agy default-denies every
-#     other tool in the command, read_url and unsandboxed classes, which
-#     is what closes this reviewer's own shell and network surface. It
-#     does not close file writing: agy's write tool is not gated by this
-#     permission layer at all (verified empirically), so it stays
-#     reachable no matter what the allow list contains -- same as the
-#     other three CLIs above, agy's own mechanism is not what actually
-#     stops a worktree write; the OS-level chmod below is.
-#
-# All four of the mechanisms above turned out, on real testing, not to
-# reliably stop a write into the worktree by itself, at the point `Write`
-# was still allowed for claude (needed then for a comment-body file the
-# reviewer no longer writes at all): `Write` has no path scoping in
-# claude's permission model (see above -- moot now that it's fully
-# disallowed, but the OS-level layer below predates that and stays
-# regardless, per the next paragraph), codex's `-s read-only` sandbox did
-# not block a real write attempt in `codex exec`'s non-interactive mode (a
-# sandbox-escalation path this script has no flag to turn off for
-# `codex exec` specifically), opencode's bash deny list is a blacklist of
-# specific verbs that a plain shell redirect walks straight past, and
-# agy's write tool bypasses its own permission layer entirely regardless
-# of what its allow list names (see the agy bullet above). Given that, the
-# worktree's actual protection is an OS-level one applied uniformly to all
-# four from cmd_prepare(), independent of any single CLI's own permission
-# engine: `chmod -R a-w` on the worktree right after
-# setup_worktree creates it (before any reviewer is launched), restored
-# with `chmod -R u+w` immediately before removal (see spawn_supervisor and
-# _dispatch_failed_cleanup). `git status`/`git diff` -- everything the
-# contract's read-only true-source-of-truth section asks a reviewer to do
-# -- were confirmed to still work against a worktree chmod'd this way,
-# since a linked worktree's own index/HEAD housekeeping lives under the
-# main repo's .git/worktrees/<name>/, not inside the worktree's own
-# directory tree. This OS-level layer is kept even though every CLI is
-# now also fully disallowed from writing through its own tool/sandbox
-# mechanism: it is still the only defense against whatever this script's
-# own git-status-snapshot comparison in spawn_supervisor cannot see (see
-# that function's own docstring on the gitignored-path tradeoff), and it
-# does not depend on any single CLI's permission engine behaving as
-# expected -- which the claude `Write`-tool and codex sandbox-escalation
-# findings above are exactly the kind of thing it exists to not have to
-# trust.
-#
-# None of claude, codex, or opencode are given a model flag (design
-# decision, made before this task and held here unchanged: each uses its
-# own configured default; resolve_model reads that default back out for
-# disclosure, it is never fed back in here). agy is the one deliberate
-# exception: its own branch below passes `--model` explicitly, because (per
-# resolve_model's own agy case) agy exposes no way to read its default
-# model back out for disclosure at all, so there is no configured default
-# left to defer to -- a value has to be supplied up front instead. This is
-# a deliberate override of, not an
-# oversight against, a preflight probing finding recorded elsewhere (in a
-# gitignored scratch file that won't exist for anyone who didn't run the
-# probe themselves, so the finding itself is restated here): opencode's
-# probe run needed an explicit, funded model because its configured
-# default had insufficient billing -- that finding is about the state of
-# one account's opencode config, not about this script's design,
-# and hardcoding a model here to work around it would trade one staleness
-# problem (a model name baked into this script drifting from whatever the
-# user actually configures) for another. Concretely, this means: if a
-# user's own opencode default model is unusable (no billing, revoked
-# credentials, etc.), the opencode reviewer is expected to fail with a
-# non-zero exit code -- spawn_supervisor records that in the summary file
-# exactly like any other reviewer failure, and the <cli>.log file
-# launch_reviewer wrote for it (see that function's own docstring) is what
-# a human uses to find the failing run's log to see why. Fixing an
-# individual user's opencode billing/model setup is out of this script's
-# scope.
-#
-# Implementation note on the PID this prints: the underlying process is
-# wrapped as `nohup bash -c '...' &` so that process's own exit code can be
-# captured to a file once it finishes (see the header comment above
-# spawn_supervisor for why this file-based handoff is used instead of
-# `wait`). That wrapper file is named after the wrapped process's own PID
-# using `$$` from *inside* the wrapper script -- which is the same PID this
-# function's `$!` observes, because `nohup` execs its argument in place
-# rather than forking an extra layer. This holds true even when this whole
-# function is invoked via command substitution (`pid=$(launch_reviewer
-# ...)`), the shape every call site here uses: unlike `wait`, this
-# file-based handoff has no dependency on process parentage, so it survives
-# the command substitution's own transient subshell exiting immediately
-# after printing the PID.
-#
-# As of Task 6 (the herdr-interactive switch), this function has no caller
-# left anywhere in this file's own production dispatch: cmd_launch() now
-# calls launch_reviewer_interactive instead (see that function's own
-# docstring), and the merge/synthesis path never called this one to begin
-# with -- it calls launch_synthesis directly. Do NOT delete this function
-# for that reason: eight-plus comments elsewhere in this file (its own
-# opencode/agy home-building helpers, launch_synthesis's claude/agy
-# branches, and more) cross-reference the empirically-verified
-# sandbox/permission findings recorded in this docstring and the case
-# branches below by name -- removing the function would orphan every one
-# of those references. It also remains directly exercised by this file's
-# own test suite, which still calls it to drive the (unmodified) headless
-# spawn_supervisor path's own tests.
-launch_reviewer() {
-  local cli_name="$1" worktree_dir="$2" log_file="$3"
-  local -a cmd=()
-  local base_dir before_snapshot starting_dir config_file pid stderr_file agy_home
-
-  base_dir="$(dirname "$worktree_dir")"
-  # Stdout and stderr are captured to two separate files, not one shared
-  # one via `2>&1`: the reviewer's full review text (between the
-  # BEGIN/END markers the contract wraps it in) now goes to stdout, and
-  # _record_reviewer_result's own extraction step parses <cli>.log by
-  # those markers to pull it into a content file. Sharing one file with
-  # stderr risks a stderr write landing
-  # between two stdout writes (stdio is commonly block-buffered rather
-  # than line-buffered once stdout isn't a TTY, so a large stdout flush
-  # and a small interleaved stderr write are not guaranteed to land in
-  # the order they were logically written) -- which could not tear a
-  # single marker line in half, but could still displace where a marker
-  # line ends up relative to stderr content in a way that breaks a naive
-  # sequential parse. Splitting the streams removes the ambiguity
-  # entirely: <cli>.log is pure reviewer stdout, nothing else ever writes
-  # to it.
-  stderr_file="$log_file.stderr"
-
-  case "$cli_name" in
-    claude)
-      # No WebFetch (or any other network-capable tool): see this
-      # function's own docstring, claude bullet, for why.
-      #
-      # --disallowedTools takes a variable number of values: it keeps
-      # consuming whatever bare (non-flag) tokens follow it on the
-      # command line as additional tool names to deny, until it hits the
-      # next `--flag` or the end of argv. The prompt must keep arriving
-      # over stdin (see the shared nohup line below), never as a
-      # positional argument placed after this flag -- a probe run that
-      # did pass it positionally here had the entire prompt swallowed
-      # word by word into new deny rules instead of ever reaching the
-      # model: the output was a wall of "Permission deny rule <word>
-      # matches no known tool" lines, and the process still exited 0. No
-      # error, no non-zero exit -- just an empty, contentless result with
-      # nothing pointing at the cause. Not reachable today (nothing here
-      # ever appends a positional arg after --disallowedTools), but a
-      # future edit that switched the prompt to a positional argument
-      # would hit this silently.
-      cmd=(claude -p --permission-mode dontAsk \
-        --allowedTools "Read Grep Glob" \
-        --disallowedTools "Edit Write NotebookEdit")
-      ;;
-    codex)
-      cmd=(codex exec -s read-only -C "$worktree_dir")
-      ;;
-    opencode)
-      config_file="$(dirname "$log_file")/opencode-permission.json"
-      _write_opencode_permission_config "$config_file"
-      cmd=(opencode run --auto --dir "$worktree_dir")
-      ;;
-    agy)
-      agy_home="$(dirname "$log_file")/agy-home"
-      _write_agy_home "$agy_home" || {
-        printf 'launch_reviewer: failed to build the isolated agy home\n' >&2
-        return 1
-      }
-      # --add-dir, not cwd: agy's tools run in agy's own state directory
-      # regardless of where the process was started, so the cd-into-the-
-      # worktree approach used for claude does nothing here (verified).
-      # --print-timeout must be set explicitly: agy is the only one of the
-      # four CLIs with a self-imposed timeout, and its default of five
-      # minutes would kill every real review.
-      # No --effort: reasoning effort is already encoded in the model id's
-      # -high suffix (see resolve_model's agy branch).
-      #
-      # No -p/--print flag at all, on purpose: a bare, unattached `-p`
-      # errors outright on a real agy binary ("flag needs an argument:
-      # -p", exit 2) -- but omitting the print flag entirely, rather than
-      # supplying it with no value, makes agy read its prompt from stdin
-      # and run non-interactively, exactly like claude/codex/opencode do
-      # via the shared nohup line's stdin redirect below. Confirmed
-      # against the real binary with this exact flag combination
-      # (--add-dir, --print-timeout, --model, prompt fed from a real file
-      # redirect rather than a pipe, matching how this script actually
-      # invokes it): exit 0, correct response. Delivering the prompt this
-      # way, rather than as a single argv entry (an earlier version of
-      # this branch did that, via an equals-attached `-p=<prompt>`),
-      # avoids two problems that shape has no bound on: a long PR thread
-      # can grow past the kernel's per-argument length limit, and argv is
-      # readable by other accounts on the same machine via the process
-      # table, which stdin is not.
-      cmd=(agy --add-dir "$worktree_dir" --print-timeout 120m \
-        --model gemini-3.8-flash-high)
-      ;;
-    *)
-      printf 'launch_reviewer: unknown reviewer CLI: %s\n' "$cli_name" >&2
-      return 1
-      ;;
-  esac
-
-  before_snapshot="$(_git_status_snapshot "$worktree_dir")"
-
-  # claude has no working-directory flag; it uses whatever the process's
-  # cwd is. Changing and restoring cwd here (a plain `cd`, not a subshell)
-  # affects only this function's own shell, which for every real call is
-  # itself a short-lived command-substitution subshell already -- so this
-  # never leaks into the caller's cwd.
-  if [ "$cli_name" = claude ]; then
-    starting_dir="$(pwd)" || return 1
-    cd "$worktree_dir" || return 1
-  fi
-
-  # opencode has no CLI flag for its permission config; it reads the
-  # OPENCODE_CONFIG env var instead. agy has no config-path flag at all
-  # (see _write_agy_home's docstring), so HOME is what carries its
-  # isolated config through instead. These two are the only CLIs needing
-  # anything prefixed onto the launch below. `env` (rather than a bare
-  # `VAR=val` prefix) lets this stay one shared launch line for every
-  # CLI: an empty env_prefix expands to zero words, so the line reduces to
-  # plain `nohup ...` for claude/codex.
-  local -a env_prefix=()
-  if [ "$cli_name" = opencode ]; then
-    env_prefix=(env "OPENCODE_CONFIG=$config_file")
-  elif [ "$cli_name" = agy ]; then
-    env_prefix=(env "HOME=$agy_home")
-  fi
-
-  # The `bash -c` wrapper's script body is single-quoted on purpose: `$1`,
-  # `$$`, `$@` and `$?` inside it must reach *that* subshell unexpanded by
-  # this shell, to be evaluated once that process actually starts running
-  # (see this function's docstring for why exit-code capture works this
-  # way instead of `wait`).
-  #
-  # `< /dev/stdin` is required, not decorative: POSIX has asynchronous
-  # commands (anything started with `&`) default their stdin to /dev/null
-  # unless *that specific command* carries its own explicit redirect --
-  # this function's own stdin already being the prompt (via the caller's
-  # `launch_reviewer ... < prompt_file`) does not, by itself, carry through
-  # to a backgrounded command inside it. Verified empirically against this
-  # repo's actual bash before adding this: the backgrounded reviewer
-  # received an empty stdin without it.
-  # shellcheck disable=SC2016 # single quotes are intentional, see comment above
-  "${env_prefix[@]+"${env_prefix[@]}"}" nohup bash -c '
-    base_dir="$1"; shift
-    exit_file="$base_dir/.exit-$$"
-    "$@"
-    printf "%s" "$?" > "$exit_file"
-  ' _ "$base_dir" "${cmd[@]}" < /dev/stdin > "$log_file" 2> "$stderr_file" &
-  pid=$!
-
-  if [ "$cli_name" = claude ]; then
-    cd "$starting_dir" || true
-  fi
-
-  printf '%s\n' "$before_snapshot" > "$base_dir/.git-status-before-$pid"
-  # spawn_supervisor only ever receives PIDs (see its own docstring on
-  # why), so this is how it learns which log file belongs to which PID --
-  # the one place it needs that mapping is to extract this reviewer's
-  # review into a content file once it finishes (posting itself is no
-  # longer any part of this pipeline; see spawn_supervisor's own
-  # docstring).
-  printf '%s\n' "$log_file" > "$base_dir/.log-$pid"
-
-  printf '%s\n' "$pid"
-}
-
 # _derive_agent_name <cli_name> <pane_id>
 #
 # Prints the name to hand `herdr agent start` for the reviewer this run
@@ -2294,21 +1639,18 @@ _derive_agent_name() {
 
 # launch_reviewer_interactive <cli> <pane_id> <worktree_dir> <reviewer_workdir> <reviewer_home> <prompt_file>
 #
-# The interactive counterpart to launch_reviewer above (see that function's
-# own docstring for the shared least-privilege rationale -- everything there
-# not specific to running headless still applies here): starts one reviewer
-# CLI inside an existing, already-created herdr pane via `herdr agent
+# Starts one reviewer CLI, under the least-privilege rationale documented
+# below, inside an existing, already-created herdr pane via `herdr agent
 # start`, confirms the pane actually rendered before trusting it, then hands
-# it this run's prompt via `herdr agent prompt`. launch_reviewer itself is
-# NOT modified or removed for this -- kept, unchanged, for the reasons its
-# own docstring now records (Task 6 update: the merge/synthesis path was
-# previously, incorrectly, believed to still call it directly; it never
-# did -- that path calls launch_synthesis, an entirely separate function,
-# see spawn_supervisor's own docstring).
+# it this run's prompt via `herdr agent prompt`. The merge/synthesis path
+# does not call this function either -- it calls launch_synthesis, an
+# entirely separate function (see spawn_supervisor_interactive's own merge
+# segment).
 #
-# Unlike launch_reviewer, this function backgrounds nothing and returns no
-# PID: the reviewer runs inside a pane herdr itself manages, not as a child
-# process of this script, so there is no PID to track. It returns as soon
+# Unlike the now-removed headless launcher, this function backgrounds
+# nothing and returns no PID: the reviewer runs inside a pane herdr itself
+# manages, not as a child process of this script, so there is no PID to
+# track. It returns as soon
 # as the prompt has been accepted, not once the reviewer finishes writing
 # its review -- supervising that to completion is a later task. On success
 # it prints the fixed output file path,
@@ -2318,17 +1660,17 @@ _derive_agent_name() {
 # for) -- so a caller can read that back without re-deriving the formula
 # itself. Prints nothing and returns non-zero on any failure below.
 #
-# The one flag difference from launch_reviewer that matters most here:
-# launch_reviewer's headless claude branch disallows Edit/Write/
-# NotebookEdit outright, because that path's reviewer only ever prints its
-# review to stdout and never needs to write anything. This interactive
+# The one flag difference that mattered most versus the now-removed
+# headless launcher's claude branch: that branch disallowed Edit/Write/
+# NotebookEdit outright, because its reviewer only ever printed its
+# review to stdout and never needed to write anything. This interactive
 # reviewer's whole job, by contrast, is writing its review directly to
-# <reviewer_workdir>/review.md -- it needs Write. Reusing launch_reviewer's
-# disallow list here would leave every claude review empty: claude would
+# <reviewer_workdir>/review.md -- it needs Write. Reusing that disallow
+# list here would leave every claude review empty: claude would
 # report success while producing nothing this run could ever read back.
 # --disallowedTools here therefore names only WebFetch (no task here has
-# any legitimate need for network access, the same reasoning as
-# launch_reviewer's own claude bullet); --permission-mode is passed
+# any legitimate need for network access, for the same reason that
+# branch also disallowed it); --permission-mode is passed
 # explicitly as auto.
 #
 # That flag used to be omitted, on an earlier probe's reading that auto is
@@ -2386,18 +1728,17 @@ _derive_agent_name() {
 #
 # The before-snapshot this function records (see _git_status_snapshot's own
 # docstring for why a git-status comparison is needed at all) is keyed by
-# cli name here, unlike launch_reviewer's own PID-keyed file -- this
-# reviewer is not a child process of this script, so it has no PID to key
-# by. A later task reads this file back to compare against an after-
-# snapshot.
+# cli name here, unlike the now-removed headless launcher's own PID-keyed
+# file -- this reviewer is not a child process of this script, so it has
+# no PID to key by. A later task reads this file back to compare against
+# an after-snapshot.
 #
-# Relocated from launch_reviewer's own docstring ahead of that function's
-# removal, because this function's opening paragraph already commits to
-# "everything there not specific to running headless still applies here":
-# these are the specific empirically-verified claude/codex/agy sandbox and
-# permission findings that pointer depended on, kept verbatim except where
-# a clause named launch_reviewer's own headless-only choice rather than the
-# finding itself.
+# Relocated from the now-removed headless launcher's own docstring ahead
+# of its removal, since the least-privilege rationale above depends on
+# it: these are the specific empirically-verified claude/codex/agy sandbox
+# and permission findings that rationale rests on, kept verbatim except
+# where a clause named that headless launcher's own headless-only choice
+# rather than the finding itself.
 #
 #   - claude: two things are empirically verified facts about a real claude
 #     binary, not inferred from --help text (which, on the first point,
@@ -2406,7 +1747,7 @@ _derive_agent_name() {
 #     needs re-verifying against a future claude release, re-run the same
 #     kind of probe rather than trusting this comment or the official text
 #     alone:
-#       1. dontAsk (launch_reviewer's own headless permission mode)
+#       1. dontAsk (the now-removed headless launcher's own permission mode)
 #          auto-denies anything not on --allowedTools *except* read-only
 #          Bash commands, which it lets through unconditionally --
 #          confirmed by asking it to run the contract's pinned `git diff
@@ -2472,7 +1813,7 @@ _derive_agent_name() {
 #     the request actually reach the listener; no `WebFetch` tool was ever
 #     invoked or needed. Four permission shapes were tried against the same
 #     probe, all with a real claude binary, all reaching the listener: (1)
-#     launch_reviewer's own dontAsk flags (no Bash pattern anywhere); (2)
+#     the now-removed headless launcher's own dontAsk flags (no Bash pattern anywhere); (2)
 #     `--permission-mode auto` with `Bash(git diff:*)` added to
 #     --allowedTools (testing whether naming one Bash pattern switches Bash
 #     to allowlist-only -- it does not: an unrelated `curl` call was still
@@ -2744,104 +2085,30 @@ _extract_reviewer_output() {
   printf '%s' "$content"
 }
 
-# _record_reviewer_result <pid> <base_dir> <worktree_dir> <summary_file>
-#
-# Records one finished reviewer: reads its exit code, compares the
-# worktree's git state against the snapshot launch_reviewer took before
-# starting it, extracts its review from its log, writes that review to
-# this run's own content file, and appends one summary line.
-#
-# It does not post anything. Posting moved to the caller (see SKILL.md):
-# the supervisor cannot report progress to a human, and a run whose three
-# reviews land forty minutes apart with no signal in between is what this
-# whole change exists to fix. What stays here is everything a shell can
-# decide without reading the review: whether the content is trustworthy
-# enough to post at all.
-#
-# content_status is one of:
-#   - "ready": markers paired, content extracted, exit code 0, worktree
-#     state unchanged. Safe to post.
-#   - "withheld": content extracted, but the exit code was non-zero or the
-#     worktree state came back invalidated. A non-zero exit means the
-#     reviewer may not have finished producing its review; an invalidated
-#     worktree means the code it read may not be the code on the PR.
-#     Either way the review has lost its factual grounding, and posting it
-#     to a public PR is worse than not posting. The content file is still
-#     written, so a human can read what would have been posted and decide
-#     by hand -- which matters because the invalidation check is known to
-#     produce false positives under concurrency (see SKILL.md's known
-#     limitations).
-#   - "no-content": the markers were missing, out of order, or empty. No
-#     content file is written and content_file is left empty.
-_record_reviewer_result() {
-  local pid="$1" base_dir="$2" worktree_dir="$3" summary_file="$4"
-  local exit_file rc end_time before after status
-  local log_file cli_name content content_file content_status
-
-  exit_file="$base_dir/.exit-$pid"
-  rc="$(cat "$exit_file" 2>/dev/null)" || rc=""
-
-  # The exit file's own mtime is this reviewer's real completion time;
-  # `date` at this point would instead read whenever the polling loop
-  # happened to get around to it.
-  end_time="$(date -u -r "$exit_file" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" \
-    || end_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-
-  before="$(cat "$base_dir/.git-status-before-$pid" 2>/dev/null)" || before=""
-  after="$(_git_status_snapshot "$worktree_dir")"
-  if [ "$before" = "$after" ]; then
-    status="ok"
-  else
-    status="invalidated"
-  fi
-
-  log_file="$(cat "$base_dir/.log-$pid" 2>/dev/null)" || log_file=""
-  cli_name="$(basename "${log_file:-unknown.log}" .log)"
-  content_file="$base_dir/.comment-body-$pid.md"
-
-  if [ -n "$log_file" ] && content="$(_extract_review_content "$log_file")"; then
-    # The echo-guard marker goes on first, ahead of the reviewer's own
-    # disclosure paragraph. It renders as nothing on GitHub, so the
-    # disclosure is still the first thing a reader sees, and it is what
-    # _fetch_pr_material matches on to keep this skill's own past output
-    # from being fed back in as requirements on the next run.
-    { printf '%s\n\n' "$ECHO_GUARD_MARKER"; printf '%s' "$content"; } > "$content_file"
-    if [ "$rc" = "0" ] && [ "$status" = "ok" ]; then
-      content_status="ready"
-    else
-      content_status="withheld"
-    fi
-  else
-    content_status="no-content"
-    content_file=""
-  fi
-
-  printf 'cli=%s pid=%s exit=%s ended_at=%s worktree_status=%s content_status=%s content_file=%s\n' \
-    "$cli_name" "$pid" "${rc:-unknown}" "$end_time" "$status" "$content_status" "$content_file" \
-    >> "$summary_file"
-}
-
 # _record_reviewer_result_interactive <cli_name> <base_dir> <worktree_dir> \
 #                                      <output_file> <summary_file>
 #
-# The interactive counterpart to _record_reviewer_result above: same
-# summary-line shape and the same worktree-tamper check (see that
-# function's own docstring for content_status's three values and why the
-# withheld/no-content distinction exists), but reads the reviewer's review
-# from <output_file> via _extract_reviewer_output instead of from a
-# captured log via _extract_review_content, and is keyed by cli name
-# rather than PID -- see launch_reviewer_interactive's own docstring for
-# why the before-snapshot this reads is filed under
-# .git-status-before-<cli_name> rather than .git-status-before-<pid>.
+# Same summary-line shape and the same worktree-tamper check as the now-
+# removed headless recorder this superseded -- content_status is one of
+# "ready" (markers paired, content extracted, worktree state unchanged,
+# safe to post), "withheld" (content extracted but not safe to post; see
+# below for what makes it unsafe here), or "no-content" (the markers were
+# missing, out of order, or empty, so no content file is written and
+# content_file is left empty) -- but reads the reviewer's review from
+# <output_file> via _extract_reviewer_output instead of from a captured
+# log via _extract_review_content, and is keyed by cli name rather than
+# PID -- see launch_reviewer_interactive's own docstring for why the
+# before-snapshot this reads is filed under .git-status-before-<cli_name>
+# rather than .git-status-before-<pid>.
 #
 # `pid` and `exit` are always printed as the literal string "n/a", not
 # left blank or omitted: an interactive reviewer runs inside a herdr pane
 # this script never forks, so it has no PID and no exit code to report --
 # "n/a" says that plainly rather than reading as an accidentally-missing
-# value. This has one real semantic consequence for content_status:
-# _record_reviewer_result's own "withheld" case has two independent
-# causes, a non-zero exit code OR an invalidated worktree; with no exit
-# code available here, that first cause is gone, so withheld can only ever
+# value. This has one real semantic consequence for content_status: that
+# headless recorder's "withheld" case had two independent causes, a
+# non-zero exit code OR an invalidated worktree; with no exit code
+# available here, that first cause is gone, so withheld can only ever
 # mean the worktree state came back invalidated. The seven summary fields
 # themselves (cli/pid/exit/ended_at/worktree_status/content_status/
 # content_file) keep their existing order and names regardless, so every
@@ -2902,7 +2169,8 @@ _count_ready() {
 #
 # Prints the cli name of the first ready line: whichever ready review
 # happens to come first in the summary file, i.e. completion order (the
-# order spawn_supervisor's poll loop records each reviewer as it finishes),
+# order spawn_supervisor_interactive's poll loop records each reviewer as
+# it finishes),
 # not the order they were dispatched in. _select_synthesis_cli is the
 # only caller now, and only as its fallback -- once neither of its two
 # preferred CLIs (see its own docstring for what makes them preferred)
@@ -2938,15 +2206,16 @@ _first_ready_cli() {
 # derived from the PR diff and its comment threads -- content any GitHub
 # user can write (see build_synthesis_prompt) -- making it the highest-
 # value prompt-injection target in the pipeline. codex's branch still
-# runs under `-s read-only`, and this file's own launch_reviewer
+# runs under `-s read-only`, and this file's own launch_reviewer_interactive
 # docstring already recorded, from real testing, that this sandbox mode
 # restricts local filesystem writes only: outbound network still reaches,
 # codex exec's shell tool is still usable underneath it, and there is no
 # further codex flag available to close that. opencode's branch denies
 # the `edit` and `bash` tools outright, which is real progress over the
-# per-pattern blacklist launch_reviewer's own opencode config needs, but
-# it is a deny list naming two specific tools -- whatever else opencode's
-# tool surface offers beyond those two stays reachable, network included.
+# per-pattern blacklist launch_reviewer_interactive's own opencode config
+# needs, but it is a deny list naming two specific tools -- whatever else
+# opencode's tool surface offers beyond those two stays reachable, network
+# included.
 # So on a combination that happens to contain codex or opencode, taking
 # whichever ready review simply printed first could hand the synthesis to
 # the one CLI still holding a shell and a network path, even when a CLI
@@ -2979,12 +2248,13 @@ _ready_content_files() {
 
 # _synthesis_log_path <base_dir>
 #
-# Prints where the synthesis log lives. spawn_supervisor (which starts the
-# synthesis process) and print_summary (which reports this path while
-# synthesis hasn't even been decided yet) both need it, but they are not
-# in a caller/callee relationship -- one runs synchronously at dispatch
-# time, the other later inside spawn_supervisor's own backgrounded
-# subshell -- so passing it down as a parameter, the fix
+# Prints where the synthesis log lives. spawn_supervisor_interactive
+# (which starts the synthesis process) and print_summary (which reports
+# this path while synthesis hasn't even been decided yet) both need it,
+# but they are not in a caller/callee relationship -- one runs
+# synchronously at dispatch time, the other later inside
+# spawn_supervisor_interactive's own backgrounded subshell -- so passing
+# it down as a parameter, the fix
 # _record_synthesis_result's docstring describes for <log_file> within
 # that one call chain, cannot reach across to here. This shared
 # derivation exists for that same drift reason: a single
@@ -3052,7 +2322,8 @@ _disclosure_status_label() {
 # which CLI it is about to run, so it has to hand that identity in
 # rather than let the synthesis process infer or default it. The caller
 # is expected to have already resolved <synth_model> via
-# `resolve_model <synth_cli>` (see spawn_supervisor's own call site) --
+# `resolve_model <synth_cli>` (see spawn_supervisor_interactive's own call
+# site) --
 # this function does not call resolve_model itself, since the CLI whose
 # model it would need to read is not the CLI running this call, and
 # nothing about resolving that model is specific to the prompt-assembly
@@ -3067,10 +2338,11 @@ _disclosure_status_label() {
 # review-text section (the caller redirects stdout to a file it never uses
 # on this path, so the partial write is harmless), when not a single ready
 # reviewer's content file could actually be embedded -- e.g. every one
-# became unreadable or vanished between when _record_reviewer_result wrote
-# it and when this function ran. Without this check, a summary reporting
-# ready_count>=2 (spawn_supervisor's own gate for even calling this
-# function) could still produce a prompt carrying the contract, the
+# became unreadable or vanished between when
+# _record_reviewer_result_interactive wrote it and when this function ran.
+# Without this check, a summary reporting ready_count>=2
+# (spawn_supervisor_interactive's own gate for even calling this function)
+# could still produce a prompt carrying the contract, the
 # coordinates, and the roster, but zero lines of actual review text --
 # and nothing downstream would notice, since the synthesis process itself
 # has no way to tell "no reviews existed" apart from "no reviews had
@@ -3082,8 +2354,9 @@ build_synthesis_prompt() {
   local cli status content_file model embedded_count=0
 
   # Guarded like build_prompt's own `contract="$(cat ...)" || return 1`:
-  # this function runs inside spawn_supervisor's `if build_synthesis_prompt
-  # ...; then` call, which exempts the entire function body from the
+  # this function runs inside spawn_supervisor_interactive's `if
+  # build_synthesis_prompt ...; then` call, which exempts the entire
+  # function body from the
   # subshell's inherited errexit for the duration of that call. Without
   # this guard, a failed read here would be silently swallowed and the
   # function would continue on to print the coordinates, roster, and
@@ -3114,18 +2387,18 @@ build_synthesis_prompt() {
   # so an empty lookup is rendered as 未提供 instead of an empty string.
   #
   # `|| model=""` matters beyond just the empty-vs-未提供 rendering:
-  # this whole function runs inside spawn_supervisor's own `set -e`
-  # subshell, and a plain `var="$(cmd)"` assignment is NOT exempt from
-  # errexit the way a command substitution inside `[ ]` or an `if` is --
-  # a missing/unreadable roster_file makes sed itself exit non-zero
-  # (the `2>/dev/null` above only silences its stderr message, not its
-  # exit code), and without this fallback that would abort this
+  # this whole function runs inside spawn_supervisor_interactive's own
+  # `set -e` subshell, and a plain `var="$(cmd)"` assignment is NOT
+  # exempt from errexit the way a command substitution inside `[ ]` or
+  # an `if` is -- a missing/unreadable roster_file makes sed itself exit
+  # non-zero (the `2>/dev/null` above only silences its stderr message,
+  # not its exit code), and without this fallback that would abort this
   # function, and therefore the entire synthesis attempt, silently: no
   # error text, no summary line, nothing to show a human what happened.
-  # Confirmed against a real run of the pre-existing supervisor-order-*
-  # fixture, which calls spawn_supervisor directly without ever writing
-  # a .roster file -- before this guard, synthesis for that fixture
-  # silently vanished partway through with no trace at all.
+  # Confirmed against a real run of a fixture that called the now-removed
+  # headless supervisor function directly without ever writing a .roster
+  # file -- before this guard, synthesis for that fixture silently
+  # vanished partway through with no trace at all.
   while read -r cli status; do
     model="$(sed -n "s/^$cli \\(.*\\) dispatched$/\\1/p" "$roster_file" 2>/dev/null)" || model=""
     printf -- '- %s / %s：%s\n' \
@@ -3154,7 +2427,7 @@ build_synthesis_prompt() {
 # _write_opencode_synthesis_permission_config <path>
 #
 # Writes opencode's own permission config for the synthesis process
-# specifically -- not the same config _write_opencode_permission_config
+# specifically -- not the same config _write_opencode_permission_config_interactive
 # builds for a reviewer. That one is shaped for a reviewer that still
 # has to run the reviewer contract's pinned `git diff` command, so it
 # can only deny specific risky bash patterns by name and must fall
@@ -3166,10 +2439,9 @@ build_synthesis_prompt() {
 # access, no shell and no network -- so there is nothing left for a
 # pattern blacklist to legitimately leave open. `bash` is denied as a
 # whole tool here, the same way `edit` already is below: opencode's
-# permission schema accepts a bare "deny" for an entire tool (confirmed
-# by _write_opencode_permission_config's own "edit": "deny" line
-# already relying on this), which is the narrowest grant this CLI
-# offers -- narrower than any bash-pattern blacklist could ever be.
+# permission schema accepts a bare "deny" for an entire tool, which is
+# the narrowest grant this CLI offers -- narrower than any bash-pattern
+# blacklist could ever be.
 _write_opencode_synthesis_permission_config() {
   local path="$1"
 
@@ -3187,12 +2459,13 @@ JSON
 # launch_synthesis <cli> <base_dir> <log_file>
 #
 # Starts the synthesis process in the background and prints its PID.
-# Reads the prompt from stdin, same as launch_reviewer.
+# Reads the prompt from stdin, the same way the now-removed headless
+# reviewer launcher did.
 #
-# Relocated from launch_reviewer's own docstring ahead of that function's
-# removal, since this stdin-reading behavior is exactly what "same as
-# launch_reviewer" above depends on and this synthesis path is still
-# headless: all four reviewer CLIs were confirmed during preflight probing
+# Relocated from that now-removed headless launcher's own docstring ahead
+# of its removal, since this stdin-reading behavior is exactly what the
+# paragraph above depends on and this synthesis path is still headless:
+# all four reviewer CLIs were confirmed during preflight probing
 # to read their prompt from stdin when given no positional prompt argument:
 # `claude -p`, `codex exec`, and `opencode run` (without a `message`
 # argument) all do this. agy reaches the same place by a differently-shaped
@@ -3216,32 +2489,33 @@ launch_synthesis() {
   case "$cli" in
     claude)
       # Bash is disallowed outright here, not merely left off the allow
-      # list the way launch_reviewer's claude branch does it. That
-      # branch's own docstring records the real finding this leans on:
-      # --permission-mode dontAsk's "read-only Bash commands are always
-      # allowed" carve-out is not actually read-only in practice -- a
-      # real run with no Bash pattern on either --allowedTools or
-      # --disallowedTools still let a plain `curl` reach the network,
-      # and naming that exact command on --disallowedTools did not stop
-      # it either; the only flag combination that worked was disallowing
-      # the whole Bash tool with no pattern at all. launch_reviewer can't
-      # take that path because the reviewer contract pins `git diff` as
-      # this reviewer's own source of truth and Bash is its only way to
-      # run that command. The synthesis process has no such requirement
-      # -- see this function's own docstring above -- so it is the one
+      # list the way the now-removed headless reviewer launcher's claude
+      # branch did it. That branch's own docstring recorded the real
+      # finding this leans on: --permission-mode dontAsk's "read-only
+      # Bash commands are always allowed" carve-out is not actually
+      # read-only in practice -- a real run with no Bash pattern on
+      # either --allowedTools or --disallowedTools still let a plain
+      # `curl` reach the network, and naming that exact command on
+      # --disallowedTools did not stop it either; the only flag
+      # combination that worked was disallowing the whole Bash tool with
+      # no pattern at all. launch_reviewer_interactive can't take that
+      # path because the reviewer contract pins `git diff` as this
+      # reviewer's own source of truth and Bash is its only way to run
+      # that command. The synthesis process has no such requirement --
+      # see this function's own docstring above -- so it is the one
       # place that fully-closed form is actually available, and using it
       # removes this exfiltration path entirely instead of merely
-      # narrowing it. WebFetch is disallowed for the same reason it was
-      # removed from launch_reviewer's own allow list: nothing here has
-      # any legitimate use for it.
+      # narrowing it. WebFetch is disallowed for the same reason
+      # launch_reviewer_interactive's own claude branch disallows it:
+      # nothing here has any legitimate use for it.
       #
       # --disallowedTools here is the same variable-length flag
-      # launch_reviewer's own claude branch documents: it swallows a
-      # positional prompt argument word by word into new deny rules and
-      # silently succeeds with an empty result instead of ever running
-      # the prompt. See that branch's comment for the probe that found
-      # it; the prompt here likewise only ever arrives over stdin, never
-      # positionally.
+      # launch_reviewer_interactive's own claude branch also relies on:
+      # it swallows a positional prompt argument word by word into new
+      # deny rules and silently succeeds with an empty result instead of
+      # ever running the prompt. See that branch's comment for the probe
+      # that found it; the prompt here likewise only ever arrives over
+      # stdin, never positionally.
       cmd=(claude -p --permission-mode dontAsk \
         --allowedTools "" \
         --disallowedTools "Edit Write NotebookEdit WebFetch Bash")
@@ -3268,8 +2542,9 @@ launch_synthesis() {
       # actually matters for exfiltration, and the reason agy is still
       # preferred here (see _select_synthesis_cli). It does NOT close file
       # writing: agy's write tool is not gated by this permission layer at
-      # all (see the agy bullet in launch_reviewer's own docstring), so it
-      # stays reachable regardless of what this list contains. That gap is
+      # all (see the agy bullet in launch_reviewer_interactive's own
+      # docstring), so it stays reachable regardless of what this list
+      # contains. That gap is
       # more exposed here than for a reviewer, and worse than base_dir
       # itself: a reviewer's write attempts are still stopped by the
       # worktree's read-only chmod, but this branch's own cmd array below
@@ -3284,8 +2559,9 @@ launch_synthesis() {
       jq -n '{permissions: {allow: []}}' \
         > "$agy_home/.gemini/antigravity-cli/settings.json" || return 1
       # No -p/--print flag at all, on purpose -- the same reasoning and
-      # the same empirical finding launch_reviewer's own agy branch
-      # documents: a bare, unattached -p is rejected outright by the
+      # the same empirical finding the now-removed headless reviewer
+      # launcher's own agy branch documents: a bare, unattached -p is
+      # rejected outright by the
       # real agy binary ("flag needs an argument: -p", exit 2), so
       # omitting the flag entirely (not supplying it with no value) is
       # what makes agy read the prompt from stdin and run
@@ -3299,7 +2575,7 @@ launch_synthesis() {
       ;;
   esac
 
-  # shellcheck disable=SC2016 # single quotes intentional, same as launch_reviewer
+  # shellcheck disable=SC2016 # single quotes intentional, same nohup wrapper convention the now-removed headless reviewer launcher used
   "${env_prefix[@]+"${env_prefix[@]}"}" nohup bash -c '
     base_dir="$1"; shift
     exit_file="$base_dir/.synthesis-exit-$$"
@@ -3322,9 +2598,9 @@ launch_synthesis() {
 # because no worktree was involved.
 #
 # <log_file> is a parameter, not re-derived from <base_dir> here, on
-# purpose: the caller (spawn_supervisor) is the one place that already
-# computed this exact path to hand to launch_synthesis, and having both
-# that call site and this function separately hardcode
+# purpose: the caller (spawn_supervisor_interactive) is the one place
+# that already computed this exact path to hand to launch_synthesis, and
+# having both that call site and this function separately hardcode
 # "$base_dir/synthesis.log" would let the two silently drift apart if
 # either one is ever edited alone.
 _record_synthesis_result() {
@@ -3354,172 +2630,14 @@ _record_synthesis_result() {
     >> "$summary_file"
 }
 
-# spawn_supervisor <worktree_dir> <summary_file> <pid>...
-#
-# Backgrounds itself and returns immediately (the caller, main(), does not
-# wait for it). Writes <base_dir>/.supervisor.pid (base_dir being
-# <worktree_dir>'s parent) with this subshell's own PID -- via $BASHPID,
-# not $$, since $$ inside a `(...)&` subshell still names the parent
-# shell, not this subshell. The caller's heartbeat check needs a way to
-# tell "every reviewer is still running" apart from "the supervisor
-# itself died and no further summary line will ever appear"; without this
-# file those two states look identical from outside (a summary file that
-# has simply stopped growing), and the caller would wait out its full
-# deadline on a run that had already failed.
-#
-# Polls the given PIDs and, for each one as soon as it finishes -- not in
-# the order the PIDs were given -- delegates to _record_reviewer_result
-# (see its own docstring for what "finished" means per PID, what gets
-# extracted, and content_status's three values) to append that reviewer's
-# summary line. This is the entire reason this function polls a pending
-# set rather than waiting on PIDs in a fixed order: a reviewer that
-# finishes early must get its summary line written before a slower one
-# dispatched ahead of it, not sit unrecorded behind it. Posting is no
-# longer any part of this -- it moved to the caller (see SKILL.md) -- so
-# this function's own job is now pure bookkeeping: track who has
-# finished, hand each one to _record_reviewer_result, and clean up once
-# every PID is accounted for.
-#
-# Once every PID has been recorded, removes the worktree -- only after
-# every reviewer has been through this step, not right after the last one
-# finishes running, since a still-pending PID's own _record_reviewer_
-# result call may still need to read it. The number of PIDs handled is
-# exactly the number given -- nothing here assumes three.
-#
-# After the worktree is gone, and only when at least two reviewers ended
-# up ready (see _count_ready's own docstring on why two is the floor),
-# launches the synthesis pass and blocks on it before this subshell
-# exits: the synthesis's own summary line is what turns "every reviewer
-# finished" into "the one comment is ready to post", so a caller polling
-# this function's progress needs that line to exist by the time this
-# subshell is done, not appear from some later, untracked process.
-#
-# Why this polls for a per-PID exit-code file instead of using `wait`: bash
-# can only `wait` on an actual child of the *current* process. By the time
-# main() calls this function, each reviewer process is already a child of
-# main()'s own shell (launch_reviewer backgrounded it there); the `(...)&`
-# this function uses to background itself forks a *new*, separate process
-# that is a sibling of those reviewers, not their parent, so `wait` on
-# their PIDs from inside that subshell fails outright ("not a child of this
-# shell") -- verified against this repo's actual bash before settling on
-# this design, not merely reasoned about. launch_reviewer's nohup wrapper
-# sidesteps the whole problem by having each reviewer process record its
-# own exit code to a file when it finishes, which needs no parent-child
-# relationship to observe from here.
-#
-# `trap '' HUP` right below, before anything else runs in the backgrounded
-# subshell, is not redundant with the `disown` after it: `disown` only
-# stops *this shell* from sending SIGHUP to the job when the shell itself
-# exits; it does nothing about the kernel sending SIGHUP to the whole
-# foreground process group when the controlling terminal goes away (e.g.
-# the terminal this whole run-review.sh invocation was started from gets closed).
-# Without also ignoring that signal, this subshell dying is not a minor
-# inconvenience: it is the only thing that ever removes the worktree or
-# completes the summary file, so its death leaves the worktree (still
-# holding the branch this run created) permanently stuck -- neither this
-# script's own future runs (which only prune worktrees whose directory is
-# already gone) nor a normal branch cleanup ever reaches it again.
-#
-# The `> "$(dirname "$worktree_dir")/.supervisor.log" 2>&1` below the
-# closing `)` is required, not decorative: neither `(...)&` nor `disown`
-# closes the *inherited* stdout/stderr fds this subshell forks with --
-# both keep pointing at whatever fd 1/2 were in the caller's own process,
-# for as long as this subshell (and, via the synthesis pass, everything
-# it blocks on) keeps running. A caller that captures this function's own
-# output via command substitution or a pipe -- as `run-review.sh launch`'s
-# own caller does, per SKILL.md's polling design -- would then not get
-# EOF on that read until every process holding that write end closes it,
-# this subshell included, turning a fire-and-forget dispatch into a wait
-# for the entire review (and any synthesis pass after it) to finish.
-# Verified empirically: an unredirected `(...)&` held a captured command
-# substitution open for the backgrounded subshell's full runtime; with
-# this redirect in place the same capture returns immediately. `base_dir`
-# (`dirname "$worktree_dir"`) is the target, not `logs_dir`, because
-# `logs_dir` is `chmod -R a-w`'d once every reviewer is dispatched (see
-# cmd_prepare's docstring on the matching lock for the worktree) while
-# `base_dir` itself never is (see SKILL.md's own note on that) -- a file
-# under it stays writable for this subshell's entire lifetime. stdin needs
-# no matching redirect: bash already defaults a backgrounded command's
-# stdin to /dev/null on its own (see launch_reviewer's own docstring on
-# this same behavior, verified there against this repo's actual bash),
-# and nothing in this subshell ever reads from stdin regardless.
-spawn_supervisor() {
-  local worktree_dir="$1" summary_file="$2"
-  shift 2
-  local -a pids=("$@")
-
-  (
-    trap '' HUP
-    local pid exit_file base_dir
-    local -a pending=() still=()
-    base_dir="$(dirname "$worktree_dir")"
-    # See this function's own docstring above on why this file exists.
-    printf '%s\n' "$BASHPID" > "$base_dir/.supervisor.pid"
-    : > "$summary_file"
-
-    pending=("${pids[@]}")
-    while [ "${#pending[@]}" -gt 0 ]; do
-      still=()
-      for pid in "${pending[@]}"; do
-        exit_file="$base_dir/.exit-$pid"
-        if [ -f "$exit_file" ] || ! kill -0 "$pid" 2>/dev/null; then
-          _record_reviewer_result "$pid" "$base_dir" "$worktree_dir" "$summary_file"
-        else
-          still+=("$pid")
-        fi
-      done
-      pending=("${still[@]+"${still[@]}"}")
-      [ "${#pending[@]}" -eq 0 ] || sleep 1
-    done
-
-    # Undo main()'s `chmod -R a-w` before removing -- `git worktree
-    # remove` needs write access to actually delete the tree.
-    chmod -R u+w "$worktree_dir" 2>/dev/null || true
-    git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
-
-    # Synthesis runs after the worktree is gone on purpose: it works only
-    # from the review texts already extracted into content files, so it
-    # neither needs nor should have access to the code under review. Its
-    # own log is deliberately placed directly under base_dir, a sibling
-    # of logs_dir, rather than inside logs_dir itself -- main() applies
-    # `chmod -R a-w` to logs_dir once every reviewer has been launched,
-    # and synthesis starts well after that point, so a new file inside
-    # logs_dir could never be created in the first place.
-    local ready_count synth_cli synth_model synth_log synth_pid synth_contract
-    ready_count="$(_count_ready "$summary_file")"
-    if [ "$ready_count" -ge 2 ]; then
-      synth_cli="$(_select_synthesis_cli "$summary_file")"
-      synth_model="$(resolve_model "$synth_cli")"
-      synth_log="$(_synthesis_log_path "$base_dir")"
-      if synth_contract="$(resolve_synthesis_contract_path)"; then
-        # build_synthesis_prompt itself now refuses (non-zero, and no
-        # launch attempted) when none of the ready reviewers' content
-        # files could actually be embedded -- see its own docstring.
-        # Guarded explicitly here, rather than left to this subshell's
-        # inherited set -e, so that failure visibly skips launch_synthesis
-        # instead of launching it against an empty or partial prompt.
-        if build_synthesis_prompt "$synth_contract" "$base_dir/.roster" "$summary_file" \
-             "$synth_cli" "$synth_model" > "$base_dir/.synthesis-prompt"; then
-          if synth_pid="$(launch_synthesis "$synth_cli" "$base_dir" "$synth_log" \
-               < "$base_dir/.synthesis-prompt")"; then
-            while kill -0 "$synth_pid" 2>/dev/null; do sleep 1; done
-            _record_synthesis_result "$synth_pid" "$synth_cli" "$synth_log" "$base_dir" "$summary_file"
-          fi
-        fi
-      fi
-    fi
-  ) > "$(dirname "$worktree_dir")/.supervisor.log" 2>&1 &
-  disown
-}
-
 # spawn_supervisor_interactive <worktree_dir> <summary_file> <cli>...
 #
-# The interactive counterpart to spawn_supervisor above: same backgrounding
-# shape, same .supervisor.pid heartbeat file, same HUP-ignoring trap (see
-# spawn_supervisor's own docstring for why each of those exists -- nothing
-# about any of it is specific to headless), but polls a completely
-# different signal. spawn_supervisor waits for each reviewer's own child
-# process to exit (a PID it can `kill -0`); this function's reviewers are
+# Same backgrounding shape, same .supervisor.pid heartbeat file, same
+# HUP-ignoring trap as the now-removed headless supervisor this
+# superseded -- nothing about any of those three is specific to
+# headless -- but polls a completely different signal. That headless
+# supervisor waited for each reviewer's own child process to exit (a PID
+# it could `kill -0`); this function's reviewers are
 # not child processes of this script at all (see launch_reviewer_
 # interactive's own docstring), so there is no PID to poll. What it polls
 # instead is purely a filesystem check: for each cli still pending, whether
@@ -3538,25 +2656,20 @@ spawn_supervisor() {
 # worth being explicit about: this loop has no timeout of its own, so a
 # reviewer that never writes a marker-terminated review.md leaves its cli
 # in `pending` forever, and this subshell (and therefore the worktree
-# removal and any synthesis pass below it) never runs. This mirrors
-# spawn_supervisor's own lack of a timeout -- that one also polls
-# indefinitely, via `kill -0`, until every PID it was given has exited --
-# this is simply the same "no timeout of its own" property applied to
-# a file-marker check instead of a process-liveness check.
+# removal and any synthesis pass below it) never runs. This mirrors the
+# same lack of a timeout in the now-removed headless supervisor, which
+# also polled indefinitely, via `kill -0`, until every PID it was given
+# had exited -- this is simply the same "no timeout of its own" property
+# applied to a file-marker check instead of a process-liveness check.
 #
 # Same `> "$base_dir/.supervisor.log" 2>&1` redirect on this function's own
-# `(...)&`, and for the same reason -- see spawn_supervisor's own docstring
-# for the full explanation (holding the caller's inherited stdout/stderr
-# open blocks a captured `run-review.sh launch` from ever seeing EOF until
-# this subshell, and everything it waits on, finishes) and the empirical
-# verification behind it. This is the more load-bearing of the two fixes:
-# `run-review.sh launch` is exactly the call SKILL.md's own polling design
-# depends on returning immediately, and this function is what it backs
-# onto.
-#
-# Relocated from spawn_supervisor's own docstring ahead of that function's
-# removal, since it is the "empirical verification" referenced just above:
-# verified empirically, an unredirected `(...)&` held a captured command
+# `(...)&`, and for the same reason: holding the caller's inherited
+# stdout/stderr open blocks a captured `run-review.sh launch` from ever
+# seeing EOF until this subshell, and everything it waits on, finishes.
+# This is the more load-bearing of the two fixes: `run-review.sh launch`
+# is exactly the call SKILL.md's own polling design depends on returning
+# immediately, and this function is what it backs onto. Verified
+# empirically: an unredirected `(...)&` held a captured command
 # substitution open for the backgrounded subshell's full runtime; with this
 # redirect in place the same capture returns immediately.
 spawn_supervisor_interactive() {
@@ -3587,8 +2700,9 @@ spawn_supervisor_interactive() {
     done
 
     # Everything from here down (worktree removal through the synthesis
-    # pass) is spawn_supervisor's own merge segment, copied verbatim --
-    # not re-derived, not adjusted for anything above -- because this is
+    # pass) is the now-removed headless supervisor's own merge segment,
+    # copied verbatim -- not re-derived, not adjusted for anything above
+    # -- because this is
     # exactly the "合流那一路不受影響" precondition this task was built on:
     # none of the nine functions this segment calls (_count_ready,
     # _select_synthesis_cli, build_synthesis_prompt,
@@ -3598,12 +2712,13 @@ spawn_supervisor_interactive() {
     # or depend on pid= being numeric, so the switch to pid=n/a above
     # changes nothing about how this segment behaves.
     #
-    # One dependency this segment does NOT carry over unmodified from
-    # spawn_supervisor's own copy: a bare `git worktree remove --force
-    # "$worktree_dir"`, with no `-C <repo>` of its own, resolves which
-    # repository to act on from whatever this process's *current working
-    # directory* happens to be. For spawn_supervisor that was always true
-    # by construction (main() runs synchronously from cmd_prepare()'s
+    # One dependency this segment does NOT carry over unmodified from the
+    # now-removed headless supervisor's own copy: a bare `git worktree
+    # remove --force "$worktree_dir"`, with no `-C <repo>` of its own,
+    # resolves which repository to act on from whatever this process's
+    # *current working directory* happens to be. For that headless
+    # supervisor that was always true by construction (main() runs
+    # synchronously from cmd_prepare()'s
     # single invocation, in the cwd the user already ran run-review.sh
     # from), but cmd_launch() -- this function's own caller -- is a
     # *separate* process invocation from cmd_prepare() (the prepare/launch
@@ -3847,8 +2962,8 @@ resolve_base_ref() {
 # (say, on the second of three CLIs) would abort that loop's function
 # right there with no further cleanup -- leaving the worktree in place
 # forever (nothing else in this script's lifetime ever removes it outside
-# spawn_supervisor/spawn_supervisor_interactive, which this abort path
-# never reaches) and, if a CLI *before* the one that failed was already
+# spawn_supervisor_interactive, which this abort path never reaches) and,
+# if a CLI *before* the one that failed was already
 # dispatched, its herdr pane running as a permanent orphan with no
 # supervisor ever tracking it to completion or recording its exit. Both
 # are silent resource leaks with no error surfaced anywhere else, which is
@@ -3870,8 +2985,8 @@ _dispatch_failed_cleanup() {
   fi
 
   # Undo cmd_prepare()'s `chmod -R a-w` before removing -- see
-  # spawn_supervisor's matching step for why `git worktree remove` needs
-  # this first.
+  # spawn_supervisor_interactive's matching step for why `git worktree
+  # remove` needs this first.
   #
   # Same `-C <repo>` requirement as spawn_supervisor_interactive's own
   # removal step, and for the same reason (see that function's own
@@ -4027,11 +3142,12 @@ cmd_prepare() {
 
   # This chmod, not any single reviewer CLI's own sandbox/permission flags,
   # is the actual enforcement behind the reviewer contract's read-only
-  # promise -- launch_reviewer's docstring records the real testing that
-  # led here (every one of the four CLIs' own mechanisms turned out to
-  # have a real gap). Applied once, right after the worktree exists and
-  # before any reviewer is launched; spawn_supervisor and
-  # _dispatch_failed_cleanup both restore write access before removing it.
+  # promise -- launch_reviewer_interactive's docstring records the real
+  # testing that led here (every one of the four CLIs' own mechanisms
+  # turned out to have a real gap). Applied once, right after the worktree
+  # exists and before any reviewer is launched; spawn_supervisor_interactive
+  # and _dispatch_failed_cleanup both restore write access before removing
+  # it.
   if ! chmod -R a-w "$worktree_dir"; then
     printf 'run-review.sh: failed to make the review worktree read-only\n' >&2
     # chmod -R can fail partway through a tree (e.g. one entry hits a
@@ -4191,9 +3307,8 @@ cmd_prepare() {
 # (<base_dir>/reviewers/<cli>/workdir/review.md) rather than a PID (see its
 # own docstring).
 #
-# The headless launch_reviewer is NOT called from here any more -- see its
-# own docstring for why it is kept regardless, unchanged. parse_launch_args
-# itself exits 2 on a usage error, the same convention parse_args uses;
+# parse_launch_args itself exits 2 on a usage error, the same convention
+# parse_args uses;
 # _check_agents_selected also exits 2, on the same usage-error tier, for a
 # named cli prepare never selected; verify_selection exits 3 on a platform
 # that isn't on PATH, the same convention cmd_prepare's own call to it
