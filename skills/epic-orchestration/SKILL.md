@@ -123,7 +123,10 @@ orchestrator 的主 context 受三條硬禁令約束：
 `herdr agent get` 回應的三項要齊備才送出開場指令：
 
 - `agent_status` 為 `idle`
-- `launch_pending` 不為真
+- `launch_pending` 不為真——這個欄位不保證出現：對一個剛啟動完成、已就緒的 agent 下
+  `herdr agent get`，回應裡根本查不到 `launch_pending`，不是查到它的值為 `false`；已實測到
+  的另一種情形是，卡在信任對話框時這個欄位存在且為 `true`。因此欄位缺席一樣算
+  「不為真」，不要因為查不到這個欄位就以為要停下查明
 - `interactive_ready` 為真
 
 三項不齊備時停下查明：查明的具體動作是委派 `phase-decision-investigator` 讀那一格 pane、
@@ -184,13 +187,35 @@ agent 是「你的推薦」，此處改寫為第三人稱，避免在 orchestrat
 收到不屬於這四種的訊息內容時，不要當成又一種新格式接受，先懷疑契約有沒有被遵守（見
 `references/rationale.md` 待驗證假設一節）。
 
+## 監控節奏
+
+上一節的上行機制是主動推送，但 phase agent 卡在核准框時不會送任何訊息（不在四種之內），這
+種情況只能靠 orchestrator 主動觀測 `agent_status` 才能發現，即下方「決策迴圈」入口二的來
+源。orchestrator 用以下節奏維持觀測：對進度表上每一個目前在跑（非等待
+決策、非等待啟動、非 PR ready）的 phase，逐一呼叫 `herdr agent wait <agent 名稱> --until
+blocked --timeout <單次逾時毫秒>`；這個呼叫會阻塞到逾時或狀態變成 `blocked` 為止，逾時就換
+下一個 phase，狀態變成 `blocked` 就立刻進入決策迴圈入口二。每呼叫完一個 phase，先處理這段期
+間累積的任何上行訊息（入口一，或報到、PR ready、收尾完成），再輪到下一個 phase；如此循環，
+讓「等待上行訊息」與「輪流觀測 blocked」共用同一個迴圈，不各自獨立跑。PR ready 的 phase 是
+依設計閒置等 review，不落在這個觀測集合裡，否則每一輪都會白白吃掉一次逾時。orchestrator 阻
+塞在某一個 phase 的這次等待時，其他 phase 推來的訊息要等這次呼叫結束才處理得到，這是這個機
+制本身的代價。
+
+整輪觀測（依序對目前在觀測的每個 phase 各呼叫一次 `herdr agent wait`）訂一個牆鐘上限：
+60000 毫秒（60 秒）。單次逾時毫秒 = 這個上限除以目前在觀測的 phase 數，讓整輪的總阻塞時間
+不隨 phase 數增加而拉長。`--until` 可接受的其他值，以呼叫當下該子命令自己的 `--help` 為
+準，不要照記憶湊。
+
+自我檢測：進度表上正在跑的每一個 phase，是不是都在最近一輪迴圈裡被 `herdr agent wait` 觀測
+過？漏掉任何一個，入口二對那個 phase 就形同不存在。
+
 ## 決策迴圈
 
 決策迴圈有兩個入口，出口只有一個。
 
 - 入口一：phase agent 主動送出決策請求。
-- 入口二：它撞到權限提示或核准框而進入 `blocked`，orchestrator 從 `agent_status` 看得到狀
-  態，但看不到提示內容。
+- 入口二：它撞到權限提示或核准框而進入 `blocked`，orchestrator 從上一節「監控節奏」的迴圈觀
+  測中看得到狀態，但看不到提示內容。
 
 兩個入口併入同一條路徑：
 
@@ -206,7 +231,7 @@ agent 是「你的推薦」，此處改寫為第三人稱，避免在 orchestrat
    能誤判，並列才讓使用者有機會發現分析讀歪了。
 3. 使用者決定後，orchestrator 把決定轉達回該 phase agent。這是兩個入口共同的唯一出口。
 
-轉達形式依入口而異：入口一（一般決策請求）用跨 session 訊息送回去；入口二（卡在核准框）用
+轉達形式依入口而異：入口一（一般決策請求）走 `herdr agent prompt`；入口二（卡在核准框）用
 `herdr agent send-keys` 代按使用者選定的那個選項。
 
 自我檢測：呈給使用者的內容，是不是同時包含 phase agent 的原文與調查者的分析？只給其中一項就
@@ -230,6 +255,12 @@ phase——已經在跑的通知它假設已更新，尚未派工的確保派出
 
 phase agent 送回 PR 編號與一句話結論後，orchestrator 只記下 PR 編號、不讀 PR 內容，回報給
 使用者。該 phase 的 tab 保持開啟——review 可能要求改動，phase agent 還要回去做。
+
+使用者若要求某個 phase 修改，orchestrator 透過下行機制（`herdr agent prompt`）把修改要求轉
+達給該 phase agent；phase agent 改完後會重新送來一則「PR ready」訊息——這是既有第三種訊息
+的重複使用，不是新的訊息類型（見 `phase-agent-contract.md`「PR ready 之後的 review 往返」
+節）。orchestrator 收到這次重新送來的「PR ready」，回到本節開頭的處置：記下 PR 編號、回報
+使用者、tab 繼續保持開啟，直到使用者說可以合併為止。
 
 ## 合併與收尾的連鎖
 
@@ -294,6 +325,6 @@ tab 已不在但 PR 尚未合併的 phase，據實回報給使用者，由使用
 | phase agent 啟動後遲遲沒有報到 | 代表卡在啟動階段，信任對話框是已知的一種；停下問使用者，不代按 |
 | tab 已經不在而 PR 未合併 | 說明後果並詢問使用者要重派還是接手，不自己重派——自行重派會在同一個 sub-issue 上開出第二條分支 |
 | PR 已合併但對應的 sub-issue 仍然開啟 | 回報使用者，由使用者決定如何完成殘留的收尾；orchestrator 不自行接手清理 |
-| 長時間沒有任何訊息 | 可用的判準只有 `agent_status` 與該行程的累計 CPU 時間有沒有在動，兩項都不足以斷定卡死；一律把觀測值原文交給使用者決定，不做自動處置 |
+| 長時間沒有任何訊息 | 依「監控節奏」節的迴圈持續觀測；可用的判準只有 `agent_status` 與該行程的累計 CPU 時間有沒有在動，兩項都不足以斷定卡死；一律把觀測值原文交給使用者決定，不做自動處置 |
 | 合併失敗（例如衝突或 CI 未過） | 不由 orchestrator 解決，把失敗訊息原文轉給該 phase agent——那是唯一有開發脈絡的一端 |
 | 依賴圖成環，或依賴指向不存在的 issue | 停下回報，不猜測順序 |

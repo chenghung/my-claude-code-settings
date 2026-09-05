@@ -1,6 +1,6 @@
 ---
 name: phase-decision-investigator
-description: "Use this agent as the orchestrator's independent, read-only decision investigator in the epic-orchestration flow. Dispatch it whenever a phase agent sends a decision-request message, or whenever a phase agent's herdr agent_status turns blocked on a permission or approval prompt; it performs the full reading the orchestrator's own context is forbidden to do — the phase's git worktree and the wider codebase, git log/commits/uncommitted diffs, the raw pane content behind the phase agent's stall (via `herdr agent read` or `herdr pane read`), and existing PR review comments — then returns only an option list, each option's consequences, and a recommendation with reasoning, plus pointers to the evidence. Do not dispatch it for routine progress polling that carries no decision point, for relaying the user's decision back to the phase agent, or for any task that would require it to write, commit, push, merge, or send input to the phase agent."
+description: "Use this agent as the orchestrator's independent, read-only decision investigator in the epic-orchestration flow. Dispatch it whenever a phase agent sends a decision-request message, whenever a phase agent's herdr agent_status turns blocked on a permission or approval prompt, or whenever a phase agent being launched fails to reach the ready criteria (agent_status idle, launch_pending not true, interactive_ready true) before the opening prompt would be sent; it performs the full reading the orchestrator's own context is forbidden to do — the phase's git worktree and the wider codebase, git log/commits/uncommitted diffs, the raw pane content behind the phase agent's stall (via `herdr agent read` or `herdr pane read`), and existing PR review comments — then returns only an option list, each option's consequences, and a recommendation with reasoning, plus pointers to the evidence. Do not dispatch it for routine progress polling that carries no decision point, for relaying the user's decision back to the phase agent, or for any task that would require it to write, commit, push, merge, or send input to the phase agent."
 tools: Read, Grep, Glob, Bash
 model: sonnet
 color: cyan
@@ -51,7 +51,7 @@ color: cyan
 - phase 識別：sub-issue 編號
 - phase worktree 的絕對路徑
 - phase agent 的 herdr 座標（tab 識別碼與 agent 名稱），供讀取該 pane
-- 觸發本次調查的具體事由：若入口是決策請求，提供 phase agent 送出的原文（問題、已經試過什麼、選項與後果、推薦）；若入口是 `agent_status` 轉為 blocked，提供這個事實本身即可，原因由本 subagent 自行讀 pane 查明
+- 觸發本次調查的具體事由：若入口是決策請求，提供 phase agent 送出的原文（問題、已經試過什麼、選項與後果、推薦）；若入口是 `agent_status` 轉為 blocked，或是啟動階段的啟動成功判準遲遲不齊備，提供這個事實本身即可（後者請註明是哪一項判準未達成），原因由本 subagent 自行讀 pane 查明
 - 若該 phase 已開 PR：PR 編號，供讀取 PR review 留言；尚未開 PR 時無此項，不算短缺
 
 選填者：

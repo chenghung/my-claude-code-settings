@@ -16,5 +16,5 @@
 
 使用者確認合併（PR 或 branch merged）後，自動收尾此 worktree，不另行徵詢：
 
-- 先確認本次合併的變更已進入 origin/main。取得實際執行合併的另一方明確通知已完成合併時，視為已滿足此確認要求。確認後：將 local main 同步至 origin/main、移除 worktree 及其 local branch、刪除已無用的 remote branch（GitHub 未自動刪時補刪）。
+- 先確認本次合併的變更已進入 origin/main。若有更具體的契約文件已把合併執行職責另行指派給別的角色，取得該方確認合併完成後發出的通知，視為已滿足此確認要求。確認後：將 local main 同步至 origin/main、移除 worktree 及其 local branch、刪除已無用的 remote branch（GitHub 未自動刪時補刪）。
 - 若無法確認變更已進 origin/main，不得移除，保留 worktree 並回報使用者。

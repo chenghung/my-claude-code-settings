@@ -31,7 +31,7 @@ orchestrator 對一個正停在等待輸入狀態的 phase agent 送出 SendMess
 
 ### 信任對話框會擋住啟動，但 git worktree 不受影響
 
-在一個新建立的、非 git 倉庫的目錄啟動 Claude Code 時會出現工作區信任對話框，此時 `herdr agent start` 回傳 `agent_not_ready` 錯誤，但 agent 實際已存在於該 pane 且狀態為 `blocked`、`launch_pending` 為真。在既有的 git worktree 目錄（其主倉庫路徑已被信任）啟動時直接就緒，未出現信任對話框。
+在一個新建立的、非 git 倉庫的目錄啟動 Claude Code 時會出現工作區信任對話框，此時 `herdr agent start` 回傳 `agent_not_ready` 錯誤，但 agent 實際已存在於該 pane 且狀態為 `blocked`、`launch_pending` 為真。對一個已經就緒的 agent 下 `herdr agent get`，`agent_status` 為 `idle`、`interactive_ready` 為 `true`，而 `launch_pending` 這個欄位根本不存在於回應中，不是查到它的值為 `false`——這與卡在信任對話框時 `launch_pending` 存在且為真，是同一組事實的兩面。在既有的 git worktree 目錄（其主倉庫路徑已被信任）啟動時直接就緒，未出現信任對話框。
 
 信任記錄的形式是使用者家目錄下 `.claude.json` 的 `projects` 欄位，以絕對路徑為鍵、每筆帶 `hasTrustDialogAccepted` 布林值；已信任的父目錄不會讓子目錄自動通過，但 git worktree 會繼承主倉庫的信任。worktree 繼承這一點只實測過一次，樣本數與涵蓋範圍的限制見下方「git worktree 信任繼承的樣本數有限」。
 
