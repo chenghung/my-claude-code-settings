@@ -5005,9 +5005,16 @@ fi
 # ==============================================================
 
 # 出口 1: .repo-path 不存在（不可讀）。
+#
+# 這裡改成直接呼叫 _cleanup_delete_branch，不再經過 cmd_cleanup：
+# cmd_cleanup 現在自己也會在進入刪除分支之前先檢查 .repo-path 是否存在
+# （見下面「cmd_cleanup -- base_dir 語意檢查」那組測試），對一個完全沒
+# 有 .repo-path 的目錄，cmd_cleanup 會在那道外層檢查就短路回傳，永遠不
+# 會走到 _cleanup_delete_branch 這一行。要單獨驗證 _cleanup_delete_branch
+# 自己在這個出口的措辭，必須繞過 cmd_cleanup 直接呼叫它。
 CLEANBR_NOFILE="$T/cleanup-branch-no-repo-path"
 mkdir -p "$CLEANBR_NOFILE"
-out_norepo="$(cmd_cleanup --base-dir "$CLEANBR_NOFILE" 2>&1)"
+out_norepo="$(_cleanup_delete_branch "$CLEANBR_NOFILE" 2>&1)"
 case "$out_norepo" in
   *'branch_deleted=no:.repo-path unreadable'*) pass "_cleanup_delete_branch .repo-path 不存在時回報 .repo-path unreadable" ;;
   *) bad "_cleanup_delete_branch .repo-path 不存在時回報不正確: $out_norepo" ;;
@@ -5061,6 +5068,105 @@ case "$out_norunsuffix" in
   *'branch_deleted=no:cannot derive run suffix'*) pass "_cleanup_delete_branch 推不出 run suffix 時回報正確原因" ;;
   *) bad "_cleanup_delete_branch 推不出 run suffix 時回報不正確: $out_norunsuffix" ;;
 esac
+
+# ==============================================================
+# cmd_cleanup -- base_dir 語意檢查（防止刪到任意目錄）
+#
+# 光是「存在的絕對路徑目錄、底下沒有 worktree 子目錄」不足以讓
+# cmd_cleanup 動手刪除：下一個任務要改寫的呼叫端一旦算錯 base_dir，代
+# 價是無條件、不可逆地刪掉一個任意目錄。這裡驗證 .repo-path 存在性檢
+# 查真的擋在刪除之前，不是只擋在 _cleanup_delete_branch 那一半。
+# ==============================================================
+
+CLEANGUARD_ARBITRARY="$T/cleanup-guard-arbitrary-dir"
+mkdir -p "$CLEANGUARD_ARBITRARY"
+printf 'do not touch me\n' > "$CLEANGUARD_ARBITRARY/unrelated-file.txt"
+# 刻意不寫 .repo-path、也不建 worktree 子目錄 -- 模擬呼叫端傳進一個跟
+# PR review 完全無關的任意目錄這個情境。
+guard_out="$(cmd_cleanup --base-dir "$CLEANGUARD_ARBITRARY" 2>&1)"; guard_rc=$?
+
+case "$guard_out" in
+  *'worktree_removed=no'*) pass "cmd_cleanup 對缺少 .repo-path 的任意目錄回報 worktree_removed=no" ;;
+  *) bad "cmd_cleanup 對缺少 .repo-path 的任意目錄回報不正確: $guard_out" ;;
+esac
+case "$guard_out" in
+  *'run_dir_removed=no:not a pr-review run directory'*) pass "cmd_cleanup 對缺少 .repo-path 的任意目錄拒絕刪除並附上可分辨的原因" ;;
+  *) bad "cmd_cleanup 對缺少 .repo-path 的任意目錄回報不正確: $guard_out" ;;
+esac
+# 措辭必須跟「這是執行目錄但刪不掉」那條區分開來，呼叫端才分得出兩者。
+case "$guard_out" in
+  *'removal failed'*) bad "cmd_cleanup 把「不是執行目錄」跟「刪除失敗」的措辭混在一起: $guard_out" ;;
+  *) pass "cmd_cleanup 對缺少 .repo-path 的任意目錄用了跟「刪除失敗」不同的措辭" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -d "$CLEANGUARD_ARBITRARY" ] && pass "cmd_cleanup 沒有刪掉缺少 .repo-path 的任意目錄" || bad "cmd_cleanup 誤刪了一個跟 PR review 無關的任意目錄"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$CLEANGUARD_ARBITRARY/unrelated-file.txt" ] && pass "cmd_cleanup 沒有動到任意目錄裡的檔案" || bad "cmd_cleanup 清空了任意目錄裡的檔案"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$guard_rc" -eq 0 ] && pass "cmd_cleanup 對缺少 .repo-path 的任意目錄仍以結束碼 0 回報判準結果" || bad "cmd_cleanup 對缺少 .repo-path 的任意目錄結束碼為 $guard_rc"
+
+# ==============================================================
+# cmd_cleanup -- 刪除失敗時唯讀保護被補回去（errexit 防護的回歸測試）
+#
+# 這個檔案用 set -euo pipefail。cmd_cleanup 裡的 chmod -R u+w 與 rm -rf
+# 如果沒有比照既有寫法加上 || true，只要其中任一個傳回非零，errexit 會
+# 讓函式當場中止：run_dir_removed= 那一行、把 materials 重新上鎖的補
+# 救、以及 branch_deleted= 那一行全部執行不到。這正是「刪除失敗時把唯
+# 讀保護補回去」這條路徑，在沒有 || true 保護時永遠到不了的原因。
+#
+# 用「目錄沒有讀/執行權限」逼真的 rm -rf 失敗：對這支測試進程的擁有者
+# （非 root）來說，chmod -R u+w 只會加回寫入位、加不回讀/執行位，所以
+# 一個原本 000 的子目錄在 chmod -R u+w 之後只會變成「有寫入、沒有讀/
+# 執行」，rm -rf 因此連 opendir 都做不到，可靠地在真實檔案系統上失敗
+# （已用最小重現驗證：chmod -R u+w 之後目錄仍是 d-w-------，rm -rf 回
+# 報「拒絕不符權限的操作」且該目錄原封留下）。這個手法只在非 root 使
+# 用者下成立 -- root 略過所有 DAC 檢查，chmod/rm 對它都會直接成功；已
+# 用 id -u 確認這支測試腳本目前不是以 root 執行。
+#
+# 這裡刻意不透過 `$(cmd_cleanup ...)` 呼叫已經 source 進本測試進程的
+# 函式 -- 已用最小重現驗證過，bash 對「一般賦值搭配指令替換」這個呼叫
+# 形狀本身就會遮蔽 errexit（函式內失敗的指令不會讓呼叫端的 shell 中
+# 止），沿用這個呼叫形狀的話，即使 cmd_cleanup 完全沒加 || true，這條
+# 測試也看不出差異，等於測不到這個問題本身（已對照驗證：把 || true 從
+# 真正的檔案拿掉、只透過真正的子行程呼叫，RC 變成 1 且只印出
+# worktree_removed=yes 一行就中止，其餘兩行完全消失，加回 || true 後
+# RC 恢復 0 且三行都印出、materials 也確實被重新上鎖）。改成真正另開一
+# 個子行程執行 `bash "$RUN_SH" cleanup ...`（比照這個檔案其餘端到端測
+# 試呼叫 prepare/launch 的既有手法），讓 errexit 在那個子行程自己的頂
+# 層行程裡真的生效，才有辦法驗證這條防護線。
+CLEANRMFAIL="$T/cleanup-rm-fails"
+mkdir -p "$CLEANRMFAIL/materials"
+touch "$CLEANRMFAIL/materials/pr.md"
+printf '%s\n' "$T/fake-repo" > "$CLEANRMFAIL/.repo-path"
+chmod 000 "$CLEANRMFAIL/materials"
+
+cleanrmfail_out="$(HERDR_ENV=1 bash "$RUN_SH" cleanup --base-dir "$CLEANRMFAIL" 2>&1)"; cleanrmfail_rc=$?
+
+case "$cleanrmfail_out" in
+  *'run_dir_removed=no:removal failed, run directory still present'*) pass "cmd_cleanup 刪除失敗時仍走完並回報 run_dir_removed=no:removal failed" ;;
+  *) bad "cmd_cleanup 刪除失敗時的輸出不正確（可能被 errexit 中止在半路）: $cleanrmfail_out" ;;
+esac
+case "$cleanrmfail_out" in
+  *'branch_deleted='*) pass "cmd_cleanup 刪除失敗後仍走到最後一行 branch_deleted=" ;;
+  *) bad "cmd_cleanup 刪除失敗後沒有走到 branch_deleted= 那一行（errexit 中止的跡象）: $cleanrmfail_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$cleanrmfail_rc" -eq 0 ] && pass "cmd_cleanup 刪除失敗仍是判準跑完、結束碼 0" || bad "cmd_cleanup 刪除失敗時結束碼為 $cleanrmfail_rc"
+
+# 補救邏輯本身：materials 要重新上鎖（唯讀）。chmod -R u+w 只加回寫入
+# 位，所以在補救之前 materials 是「有寫入、沒有讀/執行」；補救的
+# chmod -R a-w 會把寫入位再拿掉。用「不可寫」判斷重新上鎖是否發生：如
+# 果補救程式碼因為 errexit 從沒執行到，materials 會停在「有寫入」那個
+# 中繼狀態，這裡就會抓到。
+if [ -w "$CLEANRMFAIL/materials" ]; then
+  bad "cmd_cleanup 刪除失敗後 materials 沒有重新上鎖（唯讀保護的補救沒有執行到）"
+else
+  pass "cmd_cleanup 刪除失敗後 materials 重新上鎖"
+fi
+
+# 清乾淨：把鎖住的目錄權限救回來，否則這支測試檔最後的 trap 清不掉它。
+chmod -R u+rwx "$CLEANRMFAIL" 2>/dev/null || true
+rm -rf "$CLEANRMFAIL" 2>/dev/null || true
 
 # ==============================================================
 # cmd_cleanup -- 分支刪除成功路徑

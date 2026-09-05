@@ -527,9 +527,10 @@ check_clis() {
 # in a real herdr pane's environment. herdr is a hard prerequisite for
 # prepare and launch: every reviewer either of them ends up dispatching
 # runs interactively inside a herdr pane (see SKILL.md), so a run started
-# outside one cannot succeed no matter what flags follow it. Both of
-# main()'s prepare/launch branches call this before doing anything else --
-# see main()'s own docstring on why --check-clis is deliberately exempt.
+# outside one cannot succeed no matter what flags follow it. All three of
+# main()'s prepare/launch/cleanup branches call this before doing anything
+# else -- see main()'s own docstring on why --check-clis is deliberately
+# exempt.
 # Prints a reason and returns 1 on failure; prints nothing and returns 0
 # when HERDR_ENV is exactly "1".
 _check_herdr_env() {
@@ -3555,18 +3556,47 @@ cmd_launch() {
 # Unlocking is a cost paid for deletion; if the deletion is not going to
 # happen, the cost must not be paid.
 #
+# base_dir itself is only half of this function's blast-radius bound; the
+# other half is the branch name, which _cleanup_delete_branch already
+# anchors to .repo-path rather than trusting the caller. base_dir gets the
+# same anchor here, checked before either the worktree branch below or
+# anything destructive: an existing absolute directory with no worktree/
+# subdirectory is not, by itself, proof that this is one of this skill's
+# own run directories -- it is exactly what a caller (task 8's rewritten
+# orchestration) that miscomputed base_dir would also look like, and that
+# mistake must never reach the destructive branch at all, not merely be
+# caught after it fails partway through.
+#
 # Branch deletion (see _cleanup_delete_branch) is unconditional on which
-# side of that worktree check this run lands on -- git's own refusal to
-# delete a branch still checked out in a live worktree is what keeps this
-# safe when the worktree is still present, not any check of this function's
-# own. On the worktree-gone side, _cleanup_delete_branch is called *before*
-# `rm -rf "$base_dir"`, not after: it reads .repo-path out of base_dir's own
-# contents, and `rm -rf` would take .repo-path down with everything else,
-# turning "branch already deleted" into "branch can never be deleted" on
-# every normal run. Its stdout is captured into branch_result and printed
-# last, so the three output lines still appear in the documented
-# worktree_removed/run_dir_removed/branch_deleted order regardless of this
-# internal ordering.
+# side of the worktree check below this run lands on -- git's own refusal
+# to delete a branch still checked out in a live worktree is what keeps
+# this safe when the worktree is still present, not any check of this
+# function's own. On the worktree-gone side, _cleanup_delete_branch is
+# called *before* `rm -rf "$base_dir"`, not after: it reads .repo-path out
+# of base_dir's own contents, and `rm -rf` would take .repo-path down with
+# everything else, turning "branch already deleted" into "branch can never
+# be deleted" on every normal run. Its stdout is captured into
+# branch_result and printed last, so the three output lines still appear
+# in the documented worktree_removed/run_dir_removed/branch_deleted order
+# regardless of this internal ordering.
+#
+# Every mutating call from here on (`chmod -R u+w`, `rm -rf`, and the two
+# re-lock chmods in the removal-failed branch) is guarded with `|| true`.
+# This file runs under set -euo pipefail, and none of these four calls is
+# otherwise wrapped in an `if`/`&&`/`||` the way errexit would need to
+# leave it alone -- a bare failing chmod or rm here would abort this
+# function on the spot, silently skipping every line after it, including
+# the run_dir_removed=/branch_deleted= output the caller depends on and
+# the re-lock step the calling agent's own contract requires when deletion
+# fails. Confirmed for real: a directory this process cannot make
+# readable/executable again (chmod -R u+w only ever adds the write bit, it
+# cannot restore read/execute that was never granted) makes both `chmod -R
+# u+w` and the subsequent `rm -rf` fail outright, and a partial removal
+# that took out one of materials/logs but not the other makes the combined
+# `chmod -R a-w "$base_dir/materials" "$base_dir/logs"` fail too (chmod
+# reports an error, and a nonzero exit, for the one operand that no longer
+# exists) -- all three are the same failure class as the two the review
+# flagged by name, in the same remediation path.
 cmd_cleanup() {
   local base_dir="" d branch_result
 
@@ -3585,6 +3615,13 @@ cmd_cleanup() {
   esac
   [ -d "$base_dir" ] || { printf 'run-review.sh: no such run directory: %s\n' "$base_dir" >&2; exit 2; }
 
+  if [ ! -r "$base_dir/.repo-path" ]; then
+    printf 'worktree_removed=no\n'
+    printf 'run_dir_removed=no:not a pr-review run directory (missing .repo-path)\n'
+    printf 'branch_deleted=no:not a pr-review run directory (missing .repo-path)\n'
+    return 0
+  fi
+
   if [ -d "$base_dir/worktree" ]; then
     printf 'worktree_removed=no\n'
     printf 'run_dir_removed=no:worktree still present\n'
@@ -3595,12 +3632,12 @@ cmd_cleanup() {
   printf 'worktree_removed=yes\n'
   branch_result="$(_cleanup_delete_branch "$base_dir")"
 
-  chmod -R u+w "$base_dir" 2>/dev/null
-  rm -rf "$base_dir"
+  chmod -R u+w "$base_dir" 2>/dev/null || true
+  rm -rf "$base_dir" || true
   if [ -e "$base_dir" ]; then
-    chmod -R a-w "$base_dir/materials" "$base_dir/logs" 2>/dev/null
+    chmod -R a-w "$base_dir/materials" "$base_dir/logs" 2>/dev/null || true
     for d in "$base_dir"/reviewers/*/workdir/materials; do
-      [ -d "$d" ] && chmod -R a-w "$d" 2>/dev/null
+      [ -d "$d" ] && { chmod -R a-w "$d" 2>/dev/null || true; }
     done
     printf 'run_dir_removed=no:removal failed, run directory still present\n'
   else
