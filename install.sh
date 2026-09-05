@@ -727,6 +727,16 @@ install_external_skills() {
 # this runs once regardless of which platforms were selected.
 # Re-run every time to install or update to latest: `npm install -g <pkg>@latest`
 # is idempotent and refreshes an existing global install in place.
+#
+# The install is always retargeted at ~/.local rather than npm's configured
+# global prefix. A distro-packaged Node (Arch/Manjaro, Debian) points that
+# prefix at /usr, so a global install would write into /usr/lib/node_modules —
+# root-owned and owned by the system package manager, which fails with EACCES
+# as a normal user and would need sudo to scatter npm-managed files through the
+# distro's own tree. Pinning ~/.local keeps this script sudo-free and its
+# outcome identical on every machine, whatever npm is configured to do; the
+# binary lands in the conventional ~/.local/bin. Passing --prefix per install
+# leaves the user's own npm config untouched.
 # ---------------------------------------------------------------------------
 install_openspec() {
   [ -n "$skip_external" ] && return
@@ -736,7 +746,12 @@ install_openspec() {
     return
   fi
 
-  if npm install --global @fission-ai/openspec@latest; then
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) printf '  WARNING  %s/.local/bin is not on PATH - add it to use the openspec command.\n' "$HOME" ;;
+  esac
+
+  if npm install --global --prefix "$HOME/.local" @fission-ai/openspec@latest; then
     printf '  INSTALLED @fission-ai/openspec@latest (openspec)\n'
     count_created=$(( count_created + 1 ))
   else
