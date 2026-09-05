@@ -24,4 +24,5 @@ AI 不自動 merge：達到 ready 即停下回報，由使用者確認合併。�
 
 - 關閉本次工作對應的 GitHub issue（已關閉則略過）。
 - 若該 issue 是某 parent 的 sub-issue，關閉後檢查該 parent 底下的 sub-issue 是否已全數關閉，是則一併關閉 parent（更上層 parent 同理遞迴）。
+- 例外：若有更具體的契約文件已把 parent issue 的檢查與關閉職責另行指派給別的角色，本條不適用於執行 sub-issue 收尾的那一方。
 - worktree 與分支的清理見 git worktree 工作流程。
