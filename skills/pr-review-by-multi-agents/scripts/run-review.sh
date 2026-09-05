@@ -1601,6 +1601,33 @@ _write_opencode_home_interactive() {
 # covering git add/commit/push/fetch/checkout/reset/rebase/merge/rm/branch
 # -D, rm/mv/chmod, sudo, curl/wget/nc, and every state-changing `gh`
 # subcommand -- is unrelated to file writes and stays exactly as-is.
+#
+# Relocated from _write_opencode_permission_config's own docstring ahead of
+# that function's removal, since it is "that function's own docstring for
+# the rationale behind every entry below" the paragraph above points to.
+# Three of the shared entries were confirmed empirically against a real
+# binary, not left as pattern-reading alone:
+#   - `git fetch*`: confirmed empirically, not just by pattern-reading -- a
+#     real `opencode run --auto` invocation with this exact entry present,
+#     asked to run `git fetch origin --verbose` in a scratch repo, had the
+#     Bash tool call refused before execution, with opencode's own denial
+#     message quoting `{"permission":"bash","pattern":"git
+#     fetch*","action":"deny"}` as the matching rule.
+#   - `curl*`/`wget*`/`nc*`: confirmed empirically against a real `opencode
+#     run --auto` invocation with these three entries present: asked to run
+#     a plain `curl -s http://127.0.0.1:<port>/...` against a listener on
+#     loopback, the Bash tool call was refused before execution, with
+#     opencode's own denial message quoting `{"permission":"bash","pattern":
+#     "curl*","action":"deny"}` as the matching rule, and the listener
+#     recorded no hit; the same was independently confirmed for `wget*` and
+#     `nc*`.
+#   - This bash deny list is necessarily a list of specific risky verbs, not
+#     an exhaustive one -- a real test run confirmed a plain shell redirect
+#     (`printf ... > file`, which matches none of those specific patterns)
+#     writes successfully wherever the underlying shell can reach, including
+#     into the worktree. No bash-pattern blacklist can close that off
+#     completely (there is no bounded list of every way a shell command can
+#     write a file).
 _write_opencode_permission_config_interactive() {
   local path="$1"
 
@@ -2363,6 +2390,138 @@ _derive_agent_name() {
 # reviewer is not a child process of this script, so it has no PID to key
 # by. A later task reads this file back to compare against an after-
 # snapshot.
+#
+# Relocated from launch_reviewer's own docstring ahead of that function's
+# removal, because this function's opening paragraph already commits to
+# "everything there not specific to running headless still applies here":
+# these are the specific empirically-verified claude/codex/agy sandbox and
+# permission findings that pointer depended on, kept verbatim except where
+# a clause named launch_reviewer's own headless-only choice rather than the
+# finding itself.
+#
+#   - claude: two things are empirically verified facts about a real claude
+#     binary, not inferred from --help text (which, on the first point,
+#     suggests the opposite would happen; on the second, actively
+#     recommends a syntax that turned out not to work) -- if either ever
+#     needs re-verifying against a future claude release, re-run the same
+#     kind of probe rather than trusting this comment or the official text
+#     alone:
+#       1. dontAsk (launch_reviewer's own headless permission mode)
+#          auto-denies anything not on --allowedTools *except* read-only
+#          Bash commands, which it lets through unconditionally --
+#          confirmed by asking it to run the contract's pinned `git diff
+#          <base>...HEAD` with an allowedTools/disallowedTools pair
+#          carrying no Bash pattern for `git diff` at all, and getting real
+#          diff output back.
+#       2. There is no way to scope the `Write` tool to a specific path via
+#          `--allowedTools`/`--disallowedTools`: `Write(<path>/**)` is
+#          rejected outright at startup with "is not matched by file
+#          permission checks -- only Edit(path) rules are. Use Edit(...)
+#          instead" -- but that suggestion doesn't actually work either; an
+#          `Edit(<worktree>/**)` disallow rule, combined with a bare
+#          `Write` allow, still let a real claude process write into that
+#          worktree in a real test run. `Write` in claude's tool-permission
+#          model is all-or-nothing: either the whole tool is allowed
+#          (anywhere the process can reach) or it isn't. This function
+#          grants Write (the reviewer needs it to write review.md), so this
+#          finding is a live gap here: nothing in claude's own permission
+#          model can confine that grant to <reviewer_workdir> alone.
+#
+#     Known residual gap, not closed: dontAsk's "read-only Bash commands
+#     are always allowed" carve-out is broader than strictly read-only in
+#     practice. A real run, with no `gh` pattern on either --allowedTools
+#     or --disallowedTools (and even with an explicit
+#     `Bash(gh pr comment:*)` added to --disallowedTools), still let
+#     `gh pr comment ...` actually *execute* via the Bash tool -- it only
+#     failed for an unrelated environmental reason (the test repo had no
+#     configured git remote for `gh` to resolve a target from), not because
+#     claude's permission layer blocked it. In this script's real usage,
+#     setup_worktree always configures a real `origin` remote pointing at
+#     the actual PR's repo, so this path is not purely theoretical. This
+#     means neither omitting a Bash pattern from --allowedTools nor adding
+#     one to --disallowedTools reliably stops dontAsk from letting a `gh`
+#     write command run, if the model decides (on its own, or steered by
+#     injected PR/issue content) to try one -- the actual backstop against
+#     that is that gh commands need network access plus a credential gh
+#     will accept, and this script isolates neither cleanly. Network:
+#     nothing here touches it. Credentials: gh takes them from two places,
+#     and the HOME override reaches only one. Stored credentials live under
+#     the home directory, so the override does move where gh looks --
+#     whether gh then fails to find any is NOT measured, so do not read the
+#     override as closing that path. The other place is the environment,
+#     and it is wider than the two names one first reaches for: `gh help
+#     environment` on the real binary documents four token variables
+#     (GH_TOKEN and GITHUB_TOKEN, plus the two enterprise-specific ones),
+#     all taking precedence over stored credentials, alongside a
+#     config-directory variable and a host variable. The config-directory
+#     one matters separately: once it is set, where gh looks for stored
+#     credentials stops depending on HOME at all, so the override above
+#     stops being relevant to that path too. A pane inherits its
+#     environment from the herdr daemon rather than from this script's own
+#     process (measured; see rationale.md's own isolation bullet), so
+#     nothing here can clear any of them. None of those variables was
+#     present on the machine this was measured on -- that is a property of
+#     that machine, not a guarantee this script provides.
+#
+#     Follow-up security review: confirmed the gap above is not specific to
+#     `gh` -- it is the general exfiltration path removing `WebFetch` was
+#     meant to close, still open through Bash. A real run with this
+#     function's own claude flags (--permission-mode auto,
+#     --disallowedTools "WebFetch" only), asked to run a plain
+#     `curl -s http://127.0.0.1:<port>/...` against a local listener, had
+#     the request actually reach the listener; no `WebFetch` tool was ever
+#     invoked or needed. Four permission shapes were tried against the same
+#     probe, all with a real claude binary, all reaching the listener: (1)
+#     launch_reviewer's own dontAsk flags (no Bash pattern anywhere); (2)
+#     `--permission-mode auto` with `Bash(git diff:*)` added to
+#     --allowedTools (testing whether naming one Bash pattern switches Bash
+#     to allowlist-only -- it does not: an unrelated `curl` call was still
+#     let through by the same carve-out); (3) `--permission-mode manual`
+#     with the same addition (same result); (4) `--disallowedTools` with an
+#     explicit `Bash(curl:*)` entry added (same non-effect, so this is the
+#     carve-out's general behavior, not a `gh`-specific quirk). The only
+#     flag combination that did stop it was disallowing the whole `Bash`
+#     tool with no pattern at all (confirmed separately, by a `touch`
+#     probe, to also be the only combination that stops a local write
+#     attempt) -- but a whole-tool `Bash` deny also blocks the contract's
+#     own pinned `git -C <worktree> diff <base-ref>...HEAD`, the one
+#     command this reviewer has no other way to run (build_prompt does not
+#     embed the diff itself), so that closed form is not available here
+#     either: this reviewer's Bash access, while restricted to no local
+#     writes, is not restricted to no outbound network access, and nothing
+#     in this function's own flags closes that.
+#
+#   - codex: sandbox probing confirmed `gh` still reaches the network under
+#     `-s read-only` (read-only blocks local filesystem writes only, not
+#     network I/O). A follow-up security review reconfirmed the network
+#     side directly rather than only by inference from the `gh` finding: a
+#     real `codex exec -s read-only` run, asked to run a plain
+#     `curl -s http://127.0.0.1:<port>/...` against a local listener, had
+#     the request reach it. `codex exec` has no flag to restrict outbound
+#     network access independently of the filesystem sandbox.
+#
+#   - agy: agy's write tool is not gated by its permission allow list at
+#     all (verified empirically), so it stays reachable no matter what the
+#     allow list contains.
+#
+# None of the four mechanisms above turned out, on real testing, to
+# reliably stop a write into the worktree by itself: `Write` has no path
+# scoping in claude's permission model (see above), codex's `-s read-only`
+# sandbox did not block a real write attempt in `codex exec`'s
+# non-interactive mode, opencode's bash deny list is a blacklist of
+# specific verbs that a plain shell redirect walks straight past (see
+# _write_opencode_permission_config_interactive's own docstring), and agy's
+# write tool bypasses its own permission layer entirely regardless of what
+# its allow list names. The worktree's actual protection is therefore an
+# OS-level one applied uniformly to all four from cmd_prepare(), independent
+# of any single CLI's own permission engine: `chmod -R a-w` on the worktree
+# right after setup_worktree creates it (before any reviewer is launched),
+# restored with `chmod -R u+w` immediately before removal. `git
+# status`/`git diff` -- everything the contract's read-only
+# true-source-of-truth section asks a reviewer to do -- were confirmed to
+# still work against a worktree chmod'd this way, since a linked worktree's
+# own index/HEAD housekeeping lives under the main repo's
+# .git/worktrees/<name>/, not inside the worktree's own directory tree.
 launch_reviewer_interactive() {
   local cli_name="$1" pane_id="$2" worktree_dir="$3"
   local reviewer_workdir="$4" reviewer_home="$5" prompt_file="$6"
@@ -3030,6 +3189,19 @@ JSON
 # Starts the synthesis process in the background and prints its PID.
 # Reads the prompt from stdin, same as launch_reviewer.
 #
+# Relocated from launch_reviewer's own docstring ahead of that function's
+# removal, since this stdin-reading behavior is exactly what "same as
+# launch_reviewer" above depends on and this synthesis path is still
+# headless: all four reviewer CLIs were confirmed during preflight probing
+# to read their prompt from stdin when given no positional prompt argument:
+# `claude -p`, `codex exec`, and `opencode run` (without a `message`
+# argument) all do this. agy reaches the same place by a differently-shaped
+# route: it has no positional prompt argument at all, only a `-p`/`--print`
+# flag, and a bare unattached `-p` errors outright rather than falling
+# through to stdin -- so the agy branch below simply never passes that
+# flag, which is what makes it read from stdin here (see that branch's own
+# comment for the confirming probe).
+#
 # Every CLI here is launched with the narrowest tool grant it supports:
 # the synthesis needs no filesystem access, no shell and no network, so
 # anything granted would be pure exposure. This is also why no worktree is
@@ -3381,6 +3553,12 @@ spawn_supervisor() {
 # `run-review.sh launch` is exactly the call SKILL.md's own polling design
 # depends on returning immediately, and this function is what it backs
 # onto.
+#
+# Relocated from spawn_supervisor's own docstring ahead of that function's
+# removal, since it is the "empirical verification" referenced just above:
+# verified empirically, an unredirected `(...)&` held a captured command
+# substitution open for the backgrounded subshell's full runtime; with this
+# redirect in place the same capture returns immediately.
 spawn_supervisor_interactive() {
   local worktree_dir="$1" summary_file="$2" base_dir
   shift 2
