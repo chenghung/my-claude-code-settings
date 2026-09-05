@@ -76,7 +76,7 @@ frontmatter 原本明列「由單一 agent 執行的審查」不觸發本 skill�
 
 腳本要在目標 repo 的工作副本內呼叫（主線那一次是 `run`，分階段除錯時是 `launch`），是因為合流在 claude 與 agy 兩家沒有任何工作目錄旗標，繼承的就是呼叫當下的工作目錄。被否決的替代方案是讓監督行程在啟動合流之前切到 `base_dir`。技術上做得到——腳本早年那條無頭 reviewer 路徑對 claude 就是這樣處理的（啟動前 `cd`、啟動後還原），只是那條路徑連同它的函式已經在這次整併中整個移除，要照做等於重寫一次。否決的理由不是做不到，而是那屬於腳本的行為變更，尚待決定。
 
-腳本自己的 worktree 清理已經不再是那條契約的理由：`launch` 那兩條會移除 worktree 的路徑都先讀 `prepare` 寫在執行目錄根層的 `.repo-path`，讀得到才以 `git -C` 指定要動哪一個 repo。**但那是有退路的，退路仍然吃 cwd**：`.repo-path` 讀不到時退回不帶 `-C` 的裸指令，靠呼叫當下的工作目錄解析，而這一路的失敗被靜默吞掉，不會有任何訊息。退路不是理論上的——舊版 `prepare` 建出來、當時還沒有 `.repo-path` 的執行目錄就會走到它。
+腳本自己的 worktree 清理已經不再是那條契約的理由：`launch` 那兩條會移除 worktree 的路徑都先讀 `prepare` 寫在執行目錄根層的 `.repo-path`，讀得到才以 `git -C` 指定要動哪一個 repo（讀這個檔的地方共有三處，第三處是 `cleanup` 刪本次分支那一步，它沒有下面這條退路——讀不到就印理由、什麼都不刪）。**但那是有退路的，退路仍然吃 cwd**：`.repo-path` 讀不到時退回不帶 `-C` 的裸指令，靠呼叫當下的工作目錄解析，而這一路的失敗被靜默吞掉，不會有任何訊息。退路不是理論上的——舊版 `prepare` 建出來、當時還沒有 `.repo-path` 的執行目錄就會走到它。
 
 ### prompt 尺寸門檻的兩道檢查
 
@@ -204,7 +204,7 @@ claude 那一欄的「`auto` 模式」是腳本明傳的，不是它自己落到
 ├── .synthesis-prompt             # 合流行程吃的完整 prompt：合流契約全文、派出名單、各份 review
 ├── .roster                       # prepare 選中的每個 CLI 與其解析到的 model；合流的揭露段落與 launch 的平台核對都讀它
 ├── .prepared-at                  # prepare 建立本目錄當下寫的時間戳，下次執行判斷本次是否還在陳舊回收的寬限期內
-├── .repo-path                    # 目標 repo 的絕對路徑，launch 那兩條 worktree 清理路徑據此以 git -C 指定 repo
+├── .repo-path                    # 目標 repo 的絕對路徑，三處讀它：launch 那兩條 worktree 清理路徑，以及 cleanup 刪本次分支那一步，都據此以 git -C 指定 repo
 ├── .pr-body-raw                  # PR 的原始內文，issue 推導只讀這一份，不讀 materials/pr.md
 ├── .materials-status             # 本次材料蒐集結果，摘要的材料清單據此印出
 ├── .git-status-before-<cli>      # 該 reviewer 啟動前的 worktree 狀態快照
