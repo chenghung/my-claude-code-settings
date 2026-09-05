@@ -721,22 +721,32 @@ install_external_skills() {
 }
 
 # ---------------------------------------------------------------------------
-# OpenSpec CLI (Fission-AI) — a plain npm-global tool, not part of the skills
-# ecosystem, so it is installed with `npm install -g` rather than `skills`.
-# Platform-independent: all three platforms share the same global install, so
-# this runs once regardless of which platforms were selected.
-# Re-run every time to install or update to latest: `npm install -g <pkg>@latest`
-# is idempotent and refreshes an existing global install in place.
+# OpenSpec CLI (Fission-AI) — a plain npm tool, not part of the skills
+# ecosystem, so it is installed with npm rather than `skills`.
+# Platform-independent: all three platforms share the same install, so this
+# runs once regardless of which platforms were selected.
+# Re-run every time to install or update to latest: installing <pkg>@latest is
+# idempotent and refreshes an existing install in place.
 #
-# The install is always retargeted at ~/.local rather than npm's configured
-# global prefix. A distro-packaged Node (Arch/Manjaro, Debian) points that
-# prefix at /usr, so a global install would write into /usr/lib/node_modules —
-# root-owned and owned by the system package manager, which fails with EACCES
-# as a normal user and would need sudo to scatter npm-managed files through the
-# distro's own tree. Pinning ~/.local keeps this script sudo-free and its
-# outcome identical on every machine, whatever npm is configured to do; the
-# binary lands in the conventional ~/.local/bin. Passing --prefix per install
-# leaves the user's own npm config untouched.
+# The install is always retargeted at ~/.local through a per-install --prefix,
+# never npm's configured global prefix. On Arch/Manjaro the distro-packaged
+# Node leaves that prefix at /usr, so a global install writes into
+# /usr/lib/node_modules — root-owned, and claimed by pacman packages. That
+# fails with EACCES as a normal user, and forcing it with sudo would scatter
+# npm-managed files through pacman's own tree. Pinning ~/.local keeps this
+# script sudo-free whatever npm is configured to do, and splits the package
+# the way the user-level file hierarchy prescribes: code under
+# ~/.local/lib/node_modules, entry point in ~/.local/bin. Passing --prefix per
+# install leaves the user's own npm config untouched (`npm config set prefix`
+# is deliberately avoided: nvm refuses to load when npm has a prefix set).
+#
+# The cost of overriding unconditionally: on a machine whose own global prefix
+# was already writable (nvm, fnm, volta), this installs a second copy instead
+# of updating the one already there, and whichever bin directory comes first
+# in PATH wins. A zero exit from npm is therefore not evidence that the user
+# will run the copy just installed — which is what the resolution check below
+# is for. It replaces a plain "is ~/.local/bin on PATH" test because that test
+# passes precisely in the case that actually hurts.
 # ---------------------------------------------------------------------------
 install_openspec() {
   [ -n "$skip_external" ] && return
@@ -746,17 +756,23 @@ install_openspec() {
     return
   fi
 
-  case ":$PATH:" in
-    *":$HOME/.local/bin:"*) ;;
-    *) printf '  WARNING  %s/.local/bin is not on PATH - add it to use the openspec command.\n' "$HOME" ;;
-  esac
+  local prefix="$HOME/.local"
 
-  if npm install --global --prefix "$HOME/.local" @fission-ai/openspec@latest; then
-    printf '  INSTALLED @fission-ai/openspec@latest (openspec)\n'
+  if npm install --global --prefix "$prefix" @fission-ai/openspec@latest; then
+    printf '  INSTALLED @fission-ai/openspec@latest (%s/bin/openspec)\n' "$prefix"
     count_created=$(( count_created + 1 ))
   else
     printf '  WARNING  failed to install @fission-ai/openspec - skipping.\n'
     count_skipped=$(( count_skipped + 1 ))
+    return
+  fi
+
+  local resolved
+  resolved="$(command -v openspec 2> /dev/null || true)"
+  if [ -z "$resolved" ]; then
+    printf '  WARNING  openspec installed but not resolvable in this shell - add %s/bin to PATH.\n' "$prefix" >&2
+  elif [ "$resolved" != "$prefix/bin/openspec" ]; then
+    printf '  WARNING  openspec resolves to %s, which shadows the copy just installed at %s/bin/openspec.\n' "$resolved" "$prefix" >&2
   fi
 }
 
