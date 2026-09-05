@@ -4920,4 +4920,191 @@ until [ ! -e "$SVIPID_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); don
 
 export PATH="$saved_path"
 
+# ==============================================================
+# cmd_cleanup
+#
+# 收尾程序原本寫在規則層、由編排端逐步執行，其中包含編排端自己照公式
+# 組出分支名再下強制刪除——等於讓語言模型重建一個破壞性指令的目標。
+# 腳本自己知道分支名（分支就是它建的），也知道要動哪個 repo
+# （.repo-path），本來就具備完成這件事所需的全部資訊。
+#
+# 每一次呼叫 cmd_cleanup 都只餵它 $T 底下的路徑：這個子命令會真的下
+# rm -rf 與 git branch -D，絕不能讓它們碰到這個測試腳本自己的工作目錄
+# 或使用者的真實 repo。
+# ==============================================================
+
+# --- 情形一：worktree 仍在 → 整個不刪、不解鎖，據實回報 ---
+CLEAN1="$T/cleanup-worktree-present"
+mkdir -p "$CLEAN1/worktree" "$CLEAN1/materials"
+printf 'x' > "$CLEAN1/materials/pr.md"
+chmod -R a-w "$CLEAN1/materials"
+printf '%s\n' "$T/fake-repo" > "$CLEAN1/.repo-path"
+clean1_out="$(cmd_cleanup --base-dir "$CLEAN1" 2>&1)"; clean1_rc=$?
+case "$clean1_out" in
+  *'worktree_removed=no'*) pass "cmd_cleanup worktree 仍在時回報 worktree_removed=no" ;;
+  *) bad "cmd_cleanup worktree 仍在時回報不正確: $clean1_out" ;;
+esac
+case "$clean1_out" in
+  *'run_dir_removed=no:'*) pass "cmd_cleanup worktree 仍在時不刪執行目錄並附原因" ;;
+  *) bad "cmd_cleanup worktree 仍在時執行目錄處置不正確: $clean1_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -d "$CLEAN1" ] && pass "cmd_cleanup worktree 仍在時執行目錄原封保留" || bad "cmd_cleanup 誤刪了執行目錄"
+# 關鍵：不得解鎖。materials 必須維持唯讀。
+if [ -w "$CLEAN1/materials" ]; then
+  bad "cmd_cleanup worktree 仍在時不該解除唯讀保護"
+else
+  pass "cmd_cleanup worktree 仍在時未解除唯讀保護"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$clean1_rc" -eq 0 ] && pass "cmd_cleanup worktree 仍在是正常結果、結束碼 0" || bad "cmd_cleanup worktree 仍在時結束碼為 $clean1_rc"
+chmod -R u+w "$CLEAN1"
+
+# --- 情形二：worktree 已移除 → 解鎖、刪除、驗證不存在 ---
+CLEAN2="$T/cleanup-worktree-gone"
+mkdir -p "$CLEAN2/materials" "$CLEAN2/logs"
+printf 'x' > "$CLEAN2/materials/pr.md"
+printf 'x' > "$CLEAN2/logs/claude.prompt"
+chmod -R a-w "$CLEAN2/materials" "$CLEAN2/logs"
+printf '%s\n' "$T/fake-repo" > "$CLEAN2/.repo-path"
+clean2_out="$(cmd_cleanup --base-dir "$CLEAN2" 2>&1)"
+case "$clean2_out" in
+  *'run_dir_removed=yes'*) pass "cmd_cleanup worktree 已移除時刪除執行目錄" ;;
+  *) bad "cmd_cleanup worktree 已移除時未刪除: $clean2_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -d "$CLEAN2" ] && pass "cmd_cleanup 刪除後路徑確實不存在" || bad "cmd_cleanup 回報刪除但路徑仍在"
+# .repo-path 指向的 "$T/fake-repo" 從未真正建立，屬四個推導失敗出口裡
+# 「repo 路徑不是 git repo」那一種 -- 驗證這個出口即使在執行目錄真的被
+# rm -rf 掉之後仍然正確回報（見 cmd_cleanup 自己的文件：branch_result
+# 必須在 rm -rf 之前就讀完 .repo-path 並存起來，rm -rf 之後才印出來）。
+case "$clean2_out" in
+  *'branch_deleted=no:repo path from .repo-path is not a git repo'*) pass "cmd_cleanup 執行目錄被刪除後仍正確回報分支推導失敗原因" ;;
+  *) bad "cmd_cleanup 執行目錄被刪除後分支推導失敗原因不正確: $clean2_out" ;;
+esac
+
+# --- 情形三：用法錯誤 ---
+if ( cmd_cleanup 2>/dev/null ); then
+  bad "cmd_cleanup 缺 --base-dir 應以結束碼 2 拒絕"
+else
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$?" -eq 2 ] && pass "cmd_cleanup 缺 --base-dir 以結束碼 2 拒絕" || bad "cmd_cleanup 缺 --base-dir 的結束碼不是 2"
+fi
+if ( cmd_cleanup --base-dir relative/path 2>/dev/null ); then
+  bad "cmd_cleanup 相對路徑應以結束碼 2 拒絕"
+else
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$?" -eq 2 ] && pass "cmd_cleanup 相對路徑以結束碼 2 拒絕" || bad "cmd_cleanup 相對路徑的結束碼不是 2"
+fi
+
+# ==============================================================
+# _cleanup_delete_branch -- 四個推導失敗出口，各自獨立驗證
+#
+# 每個出口用一個乾淨、只踩到那一個判準的 fixture 單獨測，不依賴上面
+# 情形一/二的副作用。
+# ==============================================================
+
+# 出口 1: .repo-path 不存在（不可讀）。
+CLEANBR_NOFILE="$T/cleanup-branch-no-repo-path"
+mkdir -p "$CLEANBR_NOFILE"
+out_norepo="$(cmd_cleanup --base-dir "$CLEANBR_NOFILE" 2>&1)"
+case "$out_norepo" in
+  *'branch_deleted=no:.repo-path unreadable'*) pass "_cleanup_delete_branch .repo-path 不存在時回報 .repo-path unreadable" ;;
+  *) bad "_cleanup_delete_branch .repo-path 不存在時回報不正確: $out_norepo" ;;
+esac
+
+# 出口 2: .repo-path 存在，但內容指向的路徑不是 git repo。
+CLEANBR_NOTGIT_RUN="$T/cleanup-branch-not-git-run"
+mkdir -p "$CLEANBR_NOTGIT_RUN"
+CLEANBR_NOTGIT_DIR="$T/cleanup-branch-not-git-dir"
+mkdir -p "$CLEANBR_NOTGIT_DIR"
+printf '%s\n' "$CLEANBR_NOTGIT_DIR" > "$CLEANBR_NOTGIT_RUN/.repo-path"
+out_notgit="$(cmd_cleanup --base-dir "$CLEANBR_NOTGIT_RUN" 2>&1)"
+case "$out_notgit" in
+  *'branch_deleted=no:repo path from .repo-path is not a git repo'*) pass "_cleanup_delete_branch repo 路徑非 git repo 時回報正確原因" ;;
+  *) bad "_cleanup_delete_branch repo 路徑非 git repo 時回報不正確: $out_notgit" ;;
+esac
+
+# 一個真正的、可拋棄的 git repo，供出口 3、4 與下面的成功路徑共用 --
+# 這三組測試都只需要「.repo-path 指向的是個真 git repo」這個前提成立，
+# 差別只在 base_dir 自己的路徑形狀。
+CLEANBR_GITOK="$T/cleanup-branch-derive-repo"
+mkdir -p "$CLEANBR_GITOK"
+git init -q -b main "$CLEANBR_GITOK"
+(
+  cd "$CLEANBR_GITOK"
+  git config user.email test@example.com
+  git config user.name "Test"
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+)
+
+# 出口 3: repo 有效，但 base_dir 的上一層目錄名不符 "...-pr-<數字>" 形狀
+# （不含 "-pr-" 這個子字串），推不出 PR 編號。
+CLEANBR_NOPRNUM="$T/cleanup-branch-no-pr-number/widgets-issue-99/20260101000000-24680"
+mkdir -p "$CLEANBR_NOPRNUM"
+printf '%s\n' "$CLEANBR_GITOK" > "$CLEANBR_NOPRNUM/.repo-path"
+out_noprnum="$(cmd_cleanup --base-dir "$CLEANBR_NOPRNUM" 2>&1)"
+case "$out_noprnum" in
+  *'branch_deleted=no:cannot derive PR number'*) pass "_cleanup_delete_branch 推不出 PR 編號時回報正確原因" ;;
+  *) bad "_cleanup_delete_branch 推不出 PR 編號時回報不正確: $out_noprnum" ;;
+esac
+
+# 出口 4: repo 有效、PR 編號推得出來，但 base_dir 自己的名字結尾不是數字，
+# 推不出 run suffix。
+CLEANBR_NORUNSUFFIX="$T/cleanup-branch-no-run-suffix/widgets-pr-42/not-numeric-suffix"
+mkdir -p "$CLEANBR_NORUNSUFFIX"
+printf '%s\n' "$CLEANBR_GITOK" > "$CLEANBR_NORUNSUFFIX/.repo-path"
+out_norunsuffix="$(cmd_cleanup --base-dir "$CLEANBR_NORUNSUFFIX" 2>&1)"
+case "$out_norunsuffix" in
+  *'branch_deleted=no:cannot derive run suffix'*) pass "_cleanup_delete_branch 推不出 run suffix 時回報正確原因" ;;
+  *) bad "_cleanup_delete_branch 推不出 run suffix 時回報不正確: $out_norunsuffix" ;;
+esac
+
+# ==============================================================
+# cmd_cleanup -- 分支刪除成功路徑
+#
+# 這是本子命令存在的全部理由，原計畫的測試只涵蓋了上面四個推導失敗出
+# 口，沒有涵蓋刪除真的發生這件事本身 -- 對這個從語言模型手上收回一個
+# 破壞性指令的子命令來說，缺了這條就是缺了最關鍵的回歸保護。用一個拋
+# 棄式的真實 git repo（上面 CLEANBR_GITOK 那個 git init 出來的 repo）
+# 驗證：cmd_cleanup 真的刪掉了依命名公式算出來的那個分支，而且只刪那
+# 一個 -- 同一個 repo 裡另外放一個名字相近（同一個 PR、不同 run
+# suffix）但不該被碰的分支，測完確認它還在。
+# ==============================================================
+
+(
+  cd "$CLEANBR_GITOK"
+  # 目標分支：PR 42、run suffix 24680 -- 這個名字不是直接告訴
+  # cmd_cleanup 的，是它自己從下面 CLEANDEL_BASE 的路徑推導出來的。
+  git branch pr-review-42-24680 HEAD
+  # 名字相近但不該被碰：同一個 PR 42、run suffix 不同。只靠前綴比對會
+  # 誤殺這個分支，只有精準比對完整分支名（PR 編號與 run suffix 都對）
+  # 才會放過它。
+  git branch pr-review-42-13579 HEAD
+)
+
+CLEANDEL_BASE="$T/cleanup-branch-delete-run/widgets-pr-42/20260101000000-24680"
+mkdir -p "$CLEANDEL_BASE/materials"
+printf 'x' > "$CLEANDEL_BASE/materials/pr.md"
+printf '%s\n' "$CLEANBR_GITOK" > "$CLEANDEL_BASE/.repo-path"
+
+cleandel_out="$(cmd_cleanup --base-dir "$CLEANDEL_BASE" 2>&1)"; cleandel_rc=$?
+
+case "$cleandel_out" in
+  *'branch_deleted=yes'*) pass "cmd_cleanup 分支刪除成功時回報 branch_deleted=yes" ;;
+  *) bad "cmd_cleanup 分支刪除成功時回報不正確: $cleandel_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$cleandel_rc" -eq 0 ] && pass "cmd_cleanup 分支刪除成功時結束碼為 0" || bad "cmd_cleanup 分支刪除成功時結束碼為 $cleandel_rc"
+
+if git -C "$CLEANBR_GITOK" show-ref --verify --quiet refs/heads/pr-review-42-24680; then
+  bad "cmd_cleanup 沒有真的刪掉目標分支 pr-review-42-24680"
+else
+  pass "cmd_cleanup 真的刪掉了目標分支 pr-review-42-24680"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+git -C "$CLEANBR_GITOK" show-ref --verify --quiet refs/heads/pr-review-42-13579 && pass "cmd_cleanup 沒有誤刪名字相近的另一個分支 pr-review-42-13579" || bad "cmd_cleanup 誤刪了不該碰的分支 pr-review-42-13579"
+
 exit $fail

@@ -2,12 +2,17 @@
 # Orchestrates parallel PR code review by claude, codex, opencode, and agy
 # CLIs.
 #
-# Command line: two subcommands. `run-review.sh prepare --pr <link>
+# Command line: three subcommands. `run-review.sh prepare --pr <link>
 # [--issue <ref>] [--design <path>] --claude|--codex|--opencode|--agy` (one
 # or more platform flags; see parse_args) runs every precondition check and
 # writes each selected CLI's prompt file. `run-review.sh launch --base-dir
 # <path> --agent <cli>=<pane_id>...` (one or more; see parse_launch_args)
-# launches the reviewers `prepare` already set up. --pr, --issue and
+# launches the reviewers `prepare` already set up. `run-review.sh cleanup
+# --base-dir <path>` (see cmd_cleanup) tears a finished run down --
+# removing its worktree and run directory and force-deleting the local
+# branch `prepare` created for it, deriving both the branch name and the
+# target repo from base_dir's own contents rather than from anything the
+# caller passes in. --pr, --issue and
 # --design may be omitted or empty -- an empty/omitted PR link
 # derives the PR from the current branch (see parse_pr_url); an empty issue
 # link makes fetch_review_materials derive the issue number itself from the
@@ -3534,22 +3539,140 @@ cmd_launch() {
   print_summary "$base_dir" "${dispatched_agents[@]+"${dispatched_agents[@]}"}" --skipped "${skipped[@]+"${skipped[@]}"}"
 }
 
-# main --check-clis | prepare <flags>... | launch <flags>...
+# cmd_cleanup --base-dir <path>
+#
+# The wrap-up half of the pipeline, moved here out of SKILL.md. Everything
+# below used to be a numbered procedure the orchestrating agent carried out
+# step by step, including deriving this run's branch name from a formula
+# and then running `git branch -D` on the result -- a destructive command
+# whose target name was being reconstructed by a language model. This
+# script named that branch in the first place and records the repo it
+# belongs to in .repo-path, so it already holds everything the job needs.
+#
+# Order is load-bearing and matches the procedure it replaces: the
+# worktree check comes first and, when the worktree is still there, NOTHING
+# else happens -- not the deletion, and not the `chmod -R u+w` either.
+# Unlocking is a cost paid for deletion; if the deletion is not going to
+# happen, the cost must not be paid.
+#
+# Branch deletion (see _cleanup_delete_branch) is unconditional on which
+# side of that worktree check this run lands on -- git's own refusal to
+# delete a branch still checked out in a live worktree is what keeps this
+# safe when the worktree is still present, not any check of this function's
+# own. On the worktree-gone side, _cleanup_delete_branch is called *before*
+# `rm -rf "$base_dir"`, not after: it reads .repo-path out of base_dir's own
+# contents, and `rm -rf` would take .repo-path down with everything else,
+# turning "branch already deleted" into "branch can never be deleted" on
+# every normal run. Its stdout is captured into branch_result and printed
+# last, so the three output lines still appear in the documented
+# worktree_removed/run_dir_removed/branch_deleted order regardless of this
+# internal ordering.
+cmd_cleanup() {
+  local base_dir="" d branch_result
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --base-dir)
+        [ "$#" -ge 2 ] || { printf 'run-review.sh: --base-dir requires a value\n' >&2; exit 2; }
+        base_dir="$2"; shift 2 ;;
+      *) printf 'run-review.sh: unknown flag for cleanup: %s\n' "$1" >&2; exit 2 ;;
+    esac
+  done
+  [ -n "$base_dir" ] || { printf 'run-review.sh: cleanup requires --base-dir\n' >&2; exit 2; }
+  case "$base_dir" in
+    /*) : ;;
+    *) printf 'run-review.sh: --base-dir must be an absolute path\n' >&2; exit 2 ;;
+  esac
+  [ -d "$base_dir" ] || { printf 'run-review.sh: no such run directory: %s\n' "$base_dir" >&2; exit 2; }
+
+  if [ -d "$base_dir/worktree" ]; then
+    printf 'worktree_removed=no\n'
+    printf 'run_dir_removed=no:worktree still present\n'
+    _cleanup_delete_branch "$base_dir"
+    return 0
+  fi
+
+  printf 'worktree_removed=yes\n'
+  branch_result="$(_cleanup_delete_branch "$base_dir")"
+
+  chmod -R u+w "$base_dir" 2>/dev/null
+  rm -rf "$base_dir"
+  if [ -e "$base_dir" ]; then
+    chmod -R a-w "$base_dir/materials" "$base_dir/logs" 2>/dev/null
+    for d in "$base_dir"/reviewers/*/workdir/materials; do
+      [ -d "$d" ] && chmod -R a-w "$d" 2>/dev/null
+    done
+    printf 'run_dir_removed=no:removal failed, run directory still present\n'
+  else
+    printf 'run_dir_removed=yes\n'
+  fi
+
+  printf '%s\n' "$branch_result"
+}
+
+# _cleanup_delete_branch <base_dir>
+#
+# Force-deletes the local branch this run created, printing exactly one
+# `branch_deleted=` line. Force rather than plain delete is a deliberate
+# line, not a shortcut: the branch's content equals the PR head on GitHub,
+# there is no local-only commit on it, and a plain delete would almost
+# always fail on an unmerged branch -- leaving residue for the script's own
+# stale-branch sweeper to force-delete on the next run against this same
+# PR, which only defers the same deletion while adding noise to the consent
+# gate that sweeper feeds.
+#
+# Both inputs come from disk, not from the caller: the branch name is
+# rebuilt from base_dir's own path (the PR number from the parent
+# directory, the run suffix from the trailing digits of base_dir's own
+# name), and the repo comes from .repo-path. When either cannot be derived,
+# this prints a reason and deletes nothing -- it never falls back to a bare
+# `git branch -D` without `-C`, and never enumerates same-shaped branches
+# to pick one.
+_cleanup_delete_branch() {
+  local base_dir="$1" repo_path pr_number run_suffix branch_name
+
+  if [ ! -r "$base_dir/.repo-path" ]; then
+    printf 'branch_deleted=no:.repo-path unreadable\n'; return 0
+  fi
+  repo_path="$(cat "$base_dir/.repo-path")"
+  if [ -z "$repo_path" ] || ! git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'branch_deleted=no:repo path from .repo-path is not a git repo\n'; return 0
+  fi
+
+  pr_number="$(basename "$(dirname "$base_dir")")"
+  pr_number="${pr_number##*-pr-}"
+  run_suffix="$(basename "$base_dir")"
+  run_suffix="${run_suffix##*-}"
+  case "$pr_number" in ''|*[!0-9]*) printf 'branch_deleted=no:cannot derive PR number\n'; return 0 ;; esac
+  case "$run_suffix" in ''|*[!0-9]*) printf 'branch_deleted=no:cannot derive run suffix\n'; return 0 ;; esac
+  branch_name="pr-review-$pr_number-$run_suffix"
+
+  if git -C "$repo_path" branch -D "$branch_name" >/dev/null 2>&1; then
+    printf 'branch_deleted=yes\n'
+  else
+    printf 'branch_deleted=no:git refused to delete %s\n' "$branch_name"
+  fi
+}
+
+# main --check-clis | prepare <flags>... | launch <flags>... | cleanup <flags>...
 #
 # Top-level dispatch only. Otherwise the first argument selects one of the
-# two pipeline phases -- prepare (see cmd_prepare) does every precondition
+# three pipeline phases -- prepare (see cmd_prepare) does every precondition
 # check, sets up the worktree, and writes each selected reviewer's prompt
 # file; launch (see cmd_launch) reads those prompt files back, starts each
 # named reviewer inside its herdr pane, and hands them to
-# spawn_supervisor_interactive. Any other first argument, or none at all,
+# spawn_supervisor_interactive; cleanup (see cmd_cleanup) tears a finished
+# run down once its worktree is gone, force-deleting the branch prepare
+# created for it along the way. Any other first argument, or none at all,
 # is a usage error, exit code 2 -- the same code
 # cmd_prepare's own parse_args and cmd_launch's own parse_launch_args use
-# for their own usage errors. Both the prepare and launch branches below
-# check _check_herdr_env first and exit 4 on failure -- a code reserved for
-# exactly this failure, before either subcommand's own parsing or
-# precondition checks run and before either has a single side effect to
-# protect against (no gh round-trip, no repo mutation, no directory
-# created). --check-clis is deliberately NOT gated the same way: it is
+# for their own usage errors. All three of the prepare, launch and cleanup
+# branches below check _check_herdr_env first and exit 4 on failure -- a
+# code reserved for exactly this failure, before any of the three
+# subcommands' own parsing or precondition checks run and before any of
+# them has a single side effect to protect against (no gh round-trip, no
+# repo mutation, no directory created). --check-clis is deliberately NOT
+# gated the same way: it is
 # already a side-effect-free PATH probe (see its own docstring) that the
 # calling skill runs before the user has even chosen a combination,
 # plausibly before a herdr session exists at all -- gating it here would
@@ -3566,8 +3689,9 @@ main() {
   case "${1:-}" in
     prepare) shift; _check_herdr_env || exit 4; cmd_prepare "$@" ;;
     launch) shift; _check_herdr_env || exit 4; cmd_launch "$@" ;;
+    cleanup) shift; _check_herdr_env || exit 4; cmd_cleanup "$@" ;;
     *)
-      printf 'run-review.sh: expected a subcommand (prepare|launch) or --check-clis\n' >&2
+      printf 'run-review.sh: expected a subcommand (prepare|launch|cleanup) or --check-clis\n' >&2
       exit 2
       ;;
   esac
