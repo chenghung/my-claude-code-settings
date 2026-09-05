@@ -41,8 +41,9 @@ saved_path="$PATH"
 # already happened twice while developing this suite.
 #
 # Call this once, right after establishing a stub-prefixed PATH and before
-# the first launch_reviewer / launch_synthesis / `bash "$RUN_SH"` call that
-# runs under it -- passing the exact PATH value that call will see, the
+# the first launch_reviewer_interactive / launch_synthesis / `bash
+# "$RUN_SH"` call that runs under it -- passing the exact PATH value that
+# call will see, the
 # stub directory supposed to win the lookup, and the CLI names that
 # directory actually provides. A section that deliberately stubs only a
 # subset of the four names (because that section only ever invokes that
@@ -218,9 +219,10 @@ export PATH="$saved_path"
 
 # Stub CLIs that just need to exist on PATH; reused by several e2e
 # prepare/launch runs and fixtures further down this file that put
-# $STUB_BIN on a non-exclusive PATH (e.g. "$STUB_BIN:$saved_path") -- a name missing here
-# would let verify_selection/launch_reviewer resolve it to the real,
-# system-installed CLI further down that same PATH instead.
+# $STUB_BIN on a non-exclusive PATH (e.g. "$STUB_BIN:$saved_path") -- a
+# name missing here would let verify_selection/launch_reviewer_interactive
+# resolve it to the real, system-installed CLI further down that same
+# PATH instead.
 for cli in claude codex opencode agy; do
   cat > "$STUB_BIN/$cli" <<'STUB'
 #!/usr/bin/env bash
@@ -475,8 +477,8 @@ else
 fi
 
 # ---- parse_launch_args 同一個 cli 重複給值時以 2 拒絕（否則 cmd_launch 會
-# 對同一個 cli 呼叫兩次 launch_reviewer，造成 log/pid 檔案互相覆蓋與名單
-# 檔重複列，見這個函式自己的 docstring）----
+# 對同一個 cli 呼叫兩次 launch_reviewer_interactive，造成 log/pid 檔案互相
+# 覆蓋與名單檔重複列，見這個函式自己的 docstring）----
 if parse_launch_args --base-dir /tmp/run-dir --agent claude=w1 --agent claude=w2 >/dev/null 2>&1; then
   bad "parse_launch_args --agent cli 重複時應失敗"
 else
@@ -1443,8 +1445,9 @@ git -C "$CLEANUP_FIXTURE/work" branch -D "pr-review-5-$cleanup_dead_pid" >/dev/n
 # Creates a bare "origin" repo plus a work clone with one commit, then adds
 # a second, real *linked* worktree at <root>/worktree on its own branch --
 # the same topology `git worktree add`/`git worktree remove` need to behave
-# for real, which launch_reviewer's snapshot and spawn_supervisor's cleanup
-# both depend on. Prints the worktree's absolute path.
+# for real, which launch_reviewer_interactive's snapshot and
+# spawn_supervisor_interactive's cleanup both depend on. Prints the
+# worktree's absolute path.
 _make_worktree_fixture() {
   local root="$1" worktree_dir
   mkdir -p "$root/origin" "$root/work"
@@ -1495,124 +1498,6 @@ rm -f "$SNAP_WT/untracked-marker.txt"
 snap4="$(_git_status_snapshot "$SNAP_WT")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$snap1" != "$snap4" ] && pass git-status-snapshot-detects-commit-with-clean-tree || bad git-status-snapshot-detects-commit-with-clean-tree
-
-# ==============================================================
-# _write_opencode_permission_config
-# ==============================================================
-
-OC_CONFIG="$T/oc-permission.json"
-_write_opencode_permission_config "$OC_CONFIG"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$OC_CONFIG" ] && pass opencode-permission-config-written || bad opencode-permission-config-written
-
-oc_config_content="$(cat "$OC_CONFIG")"
-case "$oc_config_content" in
-  *'"edit": "deny"'*) pass opencode-permission-config-denies-edit ;;
-  *) bad opencode-permission-config-denies-edit ;;
-esac
-# The reviewer no longer posts anything itself (see launch_reviewer's
-# docstring), so `gh pr comment` is now denied like every other GitHub
-# write -- there is no longer any `gh` write this config needs to leave
-# allowed.
-case "$oc_config_content" in
-  *'"gh pr comment*": "deny"'*) pass opencode-permission-config-denies-pr-comment ;;
-  *) bad opencode-permission-config-denies-pr-comment ;;
-esac
-case "$oc_config_content" in
-  *'"gh pr comment*": "allow"'*) bad opencode-permission-config-pr-comment-not-allowed ;;
-  *) pass opencode-permission-config-pr-comment-not-allowed ;;
-esac
-case "$oc_config_content" in
-  *'"git push*": "deny"'*) pass opencode-permission-config-denies-git-push ;;
-  *) bad opencode-permission-config-denies-git-push ;;
-esac
-# The contract forbids fetch by name alongside commit/push -- it updates
-# a local remote-tracking ref and leaves a persistent trace even though
-# it reads from the remote rather than writing to it (see
-# _write_opencode_permission_config's own docstring).
-case "$oc_config_content" in
-  *'"git fetch*": "deny"'*) pass opencode-permission-config-denies-git-fetch ;;
-  *) bad opencode-permission-config-denies-git-fetch ;;
-esac
-
-# A follow-up security review found opencode's deny list had nothing
-# matching a generic outbound HTTP/TCP command -- the same exfiltration
-# path `WebFetch` closes for claude (see launch_reviewer's docstring) was
-# still open here via a plain `curl`/`wget`/`nc` call, with no named fetch
-# tool to remove. See _write_opencode_permission_config's own docstring
-# for the real-binary confirmation that these three patterns actually
-# match and deny a live invocation, the same way `git fetch*` was verified
-# above.
-case "$oc_config_content" in
-  *'"curl*": "deny"'*) pass opencode-permission-config-denies-curl ;;
-  *) bad opencode-permission-config-denies-curl ;;
-esac
-case "$oc_config_content" in
-  *'"wget*": "deny"'*) pass opencode-permission-config-denies-wget ;;
-  *) bad opencode-permission-config-denies-wget ;;
-esac
-case "$oc_config_content" in
-  *'"nc*": "deny"'*) pass opencode-permission-config-denies-nc ;;
-  *) bad opencode-permission-config-denies-nc ;;
-esac
-
-# `gh issue*`/`gh api*` must NOT appear as blanket deny keys -- a blanket
-# deny there would also block the read-only issue/API queries the
-# reviewer contract's requirements-conformance axis needs (issue content
-# is listed as judging material there), silently degrading that axis to
-# "material not provided" for a reason invisible on the posted comment.
-# Only the specific mutating subcommand/HTTP-method patterns should be
-# denied.
-case "$oc_config_content" in
-  *'"gh issue*"'*) bad opencode-permission-config-no-blanket-issue-deny ;;
-  *) pass opencode-permission-config-no-blanket-issue-deny ;;
-esac
-case "$oc_config_content" in
-  *'"gh api*"'*) bad opencode-permission-config-no-blanket-api-deny ;;
-  *) pass opencode-permission-config-no-blanket-api-deny ;;
-esac
-case "$oc_config_content" in
-  *'"gh issue edit*": "deny"'*) pass opencode-permission-config-denies-issue-edit ;;
-  *) bad opencode-permission-config-denies-issue-edit ;;
-esac
-case "$oc_config_content" in
-  *'"gh issue comment*": "deny"'*) pass opencode-permission-config-denies-issue-comment ;;
-  *) bad opencode-permission-config-denies-issue-comment ;;
-esac
-case "$oc_config_content" in
-  *'"gh api -X POST*": "deny"'*) pass opencode-permission-config-denies-api-post ;;
-  *) bad opencode-permission-config-denies-api-post ;;
-esac
-case "$oc_config_content" in
-  *'"gh api -X DELETE*": "deny"'*) pass opencode-permission-config-denies-api-delete ;;
-  *) bad opencode-permission-config-denies-api-delete ;;
-esac
-
-# The deny list was widened beyond pr/issue to every GitHub-state-changing
-# `gh` noun this reviewer could plausibly reach, now that it has no `gh`
-# write it still needs -- spot-check a representative sample beyond
-# pr/issue (repo, auth) plus two pr-scoped ones the earlier list didn't
-# have (create, checkout -- the latter mutates local git state via gh,
-# not just GitHub-side state).
-case "$oc_config_content" in
-  *'"gh pr create*": "deny"'*) pass opencode-permission-config-denies-pr-create ;;
-  *) bad opencode-permission-config-denies-pr-create ;;
-esac
-case "$oc_config_content" in
-  *'"gh pr checkout*": "deny"'*) pass opencode-permission-config-denies-pr-checkout ;;
-  *) bad opencode-permission-config-denies-pr-checkout ;;
-esac
-case "$oc_config_content" in
-  *'"gh repo delete*": "deny"'*) pass opencode-permission-config-denies-repo-delete ;;
-  *) bad opencode-permission-config-denies-repo-delete ;;
-esac
-case "$oc_config_content" in
-  *'"gh auth logout*": "deny"'*) pass opencode-permission-config-denies-auth-logout ;;
-  *) bad opencode-permission-config-denies-auth-logout ;;
-esac
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-jq empty "$OC_CONFIG" >/dev/null 2>&1 && pass opencode-permission-config-valid-json || bad opencode-permission-config-valid-json
 
 # ==============================================================
 # _write_agy_home
@@ -1699,7 +1584,81 @@ else
 fi
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$claude_home_i/.zshrc" ] && pass "_write_claude_home_interactive 建立 .zshrc" || bad "_write_claude_home_interactive 未建立 .zshrc"
+[ -s "$claude_home_i/.zshrc" ] && pass "_write_claude_home_interactive 建立非空 .zshrc" || bad "_write_claude_home_interactive 未建立非空 .zshrc"
+
+# ==============================================================
+# _write_env_scrubbing_zshrc
+#
+# 白名單式環境隔離：pane 繼承的是 herdr 背景服務行程的環境，使用者
+# shell 啟動檔 export 的變數會原封進到每個 pane（實測，值以雜湊比對
+# 確認逐位元組相同）。herdr 的 --env 只能設值不能移除變數，所以清理
+# 靠這個寫進隔離家目錄的 .zshrc 完成。
+# ==============================================================
+
+ENVSCRUB="$T/envscrub/.zshrc"
+mkdir -p "$T/envscrub"
+if _write_env_scrubbing_zshrc "$ENVSCRUB"; then
+  pass "_write_env_scrubbing_zshrc 回傳成功"
+else
+  bad "_write_env_scrubbing_zshrc 回傳非零"
+fi
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$ENVSCRUB" ] && pass "_write_env_scrubbing_zshrc 寫出非空檔案" || bad "_write_env_scrubbing_zshrc 寫出空檔案"
+
+# 白名單每一項都必須出現在 _rr_keep 陣列本身，而不是整份產生檔案（含註解）
+# 的任何角落。先把陣列區塊切出來、砍掉每一行的 # 註解，只對切剩的陣列
+# 內容比對 -- 對整份檔案找關鍵字等於形同虛設：陣列正上方那段檔頭註解、
+# 以及 OPENCODE_CONFIG 前面說明它為何在清單上的那段註解，本來就會提到
+# 變數名，把某個變數名從陣列搬進註解，這樣的斷言仍然會通過。
+envscrub_array="$(sed -n '/^_rr_keep=($/,/^)$/p' "$ENVSCRUB" | sed 's/#.*//')"
+envscrub_missing=""
+for v in PATH HOME SHELL TERM TERMINFO COLORTERM LANG LC_ALL USER LOGNAME \
+         PWD OLDPWD TMPDIR XDG_RUNTIME_DIR DISPLAY WAYLAND_DISPLAY \
+         DBUS_SESSION_BUS_ADDRESS HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID \
+         HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_BIN_PATH SSH_AUTH_SOCK \
+         ZDOTDIR SHLVL OPENCODE_CONFIG; do
+  printf '%s\n' "$envscrub_array" | grep -qw -- "$v" || envscrub_missing="$envscrub_missing $v"
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$envscrub_missing" ] && pass "_write_env_scrubbing_zshrc 白名單完整" || bad "_write_env_scrubbing_zshrc 白名單缺項:$envscrub_missing"
+
+# 已知的機密變數名不得出現在檔案裡——清理靠白名單，不是靠列舉機密
+case "$(cat "$ENVSCRUB")" in
+  *CIRCLECI*|*FIGMA*|*WEBHOOK*|*API_KEY*) bad "_write_env_scrubbing_zshrc 不該列舉機密變數名" ;;
+  *) pass "_write_env_scrubbing_zshrc 未列舉任何機密變數名" ;;
+esac
+
+# 實際行為：在一個帶有偽造機密變數的 zsh 中 source 它，機密應消失、白名單項應留下
+if command -v zsh >/dev/null 2>&1; then
+  envscrub_out="$(FAKE_SECRET_TOKEN=leakme HOME="$T/envscrub" zsh -c \
+    "source '$ENVSCRUB'; printf 'SECRET=[%s] PATH_SET=[%s]\n' \"\$FAKE_SECRET_TOKEN\" \"\${PATH:+yes}\"" 2>/dev/null)"
+  case "$envscrub_out" in
+    'SECRET=[] PATH_SET=[yes]') pass "_write_env_scrubbing_zshrc 清掉非白名單變數且保留白名單變數" ;;
+    *) bad "_write_env_scrubbing_zshrc 行為不符: $envscrub_out" ;;
+  esac
+else
+  pass "_write_env_scrubbing_zshrc 行為測試略過（本機無 zsh）"
+fi
+
+# OPENCODE_CONFIG 不是使用者環境帶進來的變數：它是 run-review.sh 自己在
+# 建立 opencode 的 pane 時透過 --env 設進去的（見 _build_reviewer_panes），
+# opencode 的權限拒絕清單完全靠它才能生效。這個回歸測試要抓的正是：清理腳本
+# 曾經把它跟其他非白名單變數一起清掉，opencode 因而在沒有拒絕清單、且無任何
+# 錯誤訊息的情況下啟動。同一個 zsh 呼叫裡同時帶一個假機密與一個假
+# OPENCODE_CONFIG 值，驗證前者被清掉、後者被保留。
+if command -v zsh >/dev/null 2>&1; then
+  envscrub_oc_out="$(FAKE_SECRET_TOKEN=leakme \
+    OPENCODE_CONFIG=/fake/opencode-permission.json \
+    HOME="$T/envscrub" zsh -c \
+    "source '$ENVSCRUB'; printf 'SECRET=[%s] OC=[%s]\n' \"\$FAKE_SECRET_TOKEN\" \"\$OPENCODE_CONFIG\"" 2>/dev/null)"
+  case "$envscrub_oc_out" in
+    'SECRET=[] OC=[/fake/opencode-permission.json]') pass "_write_env_scrubbing_zshrc 保留 OPENCODE_CONFIG 且清掉非白名單變數" ;;
+    *) bad "_write_env_scrubbing_zshrc 未保留 OPENCODE_CONFIG: $envscrub_oc_out" ;;
+  esac
+else
+  pass "_write_env_scrubbing_zshrc OPENCODE_CONFIG 保留測試略過（本機無 zsh）"
+fi
 
 # ==============================================================
 # _write_codex_home_interactive
@@ -1730,7 +1689,7 @@ else
 fi
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$codex_home_i/.zshrc" ] && pass "_write_codex_home_interactive 建立 .zshrc" || bad "_write_codex_home_interactive 未建立 .zshrc"
+[ -s "$codex_home_i/.zshrc" ] && pass "_write_codex_home_interactive 建立非空 .zshrc" || bad "_write_codex_home_interactive 未建立非空 .zshrc"
 
 # ==============================================================
 # _write_opencode_home_interactive
@@ -1744,7 +1703,7 @@ else
 fi
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$opencode_home_i/.zshrc" ] && pass "_write_opencode_home_interactive 建立 .zshrc" || bad "_write_opencode_home_interactive 未建立 .zshrc"
+[ -s "$opencode_home_i/.zshrc" ] && pass "_write_opencode_home_interactive 建立非空 .zshrc" || bad "_write_opencode_home_interactive 未建立非空 .zshrc"
 
 # ==============================================================
 # _write_agy_home_interactive
@@ -1802,7 +1761,31 @@ fi
 [ ! -e "$agy_home_i/.gemini/settings.json" ] && pass "_write_agy_home_interactive 不寫頂層 .gemini/settings.json" || bad "_write_agy_home_interactive 不應寫頂層 .gemini/settings.json"
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$agy_home_i/.zshrc" ] && pass "_write_agy_home_interactive 建立 .zshrc" || bad "_write_agy_home_interactive 未建立 .zshrc"
+[ -s "$agy_home_i/.zshrc" ] && pass "_write_agy_home_interactive 建立非空 .zshrc" || bad "_write_agy_home_interactive 未建立非空 .zshrc"
+
+# ==============================================================
+# _derive_agent_name
+#
+# 這裡印出的 "<cli>-<digest>" 前綴是承重的：cmd_wait 自己的
+# _wait_agent_states 就是靠 "$cli-" 這個前綴去 herdr agent list 裡挑出這次
+# run 自己派出的 agent（見那個函式自己的 docstring）。挑錯 agent 不會報
+# 任何錯誤，只會讓 cmd_wait 誤判成 unknown 或撞到另一個不相干的 agent，
+# 所以這個前綴格式需要自己的直接斷言，不能只靠下面 launch_reviewer_
+# interactive 那組間接驗證 argv 的測試。
+# ==============================================================
+
+derive_name_claude="$(_derive_agent_name claude wT:p1)"
+if [[ "$derive_name_claude" =~ ^claude-[0-9a-f]{12}$ ]]; then
+  pass "_derive_agent_name 印出 <cli>-<12 位十六進位 digest> 格式"
+else
+  bad "_derive_agent_name 格式不符: $derive_name_claude"
+fi
+
+# 不同 cli、同一個 pane id 要得出不同名稱（cli 名稱本身就是前綴的一部
+# 分），否則 _wait_agent_states 的前綴比對會在兩個 reviewer 之間撞名。
+derive_name_agy="$(_derive_agent_name agy wT:p1)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$derive_name_claude" != "$derive_name_agy" ] && pass "_derive_agent_name 不同 cli 得到不同名稱" || bad "_derive_agent_name 不同 cli 卻撞名: $derive_name_claude"
 
 # ==============================================================
 # launch_reviewer_interactive
@@ -1832,6 +1815,15 @@ fi
 # -- a wrong TARGET would record under a filename these tests never read
 # back from, so the assertion would fail by absence rather than a specific
 # check having to be written for it.
+#
+# Task 4 added a second `agent prompt` recording, alongside the
+# pane-id-keyed one above: agent-prompt.<kind>.argv, holding every arg
+# `agent prompt` was called with (not just TEXT). <kind> is looked up from
+# a pane-kind.<pane_id> file this stub's own `agent start` branch writes
+# first, since `agent prompt`'s own argv carries no cli kind of its own --
+# only the pane id. This is what task 4's claude-branch assertions below
+# read to confirm claude's `agent prompt` call carries the fixed start
+# signal, not the contract file's content.
 #
 # HERDR_STUB_PANE_EMPTY_READS controls how many of `pane read`'s own
 # leading calls, *for one given pane id* (tracked via a per-pane-id counter
@@ -1868,20 +1860,34 @@ agent)
       exit 1
     fi
     kind=""
+    pane_id=""
     prev=""
     for a in "$@"; do
       if [ "$prev" = "--kind" ]; then kind="$a"; fi
+      if [ "$prev" = "--pane" ]; then pane_id="$a"; fi
       prev="$a"
     done
     record="$HERDR_RECORD_DIR/agent-start.$kind.argv"
     : > "$record"
     for a in "$@"; do printf '%s\n' "$a" >> "$record"; done
+    # Records which cli kind owns this pane id, so a later `agent prompt`
+    # call against the same pane id (which carries no kind of its own --
+    # see this case's own docstring) can still be recorded under a
+    # cli-keyed filename (agent-prompt.<kind>.argv) alongside the existing
+    # pane-id-keyed one below.
+    [ -n "$pane_id" ] && printf '%s' "$kind" > "$HERDR_RECORD_DIR/pane-kind.$pane_id"
     if [ "${HERDR_STUB_START_OK:-1}" = "1" ]; then exit 0; else exit 1; fi
     ;;
   prompt)
     target="$3"
     text="${4:-}"
     printf '%s' "$text" > "$HERDR_RECORD_DIR/agent-prompt.$target.text"
+    prompt_kind="$(cat "$HERDR_RECORD_DIR/pane-kind.$target" 2>/dev/null)"
+    if [ -n "$prompt_kind" ]; then
+      prompt_record="$HERDR_RECORD_DIR/agent-prompt.$prompt_kind.argv"
+      : > "$prompt_record"
+      for a in "$@"; do printf '%s\n' "$a" >> "$prompt_record"; done
+    fi
     if [ "${HERDR_STUB_PROMPT_OK:-1}" = "1" ]; then exit 0; else exit 1; fi
     ;;
   esac
@@ -1915,8 +1921,9 @@ assert_cli_stub_only "$PATH" "$STUB_BIN" herdr
 # --- claude: --disallowedTools names only WebFetch; --permission-mode is
 # passed as auto; no -p; and, the assertion this task exists to protect, no
 # Edit/Write/NotebookEdit on --disallowedTools -- any of those three
-# appearing would mean this branch reused launch_reviewer's headless deny
-# list, leaving this reviewer unable to write review.md at all ---
+# appearing would mean this branch reused the now-removed headless
+# launcher's deny list, leaving this reviewer unable to write review.md at
+# all ---
 
 lri_claude_workdir="$LRI_ROOT/reviewers/claude/workdir"
 lri_claude_home="$LRI_ROOT/reviewers/claude/home"
@@ -1987,11 +1994,45 @@ esac
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -f "$LRI_ROOT/.git-status-before-claude" ] && pass launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name || bad launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name
+# Since task 4, claude's own `agent prompt` call carries the fixed
+# "開始" start signal, not the prompt file's content (see this function's
+# own claude branch) -- this checks for that fixed signal now, in place
+# of the "claude review prompt" prompt-file content it checked for before
+# task 4. Still targets the pane id, not the `<cli>-<digest>` agent name,
+# and still real (non-empty) content.
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$LRI_RECORD_DIR/agent-prompt.w14:pZ.text" 2>/dev/null)" = "claude review prompt" ] && pass launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content || bad launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content
+[ "$(cat "$LRI_RECORD_DIR/agent-prompt.w14:pZ.text" 2>/dev/null)" = "開始" ] && pass launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content || bad "launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content: $(cat "$LRI_RECORD_DIR/agent-prompt.w14:pZ.text" 2>/dev/null)"
 
-# --- codex: no -s (the sandbox flag is launch_reviewer's own headless-only
-# concern; herdr's own --pane already scopes this to one interactive pane) ---
+# claude 的契約走 --append-system-prompt-file，不再經由 agent prompt 的位置引數。
+# 附加型（append）已做過兩次功能探測，皆成功；取代型（--system-prompt-file）
+# 只確認旗標存在、未做功能探測，不在採用範圍。
+lri_claude_syspromptfile_ok=0
+for idx in "${!lri_claude_argv[@]}"; do
+  if [ "${lri_claude_argv[$idx]}" = "--append-system-prompt-file" ] \
+    && [ "${lri_claude_argv[$((idx + 1))]:-}" = "$LRI_ROOT/claude.prompt" ]; then
+    lri_claude_syspromptfile_ok=1
+  fi
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_claude_syspromptfile_ok" -eq 1 ] && pass launch-reviewer-interactive-claude-system-prompt-file || bad "launch-reviewer-interactive-claude-system-prompt-file: $(cat "$claude_start_argv")"
+
+# 取代型不得被使用
+case "$(cat "$claude_start_argv")" in
+  *'--system-prompt-file'*) bad "launch-reviewer-interactive-claude-no-replacing-system-prompt" ;;
+  *) pass launch-reviewer-interactive-claude-no-replacing-system-prompt ;;
+esac
+
+# agent prompt 送出的內容不得是契約全文
+lri_claude_prompt_text="$(cat "$LRI_RECORD_DIR/agent-prompt.claude.argv" 2>/dev/null)"
+case "$lri_claude_prompt_text" in
+  *'claude review prompt'*) bad "launch-reviewer-interactive-claude-prompt-not-contract: 契約全文仍走 agent prompt" ;;
+  '') bad "launch-reviewer-interactive-claude-prompt-not-contract: 沒有記錄到 agent prompt 呼叫" ;;
+  *) pass launch-reviewer-interactive-claude-prompt-not-contract ;;
+esac
+
+# --- codex: no -s (the sandbox flag was the now-removed headless
+# launcher's own concern; herdr's own --pane already scopes this to one
+# interactive pane) ---
 
 lri_codex_workdir="$LRI_ROOT/reviewers/codex/workdir"
 lri_codex_home="$LRI_ROOT/reviewers/codex/home"
@@ -2083,6 +2124,81 @@ case "$(cat "$lri_opencode_home/opencode-permission.json" 2>/dev/null)" in
   *'"edit": "deny"'*) bad "launch-reviewer-interactive-opencode-permission-config-allows-edit: reviewer would be unable to write review.md" ;;
   *) pass launch-reviewer-interactive-opencode-permission-config-allows-edit ;;
 esac
+
+# 互動版拒絕清單的內容本身：無頭版那條路徑被刪除時，原本鎖著這份清單
+# 逐項內容的 21 條斷言（無頭版權限設定檔寫入函式自己的測試）一併消
+# 失，而生產路徑實際在用的
+# _write_opencode_permission_config_interactive 帶著同一份清單，這裡卻
+# 一次都沒被具名引用過。上面兩則斷言只驗過檔案存在與 edit 沒被擋，清單
+# 其餘項目（擋外連的指令、版本控制工具的寫入操作、gh 的狀態變更子命
+# 令、變更權限與提權）完全沒有回歸保護：日後誰漏掉或改寬其中一條，這
+# 裡不會變紅，而 opencode reviewer 會在少一道防線的情況下讀取外部可控
+# 的 diff，症狀是完全靜默的。不逐條照抄被刪的 21 條，但每一類都留一到
+# 三個代表項目，且斷言比對的是清單裡實際的字串內容，不只是檔案有沒有
+# 寫出來。
+lri_opencode_permission_content="$(cat "$lri_opencode_home/opencode-permission.json" 2>/dev/null)"
+
+# 擋外連
+case "$lri_opencode_permission_content" in
+  *'"curl*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-curl ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-curl ;;
+esac
+case "$lri_opencode_permission_content" in
+  *'"wget*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-wget ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-wget ;;
+esac
+case "$lri_opencode_permission_content" in
+  *'"nc*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-nc ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-nc ;;
+esac
+
+# 版本控制工具的寫入操作
+case "$lri_opencode_permission_content" in
+  *'"git push*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-git-push ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-git-push ;;
+esac
+case "$lri_opencode_permission_content" in
+  *'"git commit*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-git-commit ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-git-commit ;;
+esac
+# git fetch* 是這份清單裡少數對真實 opencode 二進位實測過的一條（見
+# _write_opencode_permission_config_interactive 自己的文件），不是單純
+# 依樣畫葫蘆。
+case "$lri_opencode_permission_content" in
+  *'"git fetch*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-git-fetch ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-git-fetch ;;
+esac
+
+# GitHub 命令列工具的狀態變更子命令
+case "$lri_opencode_permission_content" in
+  *'"gh pr comment*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-pr-comment ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-pr-comment ;;
+esac
+case "$lri_opencode_permission_content" in
+  *'"gh issue edit*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-issue-edit ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-issue-edit ;;
+esac
+case "$lri_opencode_permission_content" in
+  *'"gh api -X POST*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-api-post ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-api-post ;;
+esac
+
+# 變更權限與提權
+case "$lri_opencode_permission_content" in
+  *'"chmod *": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-chmod ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-chmod ;;
+esac
+case "$lri_opencode_permission_content" in
+  *'"sudo*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-sudo ;;
+  *) bad launch-reviewer-interactive-opencode-permission-config-denies-sudo ;;
+esac
+
+# 整份清單仍是合法 JSON，不是斷言比對到的片段恰好長得像字串、檔案其實
+# 已經壞掉
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+jq empty "$lri_opencode_home/opencode-permission.json" >/dev/null 2>&1 \
+  && pass launch-reviewer-interactive-opencode-permission-config-valid-json \
+  || bad launch-reviewer-interactive-opencode-permission-config-valid-json
 
 # --- agy: no --print-timeout (no interactive-mode equivalent exists);
 # --add-dir names only reviewer_workdir, never the worktree path too ---
@@ -2223,722 +2339,6 @@ export PATH="$saved_path"
 # the file here scopes it to this section only, the same way the
 # PATH restore above already scopes $STUB_BIN itself.
 rm -f "$STUB_BIN/herdr"
-
-# ==============================================================
-# launch_reviewer
-#
-# Recording stubs (distinct from the plain "exit 0" claude/codex/opencode
-# stubs created above, reused by several e2e fixtures further down this
-# file) that capture their own argv, stdin, cwd, and the OPENCODE_CONFIG
-# env var into files under LAUNCH_RECORD_DIR, so this can assert on
-# exactly what launch_reviewer handed the underlying CLI -- not just that
-# something ran.
-# ==============================================================
-
-LAUNCH_ROOT="$T/launch-fixture"
-LAUNCH_WT="$(_make_worktree_fixture "$LAUNCH_ROOT")"
-LAUNCH_LOGS="$LAUNCH_ROOT/logs"
-mkdir -p "$LAUNCH_LOGS"
-LAUNCH_RECORD_DIR="$LAUNCH_ROOT/records"
-mkdir -p "$LAUNCH_RECORD_DIR"
-
-LAUNCH_STUB_BIN="$T/launch-stub-bin"
-mkdir -p "$LAUNCH_STUB_BIN"
-cat > "$LAUNCH_STUB_BIN/claude" <<'STUB'
-#!/usr/bin/env bash
-name="$(basename "$0")"
-: > "$LAUNCH_RECORD_DIR/$name.argv"
-for a in "$@"; do printf '%s\n' "$a" >> "$LAUNCH_RECORD_DIR/$name.argv"; done
-pwd > "$LAUNCH_RECORD_DIR/$name.pwd"
-cat > "$LAUNCH_RECORD_DIR/$name.stdin"
-printf '%s' "${OPENCODE_CONFIG:-}" > "$LAUNCH_RECORD_DIR/$name.env-opencode-config"
-printf '%s' "${HOME:-}" > "$LAUNCH_RECORD_DIR/$name.env-home"
-echo "stub $name ran"
-sleep 0.1
-exit "${LAUNCH_STUB_EXIT_CODE:-0}"
-STUB
-chmod +x "$LAUNCH_STUB_BIN/claude"
-cp "$LAUNCH_STUB_BIN/claude" "$LAUNCH_STUB_BIN/codex"
-cp "$LAUNCH_STUB_BIN/claude" "$LAUNCH_STUB_BIN/opencode"
-cp "$LAUNCH_STUB_BIN/claude" "$LAUNCH_STUB_BIN/agy"
-
-export PATH="$LAUNCH_STUB_BIN:$saved_path"
-export LAUNCH_RECORD_DIR
-assert_cli_stub_only "$PATH" "$LAUNCH_STUB_BIN" claude codex opencode agy
-
-printf 'codex-prompt-content' > "$LAUNCH_LOGS/codex.prompt"
-pid_codex="$(launch_reviewer codex "$LAUNCH_WT" "$LAUNCH_LOGS/codex.log" < "$LAUNCH_LOGS/codex.prompt")"
-
-# Bounded poll for the backgrounded stub to actually finish (its exit-code
-# file only appears once it does) instead of guessing a sleep duration.
-i=0
-until [ -f "$LAUNCH_ROOT/.exit-$pid_codex" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$pid_codex" -gt 0 ] 2>/dev/null && pass launch-reviewer-codex-pid-is-numeric || bad launch-reviewer-codex-pid-is-numeric
-
-# codex must receive `-C <worktree>` as adjacent argv entries, not just
-# have both tokens appear somewhere.
-mapfile -t codex_argv < "$LAUNCH_RECORD_DIR/codex.argv"
-found=0
-for idx in "${!codex_argv[@]}"; do
-  if [ "${codex_argv[$idx]}" = "-C" ] && [ "${codex_argv[$((idx + 1))]:-}" = "$LAUNCH_WT" ]; then
-    found=1
-  fi
-done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$found" -eq 1 ] && pass launch-reviewer-codex-workdir-flag || bad launch-reviewer-codex-workdir-flag
-
-case "$(cat "$LAUNCH_RECORD_DIR/codex.argv")" in
-  *'read-only'*) pass launch-reviewer-codex-sandbox-flag ;;
-  *) bad launch-reviewer-codex-sandbox-flag ;;
-esac
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$LAUNCH_RECORD_DIR/codex.stdin")" = "codex-prompt-content" ] && pass launch-reviewer-codex-stdin-matches-prompt || bad launch-reviewer-codex-stdin-matches-prompt
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$LAUNCH_LOGS/codex.log" ] && grep -qF 'stub codex ran' "$LAUNCH_LOGS/codex.log" && pass launch-reviewer-codex-log-created-and-written || bad launch-reviewer-codex-log-created-and-written
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$LAUNCH_ROOT/.git-status-before-$pid_codex" ] && pass launch-reviewer-codex-records-before-snapshot || bad launch-reviewer-codex-records-before-snapshot
-
-# --- direct pairing: build_prompt's real output fed straight into
-# launch_reviewer, then compared byte-for-byte against what the stub
-# actually received on stdin. The stdin-matches-a-canned-string case above
-# and the build_prompt-output tests elsewhere in this file only establish
-# this property by combining two separate tests; this one exercises the
-# real handoff between the two functions directly. ---
-
-bp_direct_prompt="$(build_prompt "$REAL_CONTRACT" "https://github.com/acme/widgets/pull/1" "$LAUNCH_ROOT" \
-  codex "direct-pairing-model-marker" "$LAUNCH_WT" "origin/main" "$LAUNCH_ROOT/review.md")"
-printf '%s' "$bp_direct_prompt" > "$LAUNCH_LOGS/codex-direct.prompt"
-pid_codex_direct="$(launch_reviewer codex "$LAUNCH_WT" "$LAUNCH_LOGS/codex-direct.log" < "$LAUNCH_LOGS/codex-direct.prompt")"
-i=0
-until [ -f "$LAUNCH_ROOT/.exit-$pid_codex_direct" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$LAUNCH_RECORD_DIR/codex.stdin")" = "$bp_direct_prompt" ] && pass launch-reviewer-receives-real-build-prompt-output || bad launch-reviewer-receives-real-build-prompt-output
-
-# --- opencode: --dir flag, OPENCODE_CONFIG env var wired to a real config file ---
-
-printf 'opencode-prompt-content' > "$LAUNCH_LOGS/opencode.prompt"
-pid_opencode="$(launch_reviewer opencode "$LAUNCH_WT" "$LAUNCH_LOGS/opencode.log" < "$LAUNCH_LOGS/opencode.prompt")"
-i=0
-until [ -f "$LAUNCH_ROOT/.exit-$pid_opencode" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-
-mapfile -t opencode_argv < "$LAUNCH_RECORD_DIR/opencode.argv"
-found=0
-for idx in "${!opencode_argv[@]}"; do
-  if [ "${opencode_argv[$idx]}" = "--dir" ] && [ "${opencode_argv[$((idx + 1))]:-}" = "$LAUNCH_WT" ]; then
-    found=1
-  fi
-done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$found" -eq 1 ] && pass launch-reviewer-opencode-workdir-flag || bad launch-reviewer-opencode-workdir-flag
-
-# --auto is required alongside the permission config (see launch_reviewer's
-# docstring): without it, any permission this run's config leaves unset
-# would block waiting for a human who, in this headless run, never
-# answers -- the same class of gap the claude dontAsk/codex read-only
-# flag assertions elsewhere in this section already cover for their own
-# CLIs, so this closes the one CLI that didn't have an equivalent check.
-case "$(cat "$LAUNCH_RECORD_DIR/opencode.argv")" in
-  *'--auto'*) pass launch-reviewer-opencode-auto-flag ;;
-  *) bad launch-reviewer-opencode-auto-flag ;;
-esac
-
-oc_env_config_path="$(cat "$LAUNCH_RECORD_DIR/opencode.env-opencode-config")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$oc_env_config_path" ] && [ -s "$oc_env_config_path" ] && pass launch-reviewer-opencode-config-env-set || bad launch-reviewer-opencode-config-env-set
-case "$(cat "$oc_env_config_path" 2>/dev/null)" in
-  *'"edit": "deny"'*) pass launch-reviewer-opencode-config-content ;;
-  *) bad launch-reviewer-opencode-config-content ;;
-esac
-
-# --- agy: --add-dir flag, --print-timeout, hardcoded model, isolated HOME,
-# and (per the empirically-confirmed finding that omitting any -p/--print
-# flag entirely makes a real agy binary read its prompt from stdin and run
-# non-interactively) the prompt reaching the process over stdin, exactly
-# like claude/codex/opencode ---
-
-printf 'agy-prompt-content' > "$LAUNCH_LOGS/agy.prompt"
-pid_agy="$(launch_reviewer agy "$LAUNCH_WT" "$LAUNCH_LOGS/agy.log" < "$LAUNCH_LOGS/agy.prompt")"
-i=0
-until [ -f "$LAUNCH_ROOT/.exit-$pid_agy" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-
-mapfile -t agy_argv < "$LAUNCH_RECORD_DIR/agy.argv"
-found=0
-for idx in "${!agy_argv[@]}"; do
-  if [ "${agy_argv[$idx]}" = "--add-dir" ] && [ "${agy_argv[$((idx + 1))]:-}" = "$LAUNCH_WT" ]; then
-    found=1
-  fi
-done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$found" -eq 1 ] && pass launch-reviewer-agy-add-dir-flag || bad launch-reviewer-agy-add-dir-flag
-
-# agy's own default print-mode timeout is five minutes (see launch_reviewer's
-# docstring) -- far too short for a real review, so this must be overridden
-# explicitly rather than left at the default.
-case "$(cat "$LAUNCH_RECORD_DIR/agy.argv")" in
-  *'--print-timeout'*'120m'*) pass launch-reviewer-agy-print-timeout-flag ;;
-  *) bad launch-reviewer-agy-print-timeout-flag ;;
-esac
-
-case "$(cat "$LAUNCH_RECORD_DIR/agy.argv")" in
-  *'--model'*'gemini-3.8-flash-high'*) pass launch-reviewer-agy-model-flag ;;
-  *) bad launch-reviewer-agy-model-flag ;;
-esac
-
-# No --effort: reasoning effort is already encoded in the model id's -high
-# suffix (see resolve_model's agy branch docstring).
-case "$(cat "$LAUNCH_RECORD_DIR/agy.argv")" in
-  *'--effort'*) bad launch-reviewer-agy-no-effort-flag ;;
-  *) pass launch-reviewer-agy-no-effort-flag ;;
-esac
-
-# No -p/--print/--prompt flag at all: a real agy binary errors outright
-# on a bare, unattached `-p` ("flag needs an argument: -p", exit 2), and
-# omitting the flag entirely -- rather than supplying it some other way
-# -- is what makes agy read its prompt from stdin instead (see
-# launch_reviewer's agy branch docstring for the confirming probe).
-# Checked against each argv entry exactly (reusing the array already read
-# above for the --add-dir check), not by substring match against the
-# whole line: `--print-timeout` itself contains the substring `-p` and
-# would otherwise false-positive this check.
-agy_print_flag_found=0
-for a in "${agy_argv[@]}"; do
-  case "$a" in
-    -p|--print|--prompt) agy_print_flag_found=1 ;;
-  esac
-done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$agy_print_flag_found" -eq 0 ] && pass launch-reviewer-agy-no-print-flag || bad launch-reviewer-agy-no-print-flag
-
-# The prompt must reach the process over stdin, the same mechanism
-# claude/codex/opencode use -- not as any argv entry, which would put the
-# full PR/issue/design text (this reviewer's whole prompt) in a process
-# table readable by other accounts on the same machine, and would be
-# bounded by the kernel's single-argument length limit besides.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$LAUNCH_RECORD_DIR/agy.stdin")" = "agy-prompt-content" ] && pass launch-reviewer-agy-stdin-matches-prompt || bad launch-reviewer-agy-stdin-matches-prompt
-
-# HOME must be the isolated per-run directory _write_agy_home built, not
-# the real user's own $HOME -- this is the whole point of Task 4's
-# isolation.
-agy_env_home="$(cat "$LAUNCH_RECORD_DIR/agy.env-home")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$agy_env_home" ] && [ "$agy_env_home" != "$HOME" ] && pass launch-reviewer-agy-home-isolated || bad launch-reviewer-agy-home-isolated
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$agy_env_home/.gemini/antigravity-cli/settings.json" ] && pass launch-reviewer-agy-home-has-permission-config || bad launch-reviewer-agy-home-has-permission-config
-
-# --- claude: no -C/--dir flag; instead the process's own cwd is the worktree ---
-
-printf 'claude-prompt-content' > "$LAUNCH_LOGS/claude.prompt"
-pid_claude="$(launch_reviewer claude "$LAUNCH_WT" "$LAUNCH_LOGS/claude.log" < "$LAUNCH_LOGS/claude.prompt")"
-i=0
-until [ -f "$LAUNCH_ROOT/.exit-$pid_claude" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$LAUNCH_RECORD_DIR/claude.pwd")" = "$LAUNCH_WT" ] && pass launch-reviewer-claude-cwd-is-worktree || bad launch-reviewer-claude-cwd-is-worktree
-case "$(cat "$LAUNCH_RECORD_DIR/claude.argv")" in
-  *'-C'*|*'--dir'*) bad launch-reviewer-claude-no-workdir-flag ;;
-  *) pass launch-reviewer-claude-no-workdir-flag ;;
-esac
-case "$(cat "$LAUNCH_RECORD_DIR/claude.argv")" in
-  *'dontAsk'*) pass launch-reviewer-claude-permission-mode ;;
-  *) bad launch-reviewer-claude-permission-mode ;;
-esac
-# The reviewer no longer executes any `gh` command at all (it prints its
-# review to stdout instead of posting anything itself -- see
-# launch_reviewer's docstring), so there must be no Bash pattern for `gh
-# pr comment` anywhere in --allowedTools.
-case "$(cat "$LAUNCH_RECORD_DIR/claude.argv")" in
-  *'Bash(gh pr comment:*)'*) bad launch-reviewer-claude-no-gh-comment-bash-pattern ;;
-  *) pass launch-reviewer-claude-no-gh-comment-bash-pattern ;;
-esac
-
-# Write must be on --disallowedTools and must NOT be on --allowedTools:
-# this reviewer has no write capability of any kind any more (a real
-# claude binary confirmed dontAsk mode makes the Write tool entirely
-# unavailable under this exact flag pair -- "Write tool 在本 session 不存
-# 在" -- while the same flag pair still let a real `git diff` run; see
-# launch_reviewer's docstring) -- checked as the argument immediately
-# following each flag, not just "Write appears somewhere", so this can't
-# be fooled by Write showing up in the wrong flag's value.
-mapfile -t claude_argv < "$LAUNCH_RECORD_DIR/claude.argv"
-write_wrongly_allowed=0
-write_disallowed=0
-edit_notebookedit_disallowed=0
-webfetch_wrongly_allowed=0
-for idx in "${!claude_argv[@]}"; do
-  case "${claude_argv[$idx]}" in
-    --allowedTools)
-      case "${claude_argv[$((idx + 1))]:-}" in
-        *Write*) write_wrongly_allowed=1 ;;
-      esac
-      case "${claude_argv[$((idx + 1))]:-}" in
-        *WebFetch*) webfetch_wrongly_allowed=1 ;;
-      esac
-      ;;
-    --disallowedTools)
-      case "${claude_argv[$((idx + 1))]:-}" in
-        *Write*) write_disallowed=1 ;;
-      esac
-      case "${claude_argv[$((idx + 1))]:-}" in
-        *Edit*NotebookEdit*) edit_notebookedit_disallowed=1 ;;
-      esac
-      ;;
-  esac
-done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$write_wrongly_allowed" -eq 0 ] && pass launch-reviewer-claude-write-not-allowed || bad launch-reviewer-claude-write-not-allowed
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$write_disallowed" -eq 1 ] && pass launch-reviewer-claude-disallows-write || bad launch-reviewer-claude-disallows-write
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$edit_notebookedit_disallowed" -eq 1 ] && pass launch-reviewer-claude-disallows-edit-notebookedit || bad launch-reviewer-claude-disallows-edit-notebookedit
-# WebFetch must not be on --allowedTools: the contract forbids reaching
-# GitHub or anywhere else by any means, and every material the reviewer
-# needs is already embedded in its own prompt (see launch_reviewer's
-# docstring, claude bullet, on why this grant was removed).
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$webfetch_wrongly_allowed" -eq 0 ] && pass launch-reviewer-claude-webfetch-not-allowed || bad launch-reviewer-claude-webfetch-not-allowed
-
-# --- unknown CLI name -> non-zero, no PID printed ---
-
-if out="$(launch_reviewer bogus-cli "$LAUNCH_WT" "$LAUNCH_LOGS/bogus.log" < /dev/null 2>/dev/null)"; then
-  bad launch-reviewer-unknown-cli
-else
-  pass launch-reviewer-unknown-cli
-fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass launch-reviewer-unknown-cli-no-output || bad launch-reviewer-unknown-cli-no-output
-
-unset LAUNCH_RECORD_DIR
-export PATH="$saved_path"
-
-# ==============================================================
-# launch_reviewer -- stdout and stderr are captured to separate files
-#
-# The reviewer's full review (wrapped in the contract's BEGIN/END markers)
-# is what SKILL.md parses back out of <cli>.log, so this confirms directly
-# -- against a stub that actually interleaves stdout and stderr writes,
-# not just a stub that happens to only use one stream -- that <cli>.log
-# ends up as exactly the stdout content, complete, in order, with both
-# marker lines intact, and that stderr never lands in it at all.
-# ==============================================================
-
-LOGSPLIT_ROOT="$T/logsplit-fixture"
-LOGSPLIT_WT="$(_make_worktree_fixture "$LOGSPLIT_ROOT")"
-LOGSPLIT_LOGS="$LOGSPLIT_ROOT/logs"
-mkdir -p "$LOGSPLIT_LOGS"
-
-LOGSPLIT_STUB_BIN="$T/logsplit-stub-bin"
-mkdir -p "$LOGSPLIT_STUB_BIN"
-cat > "$LOGSPLIT_STUB_BIN/codex" <<'STUB'
-#!/usr/bin/env bash
-echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
-echo "line one of the review"
-echo "diagnostic noise one" >&2
-echo "line two of the review"
-echo "diagnostic noise two" >&2
-echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
-exit 0
-STUB
-chmod +x "$LOGSPLIT_STUB_BIN/codex"
-
-export PATH="$LOGSPLIT_STUB_BIN:$saved_path"
-# Only codex is stubbed here on purpose: this section exercises codex's own
-# stdout/stderr split exclusively, so only codex is checked.
-assert_cli_stub_only "$PATH" "$LOGSPLIT_STUB_BIN" codex
-printf 'p' > "$LOGSPLIT_LOGS/codex.prompt"
-logsplit_pid="$(launch_reviewer codex "$LOGSPLIT_WT" "$LOGSPLIT_LOGS/codex.log" < "$LOGSPLIT_LOGS/codex.prompt")"
-i=0
-until [ -f "$LOGSPLIT_ROOT/.exit-$logsplit_pid" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-export PATH="$saved_path"
-
-logsplit_log_content="$(cat "$LOGSPLIT_LOGS/codex.log" 2>/dev/null)"
-logsplit_expected=$'===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===\nline one of the review\nline two of the review\n===PR-REVIEW-BY-MULTI-AGENTS-END==='
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$logsplit_log_content" = "$logsplit_expected" ] && pass launch-reviewer-log-file-is-stdout-only-and-complete || bad launch-reviewer-log-file-is-stdout-only-and-complete
-
-case "$logsplit_log_content" in
-  *'diagnostic noise'*) bad launch-reviewer-log-file-excludes-stderr ;;
-  *) pass launch-reviewer-log-file-excludes-stderr ;;
-esac
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$LOGSPLIT_LOGS/codex.log.stderr" ] && grep -qF 'diagnostic noise one' "$LOGSPLIT_LOGS/codex.log.stderr" 2>/dev/null && pass launch-reviewer-stderr-captured-separately || bad launch-reviewer-stderr-captured-separately
-
-# --- 摘要七欄位、content_status 三值、回音室標記、.supervisor.pid ---
-REC_ROOT="$T/record-result"
-mkdir -p "$REC_ROOT/logs"
-REC_WT="$REC_ROOT/worktree"
-mkdir -p "$REC_WT"
-git -C "$REC_WT" init -q
-# GIT_CONFIG_GLOBAL/SYSTEM are pointed at /dev/null earlier in this file
-# (see the _git_status_snapshot section), so every repo fixture created
-# from here on needs its own local identity before it can commit -- same
-# idiom _make_worktree_fixture below already uses.
-git -C "$REC_WT" config user.email t@t.com
-git -C "$REC_WT" config user.name t
-git -C "$REC_WT" commit -q --allow-empty -m init
-
-_rec_fixture() {
-  local label="$1" rc="$2" body="$3"
-  local pid="90000$4"
-  local log="$REC_ROOT/logs/$label.log"
-  printf '%s' "$body" > "$log"
-  printf '%s\n' "$log" > "$REC_ROOT/.log-$pid"
-  printf '%s' "$rc" > "$REC_ROOT/.exit-$pid"
-  printf '%s\n' "$(_git_status_snapshot "$REC_WT")" > "$REC_ROOT/.git-status-before-$pid"
-  printf '%s\n' "$pid"
-}
-
-REC_GOOD_BODY='===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===
-這是完整的 review 內容
-===PR-REVIEW-BY-MULTI-AGENTS-END==='
-
-REC_READY_PID="$(_rec_fixture claude 0 "$REC_GOOD_BODY" 1)"
-REC_WITHHELD_PID="$(_rec_fixture codex 1 "$REC_GOOD_BODY" 2)"
-REC_NOCONTENT_PID="$(_rec_fixture opencode 0 'CLI 崩潰了，沒有標記' 3)"
-
-: > "$REC_ROOT/summary.txt"
-_record_reviewer_result "$REC_READY_PID" "$REC_ROOT" "$REC_WT" "$REC_ROOT/summary.txt"
-_record_reviewer_result "$REC_WITHHELD_PID" "$REC_ROOT" "$REC_WT" "$REC_ROOT/summary.txt"
-_record_reviewer_result "$REC_NOCONTENT_PID" "$REC_ROOT" "$REC_WT" "$REC_ROOT/summary.txt"
-
-REC_L1="$(sed -n 1p "$REC_ROOT/summary.txt")"
-REC_L2="$(sed -n 2p "$REC_ROOT/summary.txt")"
-REC_L3="$(sed -n 3p "$REC_ROOT/summary.txt")"
-
-# 七個欄位，順序固定
-# shellcheck disable=SC2015
-grep -qE '^cli=[^ ]+ pid=[0-9]+ exit=[^ ]+ ended_at=[^ ]+ worktree_status=[^ ]+ content_status=[^ ]+ content_file=' <<<"$REC_L1" \
-  && pass record-summary-seven-fields || bad record-summary-seven-fields
-# cli 欄位從 log 檔名推得，不必回頭對另一份摘要
-# shellcheck disable=SC2015
-grep -qF 'cli=claude' <<<"$REC_L1" && pass record-summary-names-cli || bad record-summary-names-cli
-# shellcheck disable=SC2015
-grep -qF 'content_status=ready' <<<"$REC_L1" && pass record-status-ready || bad record-status-ready
-# 結束碼非零 -> withheld，內容檔仍要留下供人工判斷
-# shellcheck disable=SC2015
-grep -qF 'content_status=withheld' <<<"$REC_L2" && pass record-status-withheld || bad record-status-withheld
-# shellcheck disable=SC2015
-[ -f "$REC_ROOT/.comment-body-$REC_WITHHELD_PID.md" ] && pass record-withheld-keeps-content-file || bad record-withheld-keeps-content-file
-# 標記不成對 -> no-content，不產生內容檔，content_file 欄位留空
-# shellcheck disable=SC2015
-grep -qF 'content_status=no-content' <<<"$REC_L3" && pass record-status-no-content || bad record-status-no-content
-# shellcheck disable=SC2015
-grep -qE 'content_file=$' <<<"$REC_L3" && pass record-no-content-empty-file-field || bad record-no-content-empty-file-field
-# shellcheck disable=SC2015
-[ ! -e "$REC_ROOT/.comment-body-$REC_NOCONTENT_PID.md" ] && pass record-no-content-writes-no-file || bad record-no-content-writes-no-file
-
-# 內容檔第一行是回音室標記，第二段才是 review 本文
-# shellcheck disable=SC2015
-[ "$(head -1 "$REC_ROOT/.comment-body-$REC_READY_PID.md")" = '<!-- pr-review-by-multi-agents -->' ] \
-  && pass record-content-file-echo-guard-first-line || bad record-content-file-echo-guard-first-line
-# shellcheck disable=SC2015
-grep -qF '這是完整的 review 內容' "$REC_ROOT/.comment-body-$REC_READY_PID.md" \
-  && pass record-content-file-keeps-review || bad record-content-file-keeps-review
-
-# --- worktree tampered with (not just a non-zero exit) also produces
-# content_status=withheld: _record_reviewer_result's gate is
-# `rc=0 AND worktree_status=ok`, and the three fixtures above only ever
-# falsify the rc half (REC_WITHHELD_PID) or leave both true (REC_READY_
-# PID). This falsifies the worktree half instead -- exit 0 and valid
-# markers throughout -- so the invalidated-worktree branch is proven to
-# land in the same withheld outcome rather than being read as
-# unconditionally "ready" just because the exit code was clean. Restored
-# after being dropped by the wholesale spawn_supervisor section
-# replacement further down; see the deleted spawn-supervisor-withholds-
-# on-invalidated-worktree / spawn-supervisor-withheld-still-saves-
-# content-invalidated tests at commit 2845159 for the pre-refactor
-# version of this same property. ---
-REC_TAMPER_ROOT="$T/record-result-tampered"
-mkdir -p "$REC_TAMPER_ROOT/logs"
-REC_TAMPER_WT="$REC_TAMPER_ROOT/worktree"
-mkdir -p "$REC_TAMPER_WT"
-git -C "$REC_TAMPER_WT" init -q
-# Same local-identity requirement as every other fresh repo fixture in
-# this file (GIT_CONFIG_GLOBAL/SYSTEM point at /dev/null).
-git -C "$REC_TAMPER_WT" config user.email t@t.com
-git -C "$REC_TAMPER_WT" config user.name t
-git -C "$REC_TAMPER_WT" commit -q --allow-empty -m init
-
-REC_TAMPER_PID=900004
-REC_TAMPER_LOG="$REC_TAMPER_ROOT/logs/codex.log"
-{
-  printf '===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===\n'
-  printf '因為 worktree 遭竄改而不可信的 review\n'
-  printf '===PR-REVIEW-BY-MULTI-AGENTS-END===\n'
-} > "$REC_TAMPER_LOG"
-printf '%s\n' "$REC_TAMPER_LOG" > "$REC_TAMPER_ROOT/.log-$REC_TAMPER_PID"
-printf '0' > "$REC_TAMPER_ROOT/.exit-$REC_TAMPER_PID"
-printf '%s\n' "$(_git_status_snapshot "$REC_TAMPER_WT")" > "$REC_TAMPER_ROOT/.git-status-before-$REC_TAMPER_PID"
-# Tamper *after* the before-snapshot is recorded, exactly like a reviewer
-# violating the read-only contract would -- exit code stays 0 throughout,
-# so only the worktree-state half of the gate can be what withholds this.
-printf 'dirty\n' > "$REC_TAMPER_WT/INJECTED-BY-TEST.txt"
-
-: > "$REC_TAMPER_ROOT/summary.txt"
-_record_reviewer_result "$REC_TAMPER_PID" "$REC_TAMPER_ROOT" "$REC_TAMPER_WT" "$REC_TAMPER_ROOT/summary.txt"
-REC_TAMPER_LINE="$(cat "$REC_TAMPER_ROOT/summary.txt")"
-
-case "$REC_TAMPER_LINE" in
-  *'worktree_status=invalidated'*) pass record-status-invalidated-on-tampered-worktree ;;
-  *) bad record-status-invalidated-on-tampered-worktree ;;
-esac
-case "$REC_TAMPER_LINE" in
-  *'content_status=withheld'*) pass record-status-withheld-on-invalidated-worktree ;;
-  *) bad record-status-withheld-on-invalidated-worktree ;;
-esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF '竄改而不可信' "$REC_TAMPER_ROOT/.comment-body-$REC_TAMPER_PID.md" 2>/dev/null \
-  && pass record-withheld-keeps-content-file-on-invalidated-worktree || bad record-withheld-keeps-content-file-on-invalidated-worktree
-
-# --- 監督行程：摘要行順序等於完成順序，不是派出順序 ---
-ORDER_ROOT="$T/supervisor-order"
-mkdir -p "$ORDER_ROOT/logs"
-ORDER_WT="$ORDER_ROOT/worktree"
-mkdir -p "$ORDER_WT"
-git -C "$ORDER_WT" init -q
-# GIT_CONFIG_GLOBAL/SYSTEM are pointed at /dev/null earlier in this file
-# (see the _git_status_snapshot section), so every repo fixture created
-# from here on needs its own local identity before it can commit -- same
-# idiom _make_worktree_fixture below already uses.
-git -C "$ORDER_WT" config user.email t@t.com
-git -C "$ORDER_WT" config user.name t
-git -C "$ORDER_WT" commit -q --allow-empty -m init
-
-# 先派出的睡久、後派出的立刻結束：若監督行程仍是循序等待，
-# 摘要第一行會是慢的那個；改成輪詢待處理清單後才會是快的那個。
-_order_launch() {
-  local label="$1" delay="$2"
-  local log="$ORDER_ROOT/logs/$label.log"
-  {
-    printf '===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===\n'
-    printf '%s 的 review 內容\n' "$label"
-    printf '===PR-REVIEW-BY-MULTI-AGENTS-END===\n'
-  } > "$log"
-  # shellcheck disable=SC2016 # single quotes are intentional: $1/$2/$$ must
-  # expand inside the nested bash -c, not in this outer shell.
-  nohup bash -c '
-    base_dir="$1"; delay="$2"
-    sleep "$delay"
-    printf "0" > "$base_dir/.exit-$$"
-  ' _ "$ORDER_ROOT" "$delay" >/dev/null 2>&1 &
-  local pid=$!
-  printf '%s\n' "$log" > "$ORDER_ROOT/.log-$pid"
-  printf '%s\n' "$(_git_status_snapshot "$ORDER_WT")" > "$ORDER_ROOT/.git-status-before-$pid"
-  printf '%s\n' "$pid"
-}
-
-ORDER_SLOW_PID="$(_order_launch slowcli 6)"
-ORDER_FAST_PID="$(_order_launch fastcli 1)"
-
-spawn_supervisor "$ORDER_WT" "$ORDER_ROOT/summary.txt" "$ORDER_SLOW_PID" "$ORDER_FAST_PID"
-
-ORDER_WAITED=0
-# `2>/dev/null` must precede `< file`: redirections apply left to right, so
-# putting it after the input redirect leaves fd 2 unredirected at the
-# moment `< file` itself fails to open a not-yet-created summary.txt --
-# bash reports that open failure straight to the real stderr regardless of
-# a `2>/dev/null` still to come, which fired on every run of this test
-# (deterministically, before spawn_supervisor's subshell got around to
-# creating the file), not just on some retry path.
-while [ "$ORDER_WAITED" -lt 40 ] && [ "$(wc -l 2>/dev/null < "$ORDER_ROOT/summary.txt" || echo 0)" -lt 2 ]; do
-  sleep 1
-  ORDER_WAITED=$((ORDER_WAITED + 1))
-done
-
-# shellcheck disable=SC2015
-[ "$(wc -l < "$ORDER_ROOT/summary.txt")" = 2 ] && pass supervisor-order-writes-two-lines || bad supervisor-order-writes-two-lines
-# shellcheck disable=SC2015
-head -1 "$ORDER_ROOT/summary.txt" | grep -qF "pid=$ORDER_FAST_PID" && pass supervisor-order-fast-first || bad supervisor-order-fast-first
-# shellcheck disable=SC2015
-tail -1 "$ORDER_ROOT/summary.txt" | grep -qF "pid=$ORDER_SLOW_PID" && pass supervisor-order-slow-last || bad supervisor-order-slow-last
-
-# 監督行程不得再呼叫 gh：_post_review_comment 這個函式必須已被移除
-if declare -F _post_review_comment >/dev/null 2>&1; then
-  bad record-post-function-removed
-else
-  pass record-post-function-removed
-fi
-
-# ==============================================================
-# spawn_supervisor -- logs_dir survival, the .supervisor.pid interface,
-# and SIGHUP hardening
-#
-# Restored after being dropped by the wholesale section replacement
-# above (see commit 2845159 for the pre-refactor spawn-supervisor-
-# preserves-logs-dir / spawn-supervisor-survives-sighup / spawn-
-# supervisor-removes-worktree-after-sighup tests this adapts from) plus
-# one genuinely new scenario for .supervisor.pid, which did not exist
-# before this task. None of the three scenarios below depend on exit
-# code or worktree tampering, so one shared "clean" opencode stub covers
-# all of them.
-# ==============================================================
-
-SV_STUB_BIN="$T/supervisor-stub-bin"
-mkdir -p "$SV_STUB_BIN"
-cat > "$SV_STUB_BIN/opencode" <<'STUB'
-#!/usr/bin/env bash
-sleep 0.1
-exit 0
-STUB
-chmod +x "$SV_STUB_BIN/opencode"
-export PATH="$SV_STUB_BIN:$saved_path"
-# Only opencode is stubbed here on purpose: none of this section's three
-# scenarios dispatch any other CLI, so only opencode is checked.
-assert_cli_stub_only "$PATH" "$SV_STUB_BIN" opencode
-
-# --- logs_dir survives spawn_supervisor removing its sibling worktree --
-# `git worktree remove --force` only ever touches the worktree path it is
-# given; logs_dir is a separate sibling directory under base_dir and is
-# the only post-mortem evidence a human has when a review never shows up,
-# so its survival through that removal step is worth pinning down
-# directly rather than trusting "the two are different directories" by
-# inspection alone. ---
-
-SVLOGS_ROOT="$T/supervisor-logs-fixture"
-SVLOGS_WT="$(_make_worktree_fixture "$SVLOGS_ROOT")"
-mkdir -p "$SVLOGS_ROOT/logs"
-printf 'p' > "$SVLOGS_ROOT/logs/opencode.prompt"
-svlogs_pid="$(launch_reviewer opencode "$SVLOGS_WT" "$SVLOGS_ROOT/logs/opencode.log" < "$SVLOGS_ROOT/logs/opencode.prompt")"
-SVLOGS_SUMMARY="$SVLOGS_ROOT/summary.txt"
-(cd "$SVLOGS_ROOT/work" && spawn_supervisor "$SVLOGS_WT" "$SVLOGS_SUMMARY" "$svlogs_pid")
-
-i=0
-until [ ! -e "$SVLOGS_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$SVLOGS_WT" ] && [ -d "$SVLOGS_ROOT/logs" ] && pass spawn-supervisor-preserves-logs-dir || bad spawn-supervisor-preserves-logs-dir
-
-# --- .supervisor.pid holds the backgrounded supervisor subshell's own
-# PID (via $BASHPID inside it), not the PID of whichever shell happened
-# to call spawn_supervisor -- Task 7's liveness check needs to `kill -0`
-# the process that is actually still running, not the caller. $! is
-# captured from *inside* the same subshell that calls spawn_supervisor
-# (into a file, since $! itself does not survive that subshell exiting),
-# the same technique the SIGHUP scenario below uses -- see its own
-# comment for why that is what makes $! refer to spawn_supervisor's own
-# internal `(...)&` job rather than anything else. ---
-
-SVPID_ROOT="$T/supervisor-pidfile-fixture"
-SVPID_WT="$(_make_worktree_fixture "$SVPID_ROOT")"
-mkdir -p "$SVPID_ROOT/logs"
-printf 'p' > "$SVPID_ROOT/logs/opencode.prompt"
-svpid_pid="$(launch_reviewer opencode "$SVPID_WT" "$SVPID_ROOT/logs/opencode.log" < "$SVPID_ROOT/logs/opencode.prompt")"
-SVPID_SUMMARY="$SVPID_ROOT/summary.txt"
-SVPID_BANG_FILE="$T/svpid-bang.txt"
-(
-  cd "$SVPID_ROOT/work" || exit 1
-  spawn_supervisor "$SVPID_WT" "$SVPID_SUMMARY" "$svpid_pid"
-  printf '%s' "$!" > "$SVPID_BANG_FILE"
-)
-svpid_bang="$(cat "$SVPID_BANG_FILE" 2>/dev/null)"
-
-i=0
-until [ -s "$SVPID_ROOT/.supervisor.pid" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$SVPID_ROOT/.supervisor.pid" ] && pass spawn-supervisor-writes-pid-file || bad spawn-supervisor-writes-pid-file
-
-svpid_recorded="$(cat "$SVPID_ROOT/.supervisor.pid" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$svpid_bang" ] && [ "$svpid_recorded" = "$svpid_bang" ] && pass spawn-supervisor-pid-file-is-supervisor-subshell || bad spawn-supervisor-pid-file-is-supervisor-subshell
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$svpid_recorded" ] && [ "$svpid_recorded" != "$$" ] && pass spawn-supervisor-pid-file-is-not-caller || bad spawn-supervisor-pid-file-is-not-caller
-
-i=0
-until [ ! -e "$SVPID_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-
-# --- the backgrounded subshell survives a real SIGHUP delivered directly
-# to it, not just `disown` (which only stops *this shell* from sending
-# SIGHUP on its own exit -- it does nothing about the kernel delivering
-# one some other way, e.g. a closed controlling terminal). $! is captured
-# from *inside* the same subshell that calls spawn_supervisor (into a
-# file, since $! itself does not survive that subshell exiting) --
-# spawn_supervisor's own internal `(...)&` is what $! refers to right
-# after the call, per bash's normal $!-after-a-backgrounded-job semantics,
-# even though that job gets disowned immediately after. ---
-
-SV4_ROOT="$T/supervisor-fixture-sighup"
-SV4_WT="$(_make_worktree_fixture "$SV4_ROOT")"
-mkdir -p "$SV4_ROOT/logs"
-printf 'p' > "$SV4_ROOT/logs/opencode.prompt"
-sv4_pid="$(launch_reviewer opencode "$SV4_WT" "$SV4_ROOT/logs/opencode.log" < "$SV4_ROOT/logs/opencode.prompt")"
-SV4_SUMMARY="$SV4_ROOT/summary.txt"
-SV4_PID_FILE="$T/sv4-supervisor-pid.txt"
-(
-  cd "$SV4_ROOT/work" || exit 1
-  spawn_supervisor "$SV4_WT" "$SV4_SUMMARY" "$sv4_pid"
-  printf '%s' "$!" > "$SV4_PID_FILE"
-)
-sv4_supervisor_pid="$(cat "$SV4_PID_FILE" 2>/dev/null)"
-# A real, unignored SIGHUP would kill a plain backgrounded subshell
-# instantly; giving it a moment first makes sure this is actually
-# targeting a live process, not racing its own already-fast completion.
-sleep 0.2
-kill -HUP "$sv4_supervisor_pid" 2>/dev/null || true
-
-i=0
-until [ -s "$SV4_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$SV4_SUMMARY" ] && pass spawn-supervisor-survives-sighup || bad spawn-supervisor-survives-sighup
-i=0
-until [ ! -e "$SV4_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$SV4_WT" ] && pass spawn-supervisor-removes-worktree-after-sighup || bad spawn-supervisor-removes-worktree-after-sighup
-
-export PATH="$saved_path"
-
-# ==============================================================
-# spawn_supervisor -- must not hold the caller's own stdout/stderr open
-# (Task 7 簡報第五節記載的缺陷：`(...)& disown` 沒有重導向繼承來的 fd
-# 1/2，背景 subshell 因此一直持有呼叫端的輸出管線；呼叫端若以命令替換
-# 擷取這次呼叫的輸出，就得等到監督行程整個跑完──含合流──才拿得到
-# EOF，把非同步派工變成同步等待）。opencode 的 stub 特意 sleep 3 秒才結
-# 束，讓「命令替換立刻返回」與「監督行程其實還在跑」這兩件事都測得到：
-# 前者驗證修好了，後者排除「返回快是因為背景根本沒真的在跑」這個混淆。
-# ==============================================================
-
-SVPIPE_STUB_BIN="$T/supervisor-pipe-stub-bin"
-mkdir -p "$SVPIPE_STUB_BIN"
-cat > "$SVPIPE_STUB_BIN/opencode" <<'STUB'
-#!/usr/bin/env bash
-sleep 3
-exit 0
-STUB
-chmod +x "$SVPIPE_STUB_BIN/opencode"
-export PATH="$SVPIPE_STUB_BIN:$saved_path"
-assert_cli_stub_only "$PATH" "$SVPIPE_STUB_BIN" opencode
-
-SVPIPE_ROOT="$T/supervisor-pipe-fixture"
-SVPIPE_WT="$(_make_worktree_fixture "$SVPIPE_ROOT")"
-mkdir -p "$SVPIPE_ROOT/logs"
-printf 'p' > "$SVPIPE_ROOT/logs/opencode.prompt"
-svpipe_pid="$(launch_reviewer opencode "$SVPIPE_WT" "$SVPIPE_ROOT/logs/opencode.log" < "$SVPIPE_ROOT/logs/opencode.prompt")"
-SVPIPE_SUMMARY="$SVPIPE_ROOT/summary.txt"
-
-svpipe_t0="$(date +%s)"
-svpipe_out="$(cd "$SVPIPE_ROOT/work" && spawn_supervisor "$SVPIPE_WT" "$SVPIPE_SUMMARY" "$svpipe_pid")"
-svpipe_t1="$(date +%s)"
-svpipe_elapsed="$((svpipe_t1 - svpipe_t0))"
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$svpipe_elapsed" -le 2 ] && pass "spawn_supervisor 不持有呼叫端管線：命令替換立刻返回" \
-  || bad "spawn_supervisor 命令替換等了 ${svpipe_elapsed}s 才返回（reviewer 要 3s 才結束），疑似仍持有呼叫端的 fd 1/2"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$svpipe_out" ] && pass "spawn_supervisor 命令替換沒有擷取到非預期輸出" || bad "spawn_supervisor 命令替換擷取到非預期輸出: $svpipe_out"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -e "$SVPIPE_WT" ] && pass "spawn_supervisor 返回時背景輪詢確實還沒收尾（worktree 仍在，時序假設成立）" \
-  || bad "spawn_supervisor 返回過快，worktree 已經被清掉，時序假設不成立，上面立刻返回的斷言不足採信"
-
-i=0
-until [ ! -e "$SVPIPE_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$SVPIPE_WT" ] && pass "spawn_supervisor 背景輪詢最終仍完成收尾" || bad "spawn_supervisor 背景輪詢從未收尾"
-
-export PATH="$saved_path"
 
 # ==============================================================
 # _reap_stale_run_dirs
@@ -3823,14 +3223,16 @@ for cli in claude codex opencode; do
   [ -d "$E2E_BASE_DIR/reviewers/$cli/workdir" ] && pass "main-e2e-reviewer-workdir-created-$cli" || bad "main-e2e-reviewer-workdir-created-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
   [ -d "$E2E_BASE_DIR/reviewers/$cli/home" ] && pass "main-e2e-reviewer-home-created-$cli" || bad "main-e2e-reviewer-home-created-$cli"
-  # cmd_prepare() also touches an empty .zshrc into reviewer_home right
-  # away, in the same per-cli loop iteration that just created it above --
-  # before cmd_launch ever runs -- to suppress zsh's new-user wizard in
-  # the herdr pane the calling agent builds against reviewer_home in
-  # between prepare and launch (see cmd_prepare's own per-cli loop comment
-  # and _write_claude_home_interactive's own docstring in run-review.sh).
+  # cmd_prepare() also writes a .zshrc into reviewer_home right away, via
+  # _write_env_scrubbing_zshrc, in the same per-cli loop iteration that
+  # just created it above -- before cmd_launch ever runs -- both to
+  # suppress zsh's new-user wizard in the herdr pane the calling agent
+  # builds against reviewer_home in between prepare and launch, and to
+  # scrub that pane's inherited environment down to a whitelist (see
+  # cmd_prepare's own per-cli loop comment and _write_env_scrubbing_zshrc's
+  # own docstring in run-review.sh).
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ -f "$E2E_BASE_DIR/reviewers/$cli/home/.zshrc" ] && pass "main-e2e-reviewer-home-zshrc-created-$cli" || bad "main-e2e-reviewer-home-zshrc-created-$cli"
+  [ -s "$E2E_BASE_DIR/reviewers/$cli/home/.zshrc" ] && pass "main-e2e-reviewer-home-zshrc-created-$cli" || bad "main-e2e-reviewer-home-zshrc-created-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
   grep -qxF "reviewer_workdir_$cli=$E2E_BASE_DIR/reviewers/$cli/workdir" <<<"$out" && pass "main-e2e-prepare-prints-reviewer-workdir-$cli" || bad "main-e2e-prepare-prints-reviewer-workdir-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -3889,8 +3291,8 @@ E2E_ROSTER_AFTER_PREPARE="$E2E_BASE_DIR/.roster"
 # placeholders: cmd_launch does not act on them yet in this task (a later
 # task wires them into herdr), it only needs them to satisfy
 # parse_launch_args's own shape check. Still run with cwd inside
-# $E2E_FIXTURE/work, same as prepare above: spawn_supervisor's own
-# `git worktree remove` (unmodified by this task -- run through
+# $E2E_FIXTURE/work, same as prepare above: spawn_supervisor_interactive's
+# own `git worktree remove` (unmodified by this task -- run through
 # cmd_launch() now, but not itself touched) resolves the repo to operate
 # on from the caller's cwd, not from worktree_dir itself, and fails
 # silently (swallowed by `|| true`) when run from anywhere else -- proven
@@ -3972,12 +3374,14 @@ E2E_WORKTREE_DIR="$E2E_BASE_DIR/worktree"
 # --- the `chmod -R a-w` mechanism cmd_prepare() applies to the worktree
 # (closing the gap that every individual reviewer CLI's own
 # sandbox/permission flags turned out, on real testing, not to fully close
-# on their own -- see launch_reviewer's docstring) is checked directly
-# against its own fixture here, not against the e2e run above: that run's
-# stub reviewers finish and get cleaned up by spawn_supervisor
-# near-instantly, so checking the worktree's permissions or attempting a
+# on their own -- see launch_reviewer_interactive's docstring) is checked
+# directly against its own fixture here, not against the e2e run above:
+# that run's stub reviewers finish and get cleaned up by
+# spawn_supervisor_interactive near-instantly, so checking the worktree's
+# permissions or attempting a
 # write against it *after* `bash "$RUN_SH" launch` has already returned
-# would race spawn_supervisor possibly having already removed it. ---
+# would race spawn_supervisor_interactive possibly having already removed
+# it. ---
 
 CHMOD_ROOT="$T/chmod-worktree-fixture"
 CHMOD_WT="$(_make_worktree_fixture "$CHMOD_ROOT")"
@@ -4353,15 +3757,16 @@ until { [ -f "$CHMODE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$CHMODE2E_SUMMARY_FILE"
 
 chmod -R u+w "$CHMODE2E_BASE_DIR" 2>/dev/null || true
 
-# --- cmd_launch() 在真正呼叫 launch_reviewer 之前，對選定平台重跑一次
-# 等價於 verify_selection 的 PATH 檢查（Medium 3 審查意見）：prepare 與
-# launch 是刻意分成兩次獨立行程呼叫、中間留了人類尺度延遲讓呼叫端建立
-# herdr pane，所以 prepare 當時在 PATH 上的 cli，launch 執行的當下不保證
-# 還在。這裡直接重現那個延遲：prepare 時 claude／codex 都在 PATH 上、
-# 成功結束；launch 時把 codex 從 PATH 上拿掉，驗證結束碼是 3（跟一開始
-# 選錯平台同一個結束碼，而不是 launch_reviewer 自己那種找不到指令的
-# 127），而且連仍然在 PATH 上的 claude 也不能被啟動——半數啟動半數沒啟動
-# 是比整批都不啟動更糟的結果，因為使用者分不出哪半段能信。----
+# --- cmd_launch() 在真正呼叫 launch_reviewer_interactive 之前，對選定平
+# 台重跑一次等價於 verify_selection 的 PATH 檢查（Medium 3 審查意見）：
+# prepare 與 launch 是刻意分成兩次獨立行程呼叫、中間留了人類尺度延遲讓
+# 呼叫端建立 herdr pane，所以 prepare 當時在 PATH 上的 cli，launch 執行
+# 的當下不保證還在。這裡直接重現那個延遲：prepare 時 claude／codex 都在
+# PATH 上、成功結束；launch 時把 codex 從 PATH 上拿掉，驗證結束碼是 3
+# （跟一開始選錯平台同一個結束碼，而不是 launch_reviewer_interactive 自
+# 己那種找不到指令的 127），而且連仍然在 PATH 上的 claude 也不能被啟動
+# ——半數啟動半數沒啟動是比整批都不啟動更糟的結果，因為使用者分不出哪半
+# 段能信。----
 
 VERIFY3_FIXTURE="$T/verify3-fixture"
 mkdir -p "$VERIFY3_FIXTURE/remotes/acme" "$VERIFY3_FIXTURE/work"
@@ -4667,8 +4072,8 @@ fi
 #
 # _count_ready / _first_ready_cli / _ready_content_files /
 # build_synthesis_prompt / launch_synthesis / _record_synthesis_result,
-# and spawn_supervisor's own tail wiring that strings them together once
-# every reviewer has finished and the worktree is gone.
+# and spawn_supervisor_interactive's own tail wiring that strings them
+# together once every reviewer has finished and the worktree is gone.
 # ==============================================================
 
 # ---- _disclosure_status_label 把三個 raw content_status 譯成合流契約
@@ -4895,14 +4300,14 @@ fi
 
 # ---- 名單檔整個不存在時（不是「有檔案但缺一筆」，是連檔案都沒有）
 # 也不能讓整個函式中止。這不只是渲染問題：build_synthesis_prompt 是在
-# spawn_supervisor 自己的 set -e 子行程裡跑的，`model="$(sed ... 2>/dev/
-# null)"` 這種一般賦值句不像放在 `[ ]`／`if` 裡的指令替換那樣豁免
-# errexit——名單檔不存在時 sed 本身結束碼非零（2>/dev/null 只是消掉錯
-# 誤訊息，不會連結束碼也吃掉），沒有 `|| model=""` 接住的話，整個函式
-# 會在這裡靜默中止：不留錯誤訊息、不留摘要行、什麼都不剩。這正是既有
-# supervisor-order-* fixture 直接呼叫 spawn_supervisor、從不寫 .roster
-# 時會踩到的真實情境，之前這個中止完全沒有任何徵狀，唯一的旁證是
-# synthesis.log 從未出現過。----
+# spawn_supervisor_interactive 自己的 set -e 子行程裡跑的，`model="$(sed
+# ... 2>/dev/null)"` 這種一般賦值句不像放在 `[ ]`／`if` 裡的指令替換那
+# 樣豁免 errexit——名單檔不存在時 sed 本身結束碼非零（2>/dev/null 只是
+# 消掉錯誤訊息，不會連結束碼也吃掉），沒有 `|| model=""` 接住的話，整
+# 個函式會在這裡靜默中止：不留錯誤訊息、不留摘要行、什麼都不剩。這正
+# 是先前一個直接呼叫已移除的無頭監督函式、從不寫 .roster 的 fixture
+# 曾經踩到的真實情境，之前這個中止完全沒有任何徵狀，唯一的旁
+# 證是 synthesis.log 從未出現過。----
 NO_ROSTER_FILE="$T/synth/nonexistent-roster.txt"
 if noroster_out="$(build_synthesis_prompt \
   "$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md" \
@@ -4920,8 +4325,9 @@ fi
 # ---- 契約檔本身讀不到（路徑指向不存在的檔案）時，函式必須整個中
 # 止，不得吞掉這個失敗、繼續往下印出座標、名單與各份 review 全文後仍
 # 回傳成功。這是與 build_prompt 姊妹函式先前已修過的同一種缺陷：這裡
-# 的呼叫跟 spawn_supervisor 自己的呼叫一樣包在 `if build_synthesis_prompt
-# ...; then` 底下，整個函式體因此豁免 set -e 的 errexit，函式裡沒接
+# 的呼叫跟 spawn_supervisor_interactive 自己的呼叫一樣包在
+# `if build_synthesis_prompt ...; then` 底下，整個函式體因此豁免 set -e
+# 的 errexit，函式裡沒接
 # `|| return 1` 的那一行讀檔失敗就會被靜默吞掉，讓呼叫端拿到一份完全
 # 沒有合流契約指示、卻仍判定為成功的 prompt。----
 NO_CONTRACT_FILE="$T/synth/nonexistent-contract.md"
@@ -4990,11 +4396,11 @@ grep -q 'REVIEW-ONE-EMBEDDABLE' <<<"$oneembed_out" && pass "build_synthesis_prom
 # ==============================================================
 # launch_synthesis
 #
-# Recording stubs, the same technique as launch_reviewer's own LAUNCH_
-# RECORD_DIR section above, so this can assert on exactly what
+# Recording stubs, the same technique launch_reviewer_interactive's own
+# tests use elsewhere in this file, so this can assert on exactly what
 # launch_synthesis handed the underlying CLI: narrower flags than
-# launch_reviewer's own (no allowedTools at all for claude, an empty agy
-# permission list instead of the reviewer's `command(git diff)`
+# launch_reviewer_interactive's own (no allowedTools at all for claude, an
+# empty agy permission list instead of the reviewer's `command(git diff)`
 # allowance), and that the prompt actually arrives over stdin.
 # ==============================================================
 
@@ -5025,7 +4431,8 @@ cp "$SYNTH_LAUNCH_STUB_BIN/claude" "$SYNTH_LAUNCH_STUB_BIN/opencode"
 # real regression this task's own review round found -- launch_
 # synthesis's agy branch passed a bare, unattached -p, which a real agy
 # binary rejects outright ("flag needs an argument: -p", exit 2), same
-# as launch_reviewer's own agy branch already documents. This stub
+# as the now-removed headless reviewer launcher's own agy branch already
+# documented. This stub
 # reproduces exactly that one behavior (a bare -p/--print as the LAST
 # argument, i.e. nothing following it supplies its value, is rejected)
 # so a future regression that reintroduces the bare flag fails this
@@ -5080,11 +4487,11 @@ synth_launch_claude_allowedtools_value="$(awk '/^--allowedTools$/{getline; print
 # disallowedTools 的值本身也是獨立一個 argv 項：找出緊接在
 # --disallowedTools 之後的那一行，逐字比對，確認四項都在（Edit、Write、
 # NotebookEdit、WebFetch）且額外加上 Bash 整個工具整體停用——這一項比
-# launch_reviewer 的 claude 分支更嚴：launch_reviewer 自己的說明記載了
-# 實測結論，dontAsk 的「唯讀 Bash 一律放行」例外實際上放得比字面寬，
-# curl 打得通、把該指令加進黑名單也擋不住，唯一驗證有效的做法是整個
-# 停用 Bash 工具；reviewer 做不到是因為審查契約釘死要跑 git diff，合
-# 流沒有這個限制，所以理當走到底。
+# 已移除的無頭 reviewer launcher 的 claude 分支更嚴：該分支當年的說明
+# 記載了實測結論，dontAsk 的「唯讀 Bash 一律放行」例外實際上放得比字
+# 面寬，curl 打得通、把該指令加進黑名單也擋不住，唯一驗證有效的做法
+# 是整個停用 Bash 工具；reviewer 做不到是因為審查契約釘死要跑
+# git diff，合流沒有這個限制，所以理當走到底。
 synth_launch_claude_disallowed_value="$(awk '/^--disallowedTools$/{getline; print; exit}' "$SYNTH_LAUNCH_RECORD_DIR/claude.argv")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$synth_launch_claude_disallowed_value" = "Edit Write NotebookEdit WebFetch Bash" ] \
@@ -5188,10 +4595,9 @@ export PATH="$saved_path"
 # ==============================================================
 # _record_synthesis_result
 #
-# Same fixture-writing technique as _record_reviewer_result's own
-# section above -- write the exit file and log directly, no real process
-# needed -- covering ready/withheld/no-content, the synthesis:<cli>
-# cli-field tag, worktree_status=n/a, and the echo-guard marker.
+# Write the exit file and log directly, no real process needed --
+# covering ready/withheld/no-content, the synthesis:<cli> cli-field tag,
+# worktree_status=n/a, and the echo-guard marker.
 # ==============================================================
 
 RSYN_SUMMARY="$T/record-synth-summary.txt"
@@ -5255,170 +4661,11 @@ grep -qE 'content_file=$' <<<"$RSYN_L3" && pass "_record_synthesis_result no-con
 [ ! -e "$RSYN_NOCONTENT_ROOT/.comment-body-synthesis.md" ] && pass "_record_synthesis_result no-content 不寫內容檔" || bad "_record_synthesis_result no-content 卻寫了內容檔"
 
 # ==============================================================
-# spawn_supervisor -- 合流的完整接線（現行無頭模式，不受本任務影響）
-#
-# Three reviewers, launched the same way any real dispatch loop would
-# (via launch_reviewer, not a hand-rolled substitute) -- two of them
-# (claude, agy) producing a trustworthy review, the third (codex)
-# deliberately crashing with no output at all -- then a direct
-# spawn_supervisor call, the same entry point the headless dispatch loop
-# uses, to confirm the whole chain: ready_count >= 2 triggers synthesis,
-# .roster feeds the roster section (including codex's failure, the same
-# way a real run's own .roster would), the synthesis log lands outside
-# the (deliberately, here too) read-only logs_dir, and the resulting
-# summary line carries the synthesis:<cli> tag with worktree_status=n/a.
-#
-# Every reviewer stub finishes in a few milliseconds, well before
-# spawn_supervisor's poll loop's first iteration ever checks any of the
-# three PIDs (see the existing supervisor-order-* tests above for this
-# same codebase's own precedent for timing-sensitive assertions), so
-# which of claude/agy ends up first in the summary -- and therefore which
-# one _select_synthesis_cli hands to launch_synthesis -- is not pinned
-# down here (both claude and agy match its own preferred-CLI branch
-# directly, so this scenario never even falls through to
-# _first_ready_cli's plain completion-order pick); the assertions below
-# accept either winner rather than gamble on an exact ordering.
-#
-# This section, spawn_supervisor itself, and launch_reviewer are all left
-# untouched by Task 6 (the herdr-interactive switch) -- cmd_launch() no
-# longer calls either of them, but this suite keeps exercising them
-# directly, unchanged, as the proof that the merge segment migrated
-# verbatim into spawn_supervisor_interactive below behaves identically.
-# ==============================================================
-
-SPWSYN_ROOT="$T/spawn-supervisor-synthesis-fixture"
-SPWSYN_WT="$(_make_worktree_fixture "$SPWSYN_ROOT")"
-mkdir -p "$SPWSYN_ROOT/logs"
-
-SPWSYN_STUB_BIN="$T/spawn-supervisor-synthesis-stub-bin"
-mkdir -p "$SPWSYN_STUB_BIN"
-cat > "$SPWSYN_STUB_BIN/claude" <<'STUB'
-#!/usr/bin/env bash
-echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
-cat
-echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
-exit 0
-STUB
-chmod +x "$SPWSYN_STUB_BIN/claude"
-cp "$SPWSYN_STUB_BIN/claude" "$SPWSYN_STUB_BIN/agy"
-cp "$SPWSYN_STUB_BIN/claude" "$SPWSYN_STUB_BIN/opencode"
-# codex crashes outright: no markers, non-zero exit -- content_status
-# ends up no-content, the realistic shape of "a dispatched reviewer that
-# failed" (as opposed to one that was never dispatched at all: .roster is
-# written by cmd_prepare(), before any reviewer launches, so it always has
-# an entry for every selected cli by the time cmd_launch() runs -- but a
-# launch_reviewer failure in cmd_launch() still aborts the whole run via
-# _dispatch_failed_cleanup before spawn_supervisor, .roster's only reader,
-# ever runs, so this scenario never surfaces as a real state to test).
-cat > "$SPWSYN_STUB_BIN/codex" <<'STUB'
-#!/usr/bin/env bash
-exit 1
-STUB
-chmod +x "$SPWSYN_STUB_BIN/codex"
-
-export PATH="$SPWSYN_STUB_BIN:$saved_path"
-assert_cli_stub_only "$PATH" "$SPWSYN_STUB_BIN" claude codex opencode agy
-
-printf 'claude review body\n' > "$SPWSYN_ROOT/logs/claude.prompt"
-printf 'agy review body\n' > "$SPWSYN_ROOT/logs/agy.prompt"
-printf 'codex review body\n' > "$SPWSYN_ROOT/logs/codex.prompt"
-spwsyn_claude_pid="$(launch_reviewer claude "$SPWSYN_WT" "$SPWSYN_ROOT/logs/claude.log" < "$SPWSYN_ROOT/logs/claude.prompt")"
-spwsyn_agy_pid="$(launch_reviewer agy "$SPWSYN_WT" "$SPWSYN_ROOT/logs/agy.log" < "$SPWSYN_ROOT/logs/agy.prompt")"
-spwsyn_codex_pid="$(launch_reviewer codex "$SPWSYN_WT" "$SPWSYN_ROOT/logs/codex.log" < "$SPWSYN_ROOT/logs/codex.prompt")"
-
-# .roster is normally written by cmd_prepare(), before any reviewer
-# launches (Task 3 Step 5); this test calls spawn_supervisor directly,
-# bypassing both cmd_prepare() and cmd_launch(), so it seeds the same
-# file by hand.
-printf 'claude claude-e2e-model dispatched\nagy agy-e2e-model dispatched\ncodex codex-e2e-model dispatched\n' \
-  > "$SPWSYN_ROOT/.roster"
-
-# cmd_launch() 對 logs_dir 下的 chmod -R a-w 是在每個 reviewer 都已啟動之後
-# 才施加的（見 cmd_launch() 本體），這裡直接重現同一前提，確保合流的 log 確實
-# 落在 base_dir 這一層而不是 logs_dir 底下——否則這個情境根本開不出新
-# 檔。三個 launch_reviewer 呼叫已經讓各自的檔案描述子先開好，之後才
-# chmod，不受影響。
-chmod -R a-w "$SPWSYN_ROOT/logs"
-
-SPWSYN_SUMMARY="$SPWSYN_ROOT/summary.txt"
-(cd "$SPWSYN_ROOT/work" && spawn_supervisor "$SPWSYN_WT" "$SPWSYN_SUMMARY" "$spwsyn_claude_pid" "$spwsyn_agy_pid" "$spwsyn_codex_pid")
-
-i=0
-until { [ -f "$SPWSYN_SUMMARY" ] && [ "$(wc -l < "$SPWSYN_SUMMARY")" -eq 4 ]; } || [ "$i" -ge 200 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$SPWSYN_SUMMARY" ] && [ "$(wc -l < "$SPWSYN_SUMMARY")" -eq 4 ] && pass "spawn_supervisor 三個 reviewer（兩個 ready）後多寫一行合流" || bad "spawn_supervisor 未寫出合流那一行: $(cat "$SPWSYN_SUMMARY" 2>/dev/null)"
-
-SPWSYN_L4="$(sed -n 4p "$SPWSYN_SUMMARY")"
-case "$SPWSYN_L4" in
-  'cli=synthesis:claude '*|'cli=synthesis:agy '*) pass "spawn_supervisor 合流那一行的 cli 欄以 synthesis: 開頭並保留實際 CLI" ;;
-  *) bad "spawn_supervisor 合流那一行的 cli 欄不對: $SPWSYN_L4" ;;
-esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'worktree_status=n/a' <<<"$SPWSYN_L4" && pass "spawn_supervisor 合流那一行 worktree_status=n/a" || bad "spawn_supervisor 合流那一行 worktree_status 不對"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'content_status=ready' <<<"$SPWSYN_L4" && pass "spawn_supervisor 合流那一行 content_status=ready" || bad "spawn_supervisor 合流那一行 content_status 不對: $SPWSYN_L4"
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$SPWSYN_ROOT/synthesis.log" ] && pass "spawn_supervisor 把合流 log 放在 base_dir 而非 logs_dir" || bad "spawn_supervisor 未在 base_dir 寫出合流 log"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$SPWSYN_ROOT/logs/synthesis.log" ] && pass "spawn_supervisor 沒有把合流 log 誤放進唯讀的 logs_dir" || bad "spawn_supervisor 誤把合流 log 放進 logs_dir"
-
-# 合流實際收到的 prompt（透過 stub 把 stdin 原樣回顯進 synthesis.log）
-# 涵蓋契約組出的名單（含 codex 這個真的被派出、卻沒有標記可信賴內容的
-# 那一項）與兩份 ready review 全文，證明 build_synthesis_prompt 的輸出
-# 確實整段送進了真正被 launch_synthesis 啟動的那個行程，不是只在記憶
-# 體裡組出來就結束。
-SPWSYN_SYNTH_LOG_CONTENT="$(cat "$SPWSYN_ROOT/synthesis.log" 2>/dev/null)"
-case "$SPWSYN_SYNTH_LOG_CONTENT" in
-  *'claude review body'*) pass "合流 log 內含 claude 那份 review 全文" ;;
-  *) bad "合流 log 缺 claude 那份 review 全文" ;;
-esac
-case "$SPWSYN_SYNTH_LOG_CONTENT" in
-  *'agy review body'*) pass "合流 log 內含 agy 那份 review 全文" ;;
-  *) bad "合流 log 缺 agy 那份 review 全文" ;;
-esac
-case "$SPWSYN_SYNTH_LOG_CONTENT" in
-  *'codex review body'*) bad "合流 log 誤含 codex 這份不可信的 review 全文" ;;
-  *) pass "合流 log 排除 codex 這份不可信的 review 全文" ;;
-esac
-case "$SPWSYN_SYNTH_LOG_CONTENT" in
-  *'codex-e2e-model'*) pass "合流 log 內含名單中失敗的 codex 項" ;;
-  *) bad "合流 log 缺名單中的 codex 項" ;;
-esac
-case "$SPWSYN_SYNTH_LOG_CONTENT" in
-  *'CLI 名稱：claude'*|*'CLI 名稱：agy'*) pass "合流 log 揭露執行合流本身的 CLI 名稱" ;;
-  *) bad "合流 log 未揭露執行合流本身的 CLI 名稱" ;;
-esac
-
-chmod -R u+w "$SPWSYN_ROOT/logs" 2>/dev/null || true
-
-# --- ready_count < 2：只有一個 ready reviewer 時不觸發合流（無頭模式） ---
-SPWSYN1_ROOT="$T/spawn-supervisor-single-ready-fixture"
-SPWSYN1_WT="$(_make_worktree_fixture "$SPWSYN1_ROOT")"
-mkdir -p "$SPWSYN1_ROOT/logs"
-printf 'only reviewer\n' > "$SPWSYN1_ROOT/logs/claude.prompt"
-spwsyn1_pid="$(launch_reviewer claude "$SPWSYN1_WT" "$SPWSYN1_ROOT/logs/claude.log" < "$SPWSYN1_ROOT/logs/claude.prompt")"
-printf 'claude claude-e2e-model dispatched\n' > "$SPWSYN1_ROOT/.roster"
-SPWSYN1_SUMMARY="$SPWSYN1_ROOT/summary.txt"
-(cd "$SPWSYN1_ROOT/work" && spawn_supervisor "$SPWSYN1_WT" "$SPWSYN1_SUMMARY" "$spwsyn1_pid")
-
-i=0
-until [ ! -e "$SPWSYN1_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# 額外靜候片刻：要確認的是「合流不會被觸發」，不是「合流還沒來得及跑
-# 完」——worktree 移除後若真的觸發了合流，會再花上啟動一個行程並等它
-# 結束的時間，這裡多等一輪，確保看到的是穩定狀態而不是還在跑到一半。
-sleep 1
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(wc -l < "$SPWSYN1_SUMMARY")" -eq 1 ] && pass "spawn_supervisor 只有一個 ready reviewer 時不多寫合流那一行" || bad "spawn_supervisor 在只有一個 ready reviewer 時仍寫出合流那一行: $(cat "$SPWSYN1_SUMMARY" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$SPWSYN1_ROOT/synthesis.log" ] && pass "spawn_supervisor 只有一個 ready reviewer 時不啟動合流行程" || bad "spawn_supervisor 只有一個 ready reviewer 時仍啟動了合流行程"
-
-# ==============================================================
 # spawn_supervisor_interactive -- 合流的完整接線（互動模式）
 #
-# 對照上面 spawn_supervisor 的合流測試，但完成判準換成「輸出檔已存在
-# 且帶結束標記」，不再透過 launch_reviewer 起真正的背景行程：claude、
+# 對照先前那個已移除的無頭合流監督測試，完成判準換成「輸出檔已存在
+# 且帶結束標記」，不再透過已移除的無頭 reviewer 啟動函式起真正的背景
+# 行程：claude、
 # agy 兩個 reviewer 直接把內容加結束標記寫進各自的 review.md（模擬已
 # 完成），codex 的 review.md 同樣帶標記（讓輪詢迴圈能終止），但刻意不
 # 寫 .git-status-before-codex，使其 worktree 前後比對必然不符、落在
@@ -5455,9 +4702,9 @@ mkdir -p "$SPWSYNI_STUB_BIN"
 # stub 目錄的職責 -- assert_cli_stub_only 只保護裝了樁的名字，若合流挑
 # 選邏輯日後改變而 agy/codex 的樁不存在，兩者會直接穿透到系統 PATH 上
 # 真正的、已認證的 CLI 二進位。agy 沿用 claude 的樁內容（萬一被意外啟
-# 動，至少不會嘗試真的執行任何動作）；codex 沿用下面 SPWSYN_STUB_BIN
-# 那組已有的「直接崩潰」寫法，同一個理由：不該被啟動的 CLI 若真的被啟
-# 動，樁本身要讓這個情境明顯失敗，而不是安靜地表現得像成功。
+# 動，至少不會嘗試真的執行任何動作）；codex 則是直接崩潰（exit 1）的
+# 寫法，同一個理由：不該被啟動的 CLI 若真的被啟動，樁本身要讓這個情境
+# 明顯失敗，而不是安靜地表現得像成功。
 cat > "$SPWSYNI_STUB_BIN/claude" <<'STUB'
 #!/usr/bin/env bash
 echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
@@ -5515,6 +4762,27 @@ case "$SPWSYNI_L3" in
   'cli=codex pid=n/a exit=n/a '*' content_status=withheld '*) pass "spawn_supervisor_interactive codex 那一行 pid=n/a exit=n/a content_status=withheld" ;;
   *) bad "spawn_supervisor_interactive codex 那一行不對: $SPWSYNI_L3" ;;
 esac
+
+# 回音室標記首行斷言：目前只驗過合流那一份（.comment-body-synthesis.md，
+# 見下面 _record_synthesis_result 那一段），逐則張貼退路每個 cli 各自
+# 那一份（_record_reviewer_result_interactive 寫出的
+# .comment-body-<cli>.md）完全沒有對應斷言。標記的作用是讓下一次針對
+# 同一個 PR 的執行過濾掉自己上一輪的產出，少了它，前一輪的 review 全文
+# 會被當成 PR 討論串的材料重新餵回 reviewer，形成回音室。claude、agy 兩
+# 份 ready、codex 那份 withheld 在這個 fixture 裡都已經由
+# spawn_supervisor_interactive 寫出，三份都要驗。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(head -1 "$SPWSYNI_ROOT/.comment-body-claude.md")" = '<!-- pr-review-by-multi-agents -->' ] \
+  && pass "spawn_supervisor_interactive claude 逐則張貼內容檔第一行是回音室標記" \
+  || bad "spawn_supervisor_interactive claude 逐則張貼內容檔缺回音室標記"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(head -1 "$SPWSYNI_ROOT/.comment-body-agy.md")" = '<!-- pr-review-by-multi-agents -->' ] \
+  && pass "spawn_supervisor_interactive agy 逐則張貼內容檔第一行是回音室標記" \
+  || bad "spawn_supervisor_interactive agy 逐則張貼內容檔缺回音室標記"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(head -1 "$SPWSYNI_ROOT/.comment-body-codex.md")" = '<!-- pr-review-by-multi-agents -->' ] \
+  && pass "spawn_supervisor_interactive codex（withheld）逐則張貼內容檔第一行仍是回音室標記" \
+  || bad "spawn_supervisor_interactive codex（withheld）逐則張貼內容檔缺回音室標記"
 
 SPWSYNI_L4="$(sed -n 4p "$SPWSYNI_SUMMARY")"
 case "$SPWSYNI_L4" in
@@ -5633,12 +4901,15 @@ grep -qF 'content_status=ready' "$SPWSYNI2_SUMMARY" 2>/dev/null && pass "spawn_s
 
 # ==============================================================
 # spawn_supervisor_interactive -- must not hold the caller's own
-# stdout/stderr open（見上面 spawn_supervisor 的同名區段對這個缺陷的完
-# 整說明；這裡驗證的是同一個修法在互動版本上一樣有效，且更關鍵：
-# `run-review.sh launch` 正是 SKILL.md 輪詢設計仰賴立刻返回的那次呼
-# 叫，這個函式是它背後真正跑的東西）。比照上面合流接線區段最後一段的
-# 手法：背景 sleep 之後才補上結束標記，讓輪詢迴圈有真的要等的東西，這
-# 個函式不啟動任何 CLI，不需要另外的 PATH 樁。
+# stdout/stderr open（Task 7 簡報第五節記載的缺陷：`(...)& disown` 沒有
+# 重導向繼承來的 fd 1/2，背景 subshell 因此一直持有呼叫端的輸出管線；
+# 呼叫端若以命令替換擷取這次呼叫的輸出，就得等到監督行程整個跑完──含
+# 合流──才拿得到 EOF，把非同步派工變成同步等待。這裡驗證的是同一個修
+# 法在互動版本上一樣有效，且更關鍵：`run-review.sh launch` 正是
+# SKILL.md 輪詢設計仰賴立刻返回的那次呼叫，這個函式是它背後真正跑的東
+# 西）。比照上面合流接線區段最後一段的手法：背景 sleep 之後才補上結束
+# 標記，讓輪詢迴圈有真的要等的東西，這個函式不啟動任何 CLI，不需要另
+# 外的 PATH 樁。
 # ==============================================================
 
 SVIPIPE_ROOT="$T/supervisor-interactive-pipe-fixture"
@@ -5712,6 +4983,953 @@ until [ ! -e "$SVREPOPATH_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1));
 [ ! -e "$SVREPOPATH_WT" ] && pass "spawn_supervisor_interactive 從非目標 repo 的工作目錄呼叫仍能清除 worktree" \
   || bad "spawn_supervisor_interactive 從非目標 repo 的工作目錄呼叫時未能清除 worktree（worktree 仍在: $SVREPOPATH_WT）"
 
+# ==============================================================
+# spawn_supervisor_interactive -- .supervisor.pid 寫入與 SIGHUP 存活韌性
+#
+# 無頭版原有的 spawn-supervisor-writes-pid-file / spawn-supervisor-pid-
+# file-is-not-caller / spawn-supervisor-survives-sighup /
+# spawn-supervisor-removes-worktree-after-sighup 這幾個案例隨無頭版監督
+# 行程實作一併被刪除；但 .supervisor.pid 的寫入（trap '' HUP
+# 之後、輪詢迴圈開始之前，把 $BASHPID 寫進 base_dir/.supervisor.pid）與
+# HUP 忽略是從無頭版逐字複製過來的，這個檔案裡其餘提到 .supervisor.pid
+# 的斷言全是讀取側（printf 一個假的 pid 檔去測 setup_worktree 與
+# _reap_stale_run_dirs 的回收判斷），沒有一個真正呼叫
+# spawn_supervisor_interactive 驗證寫入側本身。編排端判斷監督行程是否
+# 存活完全依賴這個檔案，缺了寫入側斷言，日後任何一次修改都可能讓它靜
+# 默不再寫出這個檔、或不再抵抗 SIGHUP，而不會被任何測試抓到。
+#
+# 比照上面「標記出現前持續等待」與「不持有呼叫端管線」兩段的手法：
+# review.md 先不帶結束標記，背景 sleep 之後才補上，讓輪詢迴圈有真的要
+# 等的東西，藉此在補標記之前的空窗期驗證 .supervisor.pid 記錄的行程當
+# 下確實存活，並在那段空窗期對它送真正的 SIGHUP，確認它既不會立刻死
+# 掉，最終仍完成收尾（等到標記補上、summary.txt 寫出 ready 那一行、
+# worktree 被清掉）。
+# ==============================================================
+
+SVIPID_ROOT="$T/supervisor-interactive-pidfile-fixture"
+SVIPID_WT="$(_make_worktree_fixture "$SVIPID_ROOT")"
+mkdir -p "$SVIPID_ROOT/reviewers/claude/workdir"
+SVIPID_REVIEW="$SVIPID_ROOT/reviewers/claude/workdir/review.md"
+printf 'still writing, no end marker yet\n' > "$SVIPID_REVIEW"
+printf '%s\n' "$(_git_status_snapshot "$SVIPID_WT")" > "$SVIPID_ROOT/.git-status-before-claude"
+printf 'claude claude-e2e-model dispatched\n' > "$SVIPID_ROOT/.roster"
+SVIPID_SUMMARY="$SVIPID_ROOT/summary.txt"
+
+# shellcheck disable=SC2016  # single quotes intentional: $1/$2 expand inside the nested bash -c, not here
+nohup bash -c '
+  review="$1"; delay="$2"
+  sleep "$delay"
+  printf "===PR-REVIEW-BY-MULTI-AGENTS-END===\n" >> "$review"
+' _ "$SVIPID_REVIEW" 3 >/dev/null 2>&1 &
+
+(cd "$SVIPID_ROOT/work" && spawn_supervisor_interactive "$SVIPID_WT" "$SVIPID_SUMMARY" claude)
+
+i=0
+until [ -s "$SVIPID_ROOT/.supervisor.pid" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$SVIPID_ROOT/.supervisor.pid" ] && pass "spawn_supervisor_interactive 寫出 .supervisor.pid" || bad "spawn_supervisor_interactive 沒有寫出 .supervisor.pid"
+
+svipid_recorded="$(cat "$SVIPID_ROOT/.supervisor.pid" 2>/dev/null)"
+# 標記還沒補上（背景 sleep 3 秒還沒到），此時 .supervisor.pid 記錄的行
+# 程必然還在跑，用 kill -0 直接驗證，不是巧合命中一個已經結束、PID 被
+# 作業系統回收給別的行程用的號碼。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$svipid_recorded" ] && kill -0 "$svipid_recorded" 2>/dev/null && pass "spawn_supervisor_interactive .supervisor.pid 記錄的是當下存活的行程" \
+  || bad "spawn_supervisor_interactive .supervisor.pid 記錄的行程（$svipid_recorded）當下已經不存活"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$svipid_recorded" ] && [ "$svipid_recorded" != "$$" ] && pass "spawn_supervisor_interactive .supervisor.pid 不是呼叫端自己的 PID" \
+  || bad "spawn_supervisor_interactive .supervisor.pid 記成了呼叫端自己的 PID: $svipid_recorded"
+
+# 對 .supervisor.pid 記錄的那個行程送真正的 SIGHUP：這個函式一開始就
+# trap '' HUP，重點是它會忽略這個訊號本身，不是靠 disown（disown 只讓
+# 這個測試腳本自己退出時不主動送 SIGHUP，不影響這裡核發送出的這一個）。
+kill -HUP "$svipid_recorded" 2>/dev/null || true
+
+sleep 0.2
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+kill -0 "$svipid_recorded" 2>/dev/null && pass "spawn_supervisor_interactive 收到 SIGHUP 後仍然存活" \
+  || bad "spawn_supervisor_interactive 收到 SIGHUP 後已經死亡（PID $svipid_recorded 消失）"
+
+i=0
+until [ -s "$SVIPID_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$SVIPID_SUMMARY" ] && pass "spawn_supervisor_interactive 收到 SIGHUP 後仍完成輪詢並寫出摘要" || bad "spawn_supervisor_interactive 收到 SIGHUP 後未完成輪詢，摘要檔仍是空的"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'content_status=ready' "$SVIPID_SUMMARY" 2>/dev/null && pass "spawn_supervisor_interactive 收到 SIGHUP 後仍正確記錄 content_status=ready" || bad "spawn_supervisor_interactive 收到 SIGHUP 後這一行不對: $(cat "$SVIPID_SUMMARY" 2>/dev/null)"
+
+i=0
+until [ ! -e "$SVIPID_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$SVIPID_WT" ] && pass "spawn_supervisor_interactive 收到 SIGHUP 後仍完成 worktree 清理" || bad "spawn_supervisor_interactive 收到 SIGHUP 後未清理 worktree"
+
 export PATH="$saved_path"
+
+# ==============================================================
+# cmd_cleanup
+#
+# 收尾程序原本寫在規則層、由編排端逐步執行，其中包含編排端自己照公式
+# 組出分支名再下強制刪除——等於讓語言模型重建一個破壞性指令的目標。
+# 腳本自己知道分支名（分支就是它建的），也知道要動哪個 repo
+# （.repo-path），本來就具備完成這件事所需的全部資訊。
+#
+# 每一次呼叫 cmd_cleanup 都只餵它 $T 底下的路徑：這個子命令會真的下
+# rm -rf 與 git branch -D，絕不能讓它們碰到這個測試腳本自己的工作目錄
+# 或使用者的真實 repo。
+# ==============================================================
+
+# --- 情形一：worktree 仍在 → 整個不刪、不解鎖，據實回報 ---
+CLEAN1="$T/cleanup-worktree-present"
+mkdir -p "$CLEAN1/worktree" "$CLEAN1/materials"
+printf 'x' > "$CLEAN1/materials/pr.md"
+chmod -R a-w "$CLEAN1/materials"
+printf '%s\n' "$T/fake-repo" > "$CLEAN1/.repo-path"
+clean1_out="$(cmd_cleanup --base-dir "$CLEAN1" 2>&1)"; clean1_rc=$?
+case "$clean1_out" in
+  *'worktree_removed=no'*) pass "cmd_cleanup worktree 仍在時回報 worktree_removed=no" ;;
+  *) bad "cmd_cleanup worktree 仍在時回報不正確: $clean1_out" ;;
+esac
+case "$clean1_out" in
+  *'run_dir_removed=no:'*) pass "cmd_cleanup worktree 仍在時不刪執行目錄並附原因" ;;
+  *) bad "cmd_cleanup worktree 仍在時執行目錄處置不正確: $clean1_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -d "$CLEAN1" ] && pass "cmd_cleanup worktree 仍在時執行目錄原封保留" || bad "cmd_cleanup 誤刪了執行目錄"
+# 關鍵：不得解鎖。materials 必須維持唯讀。
+if [ -w "$CLEAN1/materials" ]; then
+  bad "cmd_cleanup worktree 仍在時不該解除唯讀保護"
+else
+  pass "cmd_cleanup worktree 仍在時未解除唯讀保護"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$clean1_rc" -eq 0 ] && pass "cmd_cleanup worktree 仍在是正常結果、結束碼 0" || bad "cmd_cleanup worktree 仍在時結束碼為 $clean1_rc"
+chmod -R u+w "$CLEAN1"
+
+# --- 情形二：worktree 已移除 → 解鎖、刪除、驗證不存在 ---
+CLEAN2="$T/cleanup-worktree-gone"
+mkdir -p "$CLEAN2/materials" "$CLEAN2/logs"
+printf 'x' > "$CLEAN2/materials/pr.md"
+printf 'x' > "$CLEAN2/logs/claude.prompt"
+chmod -R a-w "$CLEAN2/materials" "$CLEAN2/logs"
+printf '%s\n' "$T/fake-repo" > "$CLEAN2/.repo-path"
+clean2_out="$(cmd_cleanup --base-dir "$CLEAN2" 2>&1)"
+case "$clean2_out" in
+  *'run_dir_removed=yes'*) pass "cmd_cleanup worktree 已移除時刪除執行目錄" ;;
+  *) bad "cmd_cleanup worktree 已移除時未刪除: $clean2_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -d "$CLEAN2" ] && pass "cmd_cleanup 刪除後路徑確實不存在" || bad "cmd_cleanup 回報刪除但路徑仍在"
+# .repo-path 指向的 "$T/fake-repo" 從未真正建立，屬四個推導失敗出口裡
+# 「repo 路徑不是 git repo」那一種 -- 驗證這個出口即使在執行目錄真的被
+# rm -rf 掉之後仍然正確回報（見 cmd_cleanup 自己的文件：branch_result
+# 必須在 rm -rf 之前就讀完 .repo-path 並存起來，rm -rf 之後才印出來）。
+case "$clean2_out" in
+  *'branch_deleted=no:repo path from .repo-path is not a git repo'*) pass "cmd_cleanup 執行目錄被刪除後仍正確回報分支推導失敗原因" ;;
+  *) bad "cmd_cleanup 執行目錄被刪除後分支推導失敗原因不正確: $clean2_out" ;;
+esac
+
+# --- 情形三：用法錯誤 ---
+if ( cmd_cleanup 2>/dev/null ); then
+  bad "cmd_cleanup 缺 --base-dir 應以結束碼 2 拒絕"
+else
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$?" -eq 2 ] && pass "cmd_cleanup 缺 --base-dir 以結束碼 2 拒絕" || bad "cmd_cleanup 缺 --base-dir 的結束碼不是 2"
+fi
+if ( cmd_cleanup --base-dir relative/path 2>/dev/null ); then
+  bad "cmd_cleanup 相對路徑應以結束碼 2 拒絕"
+else
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$?" -eq 2 ] && pass "cmd_cleanup 相對路徑以結束碼 2 拒絕" || bad "cmd_cleanup 相對路徑的結束碼不是 2"
+fi
+
+# ==============================================================
+# _cleanup_delete_branch -- 四個推導失敗出口，各自獨立驗證
+#
+# 每個出口用一個乾淨、只踩到那一個判準的 fixture 單獨測，不依賴上面
+# 情形一/二的副作用。
+# ==============================================================
+
+# 出口 1: .repo-path 不存在（不可讀）。
+#
+# 這裡改成直接呼叫 _cleanup_delete_branch，不再經過 cmd_cleanup：
+# cmd_cleanup 現在自己也會在進入刪除分支之前先檢查 .repo-path 是否存在
+# （見下面「cmd_cleanup -- base_dir 語意檢查」那組測試），對一個完全沒
+# 有 .repo-path 的目錄，cmd_cleanup 會在那道外層檢查就短路回傳，永遠不
+# 會走到 _cleanup_delete_branch 這一行。要單獨驗證 _cleanup_delete_branch
+# 自己在這個出口的措辭，必須繞過 cmd_cleanup 直接呼叫它。
+CLEANBR_NOFILE="$T/cleanup-branch-no-repo-path"
+mkdir -p "$CLEANBR_NOFILE"
+out_norepo="$(_cleanup_delete_branch "$CLEANBR_NOFILE" 2>&1)"
+case "$out_norepo" in
+  *'branch_deleted=no:.repo-path unreadable'*) pass "_cleanup_delete_branch .repo-path 不存在時回報 .repo-path unreadable" ;;
+  *) bad "_cleanup_delete_branch .repo-path 不存在時回報不正確: $out_norepo" ;;
+esac
+
+# 出口 2: .repo-path 存在，但內容指向的路徑不是 git repo。
+CLEANBR_NOTGIT_RUN="$T/cleanup-branch-not-git-run"
+mkdir -p "$CLEANBR_NOTGIT_RUN"
+CLEANBR_NOTGIT_DIR="$T/cleanup-branch-not-git-dir"
+mkdir -p "$CLEANBR_NOTGIT_DIR"
+printf '%s\n' "$CLEANBR_NOTGIT_DIR" > "$CLEANBR_NOTGIT_RUN/.repo-path"
+out_notgit="$(cmd_cleanup --base-dir "$CLEANBR_NOTGIT_RUN" 2>&1)"
+case "$out_notgit" in
+  *'branch_deleted=no:repo path from .repo-path is not a git repo'*) pass "_cleanup_delete_branch repo 路徑非 git repo 時回報正確原因" ;;
+  *) bad "_cleanup_delete_branch repo 路徑非 git repo 時回報不正確: $out_notgit" ;;
+esac
+
+# 一個真正的、可拋棄的 git repo，供出口 3、4 與下面的成功路徑共用 --
+# 這三組測試都只需要「.repo-path 指向的是個真 git repo」這個前提成立，
+# 差別只在 base_dir 自己的路徑形狀。
+CLEANBR_GITOK="$T/cleanup-branch-derive-repo"
+mkdir -p "$CLEANBR_GITOK"
+git init -q -b main "$CLEANBR_GITOK"
+(
+  cd "$CLEANBR_GITOK"
+  git config user.email test@example.com
+  git config user.name "Test"
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+)
+
+# 出口 3: repo 有效，但 base_dir 的上一層目錄名不符 "...-pr-<數字>" 形狀
+# （不含 "-pr-" 這個子字串），推不出 PR 編號。
+CLEANBR_NOPRNUM="$T/cleanup-branch-no-pr-number/widgets-issue-99/20260101000000-24680"
+mkdir -p "$CLEANBR_NOPRNUM"
+printf '%s\n' "$CLEANBR_GITOK" > "$CLEANBR_NOPRNUM/.repo-path"
+out_noprnum="$(cmd_cleanup --base-dir "$CLEANBR_NOPRNUM" 2>&1)"
+case "$out_noprnum" in
+  *'branch_deleted=no:cannot derive PR number'*) pass "_cleanup_delete_branch 推不出 PR 編號時回報正確原因" ;;
+  *) bad "_cleanup_delete_branch 推不出 PR 編號時回報不正確: $out_noprnum" ;;
+esac
+
+# 出口 4: repo 有效、PR 編號推得出來，但 base_dir 自己的名字結尾不是數字，
+# 推不出 run suffix。
+CLEANBR_NORUNSUFFIX="$T/cleanup-branch-no-run-suffix/widgets-pr-42/not-numeric-suffix"
+mkdir -p "$CLEANBR_NORUNSUFFIX"
+printf '%s\n' "$CLEANBR_GITOK" > "$CLEANBR_NORUNSUFFIX/.repo-path"
+out_norunsuffix="$(cmd_cleanup --base-dir "$CLEANBR_NORUNSUFFIX" 2>&1)"
+case "$out_norunsuffix" in
+  *'branch_deleted=no:cannot derive run suffix'*) pass "_cleanup_delete_branch 推不出 run suffix 時回報正確原因" ;;
+  *) bad "_cleanup_delete_branch 推不出 run suffix 時回報不正確: $out_norunsuffix" ;;
+esac
+
+# ==============================================================
+# cmd_cleanup -- base_dir 語意檢查（防止刪到任意目錄）
+#
+# 光是「存在的絕對路徑目錄、底下沒有 worktree 子目錄」不足以讓
+# cmd_cleanup 動手刪除：下一個任務要改寫的呼叫端一旦算錯 base_dir，代
+# 價是無條件、不可逆地刪掉一個任意目錄。這裡驗證 .repo-path 存在性檢
+# 查真的擋在刪除之前，不是只擋在 _cleanup_delete_branch 那一半。
+# ==============================================================
+
+CLEANGUARD_ARBITRARY="$T/cleanup-guard-arbitrary-dir"
+mkdir -p "$CLEANGUARD_ARBITRARY"
+printf 'do not touch me\n' > "$CLEANGUARD_ARBITRARY/unrelated-file.txt"
+# 刻意不寫 .repo-path、也不建 worktree 子目錄 -- 模擬呼叫端傳進一個跟
+# PR review 完全無關的任意目錄這個情境。
+guard_out="$(cmd_cleanup --base-dir "$CLEANGUARD_ARBITRARY" 2>&1)"; guard_rc=$?
+
+case "$guard_out" in
+  *'worktree_removed=no'*) pass "cmd_cleanup 對缺少 .repo-path 的任意目錄回報 worktree_removed=no" ;;
+  *) bad "cmd_cleanup 對缺少 .repo-path 的任意目錄回報不正確: $guard_out" ;;
+esac
+case "$guard_out" in
+  *'run_dir_removed=no:not a pr-review run directory'*) pass "cmd_cleanup 對缺少 .repo-path 的任意目錄拒絕刪除並附上可分辨的原因" ;;
+  *) bad "cmd_cleanup 對缺少 .repo-path 的任意目錄回報不正確: $guard_out" ;;
+esac
+# 措辭必須跟「這是執行目錄但刪不掉」那條區分開來，呼叫端才分得出兩者。
+case "$guard_out" in
+  *'removal failed'*) bad "cmd_cleanup 把「不是執行目錄」跟「刪除失敗」的措辭混在一起: $guard_out" ;;
+  *) pass "cmd_cleanup 對缺少 .repo-path 的任意目錄用了跟「刪除失敗」不同的措辭" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -d "$CLEANGUARD_ARBITRARY" ] && pass "cmd_cleanup 沒有刪掉缺少 .repo-path 的任意目錄" || bad "cmd_cleanup 誤刪了一個跟 PR review 無關的任意目錄"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$CLEANGUARD_ARBITRARY/unrelated-file.txt" ] && pass "cmd_cleanup 沒有動到任意目錄裡的檔案" || bad "cmd_cleanup 清空了任意目錄裡的檔案"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$guard_rc" -eq 0 ] && pass "cmd_cleanup 對缺少 .repo-path 的任意目錄仍以結束碼 0 回報判準結果" || bad "cmd_cleanup 對缺少 .repo-path 的任意目錄結束碼為 $guard_rc"
+
+# ==============================================================
+# cmd_cleanup -- 刪除失敗時唯讀保護被補回去（errexit 防護的回歸測試）
+#
+# 這個檔案用 set -euo pipefail。cmd_cleanup 裡的 chmod -R u+w 與 rm -rf
+# 如果沒有比照既有寫法加上 || true，只要其中任一個傳回非零，errexit 會
+# 讓函式當場中止：run_dir_removed= 那一行、把 materials 重新上鎖的補
+# 救、以及 branch_deleted= 那一行全部執行不到。這正是「刪除失敗時把唯
+# 讀保護補回去」這條路徑，在沒有 || true 保護時永遠到不了的原因。
+#
+# 用「目錄沒有讀/執行權限」逼真的 rm -rf 失敗：對這支測試進程的擁有者
+# （非 root）來說，chmod -R u+w 只會加回寫入位、加不回讀/執行位，所以
+# 一個原本 000 的子目錄在 chmod -R u+w 之後只會變成「有寫入、沒有讀/
+# 執行」，rm -rf 因此連 opendir 都做不到，可靠地在真實檔案系統上失敗
+# （已用最小重現驗證：chmod -R u+w 之後目錄仍是 d-w-------，rm -rf 回
+# 報「拒絕不符權限的操作」且該目錄原封留下）。這個手法只在非 root 使
+# 用者下成立 -- root 略過所有 DAC 檢查，chmod/rm 對它都會直接成功；已
+# 用 id -u 確認這支測試腳本目前不是以 root 執行。
+#
+# 這裡刻意不透過 `$(cmd_cleanup ...)` 呼叫已經 source 進本測試進程的
+# 函式 -- 已用最小重現驗證過，bash 對「一般賦值搭配指令替換」這個呼叫
+# 形狀本身就會遮蔽 errexit（函式內失敗的指令不會讓呼叫端的 shell 中
+# 止），沿用這個呼叫形狀的話，即使 cmd_cleanup 完全沒加 || true，這條
+# 測試也看不出差異，等於測不到這個問題本身（已對照驗證：把 || true 從
+# 真正的檔案拿掉、只透過真正的子行程呼叫，RC 變成 1 且只印出
+# worktree_removed=yes 一行就中止，其餘兩行完全消失，加回 || true 後
+# RC 恢復 0 且三行都印出、materials 也確實被重新上鎖）。改成真正另開一
+# 個子行程執行 `bash "$RUN_SH" cleanup ...`（比照這個檔案其餘端到端測
+# 試呼叫 prepare/launch 的既有手法），讓 errexit 在那個子行程自己的頂
+# 層行程裡真的生效，才有辦法驗證這條防護線。
+CLEANRMFAIL="$T/cleanup-rm-fails"
+mkdir -p "$CLEANRMFAIL/materials"
+touch "$CLEANRMFAIL/materials/pr.md"
+printf '%s\n' "$T/fake-repo" > "$CLEANRMFAIL/.repo-path"
+chmod 000 "$CLEANRMFAIL/materials"
+
+cleanrmfail_out="$(HERDR_ENV=1 bash "$RUN_SH" cleanup --base-dir "$CLEANRMFAIL" 2>&1)"; cleanrmfail_rc=$?
+
+case "$cleanrmfail_out" in
+  *'run_dir_removed=no:removal failed, run directory still present'*) pass "cmd_cleanup 刪除失敗時仍走完並回報 run_dir_removed=no:removal failed" ;;
+  *) bad "cmd_cleanup 刪除失敗時的輸出不正確（可能被 errexit 中止在半路）: $cleanrmfail_out" ;;
+esac
+case "$cleanrmfail_out" in
+  *'branch_deleted='*) pass "cmd_cleanup 刪除失敗後仍走到最後一行 branch_deleted=" ;;
+  *) bad "cmd_cleanup 刪除失敗後沒有走到 branch_deleted= 那一行（errexit 中止的跡象）: $cleanrmfail_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$cleanrmfail_rc" -eq 0 ] && pass "cmd_cleanup 刪除失敗仍是判準跑完、結束碼 0" || bad "cmd_cleanup 刪除失敗時結束碼為 $cleanrmfail_rc"
+
+# 補救邏輯本身：materials 要重新上鎖（唯讀）。chmod -R u+w 只加回寫入
+# 位，所以在補救之前 materials 是「有寫入、沒有讀/執行」；補救的
+# chmod -R a-w 會把寫入位再拿掉。用「不可寫」判斷重新上鎖是否發生：如
+# 果補救程式碼因為 errexit 從沒執行到，materials 會停在「有寫入」那個
+# 中繼狀態，這裡就會抓到。
+if [ -w "$CLEANRMFAIL/materials" ]; then
+  bad "cmd_cleanup 刪除失敗後 materials 沒有重新上鎖（唯讀保護的補救沒有執行到）"
+else
+  pass "cmd_cleanup 刪除失敗後 materials 重新上鎖"
+fi
+
+# 清乾淨：把鎖住的目錄權限救回來，否則這支測試檔最後的 trap 清不掉它。
+chmod -R u+rwx "$CLEANRMFAIL" 2>/dev/null || true
+rm -rf "$CLEANRMFAIL" 2>/dev/null || true
+
+# ==============================================================
+# cmd_cleanup -- 分支刪除成功路徑
+#
+# 這是本子命令存在的全部理由，原計畫的測試只涵蓋了上面四個推導失敗出
+# 口，沒有涵蓋刪除真的發生這件事本身 -- 對這個從語言模型手上收回一個
+# 破壞性指令的子命令來說，缺了這條就是缺了最關鍵的回歸保護。用一個拋
+# 棄式的真實 git repo（上面 CLEANBR_GITOK 那個 git init 出來的 repo）
+# 驗證：cmd_cleanup 真的刪掉了依命名公式算出來的那個分支，而且只刪那
+# 一個 -- 同一個 repo 裡另外放一個名字相近（同一個 PR、不同 run
+# suffix）但不該被碰的分支，測完確認它還在。
+# ==============================================================
+
+(
+  cd "$CLEANBR_GITOK"
+  # 目標分支：PR 42、run suffix 24680 -- 這個名字不是直接告訴
+  # cmd_cleanup 的，是它自己從下面 CLEANDEL_BASE 的路徑推導出來的。
+  git branch pr-review-42-24680 HEAD
+  # 名字相近但不該被碰：同一個 PR 42、run suffix 不同。只靠前綴比對會
+  # 誤殺這個分支，只有精準比對完整分支名（PR 編號與 run suffix 都對）
+  # 才會放過它。
+  git branch pr-review-42-13579 HEAD
+)
+
+CLEANDEL_BASE="$T/cleanup-branch-delete-run/widgets-pr-42/20260101000000-24680"
+mkdir -p "$CLEANDEL_BASE/materials"
+printf 'x' > "$CLEANDEL_BASE/materials/pr.md"
+printf '%s\n' "$CLEANBR_GITOK" > "$CLEANDEL_BASE/.repo-path"
+
+cleandel_out="$(cmd_cleanup --base-dir "$CLEANDEL_BASE" 2>&1)"; cleandel_rc=$?
+
+case "$cleandel_out" in
+  *'branch_deleted=yes'*) pass "cmd_cleanup 分支刪除成功時回報 branch_deleted=yes" ;;
+  *) bad "cmd_cleanup 分支刪除成功時回報不正確: $cleandel_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$cleandel_rc" -eq 0 ] && pass "cmd_cleanup 分支刪除成功時結束碼為 0" || bad "cmd_cleanup 分支刪除成功時結束碼為 $cleandel_rc"
+
+if git -C "$CLEANBR_GITOK" show-ref --verify --quiet refs/heads/pr-review-42-24680; then
+  bad "cmd_cleanup 沒有真的刪掉目標分支 pr-review-42-24680"
+else
+  pass "cmd_cleanup 真的刪掉了目標分支 pr-review-42-24680"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+git -C "$CLEANBR_GITOK" show-ref --verify --quiet refs/heads/pr-review-42-13579 && pass "cmd_cleanup 沒有誤刪名字相近的另一個分支 pr-review-42-13579" || bad "cmd_cleanup 誤刪了不該碰的分支 pr-review-42-13579"
+
+# ==============================================================
+# cmd_wait
+#
+# 規則層原本要求編排端自行組裝一個輪詢迴圈，並在兩個平台上維護兩套
+# 語意（Claude Code 有 blocked 重新武裝、codex/opencode 沒有），兩者
+# 只靠規則層的文字互相參照維持一致。收進腳本後兩邊差異只剩「要不要
+# 背景執行」。
+# ==============================================================
+
+WAIT_ROOT="$T/wait"
+mkdir -p "$WAIT_ROOT"
+
+# --- 摘要檔新增一行 → event=summary_line ---
+#
+# 這裡的摘要行必須照 _record_reviewer_result_interactive／
+# _record_synthesis_result 實際寫入的七欄 key=value 格式（cli=.../pid=.../
+# exit=.../ended_at=.../worktree_status=.../content_status=.../
+# content_file=...），不能用不帶 key 的裸值。這條 fixture 先前確實寫成裸
+# 值（"claude n/a n/a ..."），cmd_wait 當時用 awk 直接印出第一欄，對真實
+# 格式會得到帶 "cli=" 前綴的完整字串、再套進 "cli=%s" 而重複前綴，但對
+# 這個裸值 fixture 第一欄剛好就是純 cli 名稱、沒有前綴可重複，於是下面
+# 這條本來就是精確比對（非子字串、非萬用字元）的斷言，因為 fixture 本身
+# 失真而沒有機會踩到那個重複前綴的缺陷。改用真實格式後，同一條精確比對
+# 就足以攔下重複前綴的回歸。
+printf 'cli=claude pid=n/a exit=n/a ended_at=2026-09-05T00:00:00Z worktree_status=ok content_status=ready content_file=/tmp/x.md\n' > "$WAIT_ROOT/summary.txt"
+( sleep 1; printf 'cli=agy pid=n/a exit=n/a ended_at=2026-09-05T00:00:01Z worktree_status=ok content_status=ready content_file=/tmp/y.md\n' >> "$WAIT_ROOT/summary.txt" ) &
+wait_out="$(cmd_wait --base-dir "$WAIT_ROOT" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+case "$wait_out" in
+  'event=summary_line cli=agy') pass "cmd_wait 摘要檔新增一行時回傳 summary_line 事件，cli 前綴只有一層" ;;
+  *) bad "cmd_wait 摘要檔事件不正確（若含 cli=cli= 就是前綴重複的回歸）: $wait_out" ;;
+esac
+# 額外用正則再驗一次事件行的形狀，不寫死 "agy" 這個值本身，直接排除
+# "cli=cli=" 這種重複前綴的可能，即使日後這個字面比對被改鬆也還有這一
+# 道防線。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[[ "$wait_out" =~ ^event=summary_line\ cli=[a-z]+$ ]] && pass "cmd_wait summary_line 事件行的格式恰好是 event=summary_line cli=<name>，沒有重複前綴" \
+  || bad "cmd_wait summary_line 事件行格式不正確（可能重複了 cli= 前綴）: $wait_out"
+
+# ==============================================================
+# cmd_wait -- event=blocked 與 --reported-blocked 過濾
+#
+# 這兩條斷言補上原計畫測試漏掉的第四個返回條件：blocked 恰好是四個
+# 事件裡語意最細的一個，因為它正是這次要從規則層收進腳本的那套狀態
+# 機的核心（「blocked 錨點與重新武裝」)。
+#
+# herdr 是真的裝在這台機器上的二進位（不像四個 AI CLI 那樣可能沒
+# 裝），沒有替身時名稱會直接解析到它、對它送出真正的 `agent list`
+# 查詢 -- 這正是 assert_cli_stub_only 存在的理由（見它自己的docstring：
+# 「This has already happened twice while developing this suite.」)，
+# 所以這裡建立替身之後立刻呼叫它驗證替身確實遮蔽住了 herdr。
+#
+# 替身回傳的 JSON 刻意混入一個沒有 name 欄位的 agent，模擬同一台機器
+# 上任何其他被 herdr 自動發現、非本次 run 啟動的 agent（真實情境，不
+# 是假設 -- 這台開發機自己的 `herdr agent list` 現在就回傳好幾個這種
+# agent）。對真實 herdr 二進位（0.8.2）探測過：這種 agent 的 .name 是
+# null，`null | startswith(...)` 是 jq 的執行期錯誤而不是「不相符」--
+# _wait_agent_states 若沒有 `(.name // "")` 這層防護，這個沒有名字的
+# agent 存在就會讓 agent list 查詢對「每一個」cli 都失敗，症狀是
+# blocked 永遠偵測不到、而且不只發生在它自己那個名額上。
+# ==============================================================
+
+WAIT_BLOCKED="$T/wait-blocked"
+mkdir -p "$WAIT_BLOCKED"
+printf 'codex some-model dispatched\nopencode some-model dispatched\n' > "$WAIT_BLOCKED/.roster"
+
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+agent)
+  case "${2:-}" in
+  list) printf '%s' "$WAIT_HERDR_AGENT_LIST_JSON"; exit 0 ;;
+  esac
+  ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$STUB_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$STUB_BIN" herdr
+# codex: blocked（應觸發）；opencode: working（不應觸發）；第三個
+# agent 沒有 name 欄位（模擬無關 agent，驗證 (.name // "") 防護）。
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"codex-aaaaaaaaaaaa","agent_status":"blocked"},{"name":"opencode-bbbbbbbbbbbb","agent_status":"working"},{"agent_status":"blocked"}]}}'
+
+# --- 某 cli 進入 blocked → event=blocked cli=<正確的 cli 名稱> ---
+wait_blocked_out="$(cmd_wait --base-dir "$WAIT_BLOCKED" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+case "$wait_blocked_out" in
+  'event=blocked cli=codex') pass "cmd_wait 某 cli 進入 blocked 時回傳 blocked 事件並帶正確 cli 名稱" ;;
+  *) bad "cmd_wait blocked 事件不正確（可能是 (.name // \"\") 防護沒生效，或 cli 判斷錯誤）: $wait_blocked_out" ;;
+esac
+
+# --- --reported-blocked 點名的 cli 不會再次觸發 blocked，改在死線到達 ---
+wait_blocked_filtered_out="$(cmd_wait --base-dir "$WAIT_BLOCKED" --deadline-at "$(( $(date +%s) + 3 ))" --reported-blocked codex 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_blocked_filtered_out" = 'event=deadline' ] && pass "cmd_wait --reported-blocked 點名的 cli 不會再次觸發 blocked 事件" || bad "cmd_wait --reported-blocked 過濾失敗: $wait_blocked_filtered_out"
+
+unset WAIT_HERDR_AGENT_LIST_JSON
+export PATH="$saved_path"
+rm -f "$STUB_BIN/herdr"
+
+# --- 死線到達 → event=deadline，且不得早退也不得晚於死線太多 ---
+WAIT_DL="$T/wait-deadline"
+mkdir -p "$WAIT_DL"
+: > "$WAIT_DL/summary.txt"
+wait_dl_start=$(date +%s)
+wait_dl_out="$(cmd_wait --base-dir "$WAIT_DL" --deadline-at "$(( wait_dl_start + 3 ))" 2>/dev/null)"
+wait_dl_elapsed=$(( $(date +%s) - wait_dl_start ))
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_dl_out" = 'event=deadline' ] && pass "cmd_wait 死線到達回傳 deadline 事件" || bad "cmd_wait 死線事件不正確: $wait_dl_out"
+if [ "$wait_dl_elapsed" -ge 3 ] && [ "$wait_dl_elapsed" -le 9 ]; then
+  pass "cmd_wait 死線前不早退、到達後不久即返回（$wait_dl_elapsed 秒）"
+else
+  bad "cmd_wait 死線時序不正確: $wait_dl_elapsed 秒"
+fi
+
+# --- 心跳時點 → event=heartbeat，且心跳早於死線時先返回心跳 ---
+WAIT_HB="$T/wait-heartbeat"
+mkdir -p "$WAIT_HB"; : > "$WAIT_HB/summary.txt"
+wait_hb_now=$(date +%s)
+wait_hb_out="$(cmd_wait --base-dir "$WAIT_HB" --heartbeat-at "$(( wait_hb_now + 2 ))" --deadline-at "$(( wait_hb_now + 60 ))" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_hb_out" = 'event=heartbeat' ] && pass "cmd_wait 心跳時點回傳 heartbeat 事件" || bad "cmd_wait 心跳事件不正確: $wait_hb_out"
+
+# --- 摘要檔還不存在時當成零行、不視為錯誤 ---
+WAIT_NF="$T/wait-nofile"
+mkdir -p "$WAIT_NF"
+wait_nf_now=$(date +%s)
+wait_nf_out="$(cmd_wait --base-dir "$WAIT_NF" --deadline-at "$(( wait_nf_now + 3 ))" 2>/dev/null)"; wait_nf_rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_nf_out" = 'event=deadline' ] && [ "$wait_nf_rc" -eq 0 ] && pass "cmd_wait 摘要檔不存在時當成零行繼續等" || bad "cmd_wait 摘要檔不存在時處置不正確: $wait_nf_out rc=$wait_nf_rc"
+
+# --- 用法錯誤 ---
+if ( cmd_wait --base-dir "$WAIT_ROOT" 2>/dev/null ); then
+  bad "cmd_wait 缺 --deadline-at 應以結束碼 2 拒絕"
+else
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$?" -eq 2 ] && pass "cmd_wait 缺 --deadline-at 以結束碼 2 拒絕" || bad "cmd_wait 缺 --deadline-at 的結束碼不是 2"
+fi
+
+# ==============================================================
+# _build_reviewer_panes
+#
+# Building the reviewer tab and panes used to be a ~1394-character manual
+# procedure in SKILL.md that the orchestrating agent carried out call by
+# call. Measured against the real binary: a shell script running inside a
+# herdr pane can do all of it itself -- open a tab naming a workspace,
+# split panes off it naming a cwd and env vars -- so this moves it here.
+# ==============================================================
+
+PANES_ROOT="$T/panes"
+PANES_STUB="$T/panes-bin"
+mkdir -p "$PANES_ROOT" "$PANES_STUB"
+cat > "$PANES_STUB/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HERDR_RECORD_DIR/panes.calls"
+case "$1 $2" in
+  "tab create") printf '{"result":{"tab":{"tab_id":"wT:t9"},"root_pane":{"pane_id":"wT:p1"}}}\n' ;;
+  "pane split") printf '{"result":{"pane":{"pane_id":"wT:p%s"}}}\n' "$RANDOM" ;;
+  *) printf '{"result":{}}\n' ;;
+esac
+STUB
+chmod +x "$PANES_STUB/herdr"
+export HERDR_RECORD_DIR="$PANES_ROOT"
+: > "$PANES_ROOT/panes.calls"
+# herdr 是真的裝在這台機器上的二進位，沒有替身時名稱會直接解析到它、對
+# 它送出真正的 tab/pane 建立請求 -- assert_cli_stub_only 自己的docstring
+# 記載這在本套件開發期間已經發生過兩次。
+assert_cli_stub_only "$PANES_STUB:$saved_path" "$PANES_STUB" herdr
+PATH="$PANES_STUB:$saved_path" HERDR_WORKSPACE_ID=wT \
+  _build_reviewer_panes "$PANES_ROOT" claude agy > "$PANES_ROOT/panes.out" 2>&1
+
+# tab create 必須帶 --workspace，落點否則由 UI 焦點決定（實測）
+case "$(cat "$PANES_ROOT/panes.calls")" in
+  *'tab create'*'--workspace wT'*) pass "_build_reviewer_panes tab create 帶 --workspace" ;;
+  *) bad "_build_reviewer_panes tab create 未帶 --workspace: $(cat "$PANES_ROOT/panes.calls")" ;;
+esac
+# 一律 --no-focus，不搶使用者當下焦點
+case "$(cat "$PANES_ROOT/panes.calls")" in
+  *'--no-focus'*) pass "_build_reviewer_panes 帶 --no-focus" ;;
+  *) bad "_build_reviewer_panes 未帶 --no-focus" ;;
+esac
+# 每個 pane 都要帶隔離家目錄，且 HOME/ZDOTDIR 的值必須是這個 cli 自己專屬
+# 的路徑 -- 不是只數 --env HOME=/--env ZDOTDIR= 這兩個旗標出現幾次：計數
+# 擋不住四家 reviewer 被改成共用同一個家目錄（憑證與設定互相踩踏），也擋
+# 不住 ZDOTDIR 被錯誤路徑覆蓋（pane 若從 herdr 背景服務行程繼承到別的
+# ZDOTDIR，zsh 會改讀那個目錄底下的啟動檔，我們寫進隔離家目錄的 .zshrc
+# 一次都不會被 source，且不會有任何錯誤訊息 -- 見 _build_reviewer_panes
+# 自己 docstring 這一條 trap 的說明）；兩種情況下計數仍然是 2，斷言仍然會
+# 通過。改成逐一比對每個 cli 自己那行 pane split 呼叫，確認 HOME 與
+# ZDOTDIR 都恰好等於 $PANES_ROOT/reviewers/<cli>/home 這個絕對路徑。
+for panes_check_cli in claude agy; do
+  panes_check_home="$PANES_ROOT/reviewers/$panes_check_cli/home"
+  panes_check_line="$(grep -F -- "--cwd $PANES_ROOT/reviewers/$panes_check_cli/workdir" "$PANES_ROOT/panes.calls")"
+  case "$panes_check_line" in
+    *"--env HOME=$panes_check_home --env ZDOTDIR=$panes_check_home"*)
+      pass "_build_reviewer_panes $panes_check_cli 的 HOME 與 ZDOTDIR 都指到自己專屬的隔離家目錄" ;;
+    *)
+      bad "_build_reviewer_panes $panes_check_cli 的 HOME/ZDOTDIR 不正確: $panes_check_line" ;;
+  esac
+done
+# opencode 另需 OPENCODE_CONFIG，同樣只能在建 pane 當下設定
+: > "$PANES_ROOT/panes.calls"
+PATH="$PANES_STUB:$saved_path" HERDR_WORKSPACE_ID=wT \
+  _build_reviewer_panes "$PANES_ROOT" opencode > /dev/null 2>&1
+case "$(cat "$PANES_ROOT/panes.calls")" in
+  *'--env OPENCODE_CONFIG='*) pass "_build_reviewer_panes 為 opencode 帶 OPENCODE_CONFIG" ;;
+  *) bad "_build_reviewer_panes 未為 opencode 帶 OPENCODE_CONFIG" ;;
+esac
+# 輸出必須包含 tab_id 與每個 cli 的 pane_id，且從 JSON 取得而非畫面順序
+case "$(cat "$PANES_ROOT/panes.out")" in
+  *'tab_id=wT:t9'*) pass "_build_reviewer_panes 從 JSON 取得並印出 tab_id" ;;
+  *) bad "_build_reviewer_panes 未印出 tab_id: $(cat "$PANES_ROOT/panes.out")" ;;
+esac
+
+# ---- 決定二的迴歸斷言：root pane 留著不用，每個 cli（含第一個）都各自
+# pane split 出一格 -- 見 _build_reviewer_panes 自己 docstring 的取捨
+# 說明。兩個 cli 都要有自己的 pane_id，且都不等於 tab create 回傳的 root
+# pane id（wT:p1）：等於它就代表某個 cli 誤用了 root pane 本身，而不是
+# 切出來的新 pane。----
+panes_claude_pane_id="$(sed -n 's/^pane_id_claude=//p' "$PANES_ROOT/panes.out")"
+panes_agy_pane_id="$(sed -n 's/^pane_id_agy=//p' "$PANES_ROOT/panes.out")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$panes_claude_pane_id" ] && pass "_build_reviewer_panes claude 拿到自己的 pane_id" \
+  || bad "_build_reviewer_panes claude 沒有 pane_id: $(cat "$PANES_ROOT/panes.out")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$panes_agy_pane_id" ] && pass "_build_reviewer_panes agy 拿到自己的 pane_id" \
+  || bad "_build_reviewer_panes agy 沒有 pane_id: $(cat "$PANES_ROOT/panes.out")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_claude_pane_id" != "wT:p1" ] && pass "_build_reviewer_panes claude 沒有誤用 root pane（wT:p1）" \
+  || bad "_build_reviewer_panes claude 誤用了 root pane"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_agy_pane_id" != "wT:p1" ] && pass "_build_reviewer_panes agy 沒有誤用 root pane（wT:p1）" \
+  || bad "_build_reviewer_panes agy 誤用了 root pane"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_claude_pane_id" != "$panes_agy_pane_id" ] && pass "_build_reviewer_panes claude 與 agy 拿到不同的 pane" \
+  || bad "_build_reviewer_panes claude 與 agy 拿到相同的 pane: $panes_claude_pane_id"
+
+# ---- 決定一的迴歸斷言：面積不再逐次減半 -- 見 _build_reviewer_panes 自
+# 己 docstring 對這個 bug 的說明。派滿四個 cli，逐一比對四次 pane split
+# 呼叫各自的切割目標與 --ratio：目標不能從頭到尾都是 root pane（那正是
+# 面積遞減的成因），--ratio 也不能維持隱含的 0.5 不變（那是即使換了切
+# 割目標、換湯不換藥仍然減半的成因，見 docstring 那段「重接到別的 pane
+# 一樣會半半半半」的說明）。單靠「兩個 cli 拿到不同 pane」（決定二那組
+# 斷言）擋不住這個 bug：面積差到 1/2 比 1/16 時，兩個 pane_id 依然不同，
+# 舊 bug 一樣會通過那組斷言。----
+: > "$PANES_ROOT/panes.calls"
+PATH="$PANES_STUB:$saved_path" HERDR_WORKSPACE_ID=wT \
+  _build_reviewer_panes "$PANES_ROOT" claude codex opencode agy > "$PANES_ROOT/panes-area.out" 2>&1
+
+mapfile -t panes_area_splits < <(grep '^pane split ' "$PANES_ROOT/panes.calls")
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "${#panes_area_splits[@]}" -eq 4 ] && pass "_build_reviewer_panes 四個 cli 各觸發一次 pane split" \
+  || bad "_build_reviewer_panes 四個 cli 觸發的 pane split 次數不對: ${#panes_area_splits[@]}"
+
+panes_area_claude_pane="$(sed -n 's/^pane_id_claude=//p' "$PANES_ROOT/panes-area.out")"
+panes_area_target_1="$(awk '{print $3}' <<<"${panes_area_splits[0]:-}")"
+panes_area_target_2="$(awk '{print $3}' <<<"${panes_area_splits[1]:-}")"
+panes_area_target_3="$(awk '{print $3}' <<<"${panes_area_splits[2]:-}")"
+panes_area_target_4="$(awk '{print $3}' <<<"${panes_area_splits[3]:-}")"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_area_target_1" = "wT:p1" ] && pass "_build_reviewer_panes 第一刀切 root pane 本身" \
+  || bad "_build_reviewer_panes 第一刀沒有切 root pane: $panes_area_target_1"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_area_target_2" != "wT:p1" ] && [ "$panes_area_target_3" != "wT:p1" ] && [ "$panes_area_target_4" != "wT:p1" ] \
+  && pass "_build_reviewer_panes 第二刀之後不再連續切同一格 root pane" \
+  || bad "_build_reviewer_panes 仍然連續切同一格 root pane，面積會逐次減半: $panes_area_target_2 / $panes_area_target_3 / $panes_area_target_4"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_area_target_2" = "$panes_area_claude_pane" ] && [ "$panes_area_target_3" = "$panes_area_claude_pane" ] && [ "$panes_area_target_4" = "$panes_area_claude_pane" ] \
+  && pass "_build_reviewer_panes 第二刀起改切 claude 自己那格，切割目標確實換過" \
+  || bad "_build_reviewer_panes 第二刀之後的切割目標不是 claude 的 pane（$panes_area_claude_pane）: $panes_area_target_2 / $panes_area_target_3 / $panes_area_target_4"
+
+panes_area_ratio_1="$(sed -n 's/.*--ratio \([^ ]*\) .*/\1/p' <<<"${panes_area_splits[0]:-}")"
+panes_area_ratio_2="$(sed -n 's/.*--ratio \([^ ]*\) .*/\1/p' <<<"${panes_area_splits[1]:-}")"
+panes_area_ratio_3="$(sed -n 's/.*--ratio \([^ ]*\) .*/\1/p' <<<"${panes_area_splits[2]:-}")"
+panes_area_ratio_4="$(sed -n 's/.*--ratio \([^ ]*\) .*/\1/p' <<<"${panes_area_splits[3]:-}")"
+panes_area_ratios="$panes_area_ratio_1 $panes_area_ratio_2 $panes_area_ratio_3 $panes_area_ratio_4"
+# 四刀依序是 0.2/0.75/0.6667/0.5：讓四個 reviewer 與留空的 root pane 五
+# 等份平分整個 tab（各 1/5），不是隱含 0.5 造成的 1/2、1/4、1/8、1/16
+# 遞減。改回「每刀都不帶 --ratio」（等同隱含 0.5）會讓這四個值全部變成
+# 空字串，這則斷言必定失敗。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_area_ratios" = "0.2 0.75 0.6667 0.5" ] && pass "_build_reviewer_panes 四刀的 --ratio 依序讓五份等分，面積不再減半" \
+  || bad "_build_reviewer_panes 四刀的 --ratio 不是等分五份的序列: $panes_area_ratios"
+
+unset HERDR_RECORD_DIR
+
+# ==============================================================
+# cmd_run：排序保證 -- 全部前置檢查通過之後，才可以發出第一個 herdr 呼叫
+#
+# cmd_run 把「prepare」與「原本夾在 prepare/launch 之間、由編排端建 pane」
+# 這兩步收進同一個行程，原本靠兩次獨立呼叫拿到的時序保證（呼叫端在看到
+# prepare 成功之前，不會去建任何 pane）現在得靠執行順序自己保證。這裡
+# 用 cmd_prepare() 自己 per-cli 迴圈裡最後一項檢查 -- 超過
+# PROMPT_BYTE_LIMIT 的 prompt -- 逼它在 worktree、chmod、材料都已經備妥
+# 之後才失敗，是最貼近「前置檢查全部走完才失敗」的情境，藉此證明就算
+# cmd_prepare() 幾乎跑到底才失敗，herdr 依然完全沒被呼叫過一次。手法沿用
+# 既有的 oversized-prompt fixture（見上面 cmd-prepare-oversized-prompt-*
+# 那節）與 herdr-leak-record（見上面 VERIFY3 那節）兩個既有技巧，不是新
+# 發明的機制。
+# ==============================================================
+
+RUNORDER_ROOT="$T/run-order-guarantee-fixture"
+mkdir -p "$RUNORDER_ROOT/skill/scripts" "$RUNORDER_ROOT/skill/references"
+cp "$RUN_SH" "$RUNORDER_ROOT/skill/scripts/run-review.sh"
+head -c "$((PROMPT_BYTE_LIMIT + 50000))" /dev/zero | tr '\0' 'A' > "$RUNORDER_ROOT/skill/references/reviewer-contract.md"
+
+mkdir -p "$RUNORDER_ROOT/remotes/runorder-org" "$RUNORDER_ROOT/work"
+git init -q -b main --bare "$RUNORDER_ROOT/remotes/runorder-org/runorder-repo.git"
+git init -q -b main "$RUNORDER_ROOT/work"
+(
+  cd "$RUNORDER_ROOT/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "https://github.com/runorder-org/runorder-repo.git"
+  git config "url.$RUNORDER_ROOT/remotes/runorder-org/runorder-repo.git.insteadOf" "https://github.com/runorder-org/runorder-repo.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b feature
+  printf 'feature\n' >> f.txt
+  git commit -aq -m feature
+  git push -q origin feature:refs/pull/1/head
+  git checkout -q main
+)
+
+RUNORDER_HOME="$T/run-order-guarantee-home"
+mkdir -p "$RUNORDER_HOME"
+
+RUNORDER_HERDR_LEAK_RECORD="$T/run-order-guarantee-herdr-leak"
+rm -f "$RUNORDER_HERDR_LEAK_RECORD"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+: >> "$RUNORDER_HERDR_LEAK_RECORD"
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+export RUNORDER_HERDR_LEAK_RECORD
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
+
+if runorder_out="$(cd "$RUNORDER_ROOT/work" && CLAUDE_CONFIG_DIR="" HOME="$RUNORDER_HOME" \
+  PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 HERDR_WORKSPACE_ID=runOrderWs \
+  "$BASH_ABS_PATH" "$RUNORDER_ROOT/skill/scripts/run-review.sh" run \
+    --pr "https://github.com/runorder-org/runorder-repo/pull/1" --claude 2>&1)"; then
+  bad "cmd_run 超大 prompt 時應失敗"
+else
+  pass "cmd_run 超大 prompt 時失敗"
+fi
+case "$runorder_out" in
+  *"exceeds limit of $PROMPT_BYTE_LIMIT bytes"*) pass "cmd_run 失敗訊息點名 prompt 超過門檻" ;;
+  *) bad "cmd_run 失敗訊息未點名 prompt 超過門檻: $runorder_out" ;;
+esac
+# 排序保證的關鍵斷言：不是「紀錄檔是空的」，是紀錄檔根本不存在 -- 證明
+# herdr 從頭到尾沒被呼叫過一次，即使 cmd_prepare() 已經建好 worktree、
+# chmod 唯讀、複製完材料，只在 per-cli 迴圈的最後一項檢查才失敗。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$RUNORDER_HERDR_LEAK_RECORD" ] && pass "cmd_run 前置檢查失敗時 herdr 完全沒被呼叫（排序保證）" \
+  || bad "cmd_run 前置檢查失敗時仍呼叫了 herdr，排序保證失效"
+
+unset RUNORDER_HERDR_LEAK_RECORD
+rm -f "$STUB_BIN/herdr"
+
+# ==============================================================
+# cmd_run：cmd_prepare() 裸寫入失敗必須顯式中止，不能被 errexit 悄悄吃掉
+#
+# cmd_run 把 cmd_prepare 包在 `prepare_out="$(cmd_prepare "$@")" || return
+# $?` 這種命令替換 + 條件判斷裡：這個賦值本身落在 || 清單裡，即使開
+# inherit_errexit，errexit 在這種脈絡下也救不回來（實測：沒有條件判斷時
+# inherit_errexit 會正確中止，一旦加上條件判斷，命令替換內部一路跑過失敗
+# 那一行、整個賦值仍回傳成功）。這正是 RUNORDER 那組測試不會踩到的縫隙：
+# 那裡的失敗（prompt 超過門檻）本來就是顯式 `exit 1`，不管有沒有條件包著
+# 都會中止；裸寫入（例如建立 logs_dir 用的 mkdir -p）失敗時如果不顯式
+# 檢查，靠的是 set -e 自己冒出來的中止，而那個中止正是這裡會被吃掉的。
+# 所以這裡跟 RUNORDER 一樣，用 `run` 子命令（不是單獨呼叫 `prepare`）當
+# 獨立行程呼叫，同樣用一個 herdr 紀錄檔證明 cmd_run 真的整個中止、從未
+# 呼叫過 herdr（而不是吞掉失敗後靜默略過、繼續往下派工）。
+# ==============================================================
+
+WFRUN_ROOT="$T/write-failure-run-fixture"
+mkdir -p "$WFRUN_ROOT/remotes/wfrun-org" "$WFRUN_ROOT/work"
+git init -q -b main --bare "$WFRUN_ROOT/remotes/wfrun-org/wfrun-repo.git"
+git init -q -b main "$WFRUN_ROOT/work"
+(
+  cd "$WFRUN_ROOT/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "https://github.com/wfrun-org/wfrun-repo.git"
+  git config "url.$WFRUN_ROOT/remotes/wfrun-org/wfrun-repo.git.insteadOf" "https://github.com/wfrun-org/wfrun-repo.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b feature
+  printf 'feature\n' >> f.txt
+  git commit -aq -m feature
+  git push -q origin feature:refs/pull/1/head
+  git checkout -q main
+)
+
+WFRUN_HOME="$T/write-failure-run-home"
+mkdir -p "$WFRUN_HOME"
+# $HOME/.tmp 存在但是個普通檔案而非目錄 -- base_dir/logs_dir 的祖先路徑
+# 因此無法被 mkdir -p 建立，正是 cmd_prepare() 第一個裸寫入會踩到的失敗。
+: > "$WFRUN_HOME/.tmp"
+
+WFRUN_HERDR_LEAK_RECORD="$T/write-failure-run-herdr-leak"
+rm -f "$WFRUN_HERDR_LEAK_RECORD"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+: >> "$WFRUN_HERDR_LEAK_RECORD"
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+export WFRUN_HERDR_LEAK_RECORD
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
+
+if wfrun_out="$(cd "$WFRUN_ROOT/work" && CLAUDE_CONFIG_DIR="" HOME="$WFRUN_HOME" \
+  PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 HERDR_WORKSPACE_ID=wfrunWs \
+  bash "$RUN_SH" run --pr "https://github.com/wfrun-org/wfrun-repo/pull/1" --claude 2>&1)"; then
+  bad "cmd_run logs_dir 建立失敗時應失敗卻回傳成功: $wfrun_out"
+else
+  pass "cmd_run logs_dir 建立失敗時顯式中止"
+fi
+case "$wfrun_out" in
+  *"failed to create"*) pass "cmd_run 失敗訊息點名 logs_dir 建立失敗" ;;
+  *) bad "cmd_run 失敗訊息未點名 logs_dir 建立失敗: $wfrun_out" ;;
+esac
+# 排序保證：跟 RUNORDER 那組一樣，不是「紀錄檔是空的」，是紀錄檔根本不
+# 存在 -- 證明 herdr 從頭到尾沒被呼叫過一次。這條連同上面 exit code 那條
+# 是這整段測試的安全網，不是能單獨挑出 mkdir -p 這一個裸寫入的 mutation
+# 探針：$HOME/.tmp 被擋住後，base_dir 底下任何路徑都建不出來，就算把
+# mkdir -p 這裡的顯式檢查還原成裸寫入，緊接在後的 setup_worktree（原本
+# 就有的 `|| { ...; exit 1; }`）一樣會因為同一個根因而失敗，一樣會顯式
+# 中止、一樣不會呼叫到 herdr -- 這兩條測的是「整個 cmd_prepare() 對
+# base_dir 底下任何寫入失敗都不會靜默略過」這個整體安全性，真正能單獨
+# 分辨「這一行有沒有自己的顯式檢查」的是上面那條比對錯誤訊息文字的斷言
+# （mkdir -p 缺了檢查時，訊息會從 "failed to create ... logs_dir" 變成
+# 下一步 .prepared-at 或 setup_worktree 自己的訊息）。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$WFRUN_HERDR_LEAK_RECORD" ] && pass "cmd_run logs_dir 建立失敗時 herdr 完全沒被呼叫（排序保證）" \
+  || bad "cmd_run logs_dir 建立失敗時仍呼叫了 herdr，等於靜默略過繼續派工"
+
+unset WFRUN_HERDR_LEAK_RECORD
+rm -f "$STUB_BIN/herdr"
+
+# ==============================================================
+# cmd_run：快樂路徑端到端 -- prepare -> _build_reviewer_panes -> launch
+# 全部串在一次呼叫裡完成，驗證決定二（root pane 留著不用，每個 cli 都
+# 各自 split 一格）確實落實：兩個 reviewer 拿到的 pane_id 都不是 tab
+# create 回傳的 root pane，彼此也不相同；tab_id 與 summary_file 兩行印
+# 在既有 launch 摘要之上；cmd_launch 派工用的 pane_id 正是
+# _build_reviewer_panes 從 JSON 解出的那個，不是任何佔位字串（透過
+# print_summary 的輸出比對）。
+# ==============================================================
+
+RUNE2E_ROOT="$T/run-e2e-fixture"
+mkdir -p "$RUNE2E_ROOT/remotes/rune2e-org" "$RUNE2E_ROOT/work"
+git init -q -b main --bare "$RUNE2E_ROOT/remotes/rune2e-org/rune2e-repo.git"
+git init -q -b main "$RUNE2E_ROOT/work"
+(
+  cd "$RUNE2E_ROOT/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "https://github.com/rune2e-org/rune2e-repo.git"
+  git config "url.$RUNE2E_ROOT/remotes/rune2e-org/rune2e-repo.git.insteadOf" "https://github.com/rune2e-org/rune2e-repo.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b feature
+  printf 'feature\n' >> f.txt
+  git commit -aq -m feature
+  git push -q origin feature:refs/pull/9/head
+  git checkout -q main
+)
+
+RUNE2E_HOME="$T/run-e2e-home"
+mkdir -p "$RUNE2E_HOME"
+
+# herdr 替身同時扮演兩種角色：_build_reviewer_panes 要用的 tab create /
+# pane split（回傳真正的 JSON，讓 cmd_run 從中解出 tab_id/pane_id），與
+# cmd_launch 的 launch_reviewer_interactive 要用的 agent start / agent
+# prompt / pane read。pane split 的 pane_id 用一個計數檔遞增，不用
+# $RANDOM，避免兩個 reviewer 剛好撞號的機率型 flaky。
+RUNE2E_PANE_COUNTER="$T/run-e2e-pane-counter"
+: > "$RUNE2E_PANE_COUNTER"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "tab create") printf '{"result":{"tab":{"tab_id":"rune2e:t1"},"root_pane":{"pane_id":"rune2e:p0"}}}\n'; exit 0 ;;
+  "pane split")
+    n=\$(( \$(cat "$RUNE2E_PANE_COUNTER" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "\$n" > "$RUNE2E_PANE_COUNTER"
+    printf '{"result":{"pane":{"pane_id":"rune2e:p%s"}}}\n' "\$n"
+    exit 0 ;;
+  "pane read") printf 'rune2e-stub-pane-ready'; exit 0 ;;
+  "agent start") exit 0 ;;
+  "agent prompt") exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
+
+if runE2E_out="$(cd "$RUNE2E_ROOT/work" && CLAUDE_CONFIG_DIR="" HOME="$RUNE2E_HOME" \
+  PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 HERDR_WORKSPACE_ID=rune2eWs \
+  bash "$RUN_SH" run --pr "https://github.com/rune2e-org/rune2e-repo/pull/9" --claude --agy 2>&1)"; then
+  pass "cmd_run 快樂路徑成功"
+else
+  bad "cmd_run 快樂路徑失敗: $runE2E_out"
+fi
+
+RUNE2E_LOGS_DIR="$(find "$RUNE2E_HOME/.tmp" -type d -name logs 2>/dev/null | head -1)"
+RUNE2E_BASE_DIR="$(dirname "${RUNE2E_LOGS_DIR:-/nonexistent}")"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$RUNE2E_LOGS_DIR" ] && grep -qxF "base_dir=$RUNE2E_BASE_DIR" <<<"$runE2E_out" \
+  && pass "cmd_run 印出 prepare 的座標行" || bad "cmd_run 未印出 prepare 的座標行: $runE2E_out"
+
+# cmd_run 自己新增的兩行：tab_id 與 summary_file，疊在既有 launch 摘要之上。
+case "$runE2E_out" in
+  *'tab_id=rune2e:t1'*) pass "cmd_run 印出 tab_id" ;;
+  *) bad "cmd_run 未印出 tab_id: $runE2E_out" ;;
+esac
+case "$runE2E_out" in
+  *"summary_file=$RUNE2E_BASE_DIR/summary.txt"*) pass "cmd_run 印出 summary_file 的絕對路徑" ;;
+  *) bad "cmd_run 未印出正確的 summary_file: $runE2E_out" ;;
+esac
+
+# 決定二的迴歸斷言：兩個 reviewer 都要有 pane_id，且都不是 tab create
+# 回傳的 root pane（rune2e:p0）-- 等於它就代表某個 reviewer 誤用了 root
+# pane 本身，而不是各自切出來的新 pane；兩者彼此也不相同。
+runE2E_claude_pane="$(printf '%s\n' "$runE2E_out" | grep -F -- '- claude' | grep -o 'rune2e:p[0-9]*' | head -1)"
+runE2E_agy_pane="$(printf '%s\n' "$runE2E_out" | grep -F -- '- agy' | grep -o 'rune2e:p[0-9]*' | head -1)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$runE2E_claude_pane" ] && [ "$runE2E_claude_pane" != "rune2e:p0" ] \
+  && pass "cmd_run 的 claude 拿到自己切出來的 pane，不是 root pane" \
+  || bad "cmd_run 的 claude pane 不正確: '$runE2E_claude_pane'"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$runE2E_agy_pane" ] && [ "$runE2E_agy_pane" != "rune2e:p0" ] \
+  && pass "cmd_run 的 agy 拿到自己切出來的 pane，不是 root pane" \
+  || bad "cmd_run 的 agy pane 不正確: '$runE2E_agy_pane'"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$runE2E_claude_pane" ] && [ "$runE2E_claude_pane" != "$runE2E_agy_pane" ] \
+  && pass "cmd_run 的 claude 與 agy 拿到不同的 pane" \
+  || bad "cmd_run 的 claude 與 agy 拿到相同的 pane: '$runE2E_claude_pane'"
+
+# --- 讓 cmd_launch 在背景起的監督行程真的收斂：cmd_run 把 prepare、建
+# pane、launch 揉進同一次呼叫，沒有像 prepare/launch 兩階段測試那樣「呼叫
+# launch 之前先寫好 review.md」的空窗可用 -- reviewer_workdir 的路徑要等
+# cmd_prepare() 在同一個行程裡跑完才知道。改成在 run 這次呼叫返回、拿到
+# 座標之後立刻補上，讓背景監督行程收斂並清掉 worktree，避免留下永遠輪詢
+# 的孤兒行程。---
+for rune2e_cli in claude agy; do
+  printf '%s review body (run e2e stub)\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' "$rune2e_cli" \
+    > "$RUNE2E_BASE_DIR/reviewers/$rune2e_cli/workdir/review.md"
+done
+
+RUNE2E_SUMMARY_FILE="$RUNE2E_BASE_DIR/summary.txt"
+i=0
+until { [ -f "$RUNE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$RUNE2E_SUMMARY_FILE")" -eq 3 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$RUNE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$RUNE2E_SUMMARY_FILE")" -eq 3 ] \
+  && pass "cmd_run 背景監督行程正常收斂（2 個 reviewer + 1 個 synthesis）" \
+  || bad "cmd_run 背景監督行程未收斂: $(cat "$RUNE2E_SUMMARY_FILE" 2>/dev/null)"
+
+RUNE2E_WORKTREE_DIR="$RUNE2E_BASE_DIR/worktree"
+i=0
+until [ ! -e "$RUNE2E_WORKTREE_DIR" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$RUNE2E_WORKTREE_DIR" ] && pass "cmd_run 完成後 worktree 已移除" || bad "cmd_run 完成後 worktree 仍在"
+
+rm -f "$STUB_BIN/herdr"
 
 exit $fail
