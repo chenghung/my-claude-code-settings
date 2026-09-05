@@ -35,4 +35,4 @@
 
 ## 這條路徑同樣關著讀檔那道門
 
-**補貼路徑不得把 `content_file`、`.comment-body-*.md` 或任何 `review.md` 讀進 main agent 的 context**，包含為了上面那次去重比對而讀。這條禁令與 `SKILL.md` 輪詢那節寫的是同一條，不因為補貼發生在輪詢之外、或發生在另一個 session 而放寬：比對與張貼一律委派出去，main agent 這一端只經手路徑與結構化欄位。委派張貼本身照 `SKILL.md`「張貼」節那段的要求走，補貼這一次不例外。
+**補貼路徑不得把 `content_file`、`.comment-body-*.md` 或任何 `review.md` 讀進 main agent 的 context**，包含為了上面那次去重比對而讀。這條禁令與 `SKILL.md`「等待與判斷」那節寫的是同一條，不因為補貼發生在那段等待之外、或發生在另一個 session 而放寬：比對與張貼一律委派出去，main agent 這一端只經手路徑與結構化欄位。委派張貼本身照 `SKILL.md`「張貼」節那段的要求走，補貼這一次不例外。
