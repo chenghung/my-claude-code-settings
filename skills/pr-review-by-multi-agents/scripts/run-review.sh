@@ -1505,10 +1505,24 @@ _write_agy_home() {
 # credentials file is symlinked in; the user's real ~/.claude.json
 # (roughly 116KB, carrying real project history) is never linked in
 # wholesale. Instead a minimal .claude.json is written by hand with just
-# the two keys claude's interactive startup checks: hasCompletedOnboarding,
-# and hasTrustDialogAccepted keyed by <reviewer_workdir>'s own absolute
-# path -- not the shared worktree path -- generated fresh on every call
-# since the caller creates a new reviewer_workdir per run. Also touches
+# the two things claude's interactive startup checks: hasCompletedOnboarding,
+# and .projects["<reviewer_workdir>"].hasTrustDialogAccepted -- keyed by
+# <reviewer_workdir>'s own absolute path, not the shared worktree path --
+# generated fresh on every call since the caller creates a new
+# reviewer_workdir per run.
+#
+# That nesting is load-bearing and was measured, not read off any doc. An
+# earlier build wrote the trust flag as a top-level
+# hasTrustDialogAccepted: {"<path>": true} map, a shape claude never reads.
+# A/B against claude 2.1.259, same isolated home, same workdir, everything
+# else identical: the top-level form left `herdr agent start` returning
+# agent_not_ready with the pane stopped on claude's own "Quick safety
+# check" trust dialog; the .projects form started cleanly. Because
+# launch_reviewer_interactive treats a failed `agent start` as fatal, that
+# shape did not degrade to a slow reviewer -- it failed cmd_launch outright
+# for the one platform present in every menu option this skill offers.
+# Re-verify this key's shape against a real binary if claude's own config
+# layout ever moves again; nothing in this script can detect the drift. Also touches
 # .zshrc: verified empirically that a freshly isolated HOME has no shell
 # startup files at all, so zsh's first interactive launch triggers the
 # zsh-newuser-install wizard, which swallows the first characters of
@@ -1531,7 +1545,7 @@ _write_claude_home_interactive() {
   mkdir -p "$dir/.claude" || return 1
   ln -sf "$HOME/.claude/.credentials.json" "$dir/.claude/.credentials.json" || return 1
   jq -n --arg cwd "$reviewer_workdir" \
-    '{hasCompletedOnboarding: true, hasTrustDialogAccepted: {($cwd): true}}' \
+    '{hasCompletedOnboarding: true, projects: {($cwd): {hasTrustDialogAccepted: true}}}' \
     > "$dir/.claude.json" || return 1
   touch "$dir/.zshrc" || return 1
 }
@@ -1842,10 +1856,28 @@ _write_agy_home_interactive() {
 #     dontAsk from letting a `gh` write command run, if the model decides
 #     (on its own, or steered by injected PR/issue content) to try one --
 #     the actual backstop against that is that gh commands need network
-#     access and the user's own stored `gh` credentials, neither of which
-#     this script does anything to isolate the reviewer from. Recorded
-#     here rather than silently worked around, since no fix was in scope
-#     for the change that surfaced it.
+#     access plus a credential gh will accept, and this script isolates
+#     neither cleanly. Network: nothing here touches it. Credentials: gh
+#     takes them from two places, and the HOME override reaches only one.
+#     Stored credentials live under the home directory, so the override
+#     does move where gh looks -- whether gh then fails to find any is
+#     NOT measured, so do not read the override as closing that path.
+#     The other place is the environment, and it is wider than the two
+#     names one first reaches for: `gh help environment` on the real
+#     binary documents four token variables (GH_TOKEN and GITHUB_TOKEN,
+#     plus the two enterprise-specific ones), all taking precedence over
+#     stored credentials, alongside a config-directory variable and a
+#     host variable. The config-directory one matters separately: once it
+#     is set, where gh looks for stored credentials stops depending on
+#     HOME at all, so the override above stops being relevant to that
+#     path too. A pane inherits its environment from the herdr daemon
+#     rather than from this script's own process (measured; see
+#     rationale.md's own isolation bullet), so nothing here can clear any
+#     of them. None of those variables was present on the machine this
+#     was measured on -- that is a property of that machine, not a
+#     guarantee this script provides. Recorded here rather than
+#     silently worked around, since no fix was in scope for the change
+#     that surfaced it.
 #
 #     Follow-up security review, this round: confirmed the gap above is
 #     not specific to `gh` -- it is the general exfiltration path removing
@@ -2269,15 +2301,34 @@ _derive_agent_name() {
 # report success while producing nothing this run could ever read back.
 # --disallowedTools here therefore names only WebFetch (no task here has
 # any legitimate need for network access, the same reasoning as
-# launch_reviewer's own claude bullet); --permission-mode is left unset
-# entirely rather than passed as dontAsk, per a separate probe's
-# empirical finding that auto -- not dontAsk -- is already claude's
-# default permission mode under `agent start` when the flag is omitted:
-# starting claude via herdr's `agent start` with no --permission-mode flag
-# at all, the pane's own rendered status bar showed, verbatim, "auto mode
-# on" -- a screen capture of the pane's own rendered state, not an
-# inference from --help text (that probe's full record is not in this
-# repo) -- so passing --permission-mode explicitly would add nothing.
+# launch_reviewer's own claude bullet); --permission-mode is passed
+# explicitly as auto.
+#
+# That flag used to be omitted, on an earlier probe's reading that auto is
+# already claude's default under `agent start` (the pane's status bar was
+# observed showing, verbatim, "auto mode on"). That reading was overturned
+# by measuring the behavior it was supposed to predict, against claude
+# 2.1.259: with the flag omitted, a reviewer writing review.md inside its
+# own cwd raised claude's Create-file approval dialog and herdr reported
+# agent_status=blocked -- i.e. every claude review needed a human keystroke
+# before it could deliver anything. Passing --permission-mode auto, same
+# setup otherwise, the write completed unattended in 5 seconds. The status
+# bar reading was about a mode label; the dialog is about what that mode
+# actually does, and only the second one is testable.
+#
+# Three narrower alternatives were measured and rejected, so they do not
+# get retried: --permission-mode acceptEdits still raised the dialog (with
+# one fewer option, so the mode was in effect and simply does not cover the
+# Write tool); --allowedTools "Write" had no effect; and a
+# permissions.allow list in the isolated home's own .claude/settings.json
+# had no effect either. --permission-mode dontAsk points the other way
+# entirely -- it auto-DENIES anything that would prompt, and the probe
+# reviewer under it reported both Write and a Bash heredoc refused, then
+# stopped with nothing written.
+#
+# This is not a widening of the reviewer's blast radius: omitting the flag
+# was believed to select auto already, so passing it restores the state
+# this function was written to have, and --disallowedTools is unchanged.
 # Also gone: `-p`, which only makes sense for claude's headless,
 # non-interactive mode.
 #
@@ -2355,7 +2406,7 @@ launch_reviewer_interactive() {
   case "$cli_name" in
     claude)
       cmd=(herdr agent start "$agent_name" --kind claude --pane "$pane_id" \
-        -- --disallowedTools "WebFetch")
+        -- --permission-mode auto --disallowedTools "WebFetch")
       ;;
     codex)
       cmd=(herdr agent start "$agent_name" --kind codex --pane "$pane_id" \

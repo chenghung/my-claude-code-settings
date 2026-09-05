@@ -1681,11 +1681,19 @@ else
 fi
 
 ccj="$claude_home_i/.claude.json"
+# The trust key lives at .projects["<abs path>"].hasTrustDialogAccepted, not
+# at a top-level .hasTrustDialogAccepted map. Measured against claude
+# 2.1.259 with a clean A/B: an isolated home carrying the top-level form
+# left `herdr agent start` failing with agent_not_ready (the pane stopped on
+# claude's own "Quick safety check" trust dialog), while the same home
+# carrying the .projects form started cleanly. The top-level assertion this
+# replaces passed for a shape claude never reads.
 if [ -f "$ccj" ] && [ ! -L "$ccj" ] \
   && jq -e '.hasCompletedOnboarding == true' "$ccj" >/dev/null \
-  && jq -e --arg cwd "$reviewer_workdir_i" '.hasTrustDialogAccepted[$cwd] == true' "$ccj" >/dev/null \
-  && jq -e '.hasTrustDialogAccepted | length == 1' "$ccj" >/dev/null; then
-  pass "_write_claude_home_interactive 寫出只含兩個鍵、以 reviewer_workdir 為鍵的 .claude.json"
+  && jq -e --arg cwd "$reviewer_workdir_i" '.projects[$cwd].hasTrustDialogAccepted == true' "$ccj" >/dev/null \
+  && jq -e '.projects | length == 1' "$ccj" >/dev/null \
+  && jq -e 'has("hasTrustDialogAccepted") | not' "$ccj" >/dev/null; then
+  pass "_write_claude_home_interactive 寫出以 .projects[workdir] 記錄信任的 .claude.json"
 else
   bad "_write_claude_home_interactive 的 .claude.json 內容不正確: $(cat "$ccj" 2>/dev/null)"
 fi
@@ -1904,8 +1912,8 @@ export PATH="$STUB_BIN:$saved_path"
 export HERDR_RECORD_DIR="$LRI_RECORD_DIR"
 assert_cli_stub_only "$PATH" "$STUB_BIN" herdr
 
-# --- claude: --disallowedTools names only WebFetch; no -p; no
-# --permission-mode; and, the assertion this task exists to protect, no
+# --- claude: --disallowedTools names only WebFetch; --permission-mode is
+# passed as auto; no -p; and, the assertion this task exists to protect, no
 # Edit/Write/NotebookEdit on --disallowedTools -- any of those three
 # appearing would mean this branch reused launch_reviewer's headless deny
 # list, leaving this reviewer unable to write review.md at all ---
@@ -1933,7 +1941,12 @@ for idx in "${!lri_claude_argv[@]}"; do
   [ "${lri_claude_argv[$idx]}" = "--" ] && lri_claude_dashdash_idx=$idx
 done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_claude_dashdash_idx" -ge 0 ] && [ "${lri_claude_argv[$((lri_claude_dashdash_idx + 1))]:-}" = "--disallowedTools" ] && pass launch-reviewer-interactive-claude-no-duplicate-executable-name || bad "launch-reviewer-interactive-claude-no-duplicate-executable-name: $(cat "$claude_start_argv")"
+lri_claude_first_arg="${lri_claude_argv[$((lri_claude_dashdash_idx + 1))]:-}"
+# Asserts the invariant (the first token after `--` is one of claude's own
+# flags, never the executable name again) rather than pinning which flag
+# happens to come first, so adding or reordering claude's flags does not
+# make this regression guard fail for the wrong reason.
+[ "$lri_claude_dashdash_idx" -ge 0 ] && [ "$lri_claude_first_arg" != "claude" ] && [ "${lri_claude_first_arg#-}" != "$lri_claude_first_arg" ] && pass launch-reviewer-interactive-claude-no-duplicate-executable-name || bad "launch-reviewer-interactive-claude-no-duplicate-executable-name: $(cat "$claude_start_argv")"
 case "$(cat "$claude_start_argv")" in
   *'--disallowedTools'*'WebFetch'*) pass launch-reviewer-interactive-claude-disallows-webfetch ;;
   *) bad "launch-reviewer-interactive-claude-disallows-webfetch: $(cat "$claude_start_argv")" ;;
@@ -1949,10 +1962,24 @@ for a in "${lri_claude_argv[@]}"; do
 done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$lri_claude_dash_p_found" -eq 0 ] && pass launch-reviewer-interactive-claude-no-print-flag || bad launch-reviewer-interactive-claude-no-print-flag
-case "$(cat "$claude_start_argv")" in
-  *'--permission-mode'*) bad "launch-reviewer-interactive-claude-no-permission-mode: $(cat "$claude_start_argv")" ;;
-  *) pass launch-reviewer-interactive-claude-no-permission-mode ;;
-esac
+# --permission-mode auto must be passed explicitly. The earlier assertion
+# here demanded its absence, on a probe reading that claude's status bar
+# showed "auto mode on" under `agent start` with the flag omitted. That
+# reading was overturned by measurement against claude 2.1.259: with the
+# flag omitted, writing review.md inside the reviewer's own cwd raised a
+# Create-file approval dialog and herdr reported agent_status=blocked;
+# with --permission-mode auto passed, the same write completed unattended
+# in 5s. Checked as adjacent argv tokens, not as a substring of the joined
+# line, for the same reason the -p check above is.
+lri_claude_perm_mode_ok=0
+for idx in "${!lri_claude_argv[@]}"; do
+  if [ "${lri_claude_argv[$idx]}" = "--permission-mode" ] \
+    && [ "${lri_claude_argv[$((idx + 1))]:-}" = "auto" ]; then
+    lri_claude_perm_mode_ok=1
+  fi
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_claude_perm_mode_ok" -eq 1 ] && pass launch-reviewer-interactive-claude-permission-mode-auto || bad "launch-reviewer-interactive-claude-permission-mode-auto: $(cat "$claude_start_argv")"
 case "$(cat "$claude_start_argv")" in
   *'Edit'*|*'Write'*) bad "launch-reviewer-interactive-claude-write-not-disallowed: $(cat "$claude_start_argv")" ;;
   *) pass launch-reviewer-interactive-claude-write-not-disallowed ;;
