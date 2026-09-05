@@ -4731,6 +4731,85 @@ until [ ! -e "$SVREPOPATH_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1));
 [ ! -e "$SVREPOPATH_WT" ] && pass "spawn_supervisor_interactive 從非目標 repo 的工作目錄呼叫仍能清除 worktree" \
   || bad "spawn_supervisor_interactive 從非目標 repo 的工作目錄呼叫時未能清除 worktree（worktree 仍在: $SVREPOPATH_WT）"
 
+# ==============================================================
+# spawn_supervisor_interactive -- .supervisor.pid 寫入與 SIGHUP 存活韌性
+#
+# 無頭版原有的 spawn-supervisor-writes-pid-file / spawn-supervisor-pid-
+# file-is-not-caller / spawn-supervisor-survives-sighup /
+# spawn-supervisor-removes-worktree-after-sighup 這幾個案例隨無頭版
+# spawn_supervisor 一併被刪除；但 .supervisor.pid 的寫入（trap '' HUP
+# 之後、輪詢迴圈開始之前，把 $BASHPID 寫進 base_dir/.supervisor.pid）與
+# HUP 忽略是從無頭版逐字複製過來的，這個檔案裡其餘提到 .supervisor.pid
+# 的斷言全是讀取側（printf 一個假的 pid 檔去測 setup_worktree 與
+# _reap_stale_run_dirs 的回收判斷），沒有一個真正呼叫
+# spawn_supervisor_interactive 驗證寫入側本身。編排端判斷監督行程是否
+# 存活完全依賴這個檔案，缺了寫入側斷言，日後任何一次修改都可能讓它靜
+# 默不再寫出這個檔、或不再抵抗 SIGHUP，而不會被任何測試抓到。
+#
+# 比照上面「標記出現前持續等待」與「不持有呼叫端管線」兩段的手法：
+# review.md 先不帶結束標記，背景 sleep 之後才補上，讓輪詢迴圈有真的要
+# 等的東西，藉此在補標記之前的空窗期驗證 .supervisor.pid 記錄的行程當
+# 下確實存活，並在那段空窗期對它送真正的 SIGHUP，確認它既不會立刻死
+# 掉，最終仍完成收尾（等到標記補上、summary.txt 寫出 ready 那一行、
+# worktree 被清掉）。
+# ==============================================================
+
+SVIPID_ROOT="$T/supervisor-interactive-pidfile-fixture"
+SVIPID_WT="$(_make_worktree_fixture "$SVIPID_ROOT")"
+mkdir -p "$SVIPID_ROOT/reviewers/claude/workdir"
+SVIPID_REVIEW="$SVIPID_ROOT/reviewers/claude/workdir/review.md"
+printf 'still writing, no end marker yet\n' > "$SVIPID_REVIEW"
+printf '%s\n' "$(_git_status_snapshot "$SVIPID_WT")" > "$SVIPID_ROOT/.git-status-before-claude"
+printf 'claude claude-e2e-model dispatched\n' > "$SVIPID_ROOT/.roster"
+SVIPID_SUMMARY="$SVIPID_ROOT/summary.txt"
+
+# shellcheck disable=SC2016  # single quotes intentional: $1/$2 expand inside the nested bash -c, not here
+nohup bash -c '
+  review="$1"; delay="$2"
+  sleep "$delay"
+  printf "===PR-REVIEW-BY-MULTI-AGENTS-END===\n" >> "$review"
+' _ "$SVIPID_REVIEW" 3 >/dev/null 2>&1 &
+
+(cd "$SVIPID_ROOT/work" && spawn_supervisor_interactive "$SVIPID_WT" "$SVIPID_SUMMARY" claude)
+
+i=0
+until [ -s "$SVIPID_ROOT/.supervisor.pid" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$SVIPID_ROOT/.supervisor.pid" ] && pass "spawn_supervisor_interactive 寫出 .supervisor.pid" || bad "spawn_supervisor_interactive 沒有寫出 .supervisor.pid"
+
+svipid_recorded="$(cat "$SVIPID_ROOT/.supervisor.pid" 2>/dev/null)"
+# 標記還沒補上（背景 sleep 3 秒還沒到），此時 .supervisor.pid 記錄的行
+# 程必然還在跑，用 kill -0 直接驗證，不是巧合命中一個已經結束、PID 被
+# 作業系統回收給別的行程用的號碼。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$svipid_recorded" ] && kill -0 "$svipid_recorded" 2>/dev/null && pass "spawn_supervisor_interactive .supervisor.pid 記錄的是當下存活的行程" \
+  || bad "spawn_supervisor_interactive .supervisor.pid 記錄的行程（$svipid_recorded）當下已經不存活"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$svipid_recorded" ] && [ "$svipid_recorded" != "$$" ] && pass "spawn_supervisor_interactive .supervisor.pid 不是呼叫端自己的 PID" \
+  || bad "spawn_supervisor_interactive .supervisor.pid 記成了呼叫端自己的 PID: $svipid_recorded"
+
+# 對 .supervisor.pid 記錄的那個行程送真正的 SIGHUP：這個函式一開始就
+# trap '' HUP，重點是它會忽略這個訊號本身，不是靠 disown（disown 只讓
+# 這個測試腳本自己退出時不主動送 SIGHUP，不影響這裡核發送出的這一個）。
+kill -HUP "$svipid_recorded" 2>/dev/null || true
+
+sleep 0.2
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+kill -0 "$svipid_recorded" 2>/dev/null && pass "spawn_supervisor_interactive 收到 SIGHUP 後仍然存活" \
+  || bad "spawn_supervisor_interactive 收到 SIGHUP 後已經死亡（PID $svipid_recorded 消失）"
+
+i=0
+until [ -s "$SVIPID_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$SVIPID_SUMMARY" ] && pass "spawn_supervisor_interactive 收到 SIGHUP 後仍完成輪詢並寫出摘要" || bad "spawn_supervisor_interactive 收到 SIGHUP 後未完成輪詢，摘要檔仍是空的"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'content_status=ready' "$SVIPID_SUMMARY" 2>/dev/null && pass "spawn_supervisor_interactive 收到 SIGHUP 後仍正確記錄 content_status=ready" || bad "spawn_supervisor_interactive 收到 SIGHUP 後這一行不對: $(cat "$SVIPID_SUMMARY" 2>/dev/null)"
+
+i=0
+until [ ! -e "$SVIPID_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$SVIPID_WT" ] && pass "spawn_supervisor_interactive 收到 SIGHUP 後仍完成 worktree 清理" || bad "spawn_supervisor_interactive 收到 SIGHUP 後未清理 worktree"
+
 export PATH="$saved_path"
 
 exit $fail
