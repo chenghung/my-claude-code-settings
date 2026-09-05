@@ -2,12 +2,19 @@
 # Orchestrates parallel PR code review by claude, codex, opencode, and agy
 # CLIs.
 #
-# Command line: four subcommands. `run-review.sh prepare --pr <link>
+# Command line: five subcommands. `run-review.sh prepare --pr <link>
 # [--issue <ref>] [--design <path>] --claude|--codex|--opencode|--agy` (one
 # or more platform flags; see parse_args) runs every precondition check and
 # writes each selected CLI's prompt file. `run-review.sh launch --base-dir
 # <path> --agent <cli>=<pane_id>...` (one or more; see parse_launch_args)
-# launches the reviewers `prepare` already set up. `run-review.sh wait
+# launches the reviewers `prepare` already set up. `run-review.sh run`
+# (same flags as `prepare`; see cmd_run) is the single-command path: it
+# runs `prepare`, then builds this run's herdr tab and one pane per
+# selected reviewer itself (see _build_reviewer_panes -- this used to be a
+# manual procedure in SKILL.md), then runs `launch` against the panes it
+# just built. `prepare` and `launch` stay in place for stepwise
+# debugging and because the existing test suite drives them directly.
+# `run-review.sh wait
 # --base-dir <path> --deadline-at <epoch> [--heartbeat-at <epoch>]
 # [--reported-blocked <cli>]...` (see cmd_wait) blocks one turn of the
 # caller's own poll loop, returning exactly one event line -- a new summary
@@ -3816,14 +3823,146 @@ _wait_agent_states() {
   done < "$base_dir/.roster"
 }
 
-# main --check-clis | prepare <flags>... | launch <flags>... | wait <flags>... | cleanup <flags>...
+# _build_reviewer_panes <base_dir> <cli>...
+#
+# Creates this run's herdr tab and one pane per selected cli, printing
+# `tab_id=<id>` followed by one `pane_id_<cli>=<id>` line per cli. Moved
+# here out of SKILL.md, where it was ~1394 characters of rules the
+# orchestrating agent carried out by hand -- all of it deterministic herdr
+# calls that need no model judgement.
+#
+# Three of those rules are traps rather than preferences, and each one
+# fails silently when broken:
+#
+#   - --workspace on `tab create` is mandatory. Without it the tab lands in
+#     whatever workspace currently has UI focus, NOT the caller's -- and
+#     `tab create` does not read caller context at all, so no environment
+#     signal can recover a wrong landing (measured: faking all three
+#     HERDR_* caller-context variables did not move it). If this call
+#     fails, fail the run; never retry without the flag, because that
+#     retry succeeds and lands in the wrong place with no error.
+#   - --env can only be set when the pane is created. `herdr agent start`
+#     has no such parameter, so a missed --env means the isolated HOME and
+#     opencode's deny-list config are silently absent for the whole run,
+#     with no error anywhere pointing at why.
+#   - IDs come from each command's own JSON response, never from screen
+#     order or documentation examples.
+#
+# --no-focus everywhere: the user stays in the pane they were in.
+#
+# Root pane disposition: `herdr tab create` also accepts --cwd/--env, so
+# the first reviewer could in principle inherit the tab's own root pane
+# directly instead of splitting a new one -- saving one pane, at the cost
+# of assembling the --env args (isolated HOME, plus opencode's extra
+# OPENCODE_CONFIG) at two separate call sites instead of one: once before
+# `tab create` for cli #0, and again in this loop for the rest. Chosen
+# instead: every selected cli, including the first, gets its own freshly
+# split pane below, and the tab's root pane is simply left idle. A second
+# copy of the --env assembly is exactly the kind of drift this file
+# already has direct evidence against (see _write_env_scrubbing_zshrc's
+# own docstring on what a missed/diverged copy of environment-setup logic
+# costs here) -- one unused pane is a cheaper price than a second place
+# for that logic to go stale in, especially given the trap above: a bug
+# that only affects the two-line-shorter tab-create copy would silently
+# strip isolation from whichever cli happens to be first.
+_build_reviewer_panes() {
+  local base_dir="$1"; shift
+  local tab_json tab_id root_pane pane_json pane_id cli direction i=0
+  local -a env_args
+
+  tab_json="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --no-focus 2>&1)" || {
+    printf '_build_reviewer_panes: herdr tab create failed: %s\n' "$tab_json" >&2
+    return 1
+  }
+  tab_id="$(printf '%s' "$tab_json" | jq -r '.result.tab.tab_id // empty')"
+  root_pane="$(printf '%s' "$tab_json" | jq -r '.result.root_pane.pane_id // empty')"
+  if [ -z "$tab_id" ] || [ -z "$root_pane" ]; then
+    printf '_build_reviewer_panes: could not read tab_id/pane_id out of: %s\n' "$tab_json" >&2
+    return 1
+  fi
+  printf 'tab_id=%s\n' "$tab_id"
+
+  for cli in "$@"; do
+    env_args=(--env "HOME=$base_dir/reviewers/$cli/home")
+    [ "$cli" = opencode ] && env_args+=(--env "OPENCODE_CONFIG=$base_dir/reviewers/opencode/home/opencode-permission.json")
+    # Alternate split direction so four panes land as a 2x2 rather than
+    # four narrow columns.
+    if [ $((i % 2)) -eq 1 ]; then direction=right; else direction=down; fi
+    pane_json="$(herdr pane split "$root_pane" --direction "$direction" --no-focus \
+      --cwd "$base_dir/reviewers/$cli/workdir" "${env_args[@]}" 2>&1)" || {
+      printf '_build_reviewer_panes: herdr pane split failed for %s: %s\n' "$cli" "$pane_json" >&2
+      return 1
+    }
+    pane_id="$(printf '%s' "$pane_json" | jq -r '.result.pane.pane_id // empty')"
+    [ -n "$pane_id" ] || {
+      printf '_build_reviewer_panes: no pane_id for %s in: %s\n' "$cli" "$pane_json" >&2
+      return 1
+    }
+    printf 'pane_id_%s=%s\n' "$cli" "$pane_id"
+    i=$((i + 1))
+  done
+}
+
+# cmd_run <same flags as cmd_prepare>
+#
+# The single-command entry point: everything cmd_prepare does, then the
+# pane construction that used to sit between the two commands (see
+# _build_reviewer_panes), then everything cmd_launch does. prepare and
+# launch stay in place -- they are still the way to debug one half without
+# the other, and the existing test suite drives them directly.
+#
+# The ordering guarantee cmd_prepare/cmd_launch got for free from being two
+# separate calls -- nothing herdr-related could happen until the calling
+# agent had already seen prepare's own successful exit -- has to be
+# preserved here by execution order instead, now that both run in the same
+# process: `cmd_prepare "$@"` below either completes and prints its
+# coordinates, or exits non-zero and `|| return $?` stops this function
+# right there, before _build_reviewer_panes -- this function's own first
+# and only caller of any herdr command -- is ever reached. cmd_prepare's
+# own call graph never invokes herdr itself (only cmd_launch's
+# launch_reviewer_interactive does, reached below only after
+# _build_reviewer_panes has already returned). So every precondition check
+# cmd_prepare runs -- gh, jq, PR existence, git repo, origin, contract
+# files, base ref, worktree creation and chmod, materials, prompt size --
+# has already passed by the time the first `herdr tab create` is issued,
+# and a failing precondition never leaves a row of empty panes behind for
+# someone to close by hand.
+cmd_run() {
+  local prepare_out base_dir tab_id cli
+  local -a clis=() agent_args=()
+
+  prepare_out="$(cmd_prepare "$@")" || return $?
+  base_dir="$(printf '%s\n' "$prepare_out" | sed -n 's/^base_dir=//p')"
+  while IFS= read -r cli; do clis+=("$cli"); done < <(
+    printf '%s\n' "$prepare_out" | sed -n 's/^reviewer_workdir_\([a-z]*\)=.*/\1/p'
+  )
+
+  local panes_out
+  panes_out="$(_build_reviewer_panes "$base_dir" "${clis[@]}")" || return 1
+  tab_id="$(printf '%s\n' "$panes_out" | sed -n 's/^tab_id=//p')"
+
+  for cli in "${clis[@]}"; do
+    agent_args+=(--agent "$cli=$(printf '%s\n' "$panes_out" | sed -n "s/^pane_id_${cli}=//p")")
+  done
+
+  printf '%s\n' "$prepare_out"
+  printf 'tab_id=%s\n' "$tab_id"
+  printf 'summary_file=%s\n' "$base_dir/summary.txt"
+  cmd_launch --base-dir "$base_dir" "${agent_args[@]}"
+}
+
+# main --check-clis | prepare <flags>... | launch <flags>... | run <flags>... | wait <flags>... | cleanup <flags>...
 #
 # Top-level dispatch only. Otherwise the first argument selects one of the
-# four subcommands -- prepare (see cmd_prepare) does every precondition
+# five subcommands -- prepare (see cmd_prepare) does every precondition
 # check, sets up the worktree, and writes each selected reviewer's prompt
 # file; launch (see cmd_launch) reads those prompt files back, starts each
 # named reviewer inside its herdr pane, and hands them to
-# spawn_supervisor_interactive; wait (see cmd_wait) blocks one turn of the
+# spawn_supervisor_interactive; run (see cmd_run) is prepare, then
+# _build_reviewer_panes, then launch, run in that order inside this one
+# process -- the single-command path that replaces the calling agent
+# building panes by hand between separate prepare/launch invocations; wait
+# (see cmd_wait) blocks one turn of the
 # caller's own poll loop and prints a single event line -- what to do about
 # that event is entirely the caller's decision, not this script's; cleanup
 # (see cmd_cleanup) tears a finished
@@ -3831,10 +3970,10 @@ _wait_agent_states() {
 # created for it along the way. Any other first argument, or none at all,
 # is a usage error, exit code 2 -- the same code
 # cmd_prepare's own parse_args and cmd_launch's own parse_launch_args use
-# for their own usage errors. All four of the prepare, launch, wait and
-# cleanup branches below check _check_herdr_env first and exit 4 on
+# for their own usage errors. All five of the prepare, launch, run, wait
+# and cleanup branches below check _check_herdr_env first and exit 4 on
 # failure -- a code reserved for exactly this failure, before any of the
-# four subcommands' own parsing or precondition checks run and before any of
+# five subcommands' own parsing or precondition checks run and before any of
 # them has a single side effect to protect against (no gh round-trip, no
 # repo mutation, no directory created). --check-clis is deliberately NOT
 # gated the same way: it is
@@ -3854,10 +3993,11 @@ main() {
   case "${1:-}" in
     prepare) shift; _check_herdr_env || exit 4; cmd_prepare "$@" ;;
     launch) shift; _check_herdr_env || exit 4; cmd_launch "$@" ;;
+    run) shift; _check_herdr_env || exit 4; cmd_run "$@" ;;
     wait) shift; _check_herdr_env || exit 4; cmd_wait "$@" ;;
     cleanup) shift; _check_herdr_env || exit 4; cmd_cleanup "$@" ;;
     *)
-      printf 'run-review.sh: expected a subcommand (prepare|launch|wait|cleanup) or --check-clis\n' >&2
+      printf 'run-review.sh: expected a subcommand (prepare|launch|run|wait|cleanup) or --check-clis\n' >&2
       exit 2
       ;;
   esac

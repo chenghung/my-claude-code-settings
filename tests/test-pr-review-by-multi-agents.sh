@@ -5334,4 +5334,295 @@ else
   [ "$?" -eq 2 ] && pass "cmd_wait 缺 --deadline-at 以結束碼 2 拒絕" || bad "cmd_wait 缺 --deadline-at 的結束碼不是 2"
 fi
 
+# ==============================================================
+# _build_reviewer_panes
+#
+# Building the reviewer tab and panes used to be a ~1394-character manual
+# procedure in SKILL.md that the orchestrating agent carried out call by
+# call. Measured against the real binary: a shell script running inside a
+# herdr pane can do all of it itself -- open a tab naming a workspace,
+# split panes off it naming a cwd and env vars -- so this moves it here.
+# ==============================================================
+
+PANES_ROOT="$T/panes"
+PANES_STUB="$T/panes-bin"
+mkdir -p "$PANES_ROOT" "$PANES_STUB"
+cat > "$PANES_STUB/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HERDR_RECORD_DIR/panes.calls"
+case "$1 $2" in
+  "tab create") printf '{"result":{"tab":{"tab_id":"wT:t9"},"root_pane":{"pane_id":"wT:p1"}}}\n' ;;
+  "pane split") printf '{"result":{"pane":{"pane_id":"wT:p%s"}}}\n' "$RANDOM" ;;
+  *) printf '{"result":{}}\n' ;;
+esac
+STUB
+chmod +x "$PANES_STUB/herdr"
+export HERDR_RECORD_DIR="$PANES_ROOT"
+: > "$PANES_ROOT/panes.calls"
+# herdr 是真的裝在這台機器上的二進位，沒有替身時名稱會直接解析到它、對
+# 它送出真正的 tab/pane 建立請求 -- assert_cli_stub_only 自己的docstring
+# 記載這在本套件開發期間已經發生過兩次。
+assert_cli_stub_only "$PANES_STUB:$saved_path" "$PANES_STUB" herdr
+PATH="$PANES_STUB:$saved_path" HERDR_WORKSPACE_ID=wT \
+  _build_reviewer_panes "$PANES_ROOT" claude agy > "$PANES_ROOT/panes.out" 2>&1
+
+# tab create 必須帶 --workspace，落點否則由 UI 焦點決定（實測）
+case "$(cat "$PANES_ROOT/panes.calls")" in
+  *'tab create'*'--workspace wT'*) pass "_build_reviewer_panes tab create 帶 --workspace" ;;
+  *) bad "_build_reviewer_panes tab create 未帶 --workspace: $(cat "$PANES_ROOT/panes.calls")" ;;
+esac
+# 一律 --no-focus，不搶使用者當下焦點
+case "$(cat "$PANES_ROOT/panes.calls")" in
+  *'--no-focus'*) pass "_build_reviewer_panes 帶 --no-focus" ;;
+  *) bad "_build_reviewer_panes 未帶 --no-focus" ;;
+esac
+# 每個 pane 都要帶隔離家目錄；--env 只能在建 pane 當下設定，錯過沒有第二次機會
+panes_env_count="$(rg -c -- '--env HOME=' "$PANES_ROOT/panes.calls" || echo 0)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_env_count" -ge 2 ] && pass "_build_reviewer_panes 每個 pane 都帶 --env HOME=" || bad "_build_reviewer_panes 帶 HOME 的 pane 數不足: $panes_env_count"
+# opencode 另需 OPENCODE_CONFIG，同樣只能在建 pane 當下設定
+: > "$PANES_ROOT/panes.calls"
+PATH="$PANES_STUB:$saved_path" HERDR_WORKSPACE_ID=wT \
+  _build_reviewer_panes "$PANES_ROOT" opencode > /dev/null 2>&1
+case "$(cat "$PANES_ROOT/panes.calls")" in
+  *'--env OPENCODE_CONFIG='*) pass "_build_reviewer_panes 為 opencode 帶 OPENCODE_CONFIG" ;;
+  *) bad "_build_reviewer_panes 未為 opencode 帶 OPENCODE_CONFIG" ;;
+esac
+# 輸出必須包含 tab_id 與每個 cli 的 pane_id，且從 JSON 取得而非畫面順序
+case "$(cat "$PANES_ROOT/panes.out")" in
+  *'tab_id=wT:t9'*) pass "_build_reviewer_panes 從 JSON 取得並印出 tab_id" ;;
+  *) bad "_build_reviewer_panes 未印出 tab_id: $(cat "$PANES_ROOT/panes.out")" ;;
+esac
+
+# ---- 決定二的迴歸斷言：root pane 留著不用，每個 cli（含第一個）都各自
+# pane split 出一格 -- 見 _build_reviewer_panes 自己 docstring 的取捨
+# 說明。兩個 cli 都要有自己的 pane_id，且都不等於 tab create 回傳的 root
+# pane id（wT:p1）：等於它就代表某個 cli 誤用了 root pane 本身，而不是
+# 切出來的新 pane。----
+panes_claude_pane_id="$(sed -n 's/^pane_id_claude=//p' "$PANES_ROOT/panes.out")"
+panes_agy_pane_id="$(sed -n 's/^pane_id_agy=//p' "$PANES_ROOT/panes.out")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$panes_claude_pane_id" ] && pass "_build_reviewer_panes claude 拿到自己的 pane_id" \
+  || bad "_build_reviewer_panes claude 沒有 pane_id: $(cat "$PANES_ROOT/panes.out")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$panes_agy_pane_id" ] && pass "_build_reviewer_panes agy 拿到自己的 pane_id" \
+  || bad "_build_reviewer_panes agy 沒有 pane_id: $(cat "$PANES_ROOT/panes.out")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_claude_pane_id" != "wT:p1" ] && pass "_build_reviewer_panes claude 沒有誤用 root pane（wT:p1）" \
+  || bad "_build_reviewer_panes claude 誤用了 root pane"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_agy_pane_id" != "wT:p1" ] && pass "_build_reviewer_panes agy 沒有誤用 root pane（wT:p1）" \
+  || bad "_build_reviewer_panes agy 誤用了 root pane"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$panes_claude_pane_id" != "$panes_agy_pane_id" ] && pass "_build_reviewer_panes claude 與 agy 拿到不同的 pane" \
+  || bad "_build_reviewer_panes claude 與 agy 拿到相同的 pane: $panes_claude_pane_id"
+
+unset HERDR_RECORD_DIR
+
+# ==============================================================
+# cmd_run：排序保證 -- 全部前置檢查通過之後，才可以發出第一個 herdr 呼叫
+#
+# cmd_run 把「prepare」與「原本夾在 prepare/launch 之間、由編排端建 pane」
+# 這兩步收進同一個行程，原本靠兩次獨立呼叫拿到的時序保證（呼叫端在看到
+# prepare 成功之前，不會去建任何 pane）現在得靠執行順序自己保證。這裡
+# 用 cmd_prepare() 自己 per-cli 迴圈裡最後一項檢查 -- 超過
+# PROMPT_BYTE_LIMIT 的 prompt -- 逼它在 worktree、chmod、材料都已經備妥
+# 之後才失敗，是最貼近「前置檢查全部走完才失敗」的情境，藉此證明就算
+# cmd_prepare() 幾乎跑到底才失敗，herdr 依然完全沒被呼叫過一次。手法沿用
+# 既有的 oversized-prompt fixture（見上面 cmd-prepare-oversized-prompt-*
+# 那節）與 herdr-leak-record（見上面 VERIFY3 那節）兩個既有技巧，不是新
+# 發明的機制。
+# ==============================================================
+
+RUNORDER_ROOT="$T/run-order-guarantee-fixture"
+mkdir -p "$RUNORDER_ROOT/skill/scripts" "$RUNORDER_ROOT/skill/references"
+cp "$RUN_SH" "$RUNORDER_ROOT/skill/scripts/run-review.sh"
+head -c "$((PROMPT_BYTE_LIMIT + 50000))" /dev/zero | tr '\0' 'A' > "$RUNORDER_ROOT/skill/references/reviewer-contract.md"
+
+mkdir -p "$RUNORDER_ROOT/remotes/runorder-org" "$RUNORDER_ROOT/work"
+git init -q -b main --bare "$RUNORDER_ROOT/remotes/runorder-org/runorder-repo.git"
+git init -q -b main "$RUNORDER_ROOT/work"
+(
+  cd "$RUNORDER_ROOT/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "https://github.com/runorder-org/runorder-repo.git"
+  git config "url.$RUNORDER_ROOT/remotes/runorder-org/runorder-repo.git.insteadOf" "https://github.com/runorder-org/runorder-repo.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b feature
+  printf 'feature\n' >> f.txt
+  git commit -aq -m feature
+  git push -q origin feature:refs/pull/1/head
+  git checkout -q main
+)
+
+RUNORDER_HOME="$T/run-order-guarantee-home"
+mkdir -p "$RUNORDER_HOME"
+
+RUNORDER_HERDR_LEAK_RECORD="$T/run-order-guarantee-herdr-leak"
+rm -f "$RUNORDER_HERDR_LEAK_RECORD"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+: >> "$RUNORDER_HERDR_LEAK_RECORD"
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+export RUNORDER_HERDR_LEAK_RECORD
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
+
+if runorder_out="$(cd "$RUNORDER_ROOT/work" && CLAUDE_CONFIG_DIR="" HOME="$RUNORDER_HOME" \
+  PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 HERDR_WORKSPACE_ID=runOrderWs \
+  "$BASH_ABS_PATH" "$RUNORDER_ROOT/skill/scripts/run-review.sh" run \
+    --pr "https://github.com/runorder-org/runorder-repo/pull/1" --claude 2>&1)"; then
+  bad "cmd_run 超大 prompt 時應失敗"
+else
+  pass "cmd_run 超大 prompt 時失敗"
+fi
+case "$runorder_out" in
+  *"exceeds limit of $PROMPT_BYTE_LIMIT bytes"*) pass "cmd_run 失敗訊息點名 prompt 超過門檻" ;;
+  *) bad "cmd_run 失敗訊息未點名 prompt 超過門檻: $runorder_out" ;;
+esac
+# 排序保證的關鍵斷言：不是「紀錄檔是空的」，是紀錄檔根本不存在 -- 證明
+# herdr 從頭到尾沒被呼叫過一次，即使 cmd_prepare() 已經建好 worktree、
+# chmod 唯讀、複製完材料，只在 per-cli 迴圈的最後一項檢查才失敗。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$RUNORDER_HERDR_LEAK_RECORD" ] && pass "cmd_run 前置檢查失敗時 herdr 完全沒被呼叫（排序保證）" \
+  || bad "cmd_run 前置檢查失敗時仍呼叫了 herdr，排序保證失效"
+
+unset RUNORDER_HERDR_LEAK_RECORD
+rm -f "$STUB_BIN/herdr"
+
+# ==============================================================
+# cmd_run：快樂路徑端到端 -- prepare -> _build_reviewer_panes -> launch
+# 全部串在一次呼叫裡完成，驗證決定二（root pane 留著不用，每個 cli 都
+# 各自 split 一格）確實落實：兩個 reviewer 拿到的 pane_id 都不是 tab
+# create 回傳的 root pane，彼此也不相同；tab_id 與 summary_file 兩行印
+# 在既有 launch 摘要之上；cmd_launch 派工用的 pane_id 正是
+# _build_reviewer_panes 從 JSON 解出的那個，不是任何佔位字串（透過
+# print_summary 的輸出比對）。
+# ==============================================================
+
+RUNE2E_ROOT="$T/run-e2e-fixture"
+mkdir -p "$RUNE2E_ROOT/remotes/rune2e-org" "$RUNE2E_ROOT/work"
+git init -q -b main --bare "$RUNE2E_ROOT/remotes/rune2e-org/rune2e-repo.git"
+git init -q -b main "$RUNE2E_ROOT/work"
+(
+  cd "$RUNE2E_ROOT/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "https://github.com/rune2e-org/rune2e-repo.git"
+  git config "url.$RUNE2E_ROOT/remotes/rune2e-org/rune2e-repo.git.insteadOf" "https://github.com/rune2e-org/rune2e-repo.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b feature
+  printf 'feature\n' >> f.txt
+  git commit -aq -m feature
+  git push -q origin feature:refs/pull/9/head
+  git checkout -q main
+)
+
+RUNE2E_HOME="$T/run-e2e-home"
+mkdir -p "$RUNE2E_HOME"
+
+# herdr 替身同時扮演兩種角色：_build_reviewer_panes 要用的 tab create /
+# pane split（回傳真正的 JSON，讓 cmd_run 從中解出 tab_id/pane_id），與
+# cmd_launch 的 launch_reviewer_interactive 要用的 agent start / agent
+# prompt / pane read。pane split 的 pane_id 用一個計數檔遞增，不用
+# $RANDOM，避免兩個 reviewer 剛好撞號的機率型 flaky。
+RUNE2E_PANE_COUNTER="$T/run-e2e-pane-counter"
+: > "$RUNE2E_PANE_COUNTER"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "tab create") printf '{"result":{"tab":{"tab_id":"rune2e:t1"},"root_pane":{"pane_id":"rune2e:p0"}}}\n'; exit 0 ;;
+  "pane split")
+    n=\$(( \$(cat "$RUNE2E_PANE_COUNTER" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "\$n" > "$RUNE2E_PANE_COUNTER"
+    printf '{"result":{"pane":{"pane_id":"rune2e:p%s"}}}\n' "\$n"
+    exit 0 ;;
+  "pane read") printf 'rune2e-stub-pane-ready'; exit 0 ;;
+  "agent start") exit 0 ;;
+  "agent prompt") exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
+
+if runE2E_out="$(cd "$RUNE2E_ROOT/work" && CLAUDE_CONFIG_DIR="" HOME="$RUNE2E_HOME" \
+  PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 HERDR_WORKSPACE_ID=rune2eWs \
+  bash "$RUN_SH" run --pr "https://github.com/rune2e-org/rune2e-repo/pull/9" --claude --agy 2>&1)"; then
+  pass "cmd_run 快樂路徑成功"
+else
+  bad "cmd_run 快樂路徑失敗: $runE2E_out"
+fi
+
+RUNE2E_LOGS_DIR="$(find "$RUNE2E_HOME/.tmp" -type d -name logs 2>/dev/null | head -1)"
+RUNE2E_BASE_DIR="$(dirname "${RUNE2E_LOGS_DIR:-/nonexistent}")"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$RUNE2E_LOGS_DIR" ] && grep -qxF "base_dir=$RUNE2E_BASE_DIR" <<<"$runE2E_out" \
+  && pass "cmd_run 印出 prepare 的座標行" || bad "cmd_run 未印出 prepare 的座標行: $runE2E_out"
+
+# cmd_run 自己新增的兩行：tab_id 與 summary_file，疊在既有 launch 摘要之上。
+case "$runE2E_out" in
+  *'tab_id=rune2e:t1'*) pass "cmd_run 印出 tab_id" ;;
+  *) bad "cmd_run 未印出 tab_id: $runE2E_out" ;;
+esac
+case "$runE2E_out" in
+  *"summary_file=$RUNE2E_BASE_DIR/summary.txt"*) pass "cmd_run 印出 summary_file 的絕對路徑" ;;
+  *) bad "cmd_run 未印出正確的 summary_file: $runE2E_out" ;;
+esac
+
+# 決定二的迴歸斷言：兩個 reviewer 都要有 pane_id，且都不是 tab create
+# 回傳的 root pane（rune2e:p0）-- 等於它就代表某個 reviewer 誤用了 root
+# pane 本身，而不是各自切出來的新 pane；兩者彼此也不相同。
+runE2E_claude_pane="$(printf '%s\n' "$runE2E_out" | grep -F -- '- claude' | grep -o 'rune2e:p[0-9]*' | head -1)"
+runE2E_agy_pane="$(printf '%s\n' "$runE2E_out" | grep -F -- '- agy' | grep -o 'rune2e:p[0-9]*' | head -1)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$runE2E_claude_pane" ] && [ "$runE2E_claude_pane" != "rune2e:p0" ] \
+  && pass "cmd_run 的 claude 拿到自己切出來的 pane，不是 root pane" \
+  || bad "cmd_run 的 claude pane 不正確: '$runE2E_claude_pane'"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$runE2E_agy_pane" ] && [ "$runE2E_agy_pane" != "rune2e:p0" ] \
+  && pass "cmd_run 的 agy 拿到自己切出來的 pane，不是 root pane" \
+  || bad "cmd_run 的 agy pane 不正確: '$runE2E_agy_pane'"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$runE2E_claude_pane" ] && [ "$runE2E_claude_pane" != "$runE2E_agy_pane" ] \
+  && pass "cmd_run 的 claude 與 agy 拿到不同的 pane" \
+  || bad "cmd_run 的 claude 與 agy 拿到相同的 pane: '$runE2E_claude_pane'"
+
+# --- 讓 cmd_launch 在背景起的監督行程真的收斂：cmd_run 把 prepare、建
+# pane、launch 揉進同一次呼叫，沒有像 prepare/launch 兩階段測試那樣「呼叫
+# launch 之前先寫好 review.md」的空窗可用 -- reviewer_workdir 的路徑要等
+# cmd_prepare() 在同一個行程裡跑完才知道。改成在 run 這次呼叫返回、拿到
+# 座標之後立刻補上，讓背景監督行程收斂並清掉 worktree，避免留下永遠輪詢
+# 的孤兒行程。---
+for rune2e_cli in claude agy; do
+  printf '%s review body (run e2e stub)\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' "$rune2e_cli" \
+    > "$RUNE2E_BASE_DIR/reviewers/$rune2e_cli/workdir/review.md"
+done
+
+RUNE2E_SUMMARY_FILE="$RUNE2E_BASE_DIR/summary.txt"
+i=0
+until { [ -f "$RUNE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$RUNE2E_SUMMARY_FILE")" -eq 3 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$RUNE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$RUNE2E_SUMMARY_FILE")" -eq 3 ] \
+  && pass "cmd_run 背景監督行程正常收斂（2 個 reviewer + 1 個 synthesis）" \
+  || bad "cmd_run 背景監督行程未收斂: $(cat "$RUNE2E_SUMMARY_FILE" 2>/dev/null)"
+
+RUNE2E_WORKTREE_DIR="$RUNE2E_BASE_DIR/worktree"
+i=0
+until [ ! -e "$RUNE2E_WORKTREE_DIR" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$RUNE2E_WORKTREE_DIR" ] && pass "cmd_run 完成後 worktree 已移除" || bad "cmd_run 完成後 worktree 仍在"
+
+rm -f "$STUB_BIN/herdr"
+
 exit $fail
