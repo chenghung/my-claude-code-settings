@@ -1326,6 +1326,75 @@ _write_agy_home() {
     > "$dir/.gemini/antigravity-cli/settings.json" || return 1
 }
 
+# _write_env_scrubbing_zshrc <path>
+#
+# Writes the .zshrc that every isolated reviewer HOME gets. Two jobs in one
+# file, and both are load-bearing.
+#
+# First job, the original one: a freshly isolated HOME has no shell startup
+# files at all, so zsh's first interactive launch triggers the
+# zsh-newuser-install wizard, which swallows the first characters of
+# whatever herdr sends it and surfaces as "timed out waiting for agent
+# startup". Any .zshrc suppresses that wizard -- this file used to be empty
+# for exactly that reason and nothing else.
+#
+# Second job, added here: scrub the environment down to a whitelist. A pane
+# does NOT inherit this script's own process environment -- it inherits the
+# herdr daemon's (measured: CLAUDE_CONFIG_DIR and CLAUDECODE were both set
+# in the caller and both empty in the pane, while HOME matched the --env
+# value). What the daemon carries is whatever the user's shell startup
+# files exported, and that reaches the pane byte-for-byte identical
+# (measured by comparing sha256 prefixes on both sides; no values were ever
+# printed). On the machine this was measured on, several of those were
+# credentials. The isolated HOME does nothing about them: it overrides one
+# variable, and these arrive by a path that does not go through HOME.
+#
+# herdr's own --env can only SET variables, never remove them, so the scrub
+# cannot happen at pane-creation time -- which is why it lives here, in the
+# one file the pane's own interactive shell is guaranteed to source before
+# `herdr agent start` runs the CLI inside it.
+#
+# Whitelist, not denylist, and the difference is the whole point: a
+# denylist covering the credentials measured today would silently stop
+# covering the next one the user exports. Two alternatives were considered
+# and rejected -- a denylist (lowest risk, cannot break any CLI, but goes
+# stale with no signal) and disclosure-only (leaves the exfiltration
+# surface intact, only better understood).
+#
+# The list below is a verified STARTING POINT, not a proven
+# necessary-and-sufficient set: with these kept, all four CLIs start and
+# claude writes its output file unattended (measured). A CLI may still have
+# some feature that needs a variable this drops, and that would surface as
+# a silent feature failure rather than a startup failure -- which is why
+# the acceptance criteria require an actual output, not just a successful
+# start. Re-verify per entry when adding a platform.
+_write_env_scrubbing_zshrc() {
+  local path="$1"
+  cat > "$path" <<'ZRC'
+# Managed by run-review.sh -- see _write_env_scrubbing_zshrc for why.
+# Keeps only the variables below; everything else exported into this shell
+# is removed before any agent CLI starts in this pane.
+typeset -a _rr_keep
+_rr_keep=(
+  PATH HOME SHELL
+  TERM TERMINFO COLORTERM
+  LANG LC_ALL
+  USER LOGNAME
+  PWD OLDPWD
+  TMPDIR XDG_RUNTIME_DIR
+  DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS
+  HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID
+  HERDR_SOCKET_PATH HERDR_BIN_PATH
+  SSH_AUTH_SOCK ZDOTDIR SHLVL _
+)
+for _rr_v in ${(k)parameters}; do
+  [[ ${parameters[$_rr_v]} == *export* ]] || continue
+  (( ${_rr_keep[(Ie)$_rr_v]} )) || unset $_rr_v
+done
+unset _rr_v _rr_keep
+ZRC
+}
+
 # _write_claude_home_interactive <dir> <reviewer_workdir>
 #
 # Builds an isolated HOME directory for one claude reviewer process
@@ -1352,24 +1421,22 @@ _write_agy_home() {
 # shape did not degrade to a slow reviewer -- it failed cmd_launch outright
 # for the one platform present in every menu option this skill offers.
 # Re-verify this key's shape against a real binary if claude's own config
-# layout ever moves again; nothing in this script can detect the drift. Also touches
-# .zshrc: verified empirically that a freshly isolated HOME has no shell
-# startup files at all, so zsh's first interactive launch triggers the
-# zsh-newuser-install wizard, which swallows the first characters of
-# whatever herdr sends it and surfaces as "timed out waiting for agent
-# startup" -- an empty .zshrc suppresses that wizard. The touch that
-# actually protects the pane is cmd_prepare's own, written into <dir>
-# right after mkdir -p first creates it, in the same per-cli loop
-# iteration (see that loop's own comment): the calling agent's herdr pane
-# split -- the gap RUN_DIR_STALE_GRACE_SECONDS's own docstring already
-# measures, between cmd_prepare returning and cmd_launch running -- starts
-# an interactive tty shell with HOME already pointed at <dir> before this
-# function, reached only from cmd_launch, ever runs. This function's own
-# touch below is therefore a redundant, idempotent backup by the time an
-# interactive run reaches it -- kept because it is what this function's
-# own tests, and any caller that invokes it without going through
-# cmd_prepare's loop first, still rely on. Every sibling *_interactive
-# function below touches .zshrc for this same backup reason.
+# layout ever moves again; nothing in this script can detect the drift. Also
+# writes .zshrc via _write_env_scrubbing_zshrc (see that function's own
+# docstring for what the file now contains and why -- it is no longer the
+# empty placeholder it used to be). The call that actually protects the
+# pane is cmd_prepare's own, written into <dir> right after mkdir -p first
+# creates it, in the same per-cli loop iteration (see that loop's own
+# comment): the calling agent's herdr pane split -- the gap
+# RUN_DIR_STALE_GRACE_SECONDS's own docstring already measures, between
+# cmd_prepare returning and cmd_launch running -- starts an interactive tty
+# shell with HOME already pointed at <dir> before this function, reached
+# only from cmd_launch, ever runs. This function's own call below is
+# therefore a redundant, idempotent backup by the time an interactive run
+# reaches it -- kept because it is what this function's own tests, and any
+# caller that invokes it without going through cmd_prepare's loop first,
+# still rely on. Every sibling *_interactive function below calls
+# _write_env_scrubbing_zshrc for this same backup reason.
 _write_claude_home_interactive() {
   local dir="$1" reviewer_workdir="$2"
   mkdir -p "$dir/.claude" || return 1
@@ -1377,7 +1444,7 @@ _write_claude_home_interactive() {
   jq -n --arg cwd "$reviewer_workdir" \
     '{hasCompletedOnboarding: true, projects: {($cwd): {hasTrustDialogAccepted: true}}}' \
     > "$dir/.claude.json" || return 1
-  touch "$dir/.zshrc" || return 1
+  _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
 
 # _write_codex_home_interactive <dir> <reviewer_workdir>
@@ -1387,17 +1454,18 @@ _write_claude_home_interactive() {
 # granted by hand-writing a two-line .codex/config.toml that marks
 # <reviewer_workdir>'s own absolute path -- not the shared worktree path
 # -- as trusted, generated fresh on every call the same way
-# _write_claude_home_interactive's .claude.json is. Also touches .zshrc,
-# as a redundant, idempotent backup of cmd_prepare's own earlier touch
-# (see _write_claude_home_interactive's docstring for why that file
-# matters and which touch is the one actually protecting the pane).
+# _write_claude_home_interactive's .claude.json is. Also calls
+# _write_env_scrubbing_zshrc to (re)write .zshrc, as a redundant,
+# idempotent backup of cmd_prepare's own earlier call (see
+# _write_claude_home_interactive's docstring for why that file matters
+# and which call is the one actually protecting the pane).
 _write_codex_home_interactive() {
   local dir="$1" reviewer_workdir="$2"
   mkdir -p "$dir/.codex" || return 1
   ln -sf "$HOME/.codex/auth.json" "$dir/.codex/auth.json" || return 1
   printf '[projects."%s"]\ntrust_level = "trusted"\n' "$reviewer_workdir" \
     > "$dir/.codex/config.toml" || return 1
-  touch "$dir/.zshrc" || return 1
+  _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
 
 # _write_opencode_home_interactive <dir>
@@ -1406,14 +1474,14 @@ _write_codex_home_interactive() {
 # running in interactive mode. opencode needs no named credential symlink
 # to reach a state where it can accept the review prompt -- it falls back
 # to its own built-in free model ("Big Pickle") -- so the only thing this
-# function writes is .zshrc, a redundant, idempotent backup of
-# cmd_prepare's own earlier touch (see _write_claude_home_interactive's
-# docstring for why that file matters and which touch is the one actually
-# protecting the pane).
+# function writes is .zshrc, via _write_env_scrubbing_zshrc, a redundant,
+# idempotent backup of cmd_prepare's own earlier call (see
+# _write_claude_home_interactive's docstring for why that file matters and
+# which call is the one actually protecting the pane).
 _write_opencode_home_interactive() {
   local dir="$1"
   mkdir -p "$dir" || return 1
-  touch "$dir/.zshrc" || return 1
+  _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
 
 # _write_opencode_permission_config_interactive <path>
@@ -1564,10 +1632,11 @@ JSON
 # inside the worktree -- a different string prefix than "command(git
 # diff)" covers, so that headless-era rule alone would never match here.
 # The second rule, scoped to this exact -C invocation, is what actually
-# lets the reviewer's git diff through. Also touches .zshrc, as a
-# redundant, idempotent backup of cmd_prepare's own earlier touch (see
+# lets the reviewer's git diff through. Also calls
+# _write_env_scrubbing_zshrc to (re)write .zshrc, as a redundant,
+# idempotent backup of cmd_prepare's own earlier call (see
 # _write_claude_home_interactive's docstring for why that file matters
-# and which touch is the one actually protecting the pane).
+# and which call is the one actually protecting the pane).
 _write_agy_home_interactive() {
   local dir="$1" reviewer_workdir="$2" worktree_dir="$3"
   local real_gemini="$HOME/.gemini" f
@@ -1591,7 +1660,7 @@ _write_agy_home_interactive() {
   jq -n '{onboardingComplete: true}' \
     > "$dir/.gemini/antigravity-cli/cache/onboarding.json" || return 1
 
-  touch "$dir/.zshrc" || return 1
+  _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
 
 # _derive_agent_name <cli_name> <pane_id>
@@ -3018,12 +3087,14 @@ _dispatch_failed_cleanup() {
 # and verify every selected reviewer platform is actually installed (see
 # verify_selection), resolve and validate the PR, set up the shared
 # worktree and base ref, create each selected reviewer's own writable
-# working directory and isolated home directory (touching an empty
-# .zshrc into the home directory right away too, to suppress zsh's
-# new-user wizard in the herdr pane the calling agent builds against it
-# before cmd_launch ever runs -- see this function's own per-cli loop
-# comment; every other named file under the home directory is still a
-# later task's to write), copy this run's materials into each reviewer's
+# working directory and isolated home directory (writing .zshrc into the
+# home directory right away too, via _write_env_scrubbing_zshrc, both to
+# suppress zsh's new-user wizard in the herdr pane the calling agent
+# builds against it before cmd_launch ever runs and to scrub that pane's
+# inherited environment down to a whitelist -- see this function's own
+# per-cli loop comment and _write_env_scrubbing_zshrc's own docstring;
+# every other named file under the home directory is still a later task's
+# to write), copy this run's materials into each reviewer's
 # own read-only copy under its working directory (see this function's own
 # per-cli loop), then
 # build and write each selected reviewer's own prompt file and write
@@ -3174,7 +3245,7 @@ cmd_prepare() {
     # (herdr's --cwd target, and where its review.md output file lands);
     # reviewer_home is its isolated HOME (herdr's --env HOME= target).
     # Every other named file a later task writes under reviewer_home still
-    # doesn't exist yet -- .zshrc is the one exception, touched into
+    # doesn't exist yet -- .zshrc is the one exception, written into
     # reviewer_home below, right after mkdir -p creates it.
     reviewer_workdir="$base_dir/reviewers/$cli/workdir"
     reviewer_home="$base_dir/reviewers/$cli/home"
@@ -3185,18 +3256,20 @@ cmd_prepare() {
     # _dispatch_failed_cleanup instead of letting set -e abort cmd_prepare()
     # with the worktree left behind and nothing to clean it up -- mkdir -p
     # is folded into this same chain for that reason, not left as a bare
-    # statement. The .zshrc touch right after it is folded in for the same
-    # reason, into the same reviewer_home mkdir -p just created -- see
-    # _write_claude_home_interactive's own docstring for why an empty
-    # .zshrc has to exist here before the calling agent's herdr pane split
-    # ever starts an interactive shell against this reviewer_home, and why
-    # each *_interactive function below still touches it again as a
-    # redundant, idempotent backup. build_prompt is handed reviewer_materials
-    # here, not the shared materials_dir fetch_review_materials wrote to --
-    # see build_prompt's own docstring on why that per-reviewer copy (made
-    # just below) is what makes handing over a path safe at all.
+    # statement. The _write_env_scrubbing_zshrc call right after it is
+    # folded in for the same reason, into the same reviewer_home mkdir -p
+    # just created -- see _write_claude_home_interactive's own docstring
+    # for why a .zshrc has to exist here before the calling agent's herdr
+    # pane split ever starts an interactive shell against this
+    # reviewer_home, _write_env_scrubbing_zshrc's own docstring for what
+    # it now writes and why, and why each *_interactive function below
+    # still calls it again as a redundant, idempotent backup. build_prompt
+    # is handed reviewer_materials here, not the shared materials_dir
+    # fetch_review_materials wrote to -- see build_prompt's own docstring
+    # on why that per-reviewer copy (made just below) is what makes
+    # handing over a path safe at all.
     if ! mkdir -p "$reviewer_workdir" "$reviewer_home" "$reviewer_materials" \
-      || ! touch "$reviewer_home/.zshrc" \
+      || ! _write_env_scrubbing_zshrc "$reviewer_home/.zshrc" \
       || ! model="$(resolve_model "$cli")" \
       || ! prompt="$(build_prompt "$contract_path" "$pr_url" "$reviewer_materials" \
              "$cli" "$model" "$worktree_dir" "$base_ref" "$reviewer_workdir/review.md")"; then

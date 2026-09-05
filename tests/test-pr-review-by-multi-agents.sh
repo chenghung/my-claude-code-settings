@@ -1584,7 +1584,57 @@ else
 fi
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$claude_home_i/.zshrc" ] && pass "_write_claude_home_interactive 建立 .zshrc" || bad "_write_claude_home_interactive 未建立 .zshrc"
+[ -s "$claude_home_i/.zshrc" ] && pass "_write_claude_home_interactive 建立非空 .zshrc" || bad "_write_claude_home_interactive 未建立非空 .zshrc"
+
+# ==============================================================
+# _write_env_scrubbing_zshrc
+#
+# 白名單式環境隔離：pane 繼承的是 herdr 背景服務行程的環境，使用者
+# shell 啟動檔 export 的變數會原封進到每個 pane（實測，值以雜湊比對
+# 確認逐位元組相同）。herdr 的 --env 只能設值不能移除變數，所以清理
+# 靠這個寫進隔離家目錄的 .zshrc 完成。
+# ==============================================================
+
+ENVSCRUB="$T/envscrub/.zshrc"
+mkdir -p "$T/envscrub"
+if _write_env_scrubbing_zshrc "$ENVSCRUB"; then
+  pass "_write_env_scrubbing_zshrc 回傳成功"
+else
+  bad "_write_env_scrubbing_zshrc 回傳非零"
+fi
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$ENVSCRUB" ] && pass "_write_env_scrubbing_zshrc 寫出非空檔案" || bad "_write_env_scrubbing_zshrc 寫出空檔案"
+
+# 白名單每一項都必須出現在產生的清單裡
+envscrub_missing=""
+for v in PATH HOME SHELL TERM TERMINFO COLORTERM LANG LC_ALL USER LOGNAME \
+         PWD OLDPWD TMPDIR XDG_RUNTIME_DIR DISPLAY WAYLAND_DISPLAY \
+         DBUS_SESSION_BUS_ADDRESS HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID \
+         HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_BIN_PATH SSH_AUTH_SOCK \
+         ZDOTDIR SHLVL; do
+  grep -qw -- "$v" "$ENVSCRUB" || envscrub_missing="$envscrub_missing $v"
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$envscrub_missing" ] && pass "_write_env_scrubbing_zshrc 白名單完整" || bad "_write_env_scrubbing_zshrc 白名單缺項:$envscrub_missing"
+
+# 已知的機密變數名不得出現在檔案裡——清理靠白名單，不是靠列舉機密
+case "$(cat "$ENVSCRUB")" in
+  *CIRCLECI*|*FIGMA*|*WEBHOOK*|*API_KEY*) bad "_write_env_scrubbing_zshrc 不該列舉機密變數名" ;;
+  *) pass "_write_env_scrubbing_zshrc 未列舉任何機密變數名" ;;
+esac
+
+# 實際行為：在一個帶有偽造機密變數的 zsh 中 source 它，機密應消失、白名單項應留下
+if command -v zsh >/dev/null 2>&1; then
+  envscrub_out="$(FAKE_SECRET_TOKEN=leakme HOME="$T/envscrub" zsh -c \
+    "source '$ENVSCRUB'; printf 'SECRET=[%s] PATH_SET=[%s]\n' \"\$FAKE_SECRET_TOKEN\" \"\${PATH:+yes}\"" 2>/dev/null)"
+  case "$envscrub_out" in
+    'SECRET=[] PATH_SET=[yes]') pass "_write_env_scrubbing_zshrc 清掉非白名單變數且保留白名單變數" ;;
+    *) bad "_write_env_scrubbing_zshrc 行為不符: $envscrub_out" ;;
+  esac
+else
+  pass "_write_env_scrubbing_zshrc 行為測試略過（本機無 zsh）"
+fi
 
 # ==============================================================
 # _write_codex_home_interactive
@@ -1615,7 +1665,7 @@ else
 fi
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$codex_home_i/.zshrc" ] && pass "_write_codex_home_interactive 建立 .zshrc" || bad "_write_codex_home_interactive 未建立 .zshrc"
+[ -s "$codex_home_i/.zshrc" ] && pass "_write_codex_home_interactive 建立非空 .zshrc" || bad "_write_codex_home_interactive 未建立非空 .zshrc"
 
 # ==============================================================
 # _write_opencode_home_interactive
@@ -1629,7 +1679,7 @@ else
 fi
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$opencode_home_i/.zshrc" ] && pass "_write_opencode_home_interactive 建立 .zshrc" || bad "_write_opencode_home_interactive 未建立 .zshrc"
+[ -s "$opencode_home_i/.zshrc" ] && pass "_write_opencode_home_interactive 建立非空 .zshrc" || bad "_write_opencode_home_interactive 未建立非空 .zshrc"
 
 # ==============================================================
 # _write_agy_home_interactive
@@ -1687,7 +1737,7 @@ fi
 [ ! -e "$agy_home_i/.gemini/settings.json" ] && pass "_write_agy_home_interactive 不寫頂層 .gemini/settings.json" || bad "_write_agy_home_interactive 不應寫頂層 .gemini/settings.json"
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$agy_home_i/.zshrc" ] && pass "_write_agy_home_interactive 建立 .zshrc" || bad "_write_agy_home_interactive 未建立 .zshrc"
+[ -s "$agy_home_i/.zshrc" ] && pass "_write_agy_home_interactive 建立非空 .zshrc" || bad "_write_agy_home_interactive 未建立非空 .zshrc"
 
 # ==============================================================
 # launch_reviewer_interactive
@@ -2994,12 +3044,14 @@ for cli in claude codex opencode; do
   [ -d "$E2E_BASE_DIR/reviewers/$cli/workdir" ] && pass "main-e2e-reviewer-workdir-created-$cli" || bad "main-e2e-reviewer-workdir-created-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
   [ -d "$E2E_BASE_DIR/reviewers/$cli/home" ] && pass "main-e2e-reviewer-home-created-$cli" || bad "main-e2e-reviewer-home-created-$cli"
-  # cmd_prepare() also touches an empty .zshrc into reviewer_home right
-  # away, in the same per-cli loop iteration that just created it above --
-  # before cmd_launch ever runs -- to suppress zsh's new-user wizard in
-  # the herdr pane the calling agent builds against reviewer_home in
-  # between prepare and launch (see cmd_prepare's own per-cli loop comment
-  # and _write_claude_home_interactive's own docstring in run-review.sh).
+  # cmd_prepare() also writes a .zshrc into reviewer_home right away, via
+  # _write_env_scrubbing_zshrc, in the same per-cli loop iteration that
+  # just created it above -- before cmd_launch ever runs -- both to
+  # suppress zsh's new-user wizard in the herdr pane the calling agent
+  # builds against reviewer_home in between prepare and launch, and to
+  # scrub that pane's inherited environment down to a whitelist (see
+  # cmd_prepare's own per-cli loop comment and _write_env_scrubbing_zshrc's
+  # own docstring in run-review.sh).
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
   [ -f "$E2E_BASE_DIR/reviewers/$cli/home/.zshrc" ] && pass "main-e2e-reviewer-home-zshrc-created-$cli" || bad "main-e2e-reviewer-home-zshrc-created-$cli"
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
