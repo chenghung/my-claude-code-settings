@@ -92,6 +92,26 @@ readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 # changes meaningfully, and pin the measurement after the last edit -- three
 # separate figures in this file family were overtaken by a later edit within
 # the same round of work.
+#
+# Task 4 gave claude's own branch a second delivery path -- its contract
+# now reaches it via --append-system-prompt-file on `agent start`, a file
+# path argument, while `agent prompt` carries only a short fixed launch
+# phrase for claude (see launch_reviewer_interactive's own claude-branch
+# code) -- but this check was deliberately left with no cli_name exception:
+# the contract file still has to stay under some governed ceiling no
+# matter which cli ends up reading it, and one shared limit is simpler
+# than maintaining two. What changed is only what crossing it means for
+# claude. For codex/opencode/agy, this check still guards against a real
+# hard failure external to this script: their prompt_file content still
+# has to cross `agent prompt`'s own command line as a single argv entry
+# (see launch_reviewer_interactive's own docstring), and the OS caps that
+# hard. For claude, that external hard failure is gone -- its prompt_file
+# content no longer crosses any command line at all, so an oversized
+# claude contract would not, by itself, trip anything outside this
+# script. Exceeding PROMPT_BYTE_LIMIT for claude therefore now only ever
+# trips this script's own deliberate `return 1`: a governance decision to
+# keep the contract from growing unboundedly, not a rescue from an
+# OS-level failure that would otherwise happen regardless.
 readonly PROMPT_BYTE_LIMIT=100000
 
 # RUN_DIR_STALE_GRACE_SECONDS: how long _reap_stale_run_dirs (see its own
@@ -1711,7 +1731,12 @@ _derive_agent_name() {
 # Starts one reviewer CLI, under the least-privilege rationale documented
 # below, inside an existing, already-created herdr pane via `herdr agent
 # start`, confirms the pane actually rendered before trusting it, then hands
-# it this run's prompt via `herdr agent prompt`. The merge/synthesis path
+# it this run's prompt via `herdr agent prompt` -- except for claude, whose
+# branch instead hands it a fixed start signal there, the actual contract
+# having already gone to `agent start` itself as an
+# --append-system-prompt-file path argument (see this function's own
+# claude branch below, and PROMPT_BYTE_LIMIT's own docstring for why that
+# split exists). The merge/synthesis path
 # does not call this function either -- it calls launch_synthesis, an
 # entirely separate function (see spawn_supervisor_interactive's own merge
 # segment).
@@ -1778,8 +1803,13 @@ _derive_agent_name() {
 #     no --pane option (unlike `agent start`) and no file/stdin input flag
 #     of any kind, so TEXT is the only way to hand it a prompt. That is
 #     exactly why PROMPT_BYTE_LIMIT (see its own docstring near the top of
-#     this file) exists: the whole prompt has to cross this script's own
-#     command line as a single argv entry, which the OS caps hard. TARGET
+#     this file, including the claude exception task 4 introduced) exists:
+#     for codex/opencode/agy, the whole prompt still has to cross this
+#     script's own command line as a single argv entry, which the OS caps
+#     hard; claude's own branch below no longer routes its full contract
+#     through this call at all -- it goes to `agent start` instead, as an
+#     --append-system-prompt-file path argument, and this call carries
+#     only a short fixed start signal for claude. TARGET
 #     resolves by pane id, not by the agent name `agent start` was given --
 #     confirmed with a read-only probe against `herdr agent get` (a real
 #     pane id resolved to the agent; a terminal id did not), not assumed
@@ -1975,7 +2005,8 @@ launch_reviewer_interactive() {
   case "$cli_name" in
     claude)
       cmd=(herdr agent start "$agent_name" --kind claude --pane "$pane_id" \
-        -- --permission-mode auto --disallowedTools "WebFetch")
+        -- --permission-mode auto --disallowedTools "WebFetch" \
+        --append-system-prompt-file "$prompt_file")
       ;;
     codex)
       cmd=(herdr agent start "$agent_name" --kind codex --pane "$pane_id" \
@@ -2046,10 +2077,17 @@ launch_reviewer_interactive() {
   before_snapshot="$(_git_status_snapshot "$worktree_dir")"
   printf '%s\n' "$before_snapshot" > "$base_dir/.git-status-before-$cli_name"
 
-  herdr agent prompt "$pane_id" "$(cat "$prompt_file")" || {
-    printf 'launch_reviewer_interactive: herdr failed to submit the prompt to %s in pane %s\n' "$cli_name" "$pane_id" >&2
-    return 1
-  }
+  if [ "$cli_name" = claude ]; then
+    herdr agent prompt "$pane_id" "開始" || {
+      printf 'launch_reviewer_interactive: herdr failed to submit the start signal to claude in pane %s\n' "$pane_id" >&2
+      return 1
+    }
+  else
+    herdr agent prompt "$pane_id" "$(cat "$prompt_file")" || {
+      printf 'launch_reviewer_interactive: herdr failed to submit the prompt to %s in pane %s\n' "$cli_name" "$pane_id" >&2
+      return 1
+    }
+  fi
 
   printf '%s\n' "$output_file"
 }

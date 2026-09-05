@@ -1768,6 +1768,15 @@ fi
 # back from, so the assertion would fail by absence rather than a specific
 # check having to be written for it.
 #
+# Task 4 added a second `agent prompt` recording, alongside the
+# pane-id-keyed one above: agent-prompt.<kind>.argv, holding every arg
+# `agent prompt` was called with (not just TEXT). <kind> is looked up from
+# a pane-kind.<pane_id> file this stub's own `agent start` branch writes
+# first, since `agent prompt`'s own argv carries no cli kind of its own --
+# only the pane id. This is what task 4's claude-branch assertions below
+# read to confirm claude's `agent prompt` call carries the fixed start
+# signal, not the contract file's content.
+#
 # HERDR_STUB_PANE_EMPTY_READS controls how many of `pane read`'s own
 # leading calls, *for one given pane id* (tracked via a per-pane-id counter
 # file, since the four per-cli calls below all read the same script and
@@ -1803,20 +1812,34 @@ agent)
       exit 1
     fi
     kind=""
+    pane_id=""
     prev=""
     for a in "$@"; do
       if [ "$prev" = "--kind" ]; then kind="$a"; fi
+      if [ "$prev" = "--pane" ]; then pane_id="$a"; fi
       prev="$a"
     done
     record="$HERDR_RECORD_DIR/agent-start.$kind.argv"
     : > "$record"
     for a in "$@"; do printf '%s\n' "$a" >> "$record"; done
+    # Records which cli kind owns this pane id, so a later `agent prompt`
+    # call against the same pane id (which carries no kind of its own --
+    # see this case's own docstring) can still be recorded under a
+    # cli-keyed filename (agent-prompt.<kind>.argv) alongside the existing
+    # pane-id-keyed one below.
+    [ -n "$pane_id" ] && printf '%s' "$kind" > "$HERDR_RECORD_DIR/pane-kind.$pane_id"
     if [ "${HERDR_STUB_START_OK:-1}" = "1" ]; then exit 0; else exit 1; fi
     ;;
   prompt)
     target="$3"
     text="${4:-}"
     printf '%s' "$text" > "$HERDR_RECORD_DIR/agent-prompt.$target.text"
+    prompt_kind="$(cat "$HERDR_RECORD_DIR/pane-kind.$target" 2>/dev/null)"
+    if [ -n "$prompt_kind" ]; then
+      prompt_record="$HERDR_RECORD_DIR/agent-prompt.$prompt_kind.argv"
+      : > "$prompt_record"
+      for a in "$@"; do printf '%s\n' "$a" >> "$prompt_record"; done
+    fi
     if [ "${HERDR_STUB_PROMPT_OK:-1}" = "1" ]; then exit 0; else exit 1; fi
     ;;
   esac
@@ -1923,8 +1946,41 @@ esac
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -f "$LRI_ROOT/.git-status-before-claude" ] && pass launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name || bad launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name
+# Since task 4, claude's own `agent prompt` call carries the fixed
+# "開始" start signal, not the prompt file's content (see this function's
+# own claude branch) -- this checks for that fixed signal now, in place
+# of the "claude review prompt" prompt-file content it checked for before
+# task 4. Still targets the pane id, not the `<cli>-<digest>` agent name,
+# and still real (non-empty) content.
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$LRI_RECORD_DIR/agent-prompt.w14:pZ.text" 2>/dev/null)" = "claude review prompt" ] && pass launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content || bad launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content
+[ "$(cat "$LRI_RECORD_DIR/agent-prompt.w14:pZ.text" 2>/dev/null)" = "開始" ] && pass launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content || bad "launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content: $(cat "$LRI_RECORD_DIR/agent-prompt.w14:pZ.text" 2>/dev/null)"
+
+# claude 的契約走 --append-system-prompt-file，不再經由 agent prompt 的位置引數。
+# 附加型（append）已做過兩次功能探測，皆成功；取代型（--system-prompt-file）
+# 只確認旗標存在、未做功能探測，不在採用範圍。
+lri_claude_syspromptfile_ok=0
+for idx in "${!lri_claude_argv[@]}"; do
+  if [ "${lri_claude_argv[$idx]}" = "--append-system-prompt-file" ] \
+    && [ "${lri_claude_argv[$((idx + 1))]:-}" = "$LRI_ROOT/claude.prompt" ]; then
+    lri_claude_syspromptfile_ok=1
+  fi
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_claude_syspromptfile_ok" -eq 1 ] && pass launch-reviewer-interactive-claude-system-prompt-file || bad "launch-reviewer-interactive-claude-system-prompt-file: $(cat "$claude_start_argv")"
+
+# 取代型不得被使用
+case "$(cat "$claude_start_argv")" in
+  *'--system-prompt-file'*) bad "launch-reviewer-interactive-claude-no-replacing-system-prompt" ;;
+  *) pass launch-reviewer-interactive-claude-no-replacing-system-prompt ;;
+esac
+
+# agent prompt 送出的內容不得是契約全文
+lri_claude_prompt_text="$(cat "$LRI_RECORD_DIR/agent-prompt.claude.argv" 2>/dev/null)"
+case "$lri_claude_prompt_text" in
+  *'claude review prompt'*) bad "launch-reviewer-interactive-claude-prompt-not-contract: 契約全文仍走 agent prompt" ;;
+  '') bad "launch-reviewer-interactive-claude-prompt-not-contract: 沒有記錄到 agent prompt 呼叫" ;;
+  *) pass launch-reviewer-interactive-claude-prompt-not-contract ;;
+esac
 
 # --- codex: no -s (the sandbox flag was the now-removed headless
 # launcher's own concern; herdr's own --pane already scopes this to one
