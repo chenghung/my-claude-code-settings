@@ -39,7 +39,7 @@ orchestrator 對一個正停在等待輸入狀態的 phase agent 送出 SendMess
 
 這一項推翻了設計早期的一句敘述——「對著卡住的畫面送出開場指令，那段文字會被打進核准框而且不會有任何錯誤訊息」——該敘述已從 `SKILL.md` 移除。
 
-兩個界線要一併記下。其一，這道保護只涵蓋 `herdr agent prompt`，`herdr agent send-keys` 是直接送按鍵、沒有這道檢查（未實測），代按有可能落在一張已經換掉的畫面上而不報錯。其二，實測對象是狀態確實為 `blocked` 的 agent；卡在工作區信任對話框時 `agent_status` 是什麼並未查證，若那時的狀態不是 `blocked`，這道保護就伸不到那一格。
+兩個界線要一併記下。其一，這道保護只涵蓋 `herdr agent prompt`，`herdr agent send-keys` 是直接送按鍵、沒有這道檢查（未實測），代按有可能落在一張已經換掉的畫面上而不報錯。其二，實測對象是狀態確實為 `blocked` 的 agent；卡在工作區信任對話框時的狀態不必另外推測——下一節「信任對話框會擋住啟動，但 git worktree 不受影響」記下的那筆實測，正是該對話框出現時 agent 已存在於該 pane 且 `agent_status` 為 `blocked`、`launch_pending` 為真，所以這道保護涵蓋得到那一格。
 
 ### 信任對話框會擋住啟動，但 git worktree 不受影響
 
