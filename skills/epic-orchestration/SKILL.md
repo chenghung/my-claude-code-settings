@@ -525,10 +525,12 @@ orchestrator 每次下行送出後（`herdr agent prompt` 或 `herdr agent send-
 
 委派 `phase-decision-investigator` 時，依它自身定義檔 `Input from Main Agent` 一節提供：
 sub-issue 編號、該 phase worktree 的絕對路徑、herdr 座標中的 tab 識別碼與 agent 名稱、觸發本
-次調查的具體事由（入口一給 phase agent 送出的原文——問題、已經試過什麼、選項與後果、推薦、設
-計文件依據；凡是讀過 pane 才轉進來的——入口二、入口三、握手逾時、連續十輪空轉——一律給那一句
-判定結論，即它停在什麼上面，不含畫面其餘內容）、該 phase 已開 PR 時的 PR 編號。可選提供已知
-的相關背景，以及 epic 設計文件的主倉庫絕對路徑。不需要（且依「主 Context 的三條硬禁令」也不
+次調查的具體事由（入口一給 phase agent 送出的原文——問題、已經試過什麼、選項與各自後果、推
+薦、設計文件依據；凡是讀過 pane 才轉進來的——入口二、入口三、握手逾時、連續十輪空轉——一律
+給那一句判定結論，即它停在什麼上面，不含畫面其餘內容；收到契約外格式訊息而取不出待決事項的
+那一種，另給一句由 orchestrator 自己寫的、對那則訊息內容的概括——原文依「通訊協定」那一節的
+用法約束不逐字轉述，但這條線索只有 orchestrator 拿得到，調查者未必復原得了）、該 phase 已開
+PR 時的 PR 編號。可選提供已知的相關背景，以及 epic 設計文件的主倉庫絕對路徑。不需要（且依「主 Context 的三條硬禁令」也不
 能）額外提供 codebase 內容、git log、diff、pane 畫面內容或 PR review 留言本身——那些原本就是
 調查者自己會去讀的部分。
 
