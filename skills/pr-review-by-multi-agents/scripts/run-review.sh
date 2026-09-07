@@ -2525,7 +2525,31 @@ _record_reviewer_result_interactive() {
 
   content_file="$base_dir/.comment-body-$cli_name.md"
   if content="$(_extract_reviewer_output "$output_file")"; then
-    { printf '%s\n\n' "$ECHO_GUARD_MARKER"; printf '%s' "$content"; } > "$content_file"
+    # `|| true` on both writes below: this function is called bare (no
+    # if/&&/||) from spawn_supervisor_interactive's own pending loop,
+    # which runs inside that function's real `( ... )` subshell, not a
+    # command substitution -- a real subshell inherits `set -euo
+    # pipefail` from this file same as any other nested block (confirmed
+    # against a real bash 5.3.15: a bare failing write inside a `while`
+    # loop's body inside a plain `( ... )` aborts that subshell right
+    # there, the same as it would un-subshelled -- unlike the very
+    # different, and NOT applicable here, exemption a `$( ... )` command
+    # substitution gets by default). Without these guards, either write
+    # failing (e.g. base_dir going unwritable mid-run) would kill this
+    # whole background supervisor, not just this one cli's line -- every
+    # other reviewer still in `pending` at that moment would be silently
+    # abandoned, unsupervised, for the rest of the run, with nothing
+    # anywhere pointing at why (this subshell's own stdout/stderr go to
+    # `.supervisor.log`, which this run's own docstring already notes
+    # nothing actively watches). Reproduced empirically: a chmod-a-w
+    # target for the exact shape of write below stopped a `while pending`
+    # loop after its first iteration, printing nothing for any cli still
+    # pending at that point. The degradation `|| true` accepts instead is
+    # the same partial, self-limiting one _confirm_reviewers_working's own
+    # docstring already describes for its per-cli appends: only this
+    # cli's content file and/or summary line is lost, every other pending
+    # cli's own turn through this same loop is unaffected.
+    { printf '%s\n\n' "$ECHO_GUARD_MARKER"; printf '%s' "$content"; } > "$content_file" || true
     if [ "$status" = "ok" ]; then
       content_status="ready"
     else
@@ -2538,7 +2562,7 @@ _record_reviewer_result_interactive() {
 
   printf 'cli=%s pid=%s exit=%s ended_at=%s worktree_status=%s content_status=%s content_file=%s\n' \
     "$cli_name" "n/a" "n/a" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$status" "$content_status" "$content_file" \
-    >> "$summary_file"
+    >> "$summary_file" || true
 }
 
 # _count_ready <summary_file>
@@ -3011,7 +3035,17 @@ _record_synthesis_result() {
 
   content_file="$base_dir/.comment-body-synthesis.md"
   if content="$(_extract_review_content "$log_file")"; then
-    { printf '%s\n\n' "$ECHO_GUARD_MARKER"; printf '%s' "$content"; } > "$content_file"
+    # `|| true` on both writes below: same reasoning as
+    # _record_reviewer_result_interactive's own identically-shaped pair
+    # (see that function's own comment on this exact pattern) -- this
+    # function, too, is called bare from inside spawn_supervisor_
+    # interactive's own real `( ... )` subshell (see that call site's own
+    # comment on why it is guarded explicitly rather than left to this
+    # subshell's inherited set -e), and synthesis is that subshell's very
+    # last step, so an unguarded failure here would abort it with no
+    # summary line for the synthesis pass ever written -- silently, since
+    # this subshell's own output goes nowhere anyone watches in real time.
+    { printf '%s\n\n' "$ECHO_GUARD_MARKER"; printf '%s' "$content"; } > "$content_file" || true
     if [ "$rc" = "0" ]; then
       content_status="ready"
     else
@@ -3024,7 +3058,7 @@ _record_synthesis_result() {
 
   printf 'cli=%s pid=%s exit=%s ended_at=%s worktree_status=%s content_status=%s content_file=%s\n' \
     "synthesis:$cli" "$pid" "${rc:-unknown}" "$end_time" "n/a" "$content_status" "$content_file" \
-    >> "$summary_file"
+    >> "$summary_file" || true
 }
 
 # spawn_supervisor_interactive <worktree_dir> <summary_file> <cli>...
@@ -3077,8 +3111,24 @@ spawn_supervisor_interactive() {
 
   (
     trap '' HUP
-    printf '%s\n' "$BASHPID" > "$base_dir/.supervisor.pid"
-    : > "$summary_file"
+    # `|| true` on both: a plain `( ... )` subshell inherits `set -euo
+    # pipefail` from this file (unlike the `$( ... )` command-substitution
+    # subshells used elsewhere here, which do not by default) -- so an
+    # unguarded failure on either bare write below would abort this
+    # entire subshell before the pending loop even starts, silently
+    # abandoning every reviewer this run dispatched with no summary line
+    # ever written for any of them (see this subshell's own pending
+    # loop -- _record_reviewer_result_interactive's own call site below --
+    # for the identically-reasoned guard on the writes further in). A
+    # failure here specifically degrades to the same states this file's
+    # own readers already treat as ordinary: no `.supervisor.pid` reads
+    # back, elsewhere in this file, the same as "supervisor hasn't
+    # written it yet" (see _run_dir_within_stale_grace's own case-3
+    # handling); summary_file staying whatever it was (normally
+    # nonexistent for a fresh base_dir) reads the same as "zero lines so
+    # far" to cmd_wait's own `wc -l` baseline.
+    printf '%s\n' "$BASHPID" > "$base_dir/.supervisor.pid" || true
+    : > "$summary_file" || true
 
     local -a pending=("${clis[@]}") still=()
     local cli output_file
@@ -3739,8 +3789,27 @@ cmd_prepare() {
     _dispatch_failed_cleanup "$worktree_dir"
     exit 1
   }
+  # Checked explicitly, the same reason and the same failure path as the
+  # truncate immediately above, not left as a bare statement: this `>>` is
+  # a plain statement inside a `for` loop that is itself a plain statement
+  # in cmd_prepare's own body, none of it an if/while/&&/|| condition, so
+  # an unguarded failure here would abort cmd_prepare on the spot under
+  # this file's `set -euo pipefail` -- skipping both this line's own error
+  # message and _dispatch_failed_cleanup, the exact gap _confirm_reviewers_
+  # working's own docstring already walks through for a differently-shaped
+  # bare append. Confirmed against a real bash 5.3.15: truncating a file
+  # successfully, then chmod-ing it a-w before the loop's first append
+  # reaches it, aborts the whole script right there with bash's own
+  # permission-denied message on stderr and exit status 1 -- neither this
+  # printf's own error message nor _dispatch_failed_cleanup ever runs, and
+  # the worktree this run already created is left behind with nothing
+  # pointing at why.
   for cli in "${all_reviewers[@]}"; do
-    printf '%s %s dispatched\n' "$cli" "$(resolve_model "$cli")" >> "$base_dir/.roster"
+    printf '%s %s dispatched\n' "$cli" "$(resolve_model "$cli")" >> "$base_dir/.roster" || {
+      printf 'run-review.sh: failed to append to %s\n' "$base_dir/.roster" >&2
+      _dispatch_failed_cleanup "$worktree_dir"
+      exit 1
+    }
   done
 
   # Prints the run's own coordinates for the calling agent: the execution
@@ -4009,7 +4078,19 @@ _confirm_reviewers_working() {
   return 0
 }
 
-# cmd_launch --base-dir <path> --agent <cli>:<pane_id>...
+# cmd_launch --base-dir <path> --agent <cli>=<pane_id>...
+#
+# Equals, not colon: this line names the actual --agent flag syntax a
+# caller types (matching the top-of-file usage doc, parse_launch_args's
+# own "--agent value must be <cli>=<pane_id>" error message, and cmd_run's
+# own `--agent "$cli=..."` construction below). The colon shows up
+# elsewhere in this file (parse_launch_args's own parsed-output line,
+# print_summary's and _confirm_reviewers_working's own parameter shapes)
+# for an unrelated reason -- it is the join character these internal,
+# same-shell hand-offs use specifically because pane_id may itself contain
+# an "=" or a colon (see parse_launch_args's own docstring) -- and this
+# line previously carried that internal colon by mistake, describing a
+# flag shape a real invocation of it would reject with a usage error.
 #
 # The launch half of the pipeline: parse the named flags (see
 # parse_launch_args), confirm every named cli was actually selected by the
@@ -4125,10 +4206,12 @@ cmd_launch() {
     # cmd_wait is the only reader, and the only writer after this one --
     # it overwrites this file whenever it later observes a fresh
     # agent_status=working for this cli (see cmd_wait's own docstring).
-    # Treated as fatal, like .roster's own write above in cmd_prepare: a
-    # write failure here would silently leave event=stalled permanently
-    # blind for this cli for the rest of the run, which is worse than
-    # failing this dispatch loudly right now while cleanup can still run.
+    # Treated as fatal, like both of .roster's own writes in cmd_prepare
+    # (its initial truncate and its per-cli append are now on the same
+    # fatal path -- see that loop's own comment): a write failure here
+    # would silently leave event=stalled permanently blind for this cli
+    # for the rest of the run, which is worse than failing this dispatch
+    # loudly right now while cleanup can still run.
     if ! printf '%s\n' "$(date +%s)" > "$base_dir/.last-working-$cli"; then
       printf 'run-review.sh: failed to write the stalled-detection baseline for %s: %s\n' \
         "$cli" "$base_dir/.last-working-$cli" >&2
@@ -4459,7 +4542,34 @@ cmd_wait() {
     # observe a different status a moment apart (a reviewer resuming or
     # newly blocking in between the two checks) and judge them
     # inconsistently against each other.
-    agent_states="$(_wait_agent_states "$base_dir")"
+    #
+    # This bare assignment is a plain statement, not the condition of an
+    # if/while/&&/|| -- main() calls cmd_wait bare the same way it calls
+    # cmd_launch (see this function's own docstring on why that matters),
+    # so a non-zero exit from _wait_agent_states here would abort cmd_wait
+    # itself under this file's `set -euo pipefail`, the exact mechanism
+    # _confirm_reviewers_working's own docstring already walks through for
+    # its per-cli appends. It happens to be safe today only because
+    # _wait_agent_states always returns 0 on every path it has (see its
+    # own docstring): two early `return 0`s, and its own `while read`
+    # loop otherwise -- confirmed against a real bash 5.3.15, a `while`
+    # loop whose body never runs (an empty .roster) still exits 0, it
+    # does not propagate `read`'s own EOF failure the way a naive reading
+    # of that construct might suggest. That "always 0" fact is not
+    # written down anywhere as an assertion this call relies on, so a
+    # future change to that function that adds so much as one more
+    # fallible check would silently reintroduce the same abort here with
+    # nothing pointing back at this line. Guarded anyway, the same
+    # `|| var=""` shape resolve_model's own docstring establishes for
+    # exactly this situation ("Every value-producing command below is
+    # guarded... does not rely on the caller invoking it in one
+    # particular way"): an empty agent_states here reads downstream
+    # exactly like _wait_agent_states's own herdr-absent/no-.roster early
+    # returns already do -- both while loops below skip every line via
+    # their own `[ -n "$line" ] || continue`, so this pass simply finds no
+    # blocked/stalled cli and moves on to the next poll, rather than
+    # cmd_wait dying here with no event ever returned to its caller.
+    agent_states="$(_wait_agent_states "$base_dir")" || agent_states=""
 
     while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -4479,7 +4589,30 @@ cmd_wait() {
         # stalls, resumes, and later stalls again be reported both times,
         # rather than this file's initial dispatch-time value being the
         # only timestamp ever written.
-        printf '%s\n' "$now" > "$base_dir/.last-working-$cli"
+        #
+        # `|| true` here for the same reason _confirm_reviewers_working's
+        # own six per-cli appends now carry one (see that function's own
+        # docstring): this is the same pattern recurring elsewhere in this
+        # file, missed by that earlier pass because it only fixed the
+        # function it was pointed at. main() calls cmd_wait as a bare
+        # statement (not inside any if/while/&&/||), so a failing bare
+        # `>` here under this file's `set -euo pipefail` would abort
+        # cmd_wait itself mid-poll -- before this pass has even decided
+        # which of the five documented events to return -- breaking its
+        # own contract of exactly one event line and exit 0. Reproduced
+        # against a real bash 5.3.15: a read-only `.last-working-<cli>`
+        # plus a stub reporting that cli as working makes this exact line
+        # abort the whole `run-review.sh wait` process with a permission
+        # error and exit 1, and the caller never sees any event at all.
+        # `|| true` only discards the exit status; bash still writes its
+        # own redirection-failure line to stderr regardless. The
+        # degradation this accepts is a partial, self-limiting one: this
+        # cli's clock simply does not reset for this one pass, so a
+        # persistent failure to write here can eventually make a reviewer
+        # that is genuinely still working get reported `event=stalled` --
+        # a false alarm surfaced to whoever is watching this run, not a
+        # crash of the run itself.
+        printf '%s\n' "$now" > "$base_dir/.last-working-$cli" || true
         continue
       fi
       # blocked already got its own, more specific event above (whether
@@ -4499,6 +4632,40 @@ cmd_wait() {
       # the same best-effort spirit as every other missing-state fallback
       # in this file.
       [ -n "$last_working" ] || continue
+      # $last_working is file content from .last-working-$cli, and this
+      # skill's own rationale.md ("執行目錄根層沒有上鎖" section) already
+      # documents every file at base_dir's own root -- this one by name --
+      # as writable throughout the run by the very reviewer whose prompt
+      # contains attacker-influenced PR text. It must be a plain decimal
+      # integer before it ever reaches the `(( ))` below: `(( ))` operands
+      # that are bare identifiers are looked up and, if the resulting
+      # string is itself not a plain number, recursively re-parsed as a
+      # further arithmetic expression -- and a `name[...]` shape in that
+      # string is parsed as an array subscript, with any `$(...)` inside
+      # the brackets expanded (and executed) purely as a side effect of
+      # parsing the subscript, whether or not `name` was ever declared as
+      # an array. Confirmed against a real bash 5.3.15: a crafted
+      # last_working value of `now[$(touch MARK)]` (`now` reused
+      # deliberately -- it is this very function's own already-assigned
+      # local variable, not a stray identifier) ran `touch MARK` as a side
+      # effect of evaluating `(( now - last_working >= ... ))` below,
+      # while the comparison itself came back false and gave no other
+      # sign anything had run. `set -u` does NOT catch this: it only
+      # aborts on a name with no assignment anywhere in scope, confirmed
+      # separately for a genuinely unbound subscript base (`x[$(...)]`
+      # where `x` is never assigned) -- reusing the name of a variable
+      # this function already defines, as the probe above does with
+      # `now`, sails straight past it. The case pattern below is the same
+      # digit-only shape this function's own --deadline-at parsing already
+      # validates against earlier in this file, applied here for the same
+      # reason: reject anything that is not purely `[0-9]+` before it can
+      # ever be handed to an arithmetic context, rather than trust the
+      # value's origin. A value that fails this is treated exactly like no
+      # baseline being on disk at all (the check just above) -- best-
+      # effort, not an error surfaced anywhere.
+      case "$last_working" in
+        ''|*[!0-9]*) continue ;;
+      esac
       if (( now - last_working >= REVIEWER_STALLED_THRESHOLD_SECONDS )); then
         printf 'event=stalled cli=%s\n' "$cli"
         return 0
