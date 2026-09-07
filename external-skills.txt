@@ -48,8 +48,10 @@ humanlayer/skills@show-me
 # Dependencies of three entries above, not wanted for their own sake. grill-me's
 # whole body is "Run a /grilling session"; grill-with-docs adds "using the
 # /domain-modeling skill"; triage's grill step calls the Skill tool for
-# "grilling" and "domain-modeling" by name. Removing either line silently
-# breaks all three on a fresh machine - they install fine and then do nothing.
+# "grilling" and "domain-modeling" by name. So the two lines are not
+# interchangeable: dropping grilling silently breaks all three, dropping
+# domain-modeling breaks grill-with-docs and triage. Either way the affected
+# entries still install fine and then do nothing.
 mattpocock/skills@grilling
 mattpocock/skills@domain-modeling
 
