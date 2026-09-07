@@ -9,11 +9,14 @@ set -euo pipefail
 #   套件的工具。
 # 預期影響：
 #   - 透過 pacman 安裝官方 repo 套件：jq、bat、glow、eza、csvlens、
-#     openai-codex、lf、markdownlint-cli、tflint、python-pipx、
-#     ripgrep（提供 rg 指令）、shellcheck、bats；bats 另帶三個輔助庫
+#     openai-codex、lf、markdownlint-cli、markdownlint-cli2、tflint、
+#     python-pipx、ripgrep（提供 rg 指令）、shellcheck、bats、github-cli、
+#     nodejs、npm、mermaid-cli、terraform、kubectl、helm、aws-cli、
+#     duckdb、sqlite、go-yq（提供 yq 指令）、fd、uv；bats 另帶三個輔助庫
 #     bats-support、bats-assert、bats-file（僅提供 /usr/lib/bats 下的
 #     load.bash，無終端指令，以檔案存在與否判斷冪等）
-#   - 透過 yay（AUR helper）安裝 AUR 套件：rtk、claude-code、opencode
+#   - 透過 yay（AUR helper）安裝 AUR 套件：rtk、claude-code、opencode、
+#     trello-cli、hackmd-cli
 #   - 透過 pipx 安裝官方 repo 與 AUR 皆無的 python 套件：markitdown[all]
 #   - 透過上游官方安裝腳本（curl）安裝官方 repo 與 AUR 皆無可信對應套件的
 #     工具：codegraph、TokenUsageInsights（其 --service 旗標會另外常駐一個
@@ -83,7 +86,9 @@ ensure_tool() {
 # ------------------------------------------------------------
 # 1) 官方 repo 套件（pacman）：
 #    jq bat glow eza csvlens openai-codex lf markdownlint-cli
-#    tflint python-pipx shellcheck ripgrep
+#    tflint python-pipx shellcheck ripgrep bats github-cli nodejs npm
+#    mermaid-cli terraform kubectl helm aws-cli duckdb sqlite go-yq fd uv
+#    markdownlint-cli2
 #    來源依據：以上皆有官方 repo 版本，且版本不過舊（優先序第 1 級）。
 #      - openai-codex 即 OpenAI Codex CLI 官方套件
 #        （github.com/openai/codex，提供 /usr/bin/codex）。
@@ -92,14 +97,54 @@ ensure_tool() {
 #        Ruby 寫的 mdl，是完全不同的工具。
 #      - python-pipx 僅作為下方 pipx 安裝層（markitdown）的前置依賴，
 #        本身不提供終端使用者指令。
+#      - go-yq 提供 /usr/bin/yq；務必是這個套件，不要誤裝官方 repo 裡另一個
+#        同樣叫 yq 的套件——已實測 `pacman -Si yq` 確實存在（repo extra、
+#        4.1.2-1），那是 kislyuk/yq，一個把 jq 包一層處理 YAML/XML/TOML 的
+#        Python 工具，語法與 go-yq（mikefarah/yq，本節要裝的版本）完全
+#        不同，且同樣落地在 /usr/bin/yq，裝錯會直接衝突。
+#    以上 14 個新增工具的官方 repo 歸屬，皆已在本機以
+#      `LC_ALL=C pacman -Si <pkg>` 實測 Repository 欄位逐一確認。
+#    納入理由（依賴者，這是納入的唯一理由）：
+#      - gh：github-manager subagent 的全部操作、github-issue-pr-authoring
+#        與 github-review-comment-reply 兩個 skill、settings.json 的
+#        Bash(gh:*) permission。
+#      - nodejs、npm：install.sh 的 external skills 安裝走 npx skills add、
+#        openspec 走 npm install -g、settings.json 的 statusLine 走
+#        npx ccstatusline、本腳本自己寫進 ~/.zshrc 的 skills 與 sk 兩個
+#        alias 也走 npx；這四條路徑在缺 node 時全都只是印警告後略過、不會
+#        報錯，故先前的缺失是靜默的。
+#      - mmdc：diagram-designer skill 的 mermaid 圖表渲染。
+#      - terraform：terraform-engineer skill；本腳本原本已裝 tflint，卻沒
+#        裝被 lint 的本體。
+#      - kubectl、helm：helm-chart-scaffolding skill，以及 settings.json 的
+#        Bash(kubectl get:*)、Bash(kubectl logs:*)、
+#        Bash(kubectl describe:*)、Bash(helm template:*) permission。
+#      - aws：aws-architect skill 的唯讀查詢（該 skill 不做任何 mutating
+#        操作）。
+#      - duckdb、sqlite3：sql-expert subagent 明文涵蓋的資料庫唯讀診斷
+#        範圍；同範圍內的 PostgreSQL 與 MySQL/MariaDB client 依使用者指示
+#        不納入。
+#      - yq、fd：YAML 處理與檔名搜尋，現有的 jq 與 rg 覆蓋不到。
+#      - uv：python skill 的 TDD 迴圈；本機現有 uv 在 ~/.local/bin，不歸屬
+#        pacman 套件，會被 ensure_tool 的冪等判斷略過。
+#      - markdownlint-cli2：settings.json 的 permission 只允許
+#        Bash(markdownlint-cli2:*)，而本節原本裝的 markdownlint-cli 提供的
+#        指令是 markdownlint，等於 agent 真正用得到的那個指令反而不受管。
+#        本次刻意讓兩者並存，不移除既有的 markdownlint-cli 那一行——移除
+#        套件屬於使用者尚未決定的取捨。
 #    衝突防護：codex 可能已由 AUR 的 openai-codex-bin 等不同名套件提供；
 #      此時 /usr/bin/codex 已被佔用，直接 pacman -S openai-codex 會檔案衝突。
-#      故改用 ensure_tool 以「codex 指令是否存在」為準，已存在即略過。
+#      故改用 ensure_tool 以「codex 指令是否存在」為準，已存在即略過；
+#      本節其餘工具同樣一律透過 ensure_tool 安裝，防護邏輯相同。
 #    對應：套件名 -> 指令名
 #      jq->jq  bat->bat  glow->glow  eza->eza  csvlens->csvlens
 #      openai-codex->codex  lf->lf
 #      markdownlint-cli->markdownlint  tflint->tflint
 #      python-pipx->pipx  shellcheck->shellcheck  ripgrep->rg
+#      github-cli->gh  nodejs->node  npm->npm  mermaid-cli->mmdc
+#      terraform->terraform  kubectl->kubectl  helm->helm  aws-cli->aws
+#      duckdb->duckdb  sqlite->sqlite3  go-yq->yq  fd->fd
+#      uv->uv  markdownlint-cli2->markdownlint-cli2
 # ------------------------------------------------------------
 echo "==> [1/4] 透過 pacman 安裝官方 repo 套件（已存在的工具會自動略過）"
 PACMAN_INSTALL=(sudo pacman -S --needed --noconfirm)
@@ -116,6 +161,20 @@ ensure_tool pipx         python-pipx      "${PACMAN_INSTALL[@]}"
 ensure_tool shellcheck   shellcheck       "${PACMAN_INSTALL[@]}"
 ensure_tool rg           ripgrep          "${PACMAN_INSTALL[@]}"
 ensure_tool bats         bats             "${PACMAN_INSTALL[@]}"
+ensure_tool gh           github-cli       "${PACMAN_INSTALL[@]}"
+ensure_tool node         nodejs           "${PACMAN_INSTALL[@]}"
+ensure_tool npm          npm              "${PACMAN_INSTALL[@]}"
+ensure_tool mmdc         mermaid-cli      "${PACMAN_INSTALL[@]}"
+ensure_tool terraform    terraform        "${PACMAN_INSTALL[@]}"
+ensure_tool kubectl      kubectl          "${PACMAN_INSTALL[@]}"
+ensure_tool helm         helm             "${PACMAN_INSTALL[@]}"
+ensure_tool aws          aws-cli          "${PACMAN_INSTALL[@]}"
+ensure_tool duckdb       duckdb           "${PACMAN_INSTALL[@]}"
+ensure_tool sqlite3      sqlite           "${PACMAN_INSTALL[@]}"
+ensure_tool yq           go-yq            "${PACMAN_INSTALL[@]}"
+ensure_tool fd           fd               "${PACMAN_INSTALL[@]}"
+ensure_tool uv           uv               "${PACMAN_INSTALL[@]}"
+ensure_tool markdownlint-cli2 markdownlint-cli2 "${PACMAN_INSTALL[@]}"
 
 # bats 輔助庫（bats-support / bats-assert / bats-file）：官方 repo 套件，但不提供
 # 任何可執行指令，安裝後僅在 /usr/lib/bats/<lib>/load.bash 產生檔案，因此
@@ -133,17 +192,34 @@ done
 unset _bats_lib
 
 # ------------------------------------------------------------
-# 2) AUR 套件（yay）：rtk claude-code opencode-bin
-#    來源依據：三者官方 repo 皆無，但 AUR 有且版本不過舊（優先序第 2 級）。
+# 2) AUR 套件（yay）：rtk claude-code opencode-bin trello-cli hackmd-cli
+#    來源依據：五者官方 repo 皆無，但 AUR 有且版本不過舊（優先序第 2 級）。
 #      - rtk：官方安裝管道為 Homebrew / install.sh / cargo / 預建二進位，
 #        官方 repo 無；AUR 套件與 pacman 整合、可追蹤、易更新移除，最穩定。
 #      - claude-code：官方 repo 無；AUR 套件版本與 npm 官方上游一致且近期更新。
 #      - opencode-bin：對應 opencode 指令；Arch 與 Manjaro 皆無官方 repo，
 #        與 claude-code、rtk 同走 AUR 模式。
+#      - trello-cli：官方 repo 無（`pacman -Si trello-cli` 空輸出）；AUR
+#        已實測 v1.7.0-1、維護者 mheap、NumVotes 2、Provides 為
+#        ["trello"]——套件名與指令名不同名這件事是套件自己宣告的，不是
+#        誤植。這台機器上 /usr/bin/trello 已由 pacman 套件 trello-cli 提供，
+#        且 ~/.cache/yay/trello-cli 存在，可確認來源正是 AUR。納入理由：
+#        trello-manager subagent、Bash(trello:*) permission。
+#      - hackmd-cli：官方 repo 無（`pacman -Si hackmd-cli` 空輸出）；AUR
+#        已實測 v2.5.0-1、維護者 forvkusa、NumVotes 0、Popularity 0、2026
+#        年 8 月才首次提交、Depends 為 ["nodejs>=24"]、Provides 為
+#        null——新套件、票數極低，風險請自行判斷。這台機器上現有的
+#        hackmd-cli 不是這個 AUR 套件，而是 npm 全域包 @hackmd/hackmd-cli
+#        裝在 ~/.npm-global/bin，不歸屬任何 pacman 套件，依 ensure_tool 的
+#        冪等判斷會被略過；此 AUR 路徑實際上只在新機器（尚無
+#        ~/.npm-global 版本時）才會真正生效。納入理由：hackmd-manager
+#        subagent、Bash(hackmd-cli:*) permission。
 #    衝突防護：同上，claude-code 可能由 claude-code-bin 等不同名套件提供，
-#      rtk 亦可能由其他變體提供；故同樣以「指令是否存在」為準。
+#      rtk 亦可能由其他變體提供；trello、hackmd-cli 同理，皆以「指令是否
+#      存在」為準，不強制改裝。
 #    對應：套件名 -> 指令名
 #      rtk->rtk  claude-code->claude  opencode-bin->opencode
+#      trello-cli->trello  hackmd-cli->hackmd-cli
 # ------------------------------------------------------------
 echo "==> [2/4] 透過 yay 安裝 AUR 套件（已存在的工具會自動略過）"
 if ! command -v yay >/dev/null 2>&1; then
@@ -154,6 +230,8 @@ YAY_INSTALL=(yay -S --needed --noconfirm)
 ensure_tool rtk    rtk         "${YAY_INSTALL[@]}"
 ensure_tool claude claude-code "${YAY_INSTALL[@]}"
 ensure_tool opencode opencode-bin "${YAY_INSTALL[@]}"
+ensure_tool trello trello-cli  "${YAY_INSTALL[@]}"
+ensure_tool hackmd-cli hackmd-cli "${YAY_INSTALL[@]}"
 
 # ------------------------------------------------------------
 # 3) pipx 套件：markitdown（帶 all extras，取得完整格式支援）
