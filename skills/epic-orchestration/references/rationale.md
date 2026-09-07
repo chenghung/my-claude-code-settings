@@ -60,11 +60,56 @@ orchestrator 對一個正停在等待輸入狀態的 phase agent 送出 SendMess
 
 auto 的射程界線要誠實記下。auto 只實測過「以 Bash 工具對工作目錄以外的路徑建立檔案」這一類操作被自動放行，其他類型的操作在 auto 之下是不是仍會跳出核准框並未實測。另外，作用中的使用者層設定檔含有一個 `autoMode` 環境區塊，裡面記載了若干信任邊界（名稱帶 `prod` 或 `production` 的遠端目標，IAM、RBAC、networking 這類受保護的 IaC 範圍，敏感資料位置等），這代表 auto 是風險感知模式而不是無條件放行；但「這些邊界在 auto 之下是不是真的會跳出核准框」同樣未經實測。還有一點要寫明：那個 `autoMode` 區塊自述的信任倉庫是另一個倉庫（一個 Obsidian vault），不是本 epic 所在的倉庫，因此區塊內列舉的倉庫內敏感路徑對本流程沒有射程。
 
+### 啟動與開場指令不併成一步
+
+有一個提案是把啟動與開場指令併成一步：啟動 phase agent 時直接以命令列帶入第一則使用者訊息，省掉之後那一次 `herdr agent prompt`。實測之後不採用，量測結果與否決理由記在這裡。
+
+基本可行性沒有問題。四家 CLI 都帶得進初始使用者訊息，也都能透過 `herdr agent start` 在 `--` 之後傳遞，四家也都實測到該訊息確實被執行並取得預期回覆：
+
+- `claude` 用位置參數，`claude --help` 的 Usage 是 `claude [options] [command] [prompt]`，該位置參數的說明是 `Your prompt`。
+- `codex` 用位置參數，`codex --help` 的 Usage 是 `codex [OPTIONS] [PROMPT]`，該位置參數的說明是 `Optional user prompt to start the session`。
+- `opencode` 用 `--prompt`，說明是 `prompt to use`；它的位置參數是 `project`、內容是路徑，不能拿來放訊息。
+- `agy` 用 `--prompt-interactive`（短旗標 `-i`），說明是 `Run an initial prompt interactively and continue the session`。要特別註明 `agy --prompt` 是 `--print` 的別名、屬非互動模式，容易誤用。
+
+差異出在 `herdr agent start` 何時回傳，四家分成三種。`claude` 與 `agy` 等到那一輪回合結束才回傳；`codex` 在該訊息送出之前就回傳——實測當下 `agent start` 已回報 `agent_status` 為 `idle`、`interactive_ready` 為真，而畫面仍停在 `Ask Codex to do anything`、`Context 0% used`，之後才轉入 `working`；`opencode` 在該訊息開始執行前就回傳，回傳當下讀畫面是一片空白，之後才轉入 `working`。
+
+決定性的一次實測是給 `claude` 與 `agy` 一個確定超過三十秒的前景回合，指令是 `python3 -c "import time; time.sleep(60); print('done')"`。兩家症狀完全相同：`herdr agent start` 在約三十一秒後回傳失敗，對應預設的 `--timeout 30000`，`agy` 那次的錯誤原文是 `{"error":{"code":"timeout","message":"timed out waiting for agent startup"},"id":"cli:agent:start"}`；隨後對該 pane 下 `herdr agent get`，`agent_status` 為 `working`、`interactive_ready` 欄位缺席，也就是「啟動成功判準」三項不成立；以啟動時所取的名稱下 `herdr agent get`，回傳 `{"error":{"code":"agent_not_found","message":"agent target <名稱> not found"}}`，`herdr agent list` 中該 pane 的 `name` 欄位為 `null`，也就是名稱根本沒有註冊上。但那個 agent 本身完全正常，`claude` 那一次在一分七秒後正確完成並回覆。
+
+要用前景指令才測得出這個邊界。先前用 `sleep 45` 測不出來，因為 `claude` 把它放到背景執行、約二十秒就回到 `idle`。
+
+不採用的理由有三點：
+
+1. 名稱沒註冊上，後續一連串動作全部定址不到。`SKILL.md`「派工階段」以 `phase-` 接 sub-issue 編號為 agent 命名，之後的 `herdr agent prompt`、`herdr agent wait`、`herdr agent send-keys` 全靠這個名稱定址，進度表的 herdr 座標欄位也記它。
+2. 「啟動成功判準」三項在這種情況下必然不成立，於是走「失敗行為」第一列：orchestrator 讀 pane 判因後若不是信任對話框，就會自行關掉這個 pane 重啟一次——被關掉的是一個健康、正在跑、已經載入完整 context 的 phase agent，而「失敗行為」第二列正是為了避免這件事才明文規定不重啟。
+3. 這在真實情境是常態不是例外：開場指令那一輪要跑到 phase agent 自己停下來為止，遠超過 `herdr agent start --timeout` 的上限 300000 毫秒。
+
+這批實測還給既有設計補上一個新理由。「啟動成功判準必須排在開場指令送出之前」原本的理由是不要對著一個卡住的畫面送指令；現在多一條更強的：一旦把開場指令併進啟動，那個判準本身就失去了它要量的東西，因為 agent 不會停在等待輸入的狀態。
+
 ### `herdr agent wait` 的 `--until` 可接受值與逾時語意
 
 依該子命令自己的 `--help` 輸出：`--until` 接受 `idle`、`working`、`blocked`、`done`、`unknown` 五個值，可重複指定以匹配多個狀態；不帶 `--until` 時預設匹配 `idle`、`done`、`blocked` 三者；`--timeout` 的單位是毫秒，不帶時無限等待。
 
-設計因此顯式指定 `idle` 與 `blocked` 兩個值、不用預設值，理由是預設集合還包含 `done`，而 `done` 對一個 Claude Code session 的確切語意尚未實測。握手呼叫必須帶 `--timeout` 的理由出自同一份輸出的另一句：不帶時無限等待——握手一旦不設逾時，只要那則下行訊息沒被接手，orchestrator 就永久阻塞在這一次呼叫上，整個 epic 跟著停擺。
+設計因此顯式指定 `idle` 與 `blocked` 兩個值、不用預設值，理由是預設集合還包含 `done`，而 `done` 對一個 Claude Code session 的確切語意尚未實測。這份輸出的另一句——不帶 `--timeout` 時無限等待——涵蓋的是仍走 `herdr agent wait` 的那一種握手，也就是代按執行中途核准框之後另外等的那一次；這一句掛在 `--timeout` 旗標自己的說明上，不在輸出末段。`herdr agent prompt` 那一種握手已經併進送出的同一次呼叫，它的逾時掛在 `herdr agent prompt` 上，依據是那個子命令自己的 `--help` 輸出末段逐字寫的 `Without --timeout, the settled-state wait is indefinite.`——兩邊的出處不同，不要合寫成一句。兩種握手不設逾時的後果相同（orchestrator 永久阻塞在這一次呼叫上，整個 epic 跟著停擺），但走得到那裡的情形兩邊不同：`herdr agent prompt` 那一種是狀態確實變了、卻始終沒走到 `working`（例如 `idle` 轉進 `blocked` 就停住），已被受理、送出時對方處於 `idle` 而單純沒被接手的那一種反而會在 5000 毫秒內以 `agent_prompt_stalled` 回來——在本設計所取的 10000 之下，帶不帶 `--timeout` 都一樣（`--timeout` 短於 5000 才會改回逾時，可調範圍見下面「十輪門檻與握手逾時都是估計值」）；`herdr agent wait` 那一種沒有記載對應的門檻，代按沒被接受、狀態一直停在 `blocked` 時就一路等下去。
+
+### 併進送出的那次握手已實測，`herdr agent send-keys` 那一路沒有選項可帶
+
+`SKILL.md`「下行送出後的握手」把三種握手分成不對稱的兩路——第一種把送出與等待併成單次呼叫，走 `herdr agent send-keys` 的兩種只能送出與確認分兩步——依據是一正一負兩筆。
+
+正面那筆：對一個 `agent_status` 為 `idle` 的 `claude` agent 實測 `herdr agent prompt <TARGET> <TEXT> --wait --until working --timeout 10000`，指令回傳碼為 0，回應中的 `agent_status` 為 `working`，整次呼叫不到一秒就回傳，且該 prompt 確實被執行並取得預期回覆。所以送出與握手併成同一次呼叫是成立的，不必送完再補一次 `herdr agent wait`。
+
+負面那筆：`herdr agent send-keys --help` 的完整輸出如下，除了兩個位置參數之外沒有任何選項，`--wait` 與 `--timeout` 都給不進去。這就是 `SKILL.md` 說第三種「不能比照第一種」的全部依據：
+
+```text
+Send key presses to an agent
+
+Usage: herdr agent send-keys <TARGET> <KEY>...
+
+Arguments:
+  <TARGET>
+  <KEY>...
+
+Use esc as the canonical Escape key name; escape is also accepted.
+```
 
 ## GitHub API 的實測依據
 
@@ -108,7 +153,7 @@ phase agent 主動送出的訊息應只有報到、決策請求、PR ready、收
 
 ### 十輪門檻與握手逾時都是估計值
 
-「監控節奏」的十輪空轉門檻與「下行送出後的握手」的 10000 毫秒逾時，兩個數字本身都沒有實測依據。十輪是依整輪 60 秒的牆鐘上限推算的，但 60 秒是上限不是下限——其他 phase 早退時整輪遠短於 60 秒，所以十輪可能只有兩三分鐘。握手那一邊只有「不帶 `--timeout` 會無限等待」是查證過的（見上面 `--until` 那一節），10000 這個值同樣是估的。假設不成立時的失敗形態不是流程中斷，是誤報或漏報：門檻太緊會對正在做事的 phase 一再讀 pane，太鬆則讓真的卡住的 phase 拖很久才被發現。實際使用時若發現誤報或漏報過多，這兩個數字是第一個該調的參數。
+「監控節奏」的十輪空轉門檻與「下行送出後的握手」的 10000 毫秒逾時，兩個數字本身都沒有實測依據。十輪是依整輪 60 秒的牆鐘上限推算的，但 60 秒是上限不是下限——其他 phase 早退時整輪遠短於 60 秒，所以十輪可能只有兩三分鐘。握手那一邊只有「不帶 `--timeout` 會無限等待」是查證過的——走 `herdr agent wait` 的那一種見上面 `--until` 那一節，併進 `herdr agent prompt` 的那一種出自該子命令自己的 `--help` 輸出末段——10000 這個值同樣是估的。假設不成立時的失敗形態不是流程中斷，是誤報或漏報：門檻太緊會對正在做事的 phase 一再讀 pane，太鬆則讓真的卡住的 phase 拖很久才被發現。實際使用時若發現誤報或漏報過多，這兩個數字是第一個該調的參數——但第一種握手的那個數字只調得動它兩支走法中的一支。第三種握手掛在 `herdr agent wait` 上，10000 往上往下都直接改變它等多久；第一種併在 `herdr agent prompt` 上，`--wait` 是兩段式的（見 `SKILL.md`「下行送出後的握手」）：已被受理、送出時對方處於 `idle` 的那則下行，5000 毫秒內一次狀態變化都沒有觀測到時回 `agent_prompt_stalled`，這一支釘在那道固定的 5000 毫秒門檻上，把 10000 往上調完全不改變行為，唯一調得動的方向是調到 5000 以下——而那只是把回傳從 `agent_prompt_stalled` 換成逾時，兩者在 `SKILL.md` 裡走同一條處置，等於沒調；狀態變化發生過、卻始終沒走到 `working` 的那一支（例如 `idle` 轉進 `blocked` 就停在那裡）則相反，門檻已經過了、攔不到它，收尾的正是 `--timeout`，10000 直接決定 orchestrator 在這次呼叫上阻塞多久，往上調就是延長阻塞——這一支也正是第一種握手不能省略 `--timeout` 的理由（見上面 `--until` 那一節）。
 
 ## 設計取捨：為什麼不寫 shell script
 
