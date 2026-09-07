@@ -13,6 +13,31 @@ grep -qE '^ensure_tool opencode opencode-bin ' "$INSTALL_SH" && pass opencode-in
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qE '^ensure_tool rg +ripgrep ' "$INSTALL_SH" && pass rg-install-line || bad rg-install-line
 
+# go-yq is the only official-repo package that provides /usr/bin/yq. The repo
+# also ships a same-named "yq" package (kislyuk's Python jq-wrapper for
+# YAML/XML/TOML, a completely different tool) that provides the identical
+# path, so a package-name typo here (go-yq -> yq) would silently install the
+# wrong tool instead of failing loudly - an unanchored substring check would
+# not catch that, since "yq" is a substring of "go-yq" too.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qE '^ensure_tool yq +go-yq +' "$INSTALL_SH" && pass yq-install-line || bad yq-install-line
+
+# trello-cli is the AUR package providing /usr/bin/trello. AUR also has a
+# same-named "trello" package (an unofficial Electron desktop GUI, unrelated
+# to the CLI), so a package-name typo here (trello-cli -> trello) would
+# silently install the wrong, unrelated software instead of failing loudly.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qE '^ensure_tool trello +trello-cli +' "$INSTALL_SH" && pass trello-install-line || bad trello-install-line
+
+# hackmd-cli is the only tool in this script installed via a global npm
+# install rather than pacman/yay/pipx, and @hackmd/hackmd-cli is the only
+# scoped package name anywhere in the script. Anchored end-to-end (not just
+# on the package name) so this fails on any of: a package-name typo or
+# dropped scope, a reversion back to YAY_INSTALL/PACMAN_INSTALL, or the
+# quoting being changed.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qE '^ensure_tool hackmd-cli "@hackmd/hackmd-cli" "\$\{NPM_INSTALL\[@\]\}"$' "$INSTALL_SH" && pass hackmd-cli-npm-install-line || bad hackmd-cli-npm-install-line
+
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qF 'https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh' "$INSTALL_SH" && pass codegraph-install-line || bad codegraph-install-line
 
