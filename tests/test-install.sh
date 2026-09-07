@@ -259,9 +259,10 @@ grep -q '^mcp add' "$AGY_STUB_LOG" && bad ag-mcp-skips-when-registered || pass a
 # --no-external), which also un-gates install_openspec's unconditional
 # end-of-script `npm install --global` — so PATH gets npx and npm stubs on
 # top of the existing claude/agy ones: npx fabricates the on-disk result
-# `skills add` would leave under GEMINI_HOME/antigravity-cli/skills for the
-# manifest's one active entry (herdrdev/herdr@herdr), and npm is a pure no-op
-# so install_openspec can never reach the real npm on this machine.
+# `skills add` would leave under GEMINI_HOME/antigravity-cli/skills for each
+# of the manifest's active entries (ten as of this manifest, e.g.
+# herdrdev/herdr@herdr), and npm is a pure no-op so install_openspec can
+# never reach the real npm on this machine.
 cat > "$STUB_BIN/npx" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail

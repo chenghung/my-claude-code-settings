@@ -9,16 +9,53 @@
 #   - Lines starting with # are treated as comments and ignored.
 #   - Everything else is passed as-is to `npx skills add <entry> ...`.
 #
-# The herdr entry below is active by default: herdr is this setup's terminal
-# workspace manager, installed unconditionally by install-cli-tools.sh, so its
-# control skill ships with it. The entry pins @herdr on purpose - herdrdev/herdr
-# also carries three skills used only for developing herdr itself.
+# Every source below was read out of ~/.agents/.skill-lock.json, the skills
+# CLI's own record of where each installed skill came from - not guessed from
+# the skill name. Pinning @skill matters: an unpinned owner/repo entry installs
+# every skill the repository ships, and mattpocock/skills alone ships 37.
+
+# herdr is this setup's terminal workspace manager, installed unconditionally
+# by install-cli-tools.sh, so its control skill ships with it. The entry pins
+# @herdr on purpose - herdrdev/herdr also carries three skills used only for
+# developing herdr itself.
 herdrdev/herdr@herdr
 
-# The remaining entries are commented out by default so a fresh install does
-# not pull in any external skill until you opt in. Uncomment the ones you
-# want, or add your own line in the same owner/repo@skill format.
+# Thinking, explaining and workflow skills. These were installed by hand and so
+# never survived a rebuild; listing them here is what makes them reproducible
+# across all four platforms.
+#   grill-me                   a relentless interview to sharpen a plan or
+#                              design
+#   grill-with-docs            the same interview, writing ADRs and a glossary
+#                              as it goes
+#   teach                      walks the user through a concept inside this
+#                              workspace
+#   show-me                    explains the current topic visually - diagrams,
+#                              code-shape sketches, focused HTML
+#   handoff                    compacts the current conversation into a handoff
+#                              document for a fresh agent to pick up
+#   resolving-merge-conflicts  resolves an in-progress merge or rebase by
+#                              recovering each side's original intent
+#   triage                     moves issues and external PRs through a triage
+#                              state machine and writes agent-ready briefs
+mattpocock/skills@grill-me
+mattpocock/skills@grill-with-docs
+mattpocock/skills@teach
+mattpocock/skills@handoff
+mattpocock/skills@resolving-merge-conflicts
+mattpocock/skills@triage
+humanlayer/skills@show-me
 
+# Dependencies of three entries above, not wanted for their own sake. grill-me's
+# whole body is "Run a /grilling session"; grill-with-docs adds "using the
+# /domain-modeling skill"; triage's grill step calls the Skill tool for
+# "grilling" and "domain-modeling" by name. Removing either line silently
+# breaks all three on a fresh machine - they install fine and then do nothing.
+mattpocock/skills@grilling
+mattpocock/skills@domain-modeling
+
+# The entries below stay commented out. They are format examples, kept so a new
+# line can be added without looking the syntax up again - uncomment one, or add
+# your own in the same owner/repo@skill form.
 # juliusbrussee/caveman@caveman-help
 # get-convex/agent-skills@convex-migration-helper
 # dietrichgebert/ponytail@ponytail-help
