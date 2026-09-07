@@ -6,7 +6,12 @@ set -euo pipefail
 #           alias 區塊冪等地寫入 ~/.zshrc。
 # 來源優先序（硬性）：官方 repo > AUR > pipx > 上游官方安裝腳本，且版本不可
 #   過舊；第四級（上游官方安裝腳本）僅用於官方 repo 與 AUR 皆無可信對應
-#   套件的工具。
+#   套件的工具。npm 全域安裝不在此優先序之列：hackmd-cli 走 npm 全域安裝
+#   是使用者明確指定的來源，不是依此優先序推導而得——AUR 上其實有
+#   hackmd-cli 套件（已實測 v2.5.0-1），並非「AUR 沒有所以只能走 npm」；
+#   使用者推翻了先前改走 AUR 的決定，改指定 npm 全域安裝，詳見下方第 3
+#   節說明。除 hackmd-cli 這一個工具外，npm 全域安裝不用於本腳本管理的
+#   其他任何工具。
 # 預期影響：
 #   - 透過 pacman 安裝官方 repo 套件：jq、bat、glow、eza、csvlens、
 #     openai-codex、lf、markdownlint-cli、markdownlint-cli2、tflint、
@@ -16,16 +21,19 @@ set -euo pipefail
 #     bats-support、bats-assert、bats-file（僅提供 /usr/lib/bats 下的
 #     load.bash，無終端指令，以檔案存在與否判斷冪等）
 #   - 透過 yay（AUR helper）安裝 AUR 套件：rtk、claude-code、opencode、
-#     trello-cli、hackmd-cli
+#     trello-cli
+#   - 透過 npm 全域安裝（使用者指定來源，不屬於上方優先序）：
+#     @hackmd/hackmd-cli（提供 hackmd-cli 指令）
 #   - 透過 pipx 安裝官方 repo 與 AUR 皆無的 python 套件：markitdown[all]
 #   - 透過上游官方安裝腳本（curl）安裝官方 repo 與 AUR 皆無可信對應套件的
 #     工具：codegraph、TokenUsageInsights（其 --service 旗標會另外常駐一個
-#     systemd user 服務，詳見下方第 4 節說明）、herdr（每次執行本腳本都
+#     systemd user 服務，詳見下方第 5 節說明）、herdr（每次執行本腳本都
 #     檢查並更新）、agy（Antigravity CLI，已存在即略過，不代跑自帶更新器）、
 #     clauth（多組 Claude 帳號的 profile 啟動器，已存在即略過，不代跑自帶
 #     更新器；安裝時務必帶 --nocargo 旗標，避免這台機器已有的 cargo 把它
-#     改裝到別的目錄且裝出不具自更新能力的版本，詳見下方第 4 節說明）
-#   - 不再使用 npm 全域安裝任何工具（claude code / codex 已改走 repo 或 AUR）
+#     改裝到別的目錄且裝出不具自更新能力的版本，詳見下方第 5 節說明）
+#   - npm 全域安裝僅用於上述 hackmd-cli 這一個工具；claude code / codex
+#     仍走 repo 或 AUR，並未改回 npm
 #   - 於 ~/.zshrc 內以 sentinel 標記包夾的方式維護（重生）alias 區塊
 # 冪等與衝突防護（重點）：
 #   - 每個工具改以「指令是否已存在」作為冪等判斷，而非僅靠 pacman/yay 的
@@ -146,7 +154,7 @@ ensure_tool() {
 #      duckdb->duckdb  sqlite->sqlite3  go-yq->yq  fd->fd
 #      uv->uv  markdownlint-cli2->markdownlint-cli2
 # ------------------------------------------------------------
-echo "==> [1/4] 透過 pacman 安裝官方 repo 套件（已存在的工具會自動略過）"
+echo "==> [1/5] 透過 pacman 安裝官方 repo 套件（已存在的工具會自動略過）"
 PACMAN_INSTALL=(sudo pacman -S --needed --noconfirm)
 ensure_tool jq           jq               "${PACMAN_INSTALL[@]}"
 ensure_tool bat          bat              "${PACMAN_INSTALL[@]}"
@@ -192,8 +200,8 @@ done
 unset _bats_lib
 
 # ------------------------------------------------------------
-# 2) AUR 套件（yay）：rtk claude-code opencode-bin trello-cli hackmd-cli
-#    來源依據：五者官方 repo 皆無，但 AUR 有且版本不過舊（優先序第 2 級）。
+# 2) AUR 套件（yay）：rtk claude-code opencode-bin trello-cli
+#    來源依據：四者官方 repo 皆無，但 AUR 有且版本不過舊（優先序第 2 級）。
 #      - rtk：官方安裝管道為 Homebrew / install.sh / cargo / 預建二進位，
 #        官方 repo 無；AUR 套件與 pacman 整合、可追蹤、易更新移除，最穩定。
 #      - claude-code：官方 repo 無；AUR 套件版本與 npm 官方上游一致且近期更新。
@@ -205,23 +213,14 @@ unset _bats_lib
 #        誤植。這台機器上 /usr/bin/trello 已由 pacman 套件 trello-cli 提供，
 #        且 ~/.cache/yay/trello-cli 存在，可確認來源正是 AUR。納入理由：
 #        trello-manager subagent、Bash(trello:*) permission。
-#      - hackmd-cli：官方 repo 無（`pacman -Si hackmd-cli` 空輸出）；AUR
-#        已實測 v2.5.0-1、維護者 forvkusa、NumVotes 0、Popularity 0、2026
-#        年 8 月才首次提交、Depends 為 ["nodejs>=24"]、Provides 為
-#        null——新套件、票數極低，風險請自行判斷。這台機器上現有的
-#        hackmd-cli 不是這個 AUR 套件，而是 npm 全域包 @hackmd/hackmd-cli
-#        裝在 ~/.npm-global/bin，不歸屬任何 pacman 套件，依 ensure_tool 的
-#        冪等判斷會被略過；此 AUR 路徑實際上只在新機器（尚無
-#        ~/.npm-global 版本時）才會真正生效。納入理由：hackmd-manager
-#        subagent、Bash(hackmd-cli:*) permission。
 #    衝突防護：同上，claude-code 可能由 claude-code-bin 等不同名套件提供，
-#      rtk 亦可能由其他變體提供；trello、hackmd-cli 同理，皆以「指令是否
-#      存在」為準，不強制改裝。
+#      rtk 亦可能由其他變體提供；trello 同理，皆以「指令是否存在」為準，
+#      不強制改裝。
 #    對應：套件名 -> 指令名
 #      rtk->rtk  claude-code->claude  opencode-bin->opencode
-#      trello-cli->trello  hackmd-cli->hackmd-cli
+#      trello-cli->trello
 # ------------------------------------------------------------
-echo "==> [2/4] 透過 yay 安裝 AUR 套件（已存在的工具會自動略過）"
+echo "==> [2/5] 透過 yay 安裝 AUR 套件（已存在的工具會自動略過）"
 if ! command -v yay >/dev/null 2>&1; then
   echo "    [錯誤] 找不到 yay，請先安裝 AUR helper 後再執行此腳本。" >&2
   exit 1
@@ -231,10 +230,37 @@ ensure_tool rtk    rtk         "${YAY_INSTALL[@]}"
 ensure_tool claude claude-code "${YAY_INSTALL[@]}"
 ensure_tool opencode opencode-bin "${YAY_INSTALL[@]}"
 ensure_tool trello trello-cli  "${YAY_INSTALL[@]}"
-ensure_tool hackmd-cli hackmd-cli "${YAY_INSTALL[@]}"
 
 # ------------------------------------------------------------
-# 3) pipx 套件：markitdown（帶 all extras，取得完整格式支援）
+# 3) npm 全域安裝：hackmd-cli
+#    這一級不屬於上方宣告的來源優先序（官方 repo > AUR > pipx > 上游官方
+#    安裝腳本）——npm 全域安裝是使用者明確指定的來源，不是依優先序推導
+#    而得。AUR 上其實有 hackmd-cli 套件（已實測 v2.5.0-1、維護者
+#    forvkusa、NumVotes 0、Popularity 0、2026 年 8 月才首次提交、Depends
+#    為 ["nodejs>=24"]），並非「AUR 沒有所以只能走 npm」；使用者推翻了
+#    先前改走 AUR 的決定，改指定 npm 全域安裝，故僅 hackmd-cli 這一個
+#    工具走這條路徑，其餘工具不受影響。
+#    前置依賴：nodejs、npm（已於上方 [1/5] pacman 區塊安裝，故執行到此處
+#      時 npm 指令必已到位，不需要另加「找不到 npm」的防呆——若 npm 安裝
+#      本身失敗，set -euo pipefail 早已在 [1/5] 中斷本腳本，不會執行到此）。
+#    對應：套件名 -> 指令名
+#      @hackmd/hackmd-cli->hackmd-cli
+#    納入理由：hackmd-manager subagent、Bash(hackmd-cli:*) permission。
+#    冪等判斷：沿用 ensure_tool 通則——「對應指令已存在即略過」，不做成
+#      每次重跑都 npm install 或更新到 latest。這點與 install.sh 的
+#      install_openspec（每次都 npm install --global <pkg>@latest）不同：
+#      那是刻意選擇的更新語意，這裡回到本腳本的冪等通則——只有 codegraph
+#      與 herdr 因官方提供 upgrade/update 子指令才代跑更新（見下方第 5
+#      節），hackmd-cli 沒有這種理由，不套用那個例外。
+#    實測依據：這台機器上 ~/.npm-global/lib/node_modules/@hackmd/hackmd-cli
+#      存在，且 ~/.npm-global/bin/hackmd-cli 連到該套件目錄下的 bin/run。
+# ------------------------------------------------------------
+echo "==> [3/5] 透過 npm 全域安裝（已存在的工具會自動略過）"
+NPM_INSTALL=(npm install --global)
+ensure_tool hackmd-cli "@hackmd/hackmd-cli" "${NPM_INSTALL[@]}"
+
+# ------------------------------------------------------------
+# 4) pipx 套件：markitdown（帶 all extras，取得完整格式支援）
 #    來源依據：官方 repo 與 AUR 皆無 markitdown，改走 pipx（優先序第 3 級，
 #      低於官方 repo 與 AUR）。
 #    前置依賴：python-pipx（已於上方 pacman 區塊安裝，提供 pipx 指令）。
@@ -247,7 +273,7 @@ ensure_tool hackmd-cli hackmd-cli "${YAY_INSTALL[@]}"
 #      不中止整支腳本（與 yay 那層不同：yay 是硬性前提，pipx 只影響
 #      這一個工具，故此處選擇 warn-and-skip 而非 exit）。
 # ------------------------------------------------------------
-echo "==> [3/4] 透過 pipx 安裝 python 套件（已存在的工具會自動略過）"
+echo "==> [4/5] 透過 pipx 安裝 python 套件（已存在的工具會自動略過）"
 if ! command -v pipx >/dev/null 2>&1; then
   echo "    [警告] 找不到 pipx，略過 markitdown 安裝。若剛安裝 python-pipx，" >&2
   echo "           請重新開啟終端機或 source ~/.zshrc 後再重跑此腳本。" >&2
@@ -257,7 +283,7 @@ else
 fi
 
 # ------------------------------------------------------------
-# 4) 上游官方安裝腳本（curl）：codegraph、TokenUsageInsights、herdr、agy、clauth
+# 5) 上游官方安裝腳本（curl）：codegraph、TokenUsageInsights、herdr、agy、clauth
 #    來源依據：五者官方 repo 與 AUR 皆無可信對應套件，改走上游官方安裝
 #      腳本（優先序第 4 級，低於官方 repo、AUR 與 pipx）。五者皆安裝到
 #      使用者家目錄下，不需 sudo。herdr、agy（Antigravity CLI）、clauth
@@ -354,7 +380,7 @@ fi
 #      systemd user 目錄建立 unit 並執行 systemctl --user enable --now，
 #      使其儀表板常駐監聽 3003 埠。
 # ------------------------------------------------------------
-echo "==> [4/4] 透過上游官方安裝腳本安裝（codegraph、herdr 每次檢查並更新，token-usage-insights、agy、clauth 已存在即略過）"
+echo "==> [5/5] 透過上游官方安裝腳本安裝（codegraph、herdr 每次檢查並更新，token-usage-insights、agy、clauth 已存在即略過）"
 if ! command -v curl >/dev/null 2>&1; then
   echo "    [錯誤] 找不到 curl，請先安裝 curl 後再執行此腳本。" >&2
   exit 1
@@ -421,7 +447,7 @@ else
 fi
 
 # ------------------------------------------------------------
-# 5) 同步 alias 到 ~/.zshrc（重生整個託管區塊）
+# 6) 同步 alias 到 ~/.zshrc（重生整個託管區塊）
 #    防重複與同步機制：以 BEGIN/END sentinel 標記包夾整段 alias，視為
 #    「託管區塊」。每次執行都用腳本當下定義的內容「重生」此區塊：
 #      - 完整區塊（BEGIN 與 END 皆在）：以 awk 只替換 BEGIN 與 END
