@@ -1865,11 +1865,12 @@ _write_agy_home_interactive() {
 # `herdr agent start` call still targets the pane id via --pane, not this
 # name (see that function's own docstring), and every failure message on
 # this path
-# already prints the real pane id. cmd_wait's own _wait_agent_states is the
-# one place a name coming out of this function is later read back by
-# name -- but even there it only ever matches the "<cli>-" prefix (see
-# that function's own docstring), never the digest suffix, so that suffix
-# staying unreadable costs nothing either.
+# already prints the real pane id. cmd_wait's own _wait_agent_states used
+# to be the one place a name coming out of this function was read back --
+# by its "<cli>-" prefix, never the digest suffix -- but it now matches
+# `herdr agent list` entries by pane id instead (see that function's own
+# docstring for why the prefix match was dropped), so nothing in this file
+# reads this name back at all any more; staying unreadable costs nothing.
 #
 # The length ceiling is met by construction, for any pane id whatsoever:
 # the longest cli name is `opencode` at 8, plus a separator, plus 12
@@ -3855,8 +3856,9 @@ cmd_prepare() {
 # function is what actually confirms that, for every cli, regardless of
 # whether resending is even possible for it.
 #
-# Three herdr `agent wait` facts this function depends on, all confirmed
-# against the real binary (herdr 0.8.2), not inferred from --help text:
+# Four herdr `agent wait` facts this function depends on, all confirmed
+# against the real binary (herdr 0.8.2), not inferred from --help text
+# alone:
 #   - TARGET accepts a pane id directly, the same as `agent start`'s own
 #     --pane and `agent prompt`'s own TARGET already do (see
 #     launch_reviewer_interactive's own docstring) -- a live probe against
@@ -3880,6 +3882,22 @@ cmd_prepare() {
 #     stdout, and never spawn_supervisor_interactive itself since that
 #     supervisor calls no herdr command at all) -- $status recorded for
 #     print_summary is the same "unconfirmed" either way.
+#   - --timeout's unit is milliseconds, not seconds, which is why
+#     remaining_ms below is seconds multiplied by 1000. `herdr agent wait
+#     --help` states this explicitly ("--timeout <MS> Fail after this many
+#     milliseconds"), and it was also confirmed by timing the call itself,
+#     not just read off --help text: targeting a real, live pane that was
+#     genuinely idle (so it could never reach --until working on its own)
+#     with --timeout 1500 and --timeout 2000 returned the timeout error
+#     after approximately 1500ms and 2000ms of real wall-clock time
+#     respectively, not the ~25 and ~33 minutes a seconds-based reading of
+#     the same numbers would have produced. Getting this wrong would make
+#     the very first reviewer that fails to reach agent_status=working hold
+#     this whole function for about 16.7 hours (deadline_seconds * 1000
+#     read back as seconds) -- this function would never return, and
+#     cmd_launch's own dispatch summary (see print_summary) would never
+#     print -- the exact orphaned-reviewer outcome this function's own
+#     docstring above exists to avoid.
 #
 # <budget_seconds> is a parameter, not a direct read of
 # REVIEWER_CONFIRM_BUDGET_SECONDS (cmd_launch's own call site below passes
@@ -4006,6 +4024,10 @@ _confirm_reviewers_working() {
 
     while :; do
       now="$(date +%s)"
+      # * 1000: --timeout below is milliseconds, not seconds -- see this
+      # function's own docstring, fourth `agent wait` fact, for the
+      # --help text and the real-binary timing probe this is confirmed
+      # against.
       remaining_ms=$(( (deadline - now) * 1000 ))
       if (( remaining_ms <= 0 )); then
         printf '%s unconfirmed\n' "$cli" >> "$status_file" || true
@@ -4196,6 +4218,31 @@ cmd_launch() {
     # round-trip needed, this is the same shell and the same call) and why
     # colon, not equals, is the join character.
     dispatched_agents+=("$cli:${pane_id_by_cli[$cli]}")
+
+    # This run's own pane for this cli, persisted so a later, separate
+    # `wait` invocation can look it up -- unlike print_summary above,
+    # cmd_wait is not called from inside this same process: the
+    # orchestrating agent invokes it as its own, later subprocess, once per
+    # poll, so pane_id_by_cli itself (a local variable of this call) is
+    # long gone by then and cannot be handed over any other way.
+    # _wait_agent_states reads this file back to match `herdr agent list`
+    # entries by pane id rather than by cli name (see that function's own
+    # docstring for the cross-run collision this closes): `herdr agent
+    # list` is scoped to the whole herdr service, not to this run, so two
+    # reviews on the same machine dispatching the same cli at once produce
+    # two agents whose names share the same prefix, and only the exact
+    # pane id tells them apart. Treated as fatal for the same reason
+    # .last-working-$cli's own write just below is: a write failure here
+    # would silently leave this cli permanently unmatchable against `herdr
+    # agent list` for the rest of the run (every _wait_agent_states read
+    # would come back "unknown"), which is worse than failing this
+    # dispatch loudly right now while cleanup can still run.
+    if ! printf '%s\n' "${pane_id_by_cli[$cli]}" > "$base_dir/.pane-$cli"; then
+      printf 'run-review.sh: failed to write the pane-id mapping for %s: %s\n' \
+        "$cli" "$base_dir/.pane-$cli" >&2
+      _dispatch_failed_cleanup "$worktree_dir" "${dispatched[@]+"${dispatched[@]}"}"
+      exit 1
+    fi
 
     # Baseline for cmd_wait's own event=stalled check (see that function's
     # own docstring and REVIEWER_STALLED_THRESHOLD_SECONDS's docstring):
@@ -4699,25 +4746,55 @@ _wait_already_reported() {
 # fields that echo model output -- those are excluded here for the same
 # reason.
 #
-# `(.name // "")` guards against a herdr instance that also has other,
-# unrelated agents running -- a very ordinary case, not a hypothetical:
-# any other pane on the same machine that herdr auto-discovered rather
-# than started via `agent start <name>` reports back with no `name` field
-# at all. Confirmed against the real binary (herdr 0.8.2): such an entry's
-# `.name` is null, and `null | startswith(...)` is a jq runtime error, not
-# a false match -- without this guard, one such unrelated agent anywhere
-# in `herdr agent list`'s output makes the whole jq call fail and print
-# nothing, which silently reads back here as agent_status "" for every
-# cli in .roster, not just whichever agent actually lacked a name.
+# Matched by pane id, not by cli-name prefix -- an earlier version of this
+# function matched `(.name // "") | startswith($c + "-")` and took `first`
+# of whatever came back. `herdr agent list` is scoped to the whole herdr
+# service, not to this run: two reviews running on the same machine at
+# once, both dispatching the same cli, produce two agents whose names
+# share that same "<cli>-" prefix (see _derive_agent_name's own docstring
+# for why the prefix is always "<cli>-<digest>"), and the prefix match
+# could not tell them apart -- `first` silently returned whichever one
+# `herdr agent list` happened to list first, sometimes the other run's
+# agent instead of this one's. This is not a hypothetical: observed for
+# real, on this same machine, while this fix was being developed -- a
+# second, unrelated review of a different PR was running concurrently and
+# had also dispatched claude. cmd_wait's own event=stalled check resets
+# this run's .last-working-<cli> baseline whenever this function reports
+# that cli as working (see cmd_wait's own docstring); reading the wrong
+# run's agent there kept resetting this run's baseline off a pane it never
+# dispatched, so a genuinely stalled reviewer in this run was never
+# reported.
+#
+# pane_id is read back from <base_dir>/.pane-<cli>, written once at
+# dispatch time by cmd_launch's own per-cli loop -- the only point pane_id
+# is known; .roster itself is written earlier, at prepare time, before any
+# pane exists (see cmd_prepare's own docstring). A cli with no such file
+# (a base_dir predating this file, or a cli whose dispatch write itself
+# failed) has no pane id to match against and reads back `unknown` here --
+# the same value a cli that has simply fallen out of `herdr agent list`
+# already reads back as, since neither cmd_wait's blocked nor its stalled
+# check acts on `unknown` as a status of its own.
+#
+# No `(.name // "")`-style guard is needed for `.pane_id`, unlike `.name`
+# before it: confirmed against a real jq 1.8.2 binary, comparing a missing
+# (null) `.pane_id` against a non-empty string with `==` evaluates to
+# `false`, not the runtime error `null | startswith(...)` raised -- an
+# unrelated agent anywhere in the list, named or not, simply fails this
+# select and is skipped like any other non-matching entry.
 _wait_agent_states() {
-  local base_dir="$1" cli
+  local base_dir="$1" cli pane_id
   command -v herdr >/dev/null 2>&1 || return 0
   [ -r "$base_dir/.roster" ] || return 0
   while read -r cli _; do
     [ -n "$cli" ] || continue
+    pane_id="$(cat "$base_dir/.pane-$cli" 2>/dev/null)" || pane_id=""
+    if [ -z "$pane_id" ]; then
+      printf '%s unknown\n' "$cli"
+      continue
+    fi
     printf '%s %s\n' "$cli" \
-      "$(herdr agent list 2>/dev/null | jq -r --arg c "$cli" \
-          '[.result.agents[]? | select((.name // "") | startswith($c + "-")) | .agent_status] | first // "unknown"')"
+      "$(herdr agent list 2>/dev/null | jq -r --arg p "$pane_id" \
+          '[.result.agents[]? | select(.pane_id == $p) | .agent_status] | first // "unknown"')"
   done < "$base_dir/.roster"
 }
 

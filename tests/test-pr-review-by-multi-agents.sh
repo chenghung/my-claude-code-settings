@@ -1766,12 +1766,16 @@ fi
 # ==============================================================
 # _derive_agent_name
 #
-# 這裡印出的 "<cli>-<digest>" 前綴是承重的：cmd_wait 自己的
-# _wait_agent_states 就是靠 "$cli-" 這個前綴去 herdr agent list 裡挑出這次
-# run 自己派出的 agent（見那個函式自己的 docstring）。挑錯 agent 不會報
-# 任何錯誤，只會讓 cmd_wait 誤判成 unknown 或撞到另一個不相干的 agent，
-# 所以這個前綴格式需要自己的直接斷言，不能只靠下面 launch_reviewer_
-# interactive 那組間接驗證 argv 的測試。
+# 這裡印出的 "<cli>-<digest>" 格式仍然承重，但理由已經跟 _wait_agent_
+# states 的舊機制脫鉤：那個函式現在改用持久化下來的 pane id 精確比對（見
+# 它自己的 docstring），完全不再讀這個名稱的任何部分。這個格式仍然需要
+# 自己的直接斷言，因為 herdr 本身要求 `agent start` 的名稱先符合
+# [a-z][a-z0-9_-]{0,31} 且在存活 agent 之間唯一（見 _derive_agent_name 自
+# 己的 docstring），不合法的名稱在 --pane 被解析之前就會被拒絕，不能只靠
+# 下面 launch_reviewer_interactive 那組間接驗證 argv 的測試。cli 前綴留著
+# 純粹是給 herdr 自己畫面（tab、agent 清單）上的人類辨識用；真正承擔唯一
+# 性的是 digest 那一段本身，因為它雜湊自 pane id -- 而 pane id 本身已經
+# 是全域唯一的控制代碼。
 # ==============================================================
 
 derive_name_claude="$(_derive_agent_name claude wT:p1)"
@@ -1782,7 +1786,8 @@ else
 fi
 
 # 不同 cli、同一個 pane id 要得出不同名稱（cli 名稱本身就是前綴的一部
-# 分），否則 _wait_agent_states 的前綴比對會在兩個 reviewer 之間撞名。
+# 分）-- 這是給 herdr 自己畫面上的人類辨識用，不是 _wait_agent_states 的
+# 比對依據：那個函式現在只看 pane id 本身，不看這個名稱。
 derive_name_agy="$(_derive_agent_name agy wT:p1)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$derive_name_claude" != "$derive_name_agy" ] && pass "_derive_agent_name 不同 cli 得到不同名稱" || bad "_derive_agent_name 不同 cli 卻撞名: $derive_name_claude"
@@ -3918,6 +3923,22 @@ for e2e_lw_cli in claude codex opencode; do
   esac
 done
 
+# --- cmd_launch()'s own per-cli dispatch loop also persists this run's own
+# pane id to <base_dir>/.pane-<cli>, the file a later, separate `wait`
+# invocation reads back so _wait_agent_states can match `herdr agent list`
+# entries by pane id instead of by cli-name prefix (see that function's own
+# docstring for the cross-run collision this closes). The launch call above
+# used --agent claude=pane-claude --agent codex=pane-codex --agent
+# opencode=pane-opencode, so each file's content must be exactly that cli's
+# own pane id, not just non-empty. ---
+for e2e_pane_cli in claude codex opencode; do
+  e2e_pane_file="$E2E_BASE_DIR/.pane-$e2e_pane_cli"
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$(cat "$e2e_pane_file" 2>/dev/null)" = "pane-$e2e_pane_cli" ] \
+    && pass "main-e2e-pane-id-mapping-written-$e2e_pane_cli" \
+    || bad "main-e2e-pane-id-mapping-written-$e2e_pane_cli: $(cat "$e2e_pane_file" 2>/dev/null)"
+done
+
 # This run's own issue_arg ("777") was explicit and its design doc path was
 # readable -- confirming print_summary's materials section reflects that
 # correctly end to end (real cmd_prepare() -> fetch_review_materials ->
@@ -6002,18 +6023,23 @@ esac
 # 所以這裡建立替身之後立刻呼叫它驗證替身確實遮蔽住了 herdr。
 #
 # 替身回傳的 JSON 刻意混入一個沒有 name 欄位的 agent，模擬同一台機器
-# 上任何其他被 herdr 自動發現、非本次 run 啟動的 agent（真實情境，不
-# 是假設 -- 這台開發機自己的 `herdr agent list` 現在就回傳好幾個這種
-# agent）。對真實 herdr 二進位（0.8.2）探測過：這種 agent 的 .name 是
-# null，`null | startswith(...)` 是 jq 的執行期錯誤而不是「不相符」--
-# _wait_agent_states 若沒有 `(.name // "")` 這層防護，這個沒有名字的
-# agent 存在就會讓 agent list 查詢對「每一個」cli 都失敗，症狀是
-# blocked 永遠偵測不到、而且不只發生在它自己那個名額上。
+# 上任何其他被 herdr 自動發現、非本次 run 啟動的 agent（真實情境，不是
+# 假設 -- 這台開發機自己的 `herdr agent list` 現在就回傳好幾個這種
+# agent：對真實 herdr 二進位（0.8.2）探測過，這種 agent 一律沒有
+# name，但 pane_id 一律都在）。_wait_agent_states 現在改用
+# `select(.pane_id == $p)` 比對，這種無關 agent 不論有沒有 name 都只是
+# pane_id 對不上而落選，不像舊版 `(.name // "") | startswith(...)` 那樣
+# 需要額外防護 null 才不會讓 jq 對整個查詢丟出執行期錯誤（見
+# _wait_agent_states 自己的 docstring）。
 # ==============================================================
 
 WAIT_BLOCKED="$T/wait-blocked"
 mkdir -p "$WAIT_BLOCKED"
 printf 'codex some-model dispatched\nopencode some-model dispatched\n' > "$WAIT_BLOCKED/.roster"
+# .pane-<cli>：cmd_launch 在真實派工時才會寫的檔案，這裡手動補上，模擬
+# 已經派工完成、只是要單獨測 cmd_wait 這一段的情境。
+printf 'pane-codex\n' > "$WAIT_BLOCKED/.pane-codex"
+printf 'pane-opencode\n' > "$WAIT_BLOCKED/.pane-opencode"
 
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
@@ -6030,14 +6056,15 @@ chmod +x "$STUB_BIN/herdr"
 export PATH="$STUB_BIN:$saved_path"
 assert_cli_stub_only "$PATH" "$STUB_BIN" herdr
 # codex: blocked（應觸發）；opencode: working（不應觸發）；第三個
-# agent 沒有 name 欄位（模擬無關 agent，驗證 (.name // "") 防護）。
-export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"codex-aaaaaaaaaaaa","agent_status":"blocked"},{"name":"opencode-bbbbbbbbbbbb","agent_status":"working"},{"agent_status":"blocked"}]}}'
+# agent 沒有 name 欄位、pane_id 也對不上任何一個 .pane-<cli>（模擬無關
+# agent，驗證它只是單純落選，不會讓整個查詢失敗或被誤選中）。
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"codex-aaaaaaaaaaaa","pane_id":"pane-codex","agent_status":"blocked"},{"name":"opencode-bbbbbbbbbbbb","pane_id":"pane-opencode","agent_status":"working"},{"pane_id":"pane-anon-agent","agent_status":"blocked"}]}}'
 
 # --- 某 cli 進入 blocked → event=blocked cli=<正確的 cli 名稱> ---
 wait_blocked_out="$(cmd_wait --base-dir "$WAIT_BLOCKED" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
 case "$wait_blocked_out" in
   'event=blocked cli=codex') pass "cmd_wait 某 cli 進入 blocked 時回傳 blocked 事件並帶正確 cli 名稱" ;;
-  *) bad "cmd_wait blocked 事件不正確（可能是 (.name // \"\") 防護沒生效，或 cli 判斷錯誤）: $wait_blocked_out" ;;
+  *) bad "cmd_wait blocked 事件不正確（可能是 pane_id 比對沒生效，或 cli 判斷錯誤）: $wait_blocked_out" ;;
 esac
 
 # --- --reported-blocked 點名的 cli 不會再次觸發 blocked，改在死線到達 ---
@@ -6061,8 +6088,9 @@ wait_blocked_filtered_out="$(cmd_wait --base-dir "$WAIT_BLOCKED" --deadline-at "
 WAIT_STALLED_FIRES="$T/wait-stalled-fires"
 mkdir -p "$WAIT_STALLED_FIRES"
 printf 'claude some-model dispatched\n' > "$WAIT_STALLED_FIRES/.roster"
+printf 'pane-claude\n' > "$WAIT_STALLED_FIRES/.pane-claude"
 printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_FIRES/.last-working-claude"
-export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","agent_status":"idle"}]}}'
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude","agent_status":"idle"}]}}'
 wait_stalled_out="$(cmd_wait --base-dir "$WAIT_STALLED_FIRES" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
 case "$wait_stalled_out" in
   'event=stalled cli=claude') pass "cmd_wait 停滯超過門檻時回傳 stalled 事件" ;;
@@ -6074,8 +6102,9 @@ esac
 WAIT_STALLED_BLOCKED_PRIORITY="$T/wait-stalled-blocked-priority"
 mkdir -p "$WAIT_STALLED_BLOCKED_PRIORITY"
 printf 'codex some-model dispatched\n' > "$WAIT_STALLED_BLOCKED_PRIORITY/.roster"
+printf 'pane-codex\n' > "$WAIT_STALLED_BLOCKED_PRIORITY/.pane-codex"
 printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_BLOCKED_PRIORITY/.last-working-codex"
-export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"codex-aaaaaaaaaaaa","agent_status":"blocked"}]}}'
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"codex-aaaaaaaaaaaa","pane_id":"pane-codex","agent_status":"blocked"}]}}'
 wait_stalled_blocked_out="$(cmd_wait --base-dir "$WAIT_STALLED_BLOCKED_PRIORITY" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
 case "$wait_stalled_blocked_out" in
   'event=blocked cli=codex') pass "cmd_wait 同時符合 blocked 與 stalled 時優先回傳 blocked" ;;
@@ -6086,8 +6115,9 @@ esac
 WAIT_STALLED_SUPPRESSED="$T/wait-stalled-suppressed"
 mkdir -p "$WAIT_STALLED_SUPPRESSED"
 printf 'opencode some-model dispatched\n' > "$WAIT_STALLED_SUPPRESSED/.roster"
+printf 'pane-opencode\n' > "$WAIT_STALLED_SUPPRESSED/.pane-opencode"
 printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_SUPPRESSED/.last-working-opencode"
-export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"opencode-aaaaaaaaaaaa","agent_status":"idle"}]}}'
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"opencode-aaaaaaaaaaaa","pane_id":"pane-opencode","agent_status":"idle"}]}}'
 wait_stalled_suppressed_out="$(cmd_wait --base-dir "$WAIT_STALLED_SUPPRESSED" --deadline-at "$(( $(date +%s) + 3 ))" --reported-stalled opencode 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_stalled_suppressed_out" = 'event=deadline' ] && pass "cmd_wait --reported-stalled 點名的 cli 不會再次觸發 stalled 事件" || bad "cmd_wait --reported-stalled 過濾失敗: $wait_stalled_suppressed_out"
@@ -6099,8 +6129,9 @@ wait_stalled_suppressed_out="$(cmd_wait --base-dir "$WAIT_STALLED_SUPPRESSED" --
 WAIT_STALLED_REARM="$T/wait-stalled-rearm"
 mkdir -p "$WAIT_STALLED_REARM"
 printf 'agy some-model dispatched\n' > "$WAIT_STALLED_REARM/.roster"
+printf 'pane-agy\n' > "$WAIT_STALLED_REARM/.pane-agy"
 printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_REARM/.last-working-agy"
-export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"agy-aaaaaaaaaaaa","agent_status":"working"}]}}'
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"agy-aaaaaaaaaaaa","pane_id":"pane-agy","agent_status":"working"}]}}'
 wait_stalled_rearm_out1="$(cmd_wait --base-dir "$WAIT_STALLED_REARM" --deadline-at "$(( $(date +%s) + 3 ))" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_stalled_rearm_out1" = 'event=deadline' ] && pass "cmd_wait 觀測到 working 時不誤報 stalled" || bad "cmd_wait 觀測到 working 卻仍回報: $wait_stalled_rearm_out1"
@@ -6117,7 +6148,7 @@ wait_stalled_rearm_now="$(date +%s)"
 # 再次讓它變舊（模擬又經過一段時間），狀態改回不是 working 也不是
 # blocked，且這次呼叫不再傳 --reported-stalled。
 printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_REARM/.last-working-agy"
-export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"agy-aaaaaaaaaaaa","agent_status":"idle"}]}}'
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"agy-aaaaaaaaaaaa","pane_id":"pane-agy","agent_status":"idle"}]}}'
 wait_stalled_rearm_out2="$(cmd_wait --base-dir "$WAIT_STALLED_REARM" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
 case "$wait_stalled_rearm_out2" in
   'event=stalled cli=agy') pass "cmd_wait 重新武裝後可以再次觸發 stalled" ;;
@@ -6129,12 +6160,64 @@ esac
 WAIT_STALLED_DONE="$T/wait-stalled-done"
 mkdir -p "$WAIT_STALLED_DONE"
 printf 'claude some-model dispatched\n' > "$WAIT_STALLED_DONE/.roster"
+printf 'pane-claude\n' > "$WAIT_STALLED_DONE/.pane-claude"
 printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_DONE/.last-working-claude"
 printf 'cli=claude pid=n/a exit=n/a ended_at=2026-09-05T00:00:00Z worktree_status=ok content_status=ready content_file=/tmp/x.md\n' > "$WAIT_STALLED_DONE/summary.txt"
-export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","agent_status":"idle"}]}}'
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude","agent_status":"idle"}]}}'
 wait_stalled_done_out="$(cmd_wait --base-dir "$WAIT_STALLED_DONE" --deadline-at "$(( $(date +%s) + 3 ))" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_stalled_done_out" = 'event=deadline' ] && pass "cmd_wait 已有摘要行的 cli 不再判定 stalled" || bad "cmd_wait 已有摘要行卻仍回報 stalled/其他事件: $wait_stalled_done_out"
+
+# ==============================================================
+# cmd_wait -- 並行執行沖掉停滯計時（本次要修的缺陷）。
+#
+# _wait_agent_states 原本靠 "$cli-" 這個前綴去 herdr agent list 裡挑出
+# 這次 run 自己派出的 agent，而那份清單的射程是整個 herdr 服務、不限本
+# 次執行。同一台機器上兩次審查並行、兩次都派了同一家 CLI 時，清單裡先
+# 列到誰就算誰 -- 不是假設：這台開發機在這次修正進行的當下，就真的同
+# 時有另一個 session 在對別的 PR 跑審查，兩邊都派了 claude。
+#
+# 後果落在 cmd_wait 自己的停滯計時上：working 分支只要讀到 working 狀
+# 態（哪怕是別人那一格的），就把本次的 .last-working-<cli> 覆寫成當下
+# 時刻，於是本次這一格即使從頭到尾沒有動過，距上次「被讀到 working」
+# 的時間也永遠到不了門檻，event=stalled 一次都不會觸發 -- 這正好是這
+# 整批改動要買到的那段提前發現被整個抵銷掉。
+#
+# 這裡的樁刻意在同一次 `herdr agent list` 回應裡放兩個都以 "claude-"
+# 開頭的 agent：陣列裡第一個（舊版 `first` 一定選到的那個）pane_id 是
+# pane-claude-otherrun、狀態 working，代表另一次並行執行派出的 claude；
+# 第二個 pane_id 是 pane-claude-thisrun、狀態 idle，才是這次 run 自己
+# 在 .pane-claude 裡記下的那一格。.last-working-claude 預先寫成已經超
+# 過門檻的舊時間戳。
+#
+# 修正前（前綴比對 + first）：這個測試曾經人工跑過一次確認會失敗 --
+# 選到第一個 working 的條目，把 .last-working-claude 覆寫成現在，於是
+# 回傳 event=deadline 而不是 event=stalled，且時間戳確實被改寫；不隨這
+# 份測試檔案保留成永久跑的雙版本斷言，詳細操作見本次修正說明。
+# 修正後（pane_id 精確比對）：只會選到第二個（idle），這一格自始至終
+# 沒有被讀到 working，event=stalled 照樣觸發，.last-working-claude 的
+# 值也完全沒被動過。
+# ------------------------------------------------------------
+
+WAIT_STALLED_ALIAS="$T/wait-stalled-concurrent-alias"
+mkdir -p "$WAIT_STALLED_ALIAS"
+printf 'claude some-model dispatched\n' > "$WAIT_STALLED_ALIAS/.roster"
+printf 'pane-claude-thisrun\n' > "$WAIT_STALLED_ALIAS/.pane-claude"
+wait_alias_last_working_before="$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))"
+printf '%s\n' "$wait_alias_last_working_before" > "$WAIT_STALLED_ALIAS/.last-working-claude"
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude-otherrun","agent_status":"working"},{"name":"claude-bbbbbbbbbbbb","pane_id":"pane-claude-thisrun","agent_status":"idle"}]}}'
+
+wait_alias_out="$(cmd_wait --base-dir "$WAIT_STALLED_ALIAS" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+case "$wait_alias_out" in
+  'event=stalled cli=claude') pass "cmd_wait 即使清單裡有同名前綴的並行 agent 回報 working，本次這一格仍正確觸發 stalled" ;;
+  *) bad "cmd_wait 被同名前綴的並行 agent 誤導（可能又退回名稱前綴比對）: $wait_alias_out" ;;
+esac
+
+wait_alias_last_working_after="$(cat "$WAIT_STALLED_ALIAS/.last-working-claude" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_alias_last_working_after" = "$wait_alias_last_working_before" ] \
+  && pass "cmd_wait 沒有被同名前綴的並行 agent 誤判成 working，本次的停滯計時起點沒有被覆寫" \
+  || bad "cmd_wait 的停滯計時起點被覆寫了（本次自己那一格從未被讀到 working）: 原值=$wait_alias_last_working_before 現值=$wait_alias_last_working_after"
 
 # ==============================================================
 # cmd_wait -- 重置 .last-working-<cli> 失敗不得中止流程（本次要修的缺陷，
@@ -6155,11 +6238,12 @@ wait_stalled_done_out="$(cmd_wait --base-dir "$WAIT_STALLED_DONE" --deadline-at 
 WAIT_LWF_ROOT="$T/wait-last-working-write-fail"
 mkdir -p "$WAIT_LWF_ROOT"
 printf 'claude some-model dispatched\n' > "$WAIT_LWF_ROOT/.roster"
+printf 'pane-claude\n' > "$WAIT_LWF_ROOT/.pane-claude"
 printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_LWF_ROOT/.last-working-claude"
 # 用真的 chmod 逼出真實權限失敗，同前一個 commit 對 _confirm_reviewers_
 # working 的作法 -- 不裝一支假裝失敗的旗標去繞過它。
 chmod a-w "$WAIT_LWF_ROOT/.last-working-claude"
-export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","agent_status":"working"}]}}'
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude","agent_status":"working"}]}}'
 
 WAIT_LWF_OUT="$T/wait-last-working-write-fail.out"
 WAIT_LWF_ERR="$T/wait-last-working-write-fail.err"
@@ -6194,12 +6278,13 @@ chmod u+w "$WAIT_LWF_ROOT/.last-working-claude" 2>/dev/null || true
 WAIT_ARITH_ROOT="$T/wait-arith-injection"
 mkdir -p "$WAIT_ARITH_ROOT"
 printf 'claude some-model dispatched\n' > "$WAIT_ARITH_ROOT/.roster"
+printf 'pane-claude\n' > "$WAIT_ARITH_ROOT/.pane-claude"
 WAIT_ARITH_MARKER="$T/wait-arith-injection-marker"
 rm -f "$WAIT_ARITH_MARKER"
 # 用真實檔案內容，不用樁繞過：直接把 payload 寫進 .last-working-claude。
 # shellcheck disable=SC2016  # single quotes intentional: this is the printf format string itself (the literal $(...) is the payload), only %s should expand
 printf 'now[$(touch %s)]\n' "$WAIT_ARITH_MARKER" > "$WAIT_ARITH_ROOT/.last-working-claude"
-export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","agent_status":"idle"}]}}'
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude","agent_status":"idle"}]}}'
 wait_arith_out="$(cmd_wait --base-dir "$WAIT_ARITH_ROOT" --deadline-at "$(( $(date +%s) + 3 ))" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ ! -e "$WAIT_ARITH_MARKER" ] && pass "cmd_wait 不對 .last-working-<cli> 的內容做算術求值，payload 裡的指令替換沒有被執行" || bad "cmd_wait 執行了 .last-working-<cli> 內容裡夾帶的指令 -- 標記檔被建立: $WAIT_ARITH_MARKER"
