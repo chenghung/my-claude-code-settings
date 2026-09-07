@@ -1766,12 +1766,16 @@ fi
 # ==============================================================
 # _derive_agent_name
 #
-# 這裡印出的 "<cli>-<digest>" 前綴是承重的：cmd_wait 自己的
-# _wait_agent_states 就是靠 "$cli-" 這個前綴去 herdr agent list 裡挑出這次
-# run 自己派出的 agent（見那個函式自己的 docstring）。挑錯 agent 不會報
-# 任何錯誤，只會讓 cmd_wait 誤判成 unknown 或撞到另一個不相干的 agent，
-# 所以這個前綴格式需要自己的直接斷言，不能只靠下面 launch_reviewer_
-# interactive 那組間接驗證 argv 的測試。
+# 這裡印出的 "<cli>-<digest>" 格式仍然承重，但理由已經跟 _wait_agent_
+# states 的舊機制脫鉤：那個函式現在改用持久化下來的 pane id 精確比對（見
+# 它自己的 docstring），完全不再讀這個名稱的任何部分。這個格式仍然需要
+# 自己的直接斷言，因為 herdr 本身要求 `agent start` 的名稱先符合
+# [a-z][a-z0-9_-]{0,31} 且在存活 agent 之間唯一（見 _derive_agent_name 自
+# 己的 docstring），不合法的名稱在 --pane 被解析之前就會被拒絕，不能只靠
+# 下面 launch_reviewer_interactive 那組間接驗證 argv 的測試。cli 前綴留著
+# 純粹是給 herdr 自己畫面（tab、agent 清單）上的人類辨識用；真正承擔唯一
+# 性的是 digest 那一段本身，因為它雜湊自 pane id -- 而 pane id 本身已經
+# 是全域唯一的控制代碼。
 # ==============================================================
 
 derive_name_claude="$(_derive_agent_name claude wT:p1)"
@@ -1782,7 +1786,8 @@ else
 fi
 
 # 不同 cli、同一個 pane id 要得出不同名稱（cli 名稱本身就是前綴的一部
-# 分），否則 _wait_agent_states 的前綴比對會在兩個 reviewer 之間撞名。
+# 分）-- 這是給 herdr 自己畫面上的人類辨識用，不是 _wait_agent_states 的
+# 比對依據：那個函式現在只看 pane id 本身，不看這個名稱。
 derive_name_agy="$(_derive_agent_name agy wT:p1)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$derive_name_claude" != "$derive_name_agy" ] && pass "_derive_agent_name 不同 cli 得到不同名稱" || bad "_derive_agent_name 不同 cli 卻撞名: $derive_name_claude"
@@ -1808,32 +1813,43 @@ derive_name_agy="$(_derive_agent_name agy wT:p1)"
 # (parsed by this stub itself), not by a name supplied by the caller,
 # since every cli's `agent start` call goes through this one script -- there
 # is no separate "claude" binary on PATH the way LAUNCH_STUB_BIN gives each
-# cli its own recording file via $0's basename. `agent prompt`'s TARGET
-# argument (position 3) becomes part of its own recording filename for the
-# same reason, which doubles as this suite's check that TARGET really is
-# the pane id and not the `<cli>-<digest>` agent name `agent start` was given
-# -- a wrong TARGET would record under a filename these tests never read
-# back from, so the assertion would fail by absence rather than a specific
+# cli its own recording file via $0's basename.
+#
+# claude is the only cli whose whole launch (contract plus start signal)
+# crosses in this one `agent start` call (see launch_reviewer_interactive's
+# own "ONE-SHOT LAUNCH: CLAUDE ONLY" docstring section) -- codex, opencode
+# and agy still get a second, separate `agent prompt` call right after,
+# recorded here under agent-prompt.<kind>.argv (holding every arg `agent
+# prompt` was called with, not just TEXT). <kind> is looked up from a
+# pane-kind.<pane_id> file this stub's own `agent start` branch writes
+# first, since `agent prompt`'s own argv carries no cli kind of its own --
+# only the pane id. `agent prompt`'s TARGET argument (position 3) also
+# becomes part of its own recording filename (agent-prompt.<TARGET>.text),
+# which doubles as this suite's check that TARGET really is the pane id
+# and not the `<cli>-<digest>` agent name `agent start` was given -- a
+# wrong TARGET would record under a filename these tests never read back
+# from, so the assertion would fail by absence rather than a specific
 # check having to be written for it.
 #
-# Task 4 added a second `agent prompt` recording, alongside the
-# pane-id-keyed one above: agent-prompt.<kind>.argv, holding every arg
-# `agent prompt` was called with (not just TEXT). <kind> is looked up from
-# a pane-kind.<pane_id> file this stub's own `agent start` branch writes
-# first, since `agent prompt`'s own argv carries no cli kind of its own --
-# only the pane id. This is what task 4's claude-branch assertions below
-# read to confirm claude's `agent prompt` call carries the fixed start
-# signal, not the contract file's content.
+# `agent start` also reproduces a real, load-bearing herdr behavior this
+# task's own testing found directly against the real binary: any
+# AGENT_ARG (anything after the `--`) containing a newline is rejected
+# outright, exit non-zero, `invalid_agent_argument`,
+# "agent arguments cannot be encoded safely for the target shell" --
+# unrelated to length. This is exactly why codex/opencode/agy cannot fold
+# their own multi-line contract into this call the way claude's own
+# single-line launch phrase can (see launch_reviewer_interactive's own
+# "WHY CODEX/OPENCODE/AGY STAY TWO-STEP" docstring section); this stub
+# enforcing the same rule is what would turn any future attempt to
+# reintroduce that red immediately, rather than passing silently the way
+# it did before this stub ever checked argv content at all.
 #
-# HERDR_STUB_PANE_EMPTY_READS controls how many of `pane read`'s own
-# leading calls, *for one given pane id* (tracked via a per-pane-id counter
-# file, since the four per-cli calls below all read the same script and
-# would otherwise collide on a single shared counter), come back empty
-# before a real one returns HERDR_STUB_PANE_CONTENT. Left at its default
-# (0) for the four per-cli flag-assertion calls below, so their first read
-# already succeeds; overridden per-call further down to exercise the
-# retry-then-succeed and still-empty-after-retry paths this function's own
-# docstring documents.
+# There is no `pane` case at all: the `herdr pane read` readiness guard
+# this function used to run before its own second `agent prompt` call was
+# removed and deliberately not restored (see that function's own
+# docstring for why it could never have caught the real drop this task
+# found). A reintroduced call to it would fall through to this stub's own
+# bottom `exit 1`.
 # ==============================================================
 
 LRI_ROOT="$T/launch-reviewer-interactive-fixture"
@@ -1843,6 +1859,7 @@ mkdir -p "$LRI_RECORD_DIR"
 
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HERDR_RECORD_DIR/all-calls.log"
 case "${1:-}" in
 agent)
   case "${2:-}" in
@@ -1859,6 +1876,22 @@ agent)
       printf '{"error":{"code":"invalid_agent_name","message":"agent name must match [a-z][a-z0-9_-]{0,31}"},"id":"cli:agent:start"}\n' >&2
       exit 1
     fi
+    # See this section's own top comment: reproduces the real binary's own
+    # rejection of any newline-carrying AGENT_ARG, checked only past the
+    # first bare `--` (the flags before it, --kind/--pane/the name, are
+    # never multi-line).
+    past_dashdash=0
+    for a in "$@"; do
+      if [ "$past_dashdash" = "1" ]; then
+        case "$a" in
+          *$'\n'*)
+            printf '{"error":{"code":"invalid_agent_argument","message":"agent arguments cannot be encoded safely for the target shell"},"id":"cli:agent:start"}\n' >&2
+            exit 1
+            ;;
+        esac
+      fi
+      [ "$a" = "--" ] && past_dashdash=1
+    done
     kind=""
     pane_id=""
     prev=""
@@ -1872,7 +1905,7 @@ agent)
     for a in "$@"; do printf '%s\n' "$a" >> "$record"; done
     # Records which cli kind owns this pane id, so a later `agent prompt`
     # call against the same pane id (which carries no kind of its own --
-    # see this case's own docstring) can still be recorded under a
+    # see this section's own docstring) can still be recorded under a
     # cli-keyed filename (agent-prompt.<kind>.argv) alongside the existing
     # pane-id-keyed one below.
     [ -n "$pane_id" ] && printf '%s' "$kind" > "$HERDR_RECORD_DIR/pane-kind.$pane_id"
@@ -1892,23 +1925,6 @@ agent)
     ;;
   esac
   ;;
-pane)
-  case "${2:-}" in
-  read)
-    pane_id="$3"
-    count_file="$HERDR_RECORD_DIR/pane-read-count.$pane_id"
-    n=0
-    if [ -f "$count_file" ]; then n="$(cat "$count_file")"; fi
-    n=$((n + 1))
-    printf '%s' "$n" > "$count_file"
-    if [ "$n" -le "${HERDR_STUB_PANE_EMPTY_READS:-0}" ]; then
-      exit 0
-    fi
-    printf '%s' "${HERDR_STUB_PANE_CONTENT:-pane-ready-marker}"
-    exit 0
-    ;;
-  esac
-  ;;
 esac
 exit 1
 STUB
@@ -1917,6 +1933,31 @@ chmod +x "$STUB_BIN/herdr"
 export PATH="$STUB_BIN:$saved_path"
 export HERDR_RECORD_DIR="$LRI_RECORD_DIR"
 assert_cli_stub_only "$PATH" "$STUB_BIN" herdr
+
+# --- direct test of this section's own herdr stub: it must reject any
+# AGENT_ARG containing a newline the same way the real binary does, since
+# this is the actual regression guard against ever reintroducing a
+# multi-line reviewer contract into `agent start`'s own argv again -- see
+# this section's own top comment. Called directly against the stub file
+# (not through launch_reviewer_interactive, and not through PATH
+# resolution, so assert_cli_stub_only has nothing to do with this call),
+# since no current production code path builds a multi-line AGENT_ARG any
+# more -- this is a tripwire for a regression that does not exist yet, not
+# a test of today's behavior. ---
+
+if lri_newline_out="$("$STUB_BIN/herdr" agent start newline-test-agent --kind codex --pane w9:p9 \
+  -- -C /tmp "$(printf 'line one\nline two')" 2>"$LRI_ROOT/newline.stderr")"; then
+  bad "launch-reviewer-interactive-stub-rejects-newline-agent-arg: printed $lri_newline_out"
+else
+  pass launch-reviewer-interactive-stub-rejects-newline-agent-arg
+fi
+lri_newline_err="$(cat "$LRI_ROOT/newline.stderr" 2>/dev/null)"
+case "$lri_newline_err" in
+  *'invalid_agent_argument'*'agent arguments cannot be encoded safely for the target shell'*)
+    pass launch-reviewer-interactive-stub-newline-rejection-matches-real-binary ;;
+  *)
+    bad "launch-reviewer-interactive-stub-newline-rejection-matches-real-binary: $lri_newline_err" ;;
+esac
 
 # --- claude: --disallowedTools names only WebFetch; --permission-mode is
 # passed as auto; no -p; and, the assertion this task exists to protect, no
@@ -1953,6 +1994,7 @@ lri_claude_first_arg="${lri_claude_argv[$((lri_claude_dashdash_idx + 1))]:-}"
 # flags, never the executable name again) rather than pinning which flag
 # happens to come first, so adding or reordering claude's flags does not
 # make this regression guard fail for the wrong reason.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$lri_claude_dashdash_idx" -ge 0 ] && [ "$lri_claude_first_arg" != "claude" ] && [ "${lri_claude_first_arg#-}" != "$lri_claude_first_arg" ] && pass launch-reviewer-interactive-claude-no-duplicate-executable-name || bad "launch-reviewer-interactive-claude-no-duplicate-executable-name: $(cat "$claude_start_argv")"
 case "$(cat "$claude_start_argv")" in
   *'--disallowedTools'*'WebFetch'*) pass launch-reviewer-interactive-claude-disallows-webfetch ;;
@@ -1994,18 +2036,18 @@ esac
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -f "$LRI_ROOT/.git-status-before-claude" ] && pass launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name || bad launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name
-# Since task 4, claude's own `agent prompt` call carries the fixed
-# "開始" start signal, not the prompt file's content (see this function's
-# own claude branch) -- this checks for that fixed signal now, in place
-# of the "claude review prompt" prompt-file content it checked for before
-# task 4. Still targets the pane id, not the `<cli>-<digest>` agent name,
-# and still real (non-empty) content.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$LRI_RECORD_DIR/agent-prompt.w14:pZ.text" 2>/dev/null)" = "開始" ] && pass launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content || bad "launch-reviewer-interactive-claude-prompt-targets-pane-id-with-real-content: $(cat "$LRI_RECORD_DIR/agent-prompt.w14:pZ.text" 2>/dev/null)"
 
-# claude 的契約走 --append-system-prompt-file，不再經由 agent prompt 的位置引數。
-# 附加型（append）已做過兩次功能探測，皆成功；取代型（--system-prompt-file）
-# 只確認旗標存在、未做功能探測，不在採用範圍。
+# claude's own bare [prompt] positional carries only the fixed "開始"
+# launch phrase, and it is the LAST token on this call's own argv -- see
+# this function's own "ONE-SHOT LAUNCH: CLAUDE ONLY" docstring section for
+# why claude, uniquely among the four, has no second, separate
+# `agent prompt` call left to carry it instead.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "${lri_claude_argv[-1]}" = "開始" ] && pass launch-reviewer-interactive-claude-last-arg-is-start-signal || bad "launch-reviewer-interactive-claude-last-arg-is-start-signal: ${lri_claude_argv[-1]:-<empty>}"
+
+# claude 的契約走 --append-system-prompt-file，不再有任何一種形式的第二段
+# 呼叫。附加型（append）已做過兩次功能探測，皆成功；取代型
+# （--system-prompt-file）只確認旗標存在、未做功能探測，不在採用範圍。
 lri_claude_syspromptfile_ok=0
 for idx in "${!lri_claude_argv[@]}"; do
   if [ "${lri_claude_argv[$idx]}" = "--append-system-prompt-file" ] \
@@ -2022,13 +2064,33 @@ case "$(cat "$claude_start_argv")" in
   *) pass launch-reviewer-interactive-claude-no-replacing-system-prompt ;;
 esac
 
-# agent prompt 送出的內容不得是契約全文
-lri_claude_prompt_text="$(cat "$LRI_RECORD_DIR/agent-prompt.claude.argv" 2>/dev/null)"
-case "$lri_claude_prompt_text" in
-  *'claude review prompt'*) bad "launch-reviewer-interactive-claude-prompt-not-contract: 契約全文仍走 agent prompt" ;;
-  '') bad "launch-reviewer-interactive-claude-prompt-not-contract: 沒有記錄到 agent prompt 呼叫" ;;
+# 契約全文不得以任何形式出現在 agent start 的引數列裡 -- 它只透過
+# --append-system-prompt-file 的路徑引數間接抵達，這裡直接比對整份
+# argv 記錄，確認契約檔內容本身（不只是路徑）從未被逐字內嵌進來。
+case "$(cat "$claude_start_argv")" in
+  *'claude review prompt'*) bad "launch-reviewer-interactive-claude-prompt-not-contract: 契約全文出現在 agent start 的引數列裡" ;;
   *) pass launch-reviewer-interactive-claude-prompt-not-contract ;;
 esac
+
+# claude 專屬：不觸發任何一種形式的第二段 agent prompt 呼叫。整個啟動
+# （契約 + 起跑訊號）已經在上面同一個 agent start 呼叫裡完成，這才是這個
+# 分支真正不會踩到「prompt 送出成功卻被靜默丟棄」那個缺陷的原因，不是
+# 靠後續補救。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$LRI_RECORD_DIR/agent-prompt.w14:pZ.text" ] && pass launch-reviewer-interactive-claude-never-calls-agent-prompt || bad launch-reviewer-interactive-claude-never-calls-agent-prompt
+
+# 這條是「WHY CODEX/OPENCODE/AGY STAY TWO-STEP」那個發現的正面對照組：
+# claude 送進 agent start 的引數全部都不含換行（契約走檔案路徑、位置參數
+# 是單行的「開始」），所以在這個樁的新行為（見這個區段自己的文件）底下
+# 仍然啟動成功，不會被那道換行拒絕擋下。
+lri_claude_has_newline=0
+for a in "${lri_claude_argv[@]}"; do
+  case "$a" in
+    *$'\n'*) lri_claude_has_newline=1 ;;
+  esac
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_claude_has_newline" -eq 0 ] && pass launch-reviewer-interactive-claude-agent-start-argv-has-no-newlines || bad launch-reviewer-interactive-claude-agent-start-argv-has-no-newlines
 
 # --- codex: no -s (the sandbox flag was the now-removed headless
 # launcher's own concern; herdr's own --pane already scopes this to one
@@ -2072,6 +2134,16 @@ for idx in "${!lri_codex_argv[@]}"; do
 done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$found" -eq 1 ] && pass launch-reviewer-interactive-codex-workdir-flag || bad launch-reviewer-interactive-codex-workdir-flag
+# codex stays two-step (see this function's own "WHY CODEX/OPENCODE/AGY
+# STAY TWO-STEP" docstring section): `agent start` carries no prompt
+# content of any kind, and the reviewer's full contract instead arrives
+# via a second, separate `agent prompt` call right after.
+case "$(cat "$codex_start_argv")" in
+  *'codex review prompt'*) bad "launch-reviewer-interactive-codex-agent-start-no-prompt-embedded: $(cat "$codex_start_argv")" ;;
+  *) pass launch-reviewer-interactive-codex-agent-start-no-prompt-embedded ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pA.text" 2>/dev/null)" = "codex review prompt" ] && pass launch-reviewer-interactive-codex-agent-prompt-carries-full-contract || bad "launch-reviewer-interactive-codex-agent-prompt-carries-full-contract: $(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pA.text" 2>/dev/null)"
 
 # --- opencode: no `run`; no `--dir` (dropped in favour of the positional
 # project-path argument -- the top-level command has no --dir at all) ---
@@ -2117,6 +2189,16 @@ for a in "${lri_opencode_argv[@]}"; do
 done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$found" -eq 1 ] && pass launch-reviewer-interactive-opencode-positional-workdir || bad launch-reviewer-interactive-opencode-positional-workdir
+# opencode stays two-step (see this function's own "WHY CODEX/OPENCODE/AGY
+# STAY TWO-STEP" docstring section): `agent start` carries no --prompt
+# flag or any other prompt content, and the reviewer's full contract
+# instead arrives via a second, separate `agent prompt` call right after.
+case "$(cat "$opencode_start_argv")" in
+  *'--prompt'*) bad "launch-reviewer-interactive-opencode-agent-start-no-prompt-flag: $(cat "$opencode_start_argv")" ;;
+  *) pass launch-reviewer-interactive-opencode-agent-start-no-prompt-flag ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$LRI_RECORD_DIR/agent-prompt.w2:p12.text" 2>/dev/null)" = "opencode review prompt" ] && pass launch-reviewer-interactive-opencode-agent-prompt-carries-full-contract || bad "launch-reviewer-interactive-opencode-agent-prompt-carries-full-contract: $(cat "$LRI_RECORD_DIR/agent-prompt.w2:p12.text" 2>/dev/null)"
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$lri_opencode_home/opencode-permission.json" ] && pass launch-reviewer-interactive-opencode-writes-permission-config || bad launch-reviewer-interactive-opencode-writes-permission-config
@@ -2201,7 +2283,9 @@ jq empty "$lri_opencode_home/opencode-permission.json" >/dev/null 2>&1 \
   || bad launch-reviewer-interactive-opencode-permission-config-valid-json
 
 # --- agy: no --print-timeout (no interactive-mode equivalent exists);
-# --add-dir names only reviewer_workdir, never the worktree path too ---
+# --add-dir names only reviewer_workdir, never the worktree path too;
+# --dangerously-skip-permissions and --prompt-interactive are this task's
+# own additions ---
 
 lri_agy_workdir="$LRI_ROOT/reviewers/agy/workdir"
 lri_agy_home="$LRI_ROOT/reviewers/agy/home"
@@ -2243,46 +2327,58 @@ case "$(cat "$agy_start_argv")" in
   *"$LRI_WT"*) bad "launch-reviewer-interactive-agy-add-dir-excludes-worktree: $(cat "$agy_start_argv")" ;;
   *) pass launch-reviewer-interactive-agy-add-dir-excludes-worktree ;;
 esac
-
-# --- pane readiness: a single empty read right after `agent start` is a
-# known timing artifact (see this function's own docstring) -- one retry
-# must be enough to reach the real content and still send the prompt ---
-
-lri_retry_start="$(date -u +%s)"
-lri_retry_out="$(HERDR_STUB_PANE_EMPTY_READS=1 launch_reviewer_interactive claude w14:pR "$LRI_WT" \
-  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt")"
-lri_retry_elapsed=$(( $(date -u +%s) - lri_retry_start ))
+# Task's own positive assertion: --dangerously-skip-permissions really is
+# on this branch's own argv (see launch_reviewer_interactive's own agy
+# case for why). launch_synthesis's own agy branch is asserted NOT to
+# carry this flag in that function's own test section further down.
+case "$(cat "$agy_start_argv")" in
+  *'--dangerously-skip-permissions'*) pass launch-reviewer-interactive-agy-dangerously-skip-permissions ;;
+  *) bad "launch-reviewer-interactive-agy-dangerously-skip-permissions: $(cat "$agy_start_argv")" ;;
+esac
+# agy stays two-step too (see this function's own "WHY CODEX/OPENCODE/AGY
+# STAY TWO-STEP" docstring section for the real, multi-line-rejecting
+# finding that rules out folding its own --prompt-interactive flag's
+# value into this call): `agent start` carries no --prompt-interactive
+# flag, and the reviewer's full contract instead arrives via a second,
+# separate `agent prompt` call right after.
+case "$(cat "$agy_start_argv")" in
+  *'--prompt-interactive'*) bad "launch-reviewer-interactive-agy-agent-start-no-prompt-interactive: $(cat "$agy_start_argv")" ;;
+  *) pass launch-reviewer-interactive-agy-agent-start-no-prompt-interactive ;;
+esac
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_retry_out" = "$lri_claude_workdir/review.md" ] && pass launch-reviewer-interactive-pane-read-retry-then-succeeds || bad "launch-reviewer-interactive-pane-read-retry-then-succeeds: $lri_retry_out"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$LRI_RECORD_DIR/agent-prompt.w14:pR.text" ] && pass launch-reviewer-interactive-pane-read-retry-prompt-still-sent || bad launch-reviewer-interactive-pane-read-retry-prompt-still-sent
-# 缺陷回歸：兩次 `herdr pane read` 背靠背在毫秒內完成的話，這個重試根本
-# 吸收不到「畫面還沒渲染完」的時間差（見這個函式自己文件對 `sleep 1` 的
-# 說明）。這裡直接量測掛鐘時間，而不是只看重試最終有沒有成功，因為背靠
-# 背重試在這個測試樁下也一樣會成功 -- 唯一能分辨兩者的是有沒有真的等過。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_retry_elapsed" -ge 1 ] && pass "launch-reviewer-interactive-pane-read-retry-actually-waits" || bad "launch-reviewer-interactive-pane-read-retry-actually-waits: 重試只花了 ${lri_retry_elapsed}s，兩次讀取之間沒有真的等待"
+[ "$(cat "$LRI_RECORD_DIR/agent-prompt.w28:p1.text" 2>/dev/null)" = "agy review prompt" ] && pass launch-reviewer-interactive-agy-agent-prompt-carries-full-contract || bad "launch-reviewer-interactive-agy-agent-prompt-carries-full-contract: $(cat "$LRI_RECORD_DIR/agent-prompt.w28:p1.text" 2>/dev/null)"
 
-# --- pane readiness: still empty after the one retry is a real failure,
-# not guessed past -- `agent prompt` must never be called in that case ---
+# --- regression guard: across all calls above, `herdr pane read` must
+# never have been invoked at all -- it was the readiness gate the
+# now-removed two-step-for-all-four design used before its own second
+# `agent prompt` call, and this function's own docstring documents in
+# detail why it could never have caught the real drop this task found and
+# why it must not be reintroduced on the assumption that it would. There
+# is no `pane` case left at all in this section's own herdr stub, so a
+# reintroduced call would fall through to that stub's bottom `exit 1` and
+# make the launch that made it fail outright -- but checking this log
+# directly is what actually proves the call itself was never made, rather
+# than inferring it from every launch above having already succeeded. ---
 
-if lri_neverready_out="$(HERDR_STUB_PANE_EMPTY_READS=99 launch_reviewer_interactive claude w14:pN "$LRI_WT" \
-  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt" 2>"$LRI_ROOT/neverready.stderr")"; then
-  bad "launch-reviewer-interactive-pane-never-ready-rejected: printed $lri_neverready_out"
-else
-  pass launch-reviewer-interactive-pane-never-ready-rejected
-fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$LRI_RECORD_DIR/agent-prompt.w14:pN.text" ] && pass launch-reviewer-interactive-pane-never-ready-no-prompt-sent || bad launch-reviewer-interactive-pane-never-ready-no-prompt-sent
+lri_all_calls="$(cat "$LRI_RECORD_DIR/all-calls.log" 2>/dev/null)"
+case "$lri_all_calls" in
+  *'pane read'*) bad "launch-reviewer-interactive-never-calls-pane-read: $lri_all_calls" ;;
+  *) pass launch-reviewer-interactive-never-calls-pane-read ;;
+esac
 
-# --- prompt size limit: reject before ever calling `agent prompt`, with
-# both the actual size and the limit in the failure message ---
+# --- prompt size limit: reject before ever calling herdr at all, with
+# both the actual size and the limit in the failure message. Uses codex,
+# not claude, as the test subject: codex still has a second `agent prompt`
+# call this check needs to prove was never reached, while claude's own
+# one-shot branch has no such call under any circumstance (success or
+# failure), so claude could no longer distinguish "the check worked" from
+# "there was never a second call for this cli to begin with". ---
 
 lri_oversized_bytes=$((PROMPT_BYTE_LIMIT + 1))
 head -c "$lri_oversized_bytes" /dev/zero > "$LRI_ROOT/oversized.prompt"
 
-if lri_oversized_out="$(launch_reviewer_interactive claude w14:pO "$LRI_WT" \
-  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/oversized.prompt" 2>"$LRI_ROOT/oversized.stderr")"; then
+if lri_oversized_out="$(launch_reviewer_interactive codex w1X:pO "$LRI_WT" \
+  "$lri_codex_workdir" "$lri_codex_home" "$LRI_ROOT/oversized.prompt" 2>"$LRI_ROOT/oversized.stderr")"; then
   bad "launch-reviewer-interactive-prompt-too-large-rejected: printed $lri_oversized_out"
 else
   pass launch-reviewer-interactive-prompt-too-large-rejected
@@ -2292,12 +2388,16 @@ case "$lri_oversized_err" in
   *"$lri_oversized_bytes"*"$PROMPT_BYTE_LIMIT"*) pass launch-reviewer-interactive-prompt-too-large-message-has-both-sizes ;;
   *) bad "launch-reviewer-interactive-prompt-too-large-message-has-both-sizes: $lri_oversized_err" ;;
 esac
+# The load-bearing assertion: absence of this pane-id-keyed file, not just
+# an empty one, is what proves `agent prompt` was never called for this
+# specific attempt (see this section's own top comment on why the
+# pane-id-keyed recording, not the kind-keyed one, is what a single
+# attempt's own absence can be proven from).
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$LRI_RECORD_DIR/agent-prompt.w14:pO.text" ] && pass launch-reviewer-interactive-prompt-too-large-no-prompt-sent || bad launch-reviewer-interactive-prompt-too-large-no-prompt-sent
+[ ! -f "$LRI_RECORD_DIR/agent-prompt.w1X:pO.text" ] && pass launch-reviewer-interactive-prompt-too-large-no-prompt-sent || bad launch-reviewer-interactive-prompt-too-large-no-prompt-sent
 
-# --- prompt file missing: reject explicitly, before ever calling `agent
-# prompt` -- the exact silent-pass bug this section exists to catch. This
-# function's only real caller (cmd_launch) invokes it as `if !
+# --- prompt file missing: reject explicitly, before ever calling herdr at
+# all. This function's only real caller (cmd_launch) invokes it as `if !
 # launch_reviewer_interactive ...; then`, and that call shape is
 # reproduced here (`if VAR="$(launch_reviewer_interactive ...)"; then`)
 # for the same reason: bash exempts a function call from `set -e` for its
@@ -2307,10 +2407,11 @@ esac
 # before this function's own explicit `[ -r "$prompt_file" ]` guard was
 # added. Without that guard, the failed substitution came back empty,
 # `(( "" > PROMPT_BYTE_LIMIT ))` silently read the empty string as 0, and
-# an empty prompt was submitted to herdr as if it were real. ---
+# an empty prompt would have been submitted to herdr as if it were real.
+# codex again, for the same reason as the oversized-prompt case above. ---
 
-if lri_missing_prompt_out="$(launch_reviewer_interactive claude w14:pM "$LRI_WT" \
-  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/does-not-exist.prompt" 2>"$LRI_ROOT/missing-prompt.stderr")"; then
+if lri_missing_prompt_out="$(launch_reviewer_interactive codex w1X:pM "$LRI_WT" \
+  "$lri_codex_workdir" "$lri_codex_home" "$LRI_ROOT/does-not-exist.prompt" 2>"$LRI_ROOT/missing-prompt.stderr")"; then
   bad "launch-reviewer-interactive-missing-prompt-rejected: printed $lri_missing_prompt_out"
 else
   pass launch-reviewer-interactive-missing-prompt-rejected
@@ -2320,12 +2421,8 @@ case "$lri_missing_prompt_err" in
   *"$LRI_ROOT/does-not-exist.prompt"*) pass launch-reviewer-interactive-missing-prompt-message-names-file ;;
   *) bad "launch-reviewer-interactive-missing-prompt-message-names-file: $lri_missing_prompt_err" ;;
 esac
-# The load-bearing assertion: prior to the explicit -r guard, this exact
-# scenario reached `herdr agent prompt` and wrote an empty (0-byte) record
-# here instead of never writing one at all -- absence of the file, not
-# just an empty one, is what proves `agent prompt` was never called.
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$LRI_RECORD_DIR/agent-prompt.w14:pM.text" ] && pass launch-reviewer-interactive-missing-prompt-no-prompt-sent || bad "launch-reviewer-interactive-missing-prompt-no-prompt-sent: $(cat "$LRI_RECORD_DIR/agent-prompt.w14:pM.text" 2>/dev/null)"
+[ ! -f "$LRI_RECORD_DIR/agent-prompt.w1X:pM.text" ] && pass launch-reviewer-interactive-missing-prompt-no-prompt-sent || bad "launch-reviewer-interactive-missing-prompt-no-prompt-sent: $(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pM.text" 2>/dev/null)"
 
 unset HERDR_RECORD_DIR
 export PATH="$saved_path"
@@ -2639,6 +2736,329 @@ else
 fi
 
 # ==============================================================
+# _confirm_reviewers_working
+#
+# herdr is genuinely installed on this machine (see the
+# launch_reviewer_interactive section's own top comment on why that makes
+# a missing stub here exactly the PATH leak assert_cli_stub_only exists to
+# catch), so a herdr stub is required here too. This one implements
+# `agent wait` and `agent prompt` -- the second is what the resend tests
+# further down exercise, since this function only ever calls it to resend
+# a dropped first prompt for codex/opencode/agy (see its own docstring).
+#
+# Controllable per-pane-id via files this stub reads back (mirroring the
+# launch_reviewer_interactive section's own per-pane-id counter
+# convention): agent-wait-outcome.<pane_id> selects which of the three
+# real herdr behaviors this function's own docstring documents to
+# reproduce (working / timeout / agent_not_found -- default working when
+# absent), and agent-wait-sleep.<pane_id> (default 0) lets a test hold a
+# call open for a controlled number of real seconds, which is how the
+# shared-budget tests below prove the *next* reviewer's own --timeout
+# shrinks in response, without needing to wait out the real 60-second
+# constant to prove it. Every `agent wait` call's own --timeout value is
+# itself recorded to agent-wait-timeout-ms.<pane_id>, which is what those
+# same tests read back. Every `agent prompt` call increments
+# agent-prompt-resend-count.<pane_id>, which is what the resend tests read
+# back to confirm exactly how many times a dropped prompt was actually
+# resent; when agent-prompt-fixes.<pane_id> exists, that same call also
+# overwrites agent-wait-outcome.<pane_id> to "working", simulating a
+# resend that actually recovers the reviewer -- the next `agent wait` call
+# then reads that fresh value. agent-wait-lock-file.<pane_id>, when it names
+# a path, makes this stub `chmod a-w` that path as a side effect of this
+# call, before returning its own outcome -- this is how the append-failure
+# section further down forces a real, non-simulated permission failure on
+# _confirm_reviewers_working's own `>> "$status_file"` write for one
+# specific cli, without touching the file until that cli's own turn in the
+# loop actually comes up.
+# ==============================================================
+
+CONFIRM_ROOT="$T/confirm-reviewers-working"
+CONFIRM_RECORD_DIR="$CONFIRM_ROOT/records"
+mkdir -p "$CONFIRM_RECORD_DIR"
+
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+agent)
+  case "${2:-}" in
+  wait)
+    pane_id="$3"
+    timeout_ms=""
+    prev=""
+    for a in "$@"; do
+      [ "$prev" = "--timeout" ] && timeout_ms="$a"
+      prev="$a"
+    done
+    printf '%s' "$timeout_ms" > "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.$pane_id"
+    # See this stub's own top comment on agent-wait-lock-file.<pane_id>: a
+    # no-op unless a test writes that control file for this pane_id.
+    lock_file="$(cat "$CONFIRM_RECORD_DIR/agent-wait-lock-file.$pane_id" 2>/dev/null)" || lock_file=""
+    [ -n "$lock_file" ] && chmod a-w "$lock_file" 2>/dev/null
+    sleep_secs="$(cat "$CONFIRM_RECORD_DIR/agent-wait-sleep.$pane_id" 2>/dev/null)" || sleep_secs=""
+    [ -n "$sleep_secs" ] || sleep_secs=0
+    sleep "$sleep_secs"
+    outcome="$(cat "$CONFIRM_RECORD_DIR/agent-wait-outcome.$pane_id" 2>/dev/null)" || outcome=""
+    [ -n "$outcome" ] || outcome=working
+    case "$outcome" in
+    working)
+      printf '{"agent_status":"working","terminal_title":"CONFIRM-STUB-MODEL-OUTPUT-MARKER","terminal_title_stripped":"stub"}'
+      exit 0
+      ;;
+    agent_not_found)
+      printf '{"error":{"code":"agent_not_found"}}'
+      exit 1
+      ;;
+    *)
+      printf '{"error":{"code":"timeout"}}'
+      exit 1
+      ;;
+    esac
+    ;;
+  prompt)
+    pane_id="$3"
+    count_file="$CONFIRM_RECORD_DIR/agent-prompt-resend-count.$pane_id"
+    n=0
+    [ -f "$count_file" ] && n="$(cat "$count_file")"
+    n=$((n + 1))
+    printf '%s' "$n" > "$count_file"
+    [ -f "$CONFIRM_RECORD_DIR/agent-prompt-fixes.$pane_id" ] && printf 'working' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.$pane_id"
+    exit 0
+    ;;
+  esac
+  ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+
+export PATH="$STUB_BIN:$saved_path"
+export CONFIRM_RECORD_DIR
+assert_cli_stub_only "$PATH" "$STUB_BIN" herdr
+
+# --- 三種樁回報混在同一次呼叫裡：working 記為 working；timeout 與
+# agent_not_found 都記為 unconfirmed（"只是回報"，這裡不必分辨兩者對
+# print_summary 的呈現），且這個函式本身結束碼恆為 0 ---
+
+CONFIRM_MIX="$T/confirm-mix"
+mkdir -p "$CONFIRM_MIX"
+printf 'working' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-a"
+printf 'timeout' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-b"
+printf 'agent_not_found' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-c"
+
+confirm_mix_stderr="$(_confirm_reviewers_working "$CONFIRM_MIX" 60 "claude:pane-a" "codex:pane-b" "agy:pane-c" 2>&1 >/dev/null)"
+confirm_mix_rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$confirm_mix_rc" -eq 0 ] && pass confirm-reviewers-working-never-fails || bad "confirm-reviewers-working-never-fails: rc=$confirm_mix_rc"
+
+CONFIRM_MIX_STATUS="$CONFIRM_MIX/.reviewer-confirm-status"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(awk '$1=="claude"{print $2}' "$CONFIRM_MIX_STATUS" 2>/dev/null)" = working ] && pass confirm-reviewers-working-status-working || bad "confirm-reviewers-working-status-working: $(cat "$CONFIRM_MIX_STATUS" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(awk '$1=="codex"{print $2}' "$CONFIRM_MIX_STATUS" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-status-timeout-is-unconfirmed || bad "confirm-reviewers-working-status-timeout-is-unconfirmed: $(cat "$CONFIRM_MIX_STATUS" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(awk '$1=="agy"{print $2}' "$CONFIRM_MIX_STATUS" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-status-agent-not-found-is-unconfirmed || bad "confirm-reviewers-working-status-agent-not-found-is-unconfirmed: $(cat "$CONFIRM_MIX_STATUS" 2>/dev/null)"
+
+# 兩種失敗的錯誤碼確實讀得出來、分辨得出來 -- 只出現在 stderr 的診斷訊息
+# 裡，never stdout（下面單獨驗證 stdout 本身是空的）。
+case "$confirm_mix_stderr" in
+  *'pane-b'*'timeout'*) pass confirm-reviewers-working-stderr-names-timeout ;;
+  *) bad "confirm-reviewers-working-stderr-names-timeout: $confirm_mix_stderr" ;;
+esac
+case "$confirm_mix_stderr" in
+  *'pane-c'*'agent_not_found'*) pass confirm-reviewers-working-stderr-names-agent-not-found ;;
+  *) bad "confirm-reviewers-working-stderr-names-agent-not-found: $confirm_mix_stderr" ;;
+esac
+
+# working 分支的 JSON 帶著 terminal_title（承載模型輸出），這個函式的
+# docstring承諾只取結束碼 -- 這裡直接證明它從未外流到狀態檔，也從未印到
+# 這個函式自己的 stdout。
+case "$(cat "$CONFIRM_MIX_STATUS" 2>/dev/null)" in
+  *'CONFIRM-STUB-MODEL-OUTPUT-MARKER'*) bad "confirm-reviewers-working-never-leaks-terminal-title-to-status-file: $(cat "$CONFIRM_MIX_STATUS")" ;;
+  *) pass confirm-reviewers-working-never-leaks-terminal-title-to-status-file ;;
+esac
+confirm_stdout_only="$(_confirm_reviewers_working "$CONFIRM_MIX" 60 "claude:pane-a" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$confirm_stdout_only" ] && pass confirm-reviewers-working-prints-nothing-to-stdout || bad "confirm-reviewers-working-prints-nothing-to-stdout: $confirm_stdout_only"
+
+# --- 共用預算：不是每格各自獨立算一次逾時 -- 前一格花掉的時間必須讓下
+# 一格拿到的 --timeout 縮水，而不是每格都收到滿額的預算值 ---
+
+CONFIRM_BUDGET="$T/confirm-budget"
+mkdir -p "$CONFIRM_BUDGET"
+printf 'timeout' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-slow"
+printf '3' > "$CONFIRM_RECORD_DIR/agent-wait-sleep.pane-slow"
+printf 'working' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-fast"
+rm -f "$CONFIRM_RECORD_DIR/agent-wait-sleep.pane-fast"
+
+_confirm_reviewers_working "$CONFIRM_BUDGET" 5 "claude:pane-slow" "codex:pane-fast" 2>/dev/null
+
+confirm_budget_pane_fast_timeout="$(cat "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-fast" 2>/dev/null)"
+# pane-slow 吃掉了 3 秒中的一大部分（5 秒預算裡的 3 秒），所以 pane-fast
+# 拿到的 --timeout 應明顯小於「各自獨立拿滿 5000ms」會給出的值 -- 4000
+# 這個門檻留了充分的排程誤差空間，同時仍遠低於 5000。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$confirm_budget_pane_fast_timeout" ] && [ "$confirm_budget_pane_fast_timeout" -gt 0 ] && [ "$confirm_budget_pane_fast_timeout" -lt 4000 ] \
+  && pass confirm-reviewers-working-shares-budget-not-per-reviewer \
+  || bad "confirm-reviewers-working-shares-budget-not-per-reviewer: pane-fast 拿到 ${confirm_budget_pane_fast_timeout:-<空>}ms"
+
+# --- 預算耗盡：輪到的那一格如果此時剩餘預算已經 <=0，這個函式必須連
+# herdr 都不呼叫，直接記為 unconfirmed -- 不是呼叫了、只是給一個很小的
+# --timeout ---
+
+CONFIRM_EXHAUST="$T/confirm-exhaust"
+mkdir -p "$CONFIRM_EXHAUST"
+printf 'timeout' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-slow2"
+printf '2' > "$CONFIRM_RECORD_DIR/agent-wait-sleep.pane-slow2"
+rm -f "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-after"
+rm -f "$CONFIRM_RECORD_DIR/agent-wait-sleep.pane-after"
+
+_confirm_reviewers_working "$CONFIRM_EXHAUST" 1 "claude:pane-slow2" "codex:pane-after" 2>/dev/null
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-after" ] && pass confirm-reviewers-working-skips-herdr-call-after-budget-exhausted || bad confirm-reviewers-working-skips-herdr-call-after-budget-exhausted
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(awk '$1=="codex"{print $2}' "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-marks-unconfirmed-after-budget-exhausted || bad "confirm-reviewers-working-marks-unconfirmed-after-budget-exhausted: $(cat "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"
+
+# --- 重送：codex/opencode/agy 這三家第一次 agent wait 沒確認到，這個函式
+# 要重送同一份 prompt 檔的內容，再重新確認一次 -- 這裡直接讓重送生效
+# （agent-prompt-fixes 這個樁旗標一被呼叫就把 agent-wait-outcome 改成
+# working），驗證最終狀態是 working、而且 agent prompt 真的只被多呼叫了
+# 一次（第一次確認失敗、resend 一次就成功，不該再繼續重送）---
+
+CONFIRM_RESEND_OK="$T/confirm-resend-ok"
+mkdir -p "$CONFIRM_RESEND_OK/logs"
+printf 'resend test prompt for codex' > "$CONFIRM_RESEND_OK/logs/codex.prompt"
+printf 'timeout' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-resend-ok"
+: > "$CONFIRM_RECORD_DIR/agent-prompt-fixes.pane-resend-ok"
+rm -f "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-ok"
+
+_confirm_reviewers_working "$CONFIRM_RESEND_OK" 60 "codex:pane-resend-ok" 2>/dev/null
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(awk '$1=="codex"{print $2}' "$CONFIRM_RESEND_OK/.reviewer-confirm-status" 2>/dev/null)" = working ] && pass confirm-reviewers-working-resend-recovers-a-dropped-prompt || bad "confirm-reviewers-working-resend-recovers-a-dropped-prompt: $(cat "$CONFIRM_RESEND_OK/.reviewer-confirm-status" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-ok" 2>/dev/null)" = "1" ] && pass confirm-reviewers-working-resend-stops-once-it-succeeds || bad "confirm-reviewers-working-resend-stops-once-it-succeeds: $(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-ok" 2>/dev/null)"
+
+# --- 重送用光上限（REVIEWER_PROMPT_RESEND_LIMIT 次）仍未確認到 working
+# 時，才真正記為 unconfirmed -- 且重送次數必須剛好等於這個常數，不多也
+# 不少 ---
+
+CONFIRM_RESEND_EXHAUST="$T/confirm-resend-exhaust"
+mkdir -p "$CONFIRM_RESEND_EXHAUST/logs"
+printf 'resend test prompt for opencode' > "$CONFIRM_RESEND_EXHAUST/logs/opencode.prompt"
+printf 'timeout' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-resend-exhaust"
+rm -f "$CONFIRM_RECORD_DIR/agent-prompt-fixes.pane-resend-exhaust"
+rm -f "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-exhaust"
+
+_confirm_reviewers_working "$CONFIRM_RESEND_EXHAUST" 60 "opencode:pane-resend-exhaust" 2>/dev/null
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(awk '$1=="opencode"{print $2}' "$CONFIRM_RESEND_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-marks-unconfirmed-after-resend-limit-exhausted || bad "confirm-reviewers-working-marks-unconfirmed-after-resend-limit-exhausted: $(cat "$CONFIRM_RESEND_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-exhaust" 2>/dev/null)" = "$REVIEWER_PROMPT_RESEND_LIMIT" ] && pass confirm-reviewers-working-resends-exactly-up-to-the-limit || bad "confirm-reviewers-working-resends-exactly-up-to-the-limit: $(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-exhaust" 2>/dev/null), 應為 $REVIEWER_PROMPT_RESEND_LIMIT"
+
+# --- claude 絕不重送:第一次 agent wait 沒確認到就直接記為 unconfirmed,
+# 不曾呼叫 agent prompt -- 它整個啟動已經在 launch_reviewer_interactive
+# 那個唯一一次 agent start 呼叫裡完成,沒有第二份 prompt 可以重送 ---
+
+CONFIRM_CLAUDE_NO_RESEND="$T/confirm-claude-no-resend"
+mkdir -p "$CONFIRM_CLAUDE_NO_RESEND/logs"
+printf 'resend test prompt for claude' > "$CONFIRM_CLAUDE_NO_RESEND/logs/claude.prompt"
+printf 'timeout' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-claude-noresend"
+rm -f "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-claude-noresend"
+
+_confirm_reviewers_working "$CONFIRM_CLAUDE_NO_RESEND" 60 "claude:pane-claude-noresend" 2>/dev/null
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(awk '$1=="claude"{print $2}' "$CONFIRM_CLAUDE_NO_RESEND/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-claude-unconfirmed-on-failed-wait || bad "confirm-reviewers-working-claude-unconfirmed-on-failed-wait: $(cat "$CONFIRM_CLAUDE_NO_RESEND/.reviewer-confirm-status" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-claude-noresend" ] && pass confirm-reviewers-working-claude-never-resends || bad confirm-reviewers-working-claude-never-resends
+
+# --- 追加寫入失敗不得中止流程（本次要修的缺陷）：逐格結果原本用一支
+# 沒有防護的 `>>` append 寫進 $status_file，而 cmd_launch 是以裸呼叫
+# （不落在 if/while/&&/||/`$( )` 任何一種會讓內部指令豁免 errexit 的
+# 語境裡）呼叫這個函式本身（見這個函式自己 docstring 新補的那段）。這裡
+# 一定要用同樣真正裸露的呼叫形狀去驅動一次真的權限失敗，不能包
+# `var="$(...)"`：已實測證實，`$( )` 會另外開一個子殼層，這個子殼層繼承
+# 了 errexit，但 bash 對「子殼層裡迴圈本體中失敗的指令」不會套用 -e 去
+# 中止那個子殼層本身（未開 `inherit_errexit` 這個 shopt 時的既有行為，
+# bash 5.3.15 上驗證：同一支函式、同一個失敗點，改成
+# `out="$(f 2>&1 >/dev/null)"` 這種寫法之後兩格都印出權限錯誤、迴圈正常
+# 跑完、子殼層結束碼仍是 0）；本檔案這個區段稍早所有呼叫
+# _confirm_reviewers_working 的地方（CONFIRM_MIX 等）都是這種
+# `$( )` 形狀，所以都測不出這個缺陷，也不該被誤讀為對「裸呼叫會不會
+# 中止」這件事的既有覆蓋。只有真正不落在任何一種豁免語境裡的裸呼叫，才
+# 會重現 cmd_launch 那一行實際會遇到的行為。修正前，這一行本身就會讓
+# 整支測試檔案從這裡當場中止 -- 後面不會再印出任何 PASS/FAIL，包括這裡
+# 原本要印的那一行；修正後才會正常往下執行到下一行。
+# ------------------------------------------------------------
+
+CONFIRM_APPEND_FAIL="$T/confirm-append-fail"
+mkdir -p "$CONFIRM_APPEND_FAIL"
+CONFIRM_APPEND_FAIL_STATUS="$CONFIRM_APPEND_FAIL/.reviewer-confirm-status"
+
+# claude 這一格先確認成功、正常寫入 -- 要證明它這一行不會被後面 codex
+# 那一格的寫入失敗拖累消失（一次逐格寫入失敗是部分遺失，跟這個函式開頭
+# 建檔失敗那種全有全無的失效範圍不同，見這個函式自己 docstring 新補的
+# 段落）。
+printf 'working' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-appendfail-ok"
+rm -f "$CONFIRM_RECORD_DIR/agent-wait-lock-file.pane-appendfail-ok"
+
+# codex 這一格的 herdr 樁在回報 working 之前，先把 $status_file 本身
+# chmod 成不可寫（見 herdr 樁自己對 agent-wait-lock-file.<pane_id> 的
+# 說明）-- 逼出這個函式接下來要對它做的那次 `>> "$status_file"` 追加真的
+# 失敗，走一次真的 write(2) 權限錯誤路徑，而不是另外裝一支假裝失敗的
+# 旗標去繞過它。
+printf 'working' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-appendfail-trigger"
+printf '%s' "$CONFIRM_APPEND_FAIL_STATUS" > "$CONFIRM_RECORD_DIR/agent-wait-lock-file.pane-appendfail-trigger"
+
+CONFIRM_APPEND_FAIL_STDERR="$T/confirm-append-fail-stderr.log"
+# 裸呼叫 -- 不接 `|| `、不當 if/while 的條件、也不包在 `$( )` 裡，只用
+# 一個純粹的 `2>file` 重導向（重導向本身不會讓一個指令變成被測試的條件，
+# 因此不影響 errexit 是否生效）。修正前這一行會讓整支測試檔案當場中止，
+# 所以這裡不需要，也不能，另外再包一層防護去接它的結束碼。
+_confirm_reviewers_working "$CONFIRM_APPEND_FAIL" 60 "claude:pane-appendfail-ok" "codex:pane-appendfail-trigger" 2>"$CONFIRM_APPEND_FAIL_STDERR"
+# 這裡能執行到，本身就是「沒有中止」的證明 -- 見上面那段說明修正前後的
+# 差異：修正前不會有任何程式碼執行到這裡。
+pass confirm-reviewers-working-append-failure-does-not-abort
+
+# 恢復可寫，讓後面的讀取／後續測試與結尾的 trap 清理不會被這個檔案卡住。
+chmod u+w "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null || true
+
+# 先前成功寫入的那一格（claude）仍保有狀態欄位 -- 沒有被後面那格的失敗
+# 拖累消失。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(awk '$1=="claude"{print $2}' "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)" = working ] && pass confirm-reviewers-working-append-failure-keeps-earlier-successful-line || bad "confirm-reviewers-working-append-failure-keeps-earlier-successful-line: $(cat "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)"
+
+# 追加失敗的那一格完全沒有留下任何一行 -- 不是留下一個錯誤值，是那一行
+# 從未寫成功過。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$(awk '$1=="codex"{print $2}' "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)" ] && pass confirm-reviewers-working-append-failure-leaves-no-entry-for-that-cli || bad "confirm-reviewers-working-append-failure-leaves-no-entry-for-that-cli: $(cat "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)"
+
+# print_summary 讀回這份缺一格的狀態檔時，混合摘要真的印得出來：先前
+# 成功的那格仍帶狀態欄位，追加失敗的那格落到 print_summary 自己「這個
+# cli 在檔案裡沒有對應行」時用的同一條不帶狀態欄位分支（見 print_summary
+# 自己 docstring 與其 case "${confirm_status_by_cli[$cli]:-}" default
+# 分支）。
+confirm_appendfail_summary="$(print_summary "$CONFIRM_APPEND_FAIL" claude:pane-appendfail-ok codex:pane-appendfail-trigger --skipped)"
+confirm_appendfail_claude_line="$(printf '%s\n' "$confirm_appendfail_summary" | awk '/^- claude（/')"
+confirm_appendfail_codex_line="$(printf '%s\n' "$confirm_appendfail_summary" | awk '/^- codex（/')"
+case "$confirm_appendfail_claude_line" in
+  *'狀態：已進入審查中'*) pass confirm-reviewers-working-append-failure-summary-keeps-annotated-line ;;
+  *) bad "confirm-reviewers-working-append-failure-summary-keeps-annotated-line: $confirm_appendfail_claude_line" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$confirm_appendfail_codex_line" ] && pass confirm-reviewers-working-append-failure-summary-still-prints-the-cli-line || bad "confirm-reviewers-working-append-failure-summary-still-prints-the-cli-line: codex 那行整個不見了: $confirm_appendfail_summary"
+case "$confirm_appendfail_codex_line" in
+  *'狀態：'*) bad "confirm-reviewers-working-append-failure-summary-omits-status-for-failed-cli: 不該帶狀態欄位卻帶了: $confirm_appendfail_codex_line" ;;
+  *) pass confirm-reviewers-working-append-failure-summary-omits-status-for-failed-cli ;;
+esac
+
+unset CONFIRM_RECORD_DIR
+export PATH="$saved_path"
+rm -f "$STUB_BIN/herdr"
+
+# ==============================================================
 # print_summary
 # ==============================================================
 
@@ -2784,6 +3204,36 @@ ps_out_mat_e="$(print_summary "$PS_MAT_E" claude:p1 --skipped codex opencode)"
 case "$ps_out_mat_e" in
   *'issue 內文與討論串：嘗試取得但失敗（呼叫端提供的 issue 參照無法解析）'*) pass print-summary-issue-failed-no-number-message ;;
   *) bad print-summary-issue-failed-no-number-message ;;
+esac
+
+# --- print_summary: 讀回 _confirm_reviewers_working 寫下的
+# .reviewer-confirm-status，在每個已派出 reviewer 那一行後面加註它是否
+# 真的進入審查中 -- 跟上面 .materials-status 那一節同一種「選讀、缺檔就
+# 略過」手法 ---
+
+# 沒有 .reviewer-confirm-status 時（例如上面 ps_out 那組呼叫，從未跑過
+# _confirm_reviewers_working）每一行都維持原本沒有這個註記的樣子 -- 這是
+# 既有呼叫端（本檔案裡每一個直接呼叫 print_summary 卻從未寫過這個檔案
+# 的呼叫點）的回歸保證：新增這個欄位不能連它們的輸出格式都跟著變。
+case "$ps_out" in
+  *'狀態：'*) bad print-summary-omits-confirm-status-when-absent ;;
+  *) pass print-summary-omits-confirm-status-when-absent ;;
+esac
+
+PS_CONFIRM="$T/print-summary-confirm"
+mkdir -p "$PS_CONFIRM"
+cat > "$PS_CONFIRM/.reviewer-confirm-status" <<'STATUS'
+claude working
+codex unconfirmed
+STATUS
+ps_out_confirm="$(print_summary "$PS_CONFIRM" claude:p1 codex:p2 --skipped opencode)"
+case "$ps_out_confirm" in
+  *'claude'*'已進入審查中'*) pass print-summary-confirm-status-working ;;
+  *) bad "print-summary-confirm-status-working: $ps_out_confirm" ;;
+esac
+case "$ps_out_confirm" in
+  *'codex'*'尚未進入審查中'*'權限核准對話框'*) pass print-summary-confirm-status-unconfirmed-mentions-approval-dialog ;;
+  *) bad "print-summary-confirm-status-unconfirmed-mentions-approval-dialog: $ps_out_confirm" ;;
 esac
 
 # ==============================================================
@@ -3118,9 +3568,25 @@ dfcrepopath_err="$(cd "$DFCREPOPATH_ELSEWHERE" && _dispatch_failed_cleanup "$DFC
 # pairs below, since both reuse this same $STUB_BIN:$saved_path PATH --
 # and removed again right before the CHMODE2E fixture further down,
 # which deliberately uses a separate stub directory that never includes
-# herdr (see that fixture's own comment on why). This stub only needs to
-# succeed, unlike launch_reviewer_interactive's own dedicated section
-# above, which also asserts on herdr's argv.
+# herdr (see that fixture's own comment on why). `agent start` and
+# `agent prompt` only need to succeed, unlike launch_reviewer_interactive's
+# own dedicated section above, which also asserts on herdr's argv; there is
+# no `pane` case at all -- the `pane read` readiness guard stays removed
+# and is not simulated here either (see launch_reviewer_interactive's own
+# docstring for why it must not come back).
+#
+# `agent wait`, called once per dispatched reviewer by cmd_launch's own
+# _confirm_reviewers_working step, is stubbed to answer differently for
+# codex's own pane (pane-codex) than for the other two, on purpose: this
+# is what lets the print_summary assertions further down exercise both the
+# "confirmed working" and "unconfirmed" annotations from a single real
+# cmd_launch() run, instead of needing a second fixture. codex's own
+# `agent wait` always times out here, which also means
+# _confirm_reviewers_working's own resend loop runs against this stub's
+# `agent prompt` case for real (up to REVIEWER_PROMPT_RESEND_LIMIT times)
+# before finally giving up -- exercised incidentally by this fixture, not
+# specifically asserted on here (see the dedicated
+# _confirm_reviewers_working section further up for that).
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -3128,11 +3594,15 @@ agent)
   case "${2:-}" in
   start) exit 0 ;;
   prompt) exit 0 ;;
-  esac
-  ;;
-pane)
-  case "${2:-}" in
-  read) printf 'e2e-stub-pane-ready'; exit 0 ;;
+  wait)
+    pane_id="$3"
+    if [ "$pane_id" = "pane-codex" ]; then
+      printf '{"error":{"code":"timeout"}}'
+      exit 1
+    fi
+    printf '{"agent_status":"working","terminal_title":"e2e-stub-terminal-title-should-never-leak","terminal_title_stripped":"stub"}'
+    exit 0
+    ;;
   esac
   ;;
 esac
@@ -3414,6 +3884,61 @@ case "$out" in
   *) bad main-e2e-summary-output-lists-pane-and-output-file ;;
 esac
 
+# --- cmd_launch()'s own _confirm_reviewers_working step (task 2) ran for
+# real against the herdr stub above, which answers claude/opencode's own
+# `agent wait` calls as working and codex's as a timeout -- print_summary
+# must reflect both outcomes in its own dispatched-reviewer lines, and
+# must never leak the working-branch JSON's own terminal_title field (see
+# _confirm_reviewers_working's own docstring on why that field is never
+# read). ---
+
+case "$out" in
+  *'claude'*'已進入審查中'*) pass main-e2e-summary-output-marks-confirmed-reviewer ;;
+  *) bad "main-e2e-summary-output-marks-confirmed-reviewer: $out" ;;
+esac
+case "$out" in
+  *'codex'*'尚未進入審查中'*'權限核准對話框'*) pass main-e2e-summary-output-marks-unconfirmed-reviewer ;;
+  *) bad "main-e2e-summary-output-marks-unconfirmed-reviewer: $out" ;;
+esac
+case "$out" in
+  *'terminal_title'*) bad "main-e2e-summary-output-never-leaks-terminal-title: $out" ;;
+  *) pass main-e2e-summary-output-never-leaks-terminal-title ;;
+esac
+
+E2E_CONFIRM_STATUS="$E2E_BASE_DIR/.reviewer-confirm-status"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(awk '$1=="codex"{print $2}' "$E2E_CONFIRM_STATUS" 2>/dev/null)" = unconfirmed ] && pass main-e2e-confirm-status-file-records-codex-unconfirmed || bad "main-e2e-confirm-status-file-records-codex-unconfirmed: $(cat "$E2E_CONFIRM_STATUS" 2>/dev/null)"
+
+# --- cmd_launch()'s own per-cli dispatch loop (task 4's own dependency)
+# writes cmd_wait's stalled-detection baseline the moment each reviewer is
+# dispatched -- confirmed here as a real epoch-second value close to now,
+# for every dispatched cli, not just codex above. ---
+for e2e_lw_cli in claude codex opencode; do
+  e2e_lw_file="$E2E_BASE_DIR/.last-working-$e2e_lw_cli"
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ -s "$e2e_lw_file" ] && pass "main-e2e-last-working-baseline-written-$e2e_lw_cli" || bad "main-e2e-last-working-baseline-written-$e2e_lw_cli"
+  case "$(cat "$e2e_lw_file" 2>/dev/null)" in
+    ''|*[!0-9]*) bad "main-e2e-last-working-baseline-numeric-$e2e_lw_cli: $(cat "$e2e_lw_file" 2>/dev/null)" ;;
+    *) pass "main-e2e-last-working-baseline-numeric-$e2e_lw_cli" ;;
+  esac
+done
+
+# --- cmd_launch()'s own per-cli dispatch loop also persists this run's own
+# pane id to <base_dir>/.pane-<cli>, the file a later, separate `wait`
+# invocation reads back so _wait_agent_states can match `herdr agent list`
+# entries by pane id instead of by cli-name prefix (see that function's own
+# docstring for the cross-run collision this closes). The launch call above
+# used --agent claude=pane-claude --agent codex=pane-codex --agent
+# opencode=pane-opencode, so each file's content must be exactly that cli's
+# own pane id, not just non-empty. ---
+for e2e_pane_cli in claude codex opencode; do
+  e2e_pane_file="$E2E_BASE_DIR/.pane-$e2e_pane_cli"
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$(cat "$e2e_pane_file" 2>/dev/null)" = "pane-$e2e_pane_cli" ] \
+    && pass "main-e2e-pane-id-mapping-written-$e2e_pane_cli" \
+    || bad "main-e2e-pane-id-mapping-written-$e2e_pane_cli: $(cat "$e2e_pane_file" 2>/dev/null)"
+done
+
 # This run's own issue_arg ("777") was explicit and its design doc path was
 # readable -- confirming print_summary's materials section reflects that
 # correctly end to end (real cmd_prepare() -> fetch_review_materials ->
@@ -3623,7 +4148,15 @@ cp "$STUB_BIN/opencode" "$CHMODE2E_STUB_BIN/opencode"
 # end-to-end" section's own comment on why), fails immediately with
 # agent_pane_not_found (confirmed directly against the real binary -- see
 # this section's own top comment). Same minimal stub as that section's
-# own: only needs to succeed, nothing here asserts on herdr's argv.
+# own: only needs to succeed, nothing here asserts on herdr's argv. No
+# `agent wait` case at all -- cmd_launch's own _confirm_reviewers_working
+# step still calls it, falls through to this stub's bottom `exit 1` every
+# time (including after each resend attempt for codex/opencode, since
+# there is no way to make it succeed here), and marks every reviewer
+# unconfirmed, which is harmless here: this fixture's own assertions are
+# about the worktree/logs_dir chmod, not about confirmation status (see
+# _confirm_reviewers_working's own docstring on why an unconfirmed result
+# never fails cmd_launch).
 cat > "$CHMODE2E_STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -3631,11 +4164,6 @@ agent)
   case "${2:-}" in
   start) exit 0 ;;
   prompt) exit 0 ;;
-  esac
-  ;;
-pane)
-  case "${2:-}" in
-  read) printf 'e2e-stub-pane-ready'; exit 0 ;;
   esac
   ;;
 esac
@@ -4531,6 +5059,18 @@ fi
 diff -q "$SYNTH_LAUNCH_ROOT/agy.prompt" "$SYNTH_LAUNCH_RECORD_DIR/agy.stdin" >/dev/null 2>&1 \
   && pass "launch_synthesis agy 透過 stdin 完整收到 prompt" || bad "launch_synthesis agy 未透過 stdin 收到完整 prompt"
 
+# launch_reviewer_interactive's own agy branch carries
+# --dangerously-skip-permissions (see that function's own docstring for
+# why); this branch must NOT -- _select_synthesis_cli prefers agy for the
+# synthesis pass specifically because headless mode's own default-deny,
+# with an empty permission allow list, closes its shell/network surface,
+# and that flag would remove exactly that property (see
+# launch_reviewer_interactive's own agy-branch comment).
+case "$(cat "$SYNTH_LAUNCH_RECORD_DIR/agy.argv" 2>/dev/null)" in
+  *'--dangerously-skip-permissions'*) bad "launch_synthesis agy 的命令列不該帶 --dangerously-skip-permissions（那是 reviewer 分支的旗標）" ;;
+  *) pass "launch_synthesis agy 的命令列不帶 --dangerously-skip-permissions" ;;
+esac
+
 AGY_SYNTH_HOME="$SYNTH_LAUNCH_ROOT/agy-synthesis-home"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -d "$AGY_SYNTH_HOME" ] && pass "launch_synthesis agy 建立獨立 HOME" || bad "launch_synthesis agy 未建立獨立 HOME"
@@ -4659,6 +5199,39 @@ grep -qF 'content_status=no-content' <<<"$RSYN_L3" && pass "_record_synthesis_re
 grep -qE 'content_file=$' <<<"$RSYN_L3" && pass "_record_synthesis_result no-content 時 content_file 留空" || bad "_record_synthesis_result no-content 時 content_file 未留空"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ ! -e "$RSYN_NOCONTENT_ROOT/.comment-body-synthesis.md" ] && pass "_record_synthesis_result no-content 不寫內容檔" || bad "_record_synthesis_result no-content 卻寫了內容檔"
+
+# ==============================================================
+# _record_synthesis_result -- 追加寫入失敗不得中止流程（本次全檔掃描找到
+# 的同型缺陷，與 _record_reviewer_result_interactive 那段是同一個理由：
+# 兩者都在 spawn_supervisor_interactive 自己那個會繼承 errexit 的真正
+# `( ... )` 子殼層裡被裸呼叫，見該段測試自己對這個差異的完整說明，這裡
+# 不重複）。
+# ------------------------------------------------------------
+
+RSYN_APPENDFAIL_ROOT="$T/record-synth-append-fail"
+mkdir -p "$RSYN_APPENDFAIL_ROOT"
+cat > "$RSYN_APPENDFAIL_ROOT/synthesis.log" <<'LOG'
+===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===
+一段合流內容
+===PR-REVIEW-BY-MULTI-AGENTS-END===
+LOG
+printf '0' > "$RSYN_APPENDFAIL_ROOT/.synthesis-exit-77004"
+RSYN_APPENDFAIL_SUMMARY="$RSYN_APPENDFAIL_ROOT/summary.txt"
+: > "$RSYN_APPENDFAIL_SUMMARY"
+chmod a-w "$RSYN_APPENDFAIL_SUMMARY"
+
+RSYN_APPENDFAIL_STDERR="$T/record-synth-append-fail-stderr.log"
+# 裸呼叫 -- 理由同上一段。修正前這一行本身會讓整支測試檔案從這裡當場
+# 中止。
+_record_synthesis_result 77004 claude "$RSYN_APPENDFAIL_ROOT/synthesis.log" "$RSYN_APPENDFAIL_ROOT" "$RSYN_APPENDFAIL_SUMMARY" 2>"$RSYN_APPENDFAIL_STDERR"
+pass record-synthesis-result-append-failure-does-not-abort
+
+chmod u+w "$RSYN_APPENDFAIL_SUMMARY" 2>/dev/null || true
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$RSYN_APPENDFAIL_SUMMARY" ] && pass "_record_synthesis_result 摘要行追加失敗時不留下任何一行" || bad "_record_synthesis_result 摘要行追加失敗時仍留下內容: $(cat "$RSYN_APPENDFAIL_SUMMARY" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$RSYN_APPENDFAIL_ROOT/.comment-body-synthesis.md" ] && pass "_record_synthesis_result 摘要行追加失敗不影響已經寫成功的內容檔" || bad "_record_synthesis_result 內容檔未寫出"
 
 # ==============================================================
 # spawn_supervisor_interactive -- 合流的完整接線（互動模式）
@@ -4873,6 +5446,47 @@ case "$SPWSYNI2_DIRECT_LINE" in
   'cli=claude pid=n/a exit=n/a '*' content_status=no-content '*) pass "_record_reviewer_result_interactive 缺標記時 pid/exit=n/a 且 content_status=no-content" ;;
   *) bad "_record_reviewer_result_interactive 缺標記時這一行不對: $SPWSYNI2_DIRECT_LINE" ;;
 esac
+
+# ==============================================================
+# _record_reviewer_result_interactive -- 追加寫入失敗不得中止流程（本次
+# 全檔掃描找到的同型缺陷，不在原簡報點名的三處之內）。這個函式在
+# spawn_supervisor_interactive 自己的輪詢迴圈裡是被裸呼叫的（不落在
+# if/&&/|| 任何一種豁免語境），而那個迴圈本身跑在一個真正的 `( ... )`
+# 子殼層裡，不是 `$( ... )` 命令替換的子殼層 -- 兩者對 errexit 的處理
+# 不同：`( ... )` 會繼承這個檔案的 set -euo pipefail，`$( ... )` 預設不
+# 會（bash 5.3.15 上實測確認，見上面 _confirm_reviewers_working
+# append-failure 測試同一段對這個差異的完整說明）。所以這裡同樣要用真
+# 正裸露的呼叫形狀，不能包 `$( )`，否則測不出中止。
+# ------------------------------------------------------------
+
+RRRI_ROOT="$T/record-reviewer-result-append-fail"
+RRRI_WT="$(_make_worktree_fixture "$RRRI_ROOT")"
+mkdir -p "$RRRI_ROOT/reviewers/claude/workdir"
+RRRI_REVIEW="$RRRI_ROOT/reviewers/claude/workdir/review.md"
+printf '完整審查內容\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$RRRI_REVIEW"
+printf '%s\n' "$(_git_status_snapshot "$RRRI_WT")" > "$RRRI_ROOT/.git-status-before-claude"
+
+RRRI_SUMMARY="$RRRI_ROOT/summary.txt"
+: > "$RRRI_SUMMARY"
+# 用真的 chmod 逼出真實權限失敗，不裝一支假裝失敗的旗標去繞過它。
+chmod a-w "$RRRI_SUMMARY"
+
+RRRI_STDERR="$T/record-reviewer-result-append-fail-stderr.log"
+# 裸呼叫 -- 不接 `|| `、不當 if/while 的條件、也不包在 `$( )` 裡。修正
+# 前這一行本身會讓整支測試檔案從這裡當場中止。
+_record_reviewer_result_interactive claude "$RRRI_ROOT" "$RRRI_WT" "$RRRI_REVIEW" "$RRRI_SUMMARY" 2>"$RRRI_STDERR"
+# 這裡能執行到，本身就是「沒有中止」的證明。
+pass record-reviewer-result-interactive-append-failure-does-not-abort
+
+# 恢復可寫，不讓這個檔案卡住結尾的 trap 清理。
+chmod u+w "$RRRI_SUMMARY" 2>/dev/null || true
+
+# summary_file 的追加失敗只丟掉這一行，不影響內容檔（兩個寫入各自獨立
+# 防護）：內容檔仍然寫出，摘要行則完全沒有寫成功過。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$RRRI_SUMMARY" ] && pass "_record_reviewer_result_interactive 摘要行追加失敗時不留下任何一行" || bad "_record_reviewer_result_interactive 摘要行追加失敗時仍留下內容: $(cat "$RRRI_SUMMARY" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$RRRI_ROOT/.comment-body-claude.md" ] && pass "_record_reviewer_result_interactive 摘要行追加失敗不影響已經寫成功的內容檔" || bad "_record_reviewer_result_interactive 內容檔未寫出"
 
 printf 'claude claude-e2e-model dispatched\n' > "$SPWSYNI2_ROOT/.roster"
 SPWSYNI2_SUMMARY="$SPWSYNI2_ROOT/summary.txt"
@@ -5409,18 +6023,23 @@ esac
 # 所以這裡建立替身之後立刻呼叫它驗證替身確實遮蔽住了 herdr。
 #
 # 替身回傳的 JSON 刻意混入一個沒有 name 欄位的 agent，模擬同一台機器
-# 上任何其他被 herdr 自動發現、非本次 run 啟動的 agent（真實情境，不
-# 是假設 -- 這台開發機自己的 `herdr agent list` 現在就回傳好幾個這種
-# agent）。對真實 herdr 二進位（0.8.2）探測過：這種 agent 的 .name 是
-# null，`null | startswith(...)` 是 jq 的執行期錯誤而不是「不相符」--
-# _wait_agent_states 若沒有 `(.name // "")` 這層防護，這個沒有名字的
-# agent 存在就會讓 agent list 查詢對「每一個」cli 都失敗，症狀是
-# blocked 永遠偵測不到、而且不只發生在它自己那個名額上。
+# 上任何其他被 herdr 自動發現、非本次 run 啟動的 agent（真實情境，不是
+# 假設 -- 這台開發機自己的 `herdr agent list` 現在就回傳好幾個這種
+# agent：對真實 herdr 二進位（0.8.2）探測過，這種 agent 一律沒有
+# name，但 pane_id 一律都在）。_wait_agent_states 現在改用
+# `select(.pane_id == $p)` 比對，這種無關 agent 不論有沒有 name 都只是
+# pane_id 對不上而落選，不像舊版 `(.name // "") | startswith(...)` 那樣
+# 需要額外防護 null 才不會讓 jq 對整個查詢丟出執行期錯誤（見
+# _wait_agent_states 自己的 docstring）。
 # ==============================================================
 
 WAIT_BLOCKED="$T/wait-blocked"
 mkdir -p "$WAIT_BLOCKED"
 printf 'codex some-model dispatched\nopencode some-model dispatched\n' > "$WAIT_BLOCKED/.roster"
+# .pane-<cli>：cmd_launch 在真實派工時才會寫的檔案，這裡手動補上，模擬
+# 已經派工完成、只是要單獨測 cmd_wait 這一段的情境。
+printf 'pane-codex\n' > "$WAIT_BLOCKED/.pane-codex"
+printf 'pane-opencode\n' > "$WAIT_BLOCKED/.pane-opencode"
 
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
@@ -5437,20 +6056,277 @@ chmod +x "$STUB_BIN/herdr"
 export PATH="$STUB_BIN:$saved_path"
 assert_cli_stub_only "$PATH" "$STUB_BIN" herdr
 # codex: blocked（應觸發）；opencode: working（不應觸發）；第三個
-# agent 沒有 name 欄位（模擬無關 agent，驗證 (.name // "") 防護）。
-export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"codex-aaaaaaaaaaaa","agent_status":"blocked"},{"name":"opencode-bbbbbbbbbbbb","agent_status":"working"},{"agent_status":"blocked"}]}}'
+# agent 沒有 name 欄位、pane_id 也對不上任何一個 .pane-<cli>（模擬無關
+# agent，驗證它只是單純落選，不會讓整個查詢失敗或被誤選中）。
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"codex-aaaaaaaaaaaa","pane_id":"pane-codex","agent_status":"blocked"},{"name":"opencode-bbbbbbbbbbbb","pane_id":"pane-opencode","agent_status":"working"},{"pane_id":"pane-anon-agent","agent_status":"blocked"}]}}'
 
 # --- 某 cli 進入 blocked → event=blocked cli=<正確的 cli 名稱> ---
 wait_blocked_out="$(cmd_wait --base-dir "$WAIT_BLOCKED" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
 case "$wait_blocked_out" in
   'event=blocked cli=codex') pass "cmd_wait 某 cli 進入 blocked 時回傳 blocked 事件並帶正確 cli 名稱" ;;
-  *) bad "cmd_wait blocked 事件不正確（可能是 (.name // \"\") 防護沒生效，或 cli 判斷錯誤）: $wait_blocked_out" ;;
+  *) bad "cmd_wait blocked 事件不正確（可能是 pane_id 比對沒生效，或 cli 判斷錯誤）: $wait_blocked_out" ;;
 esac
 
 # --- --reported-blocked 點名的 cli 不會再次觸發 blocked，改在死線到達 ---
 wait_blocked_filtered_out="$(cmd_wait --base-dir "$WAIT_BLOCKED" --deadline-at "$(( $(date +%s) + 3 ))" --reported-blocked codex 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_blocked_filtered_out" = 'event=deadline' ] && pass "cmd_wait --reported-blocked 點名的 cli 不會再次觸發 blocked 事件" || bad "cmd_wait --reported-blocked 過濾失敗: $wait_blocked_filtered_out"
+
+# ==============================================================
+# cmd_wait -- event=stalled、blocked 優先、--reported-stalled 抑制與重新
+# 武裝
+#
+# 沿用上面同一個 herdr 替身（只認 `agent list`）與同一段 PATH，因為這五
+# 個情境全部只需要控制 agent_status，不需要它額外的行為。每個情境自己
+# 手寫 .last-working-<cli>，直接讓它落在門檻之外，而不是真的等
+# REVIEWER_STALLED_THRESHOLD_SECONDS（5 分鐘）的實際時間 -- cmd_wait 判斷
+# 的是這個檔案裡的時間戳跟現在的差距，不是自己算過多少個輪詢週期，所以
+# 這樣寫是同一個判斷路徑，不是繞過它。
+# ==============================================================
+
+# --- 停滯超過門檻 → event=stalled cli=<cli> ---
+WAIT_STALLED_FIRES="$T/wait-stalled-fires"
+mkdir -p "$WAIT_STALLED_FIRES"
+printf 'claude some-model dispatched\n' > "$WAIT_STALLED_FIRES/.roster"
+printf 'pane-claude\n' > "$WAIT_STALLED_FIRES/.pane-claude"
+printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_FIRES/.last-working-claude"
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude","agent_status":"idle"}]}}'
+wait_stalled_out="$(cmd_wait --base-dir "$WAIT_STALLED_FIRES" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+case "$wait_stalled_out" in
+  'event=stalled cli=claude') pass "cmd_wait 停滯超過門檻時回傳 stalled 事件" ;;
+  *) bad "cmd_wait stalled 事件不正確: $wait_stalled_out" ;;
+esac
+
+# --- blocked 優先：同一格既停滯超過門檻、狀態又剛好是 blocked，必須回傳
+# blocked，不是 stalled ---
+WAIT_STALLED_BLOCKED_PRIORITY="$T/wait-stalled-blocked-priority"
+mkdir -p "$WAIT_STALLED_BLOCKED_PRIORITY"
+printf 'codex some-model dispatched\n' > "$WAIT_STALLED_BLOCKED_PRIORITY/.roster"
+printf 'pane-codex\n' > "$WAIT_STALLED_BLOCKED_PRIORITY/.pane-codex"
+printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_BLOCKED_PRIORITY/.last-working-codex"
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"codex-aaaaaaaaaaaa","pane_id":"pane-codex","agent_status":"blocked"}]}}'
+wait_stalled_blocked_out="$(cmd_wait --base-dir "$WAIT_STALLED_BLOCKED_PRIORITY" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+case "$wait_stalled_blocked_out" in
+  'event=blocked cli=codex') pass "cmd_wait 同時符合 blocked 與 stalled 時優先回傳 blocked" ;;
+  *) bad "cmd_wait blocked 優先權失效: $wait_stalled_blocked_out" ;;
+esac
+
+# --- --reported-stalled 點名的 cli 不會再次觸發 stalled，改在死線到達 ---
+WAIT_STALLED_SUPPRESSED="$T/wait-stalled-suppressed"
+mkdir -p "$WAIT_STALLED_SUPPRESSED"
+printf 'opencode some-model dispatched\n' > "$WAIT_STALLED_SUPPRESSED/.roster"
+printf 'pane-opencode\n' > "$WAIT_STALLED_SUPPRESSED/.pane-opencode"
+printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_SUPPRESSED/.last-working-opencode"
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"opencode-aaaaaaaaaaaa","pane_id":"pane-opencode","agent_status":"idle"}]}}'
+wait_stalled_suppressed_out="$(cmd_wait --base-dir "$WAIT_STALLED_SUPPRESSED" --deadline-at "$(( $(date +%s) + 3 ))" --reported-stalled opencode 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_stalled_suppressed_out" = 'event=deadline' ] && pass "cmd_wait --reported-stalled 點名的 cli 不會再次觸發 stalled 事件" || bad "cmd_wait --reported-stalled 過濾失敗: $wait_stalled_suppressed_out"
+
+# --- 重新武裝：一旦這一格被觀測到 working，.last-working-<cli> 就要被
+# 重置成接近現在的時間（不誤報 stalled）；之後即使不再傳
+# --reported-stalled，只要它重新變舊，仍然要能再次觸發 stalled -- 證明
+# 重置不是一次性的閂鎖 ---
+WAIT_STALLED_REARM="$T/wait-stalled-rearm"
+mkdir -p "$WAIT_STALLED_REARM"
+printf 'agy some-model dispatched\n' > "$WAIT_STALLED_REARM/.roster"
+printf 'pane-agy\n' > "$WAIT_STALLED_REARM/.pane-agy"
+printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_REARM/.last-working-agy"
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"agy-aaaaaaaaaaaa","pane_id":"pane-agy","agent_status":"working"}]}}'
+wait_stalled_rearm_out1="$(cmd_wait --base-dir "$WAIT_STALLED_REARM" --deadline-at "$(( $(date +%s) + 3 ))" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_stalled_rearm_out1" = 'event=deadline' ] && pass "cmd_wait 觀測到 working 時不誤報 stalled" || bad "cmd_wait 觀測到 working 卻仍回報: $wait_stalled_rearm_out1"
+
+wait_stalled_rearm_last_working="$(cat "$WAIT_STALLED_REARM/.last-working-agy" 2>/dev/null)"
+wait_stalled_rearm_now="$(date +%s)"
+# 寬鬆的十秒容忍：上一次呼叫本身就要跨過至少一次 5 秒輪詢間隔才會走到
+# 死線，這裡量的是「有沒有被重置過」，不是精確計時。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$wait_stalled_rearm_last_working" ] && [ "$(( wait_stalled_rearm_now - wait_stalled_rearm_last_working ))" -le 10 ] \
+  && pass "cmd_wait 觀測到 working 時重置這一格自己的計時起點" \
+  || bad "cmd_wait 未重置計時起點: $wait_stalled_rearm_last_working（now=$wait_stalled_rearm_now）"
+
+# 再次讓它變舊（模擬又經過一段時間），狀態改回不是 working 也不是
+# blocked，且這次呼叫不再傳 --reported-stalled。
+printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_REARM/.last-working-agy"
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"agy-aaaaaaaaaaaa","pane_id":"pane-agy","agent_status":"idle"}]}}'
+wait_stalled_rearm_out2="$(cmd_wait --base-dir "$WAIT_STALLED_REARM" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+case "$wait_stalled_rearm_out2" in
+  'event=stalled cli=agy') pass "cmd_wait 重新武裝後可以再次觸發 stalled" ;;
+  *) bad "cmd_wait 重新武裝後未能再次觸發 stalled: $wait_stalled_rearm_out2" ;;
+esac
+
+# --- 已經有摘要行的 cli（監督行程已經收掉它）不再判定 stalled，即使它
+# 的 .last-working 檔案早已過期 ---
+WAIT_STALLED_DONE="$T/wait-stalled-done"
+mkdir -p "$WAIT_STALLED_DONE"
+printf 'claude some-model dispatched\n' > "$WAIT_STALLED_DONE/.roster"
+printf 'pane-claude\n' > "$WAIT_STALLED_DONE/.pane-claude"
+printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_DONE/.last-working-claude"
+printf 'cli=claude pid=n/a exit=n/a ended_at=2026-09-05T00:00:00Z worktree_status=ok content_status=ready content_file=/tmp/x.md\n' > "$WAIT_STALLED_DONE/summary.txt"
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude","agent_status":"idle"}]}}'
+wait_stalled_done_out="$(cmd_wait --base-dir "$WAIT_STALLED_DONE" --deadline-at "$(( $(date +%s) + 3 ))" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_stalled_done_out" = 'event=deadline' ] && pass "cmd_wait 已有摘要行的 cli 不再判定 stalled" || bad "cmd_wait 已有摘要行卻仍回報 stalled/其他事件: $wait_stalled_done_out"
+
+# ==============================================================
+# cmd_wait -- 並行執行沖掉停滯計時（本次要修的缺陷）。
+#
+# _wait_agent_states 原本靠 "$cli-" 這個前綴去 herdr agent list 裡挑出
+# 這次 run 自己派出的 agent，而那份清單的射程是整個 herdr 服務、不限本
+# 次執行。同一台機器上兩次審查並行、兩次都派了同一家 CLI 時，清單裡先
+# 列到誰就算誰 -- 不是假設：這台開發機在這次修正進行的當下，就真的同
+# 時有另一個 session 在對別的 PR 跑審查，兩邊都派了 claude。
+#
+# 後果落在 cmd_wait 自己的停滯計時上：working 分支只要讀到 working 狀
+# 態（哪怕是別人那一格的），就把本次的 .last-working-<cli> 覆寫成當下
+# 時刻，於是本次這一格即使從頭到尾沒有動過，距上次「被讀到 working」
+# 的時間也永遠到不了門檻，event=stalled 一次都不會觸發 -- 這正好是這
+# 整批改動要買到的那段提前發現被整個抵銷掉。
+#
+# 這裡的樁刻意在同一次 `herdr agent list` 回應裡放兩個都以 "claude-"
+# 開頭的 agent：陣列裡第一個（舊版 `first` 一定選到的那個）pane_id 是
+# pane-claude-otherrun、狀態 working，代表另一次並行執行派出的 claude；
+# 第二個 pane_id 是 pane-claude-thisrun、狀態 idle，才是這次 run 自己
+# 在 .pane-claude 裡記下的那一格。.last-working-claude 預先寫成已經超
+# 過門檻的舊時間戳。
+#
+# 修正前（前綴比對 + first）：這個測試曾經人工跑過一次確認會失敗 --
+# 選到第一個 working 的條目，把 .last-working-claude 覆寫成現在，於是
+# 回傳 event=deadline 而不是 event=stalled，且時間戳確實被改寫；不隨這
+# 份測試檔案保留成永久跑的雙版本斷言，詳細操作見本次修正說明。
+# 修正後（pane_id 精確比對）：只會選到第二個（idle），這一格自始至終
+# 沒有被讀到 working，event=stalled 照樣觸發，.last-working-claude 的
+# 值也完全沒被動過。
+# ------------------------------------------------------------
+
+WAIT_STALLED_ALIAS="$T/wait-stalled-concurrent-alias"
+mkdir -p "$WAIT_STALLED_ALIAS"
+printf 'claude some-model dispatched\n' > "$WAIT_STALLED_ALIAS/.roster"
+printf 'pane-claude-thisrun\n' > "$WAIT_STALLED_ALIAS/.pane-claude"
+wait_alias_last_working_before="$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))"
+printf '%s\n' "$wait_alias_last_working_before" > "$WAIT_STALLED_ALIAS/.last-working-claude"
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude-otherrun","agent_status":"working"},{"name":"claude-bbbbbbbbbbbb","pane_id":"pane-claude-thisrun","agent_status":"idle"}]}}'
+
+wait_alias_out="$(cmd_wait --base-dir "$WAIT_STALLED_ALIAS" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+case "$wait_alias_out" in
+  'event=stalled cli=claude') pass "cmd_wait 即使清單裡有同名前綴的並行 agent 回報 working，本次這一格仍正確觸發 stalled" ;;
+  *) bad "cmd_wait 被同名前綴的並行 agent 誤導（可能又退回名稱前綴比對）: $wait_alias_out" ;;
+esac
+
+wait_alias_last_working_after="$(cat "$WAIT_STALLED_ALIAS/.last-working-claude" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_alias_last_working_after" = "$wait_alias_last_working_before" ] \
+  && pass "cmd_wait 沒有被同名前綴的並行 agent 誤判成 working，本次的停滯計時起點沒有被覆寫" \
+  || bad "cmd_wait 的停滯計時起點被覆寫了（本次自己那一格從未被讀到 working）: 原值=$wait_alias_last_working_before 現值=$wait_alias_last_working_after"
+
+# ==============================================================
+# cmd_wait -- 重置 .last-working-<cli> 失敗不得中止流程（本次要修的缺陷，
+# 與前一個 commit 修 _confirm_reviewers_working 六處逐格追加寫入是同一個
+# 模式，只是那次沒有搜過同一支腳本裡還有沒有結構相同的地方）。
+#
+# main() 呼叫 cmd_wait 是裸陳述句（不落在 if/while/&&/|| 或 `$( )` 任何
+# 一種會讓內部指令豁免 errexit 的語境裡），而這裡要重現的正是那一條真
+# 正的呼叫路徑本身，所以下面對 cmd_wait 的呼叫同樣必須是真正裸露的形
+# 狀 -- 不能包 `var="$( )"`：已實測證實 `$( )` 會另開一個不繼承 errexit
+# 的子殼層（bash 5.3.15，未開 inherit_errexit 這個 shopt 時的既有行
+# 為），修正前的缺陷版本包在 `$( )` 裡會測不出來，這正是上一個 commit
+# 那段測試已經記下來的教訓。修正前，`cmd_wait` 呼叫那一行本身會讓整支
+# 測試檔案從這裡當場中止 -- 後面不會再印出任何 PASS/FAIL；修正後才會
+# 正常往下執行到下一行。
+# ------------------------------------------------------------
+
+WAIT_LWF_ROOT="$T/wait-last-working-write-fail"
+mkdir -p "$WAIT_LWF_ROOT"
+printf 'claude some-model dispatched\n' > "$WAIT_LWF_ROOT/.roster"
+printf 'pane-claude\n' > "$WAIT_LWF_ROOT/.pane-claude"
+printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_LWF_ROOT/.last-working-claude"
+# 用真的 chmod 逼出真實權限失敗，同前一個 commit 對 _confirm_reviewers_
+# working 的作法 -- 不裝一支假裝失敗的旗標去繞過它。
+chmod a-w "$WAIT_LWF_ROOT/.last-working-claude"
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude","agent_status":"working"}]}}'
+
+WAIT_LWF_OUT="$T/wait-last-working-write-fail.out"
+WAIT_LWF_ERR="$T/wait-last-working-write-fail.err"
+# 裸呼叫 -- 純 `>`/`2>` 重導向不是 if/while/&&/|| 的條件，也不是
+# `$( )`，不影響 errexit 是否套用。
+cmd_wait --base-dir "$WAIT_LWF_ROOT" --deadline-at "$(( $(date +%s) + 3 ))" >"$WAIT_LWF_OUT" 2>"$WAIT_LWF_ERR"
+# 這裡能執行到，本身就是「沒有中止」的證明。
+pass cmd-wait-last-working-write-failure-does-not-abort
+
+# 恢復可寫，不讓這個檔案卡住後面的測試與結尾的 trap 清理。
+chmod u+w "$WAIT_LWF_ROOT/.last-working-claude" 2>/dev/null || true
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$WAIT_LWF_OUT" 2>/dev/null)" = 'event=deadline' ] && pass "cmd_wait 觀測到 working 但重置計時起點失敗時仍正常回到死線事件" || bad "cmd_wait 未能在重置計時起點失敗後仍回到死線事件: $(cat "$WAIT_LWF_OUT" 2>/dev/null)"
+
+# ==============================================================
+# cmd_wait -- .last-working-<cli> 內容被算術語境求值的指令注入（Critical，
+# 追加需求）。
+#
+# base_dir 根層自始至終是 reviewer 寫得到的（見 references/rationale.md
+# 「執行目錄根層沒有上鎖」一節，.last-working-<cli> 本身就在其列），而
+# `(( now - last_working >= ... ))` 會把 last_working 的值遞迴當成算術
+# 式求值：值裡若含 `name[...]` 這種陣列下標形狀，`[...]` 裡的
+# `$( )` 會被當成求值下標的副作用執行，不論 name 是否真的被宣告成陣
+# 列。這裡的 payload 重用 cmd_wait 自己函式範圍內已賦值的區域變數
+# `now`，`set -u` 只擋得住從未賦值過的名字（另一個對照 payload
+# `x[$(...)]`，`x` 從未被賦值，會被 set -u 直接擋下 -- 已在
+# run-review.sh 這個修正本身的註解與撰寫測試前的獨立探測中重複確認,
+# 對照探測見本次修正說明), 不擋重用某個已賦值變數名稱的這種形狀。
+# ------------------------------------------------------------
+
+WAIT_ARITH_ROOT="$T/wait-arith-injection"
+mkdir -p "$WAIT_ARITH_ROOT"
+printf 'claude some-model dispatched\n' > "$WAIT_ARITH_ROOT/.roster"
+printf 'pane-claude\n' > "$WAIT_ARITH_ROOT/.pane-claude"
+WAIT_ARITH_MARKER="$T/wait-arith-injection-marker"
+rm -f "$WAIT_ARITH_MARKER"
+# 用真實檔案內容，不用樁繞過：直接把 payload 寫進 .last-working-claude。
+# shellcheck disable=SC2016  # single quotes intentional: this is the printf format string itself (the literal $(...) is the payload), only %s should expand
+printf 'now[$(touch %s)]\n' "$WAIT_ARITH_MARKER" > "$WAIT_ARITH_ROOT/.last-working-claude"
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude","agent_status":"idle"}]}}'
+wait_arith_out="$(cmd_wait --base-dir "$WAIT_ARITH_ROOT" --deadline-at "$(( $(date +%s) + 3 ))" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$WAIT_ARITH_MARKER" ] && pass "cmd_wait 不對 .last-working-<cli> 的內容做算術求值，payload 裡的指令替換沒有被執行" || bad "cmd_wait 執行了 .last-working-<cli> 內容裡夾帶的指令 -- 標記檔被建立: $WAIT_ARITH_MARKER"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_arith_out" = 'event=deadline' ] && pass "cmd_wait 對非純數字的 .last-working-<cli> 內容視同沒有基準時間，不誤報 stalled" || bad "cmd_wait 對被竄改的 .last-working-<cli> 內容處置不正確: $wait_arith_out"
+
+# ==============================================================
+# cmd_wait -- _wait_agent_states 失敗不得中止流程（防未來回歸）。
+#
+# agent_states="$(_wait_agent_states "$base_dir")" 目前安全只是因為
+# _wait_agent_states 自己每一條路徑都回傳 0，這個前提沒有被斷言釘住；
+# 這裡直接局部覆寫該函式，模擬它日後多一個會失敗的檢查，驗證
+# cmd_wait 這一行自己的防護（`|| agent_states=""`）真的擋得住，而不是
+# 依賴被覆寫前的那個實作恰好從不失敗。
+#
+# 覆寫包在一個真正的 `( )` 子殼層裡，只讓這個覆寫留在這個子殼層自己的
+# 函式表裡，不外洩去影響後面其他測試裡真正的 _wait_agent_states。這種
+# 子殼層會繼承這個檔案的 `set -euo pipefail`（不像 `$( )` 命令替換預設
+# 不繼承），所以裡面對 cmd_wait 的裸呼叫，複現的正是 main() 呼叫
+# cmd_wait 那條路徑真正會遇到的行為 -- 但子殼層本身這個外層的
+# `( ... ) > file` 同樣是這支測試檔案自己 `set -euo pipefail` 之下的一
+# 條裸陳述句：修正前，子殼層裡的 cmd_wait 中止會讓子殼層以非零結束碼
+# 收尾，而這一整條外層陳述句的失敗會讓「這支測試檔案自己」從這裡當場
+# 中止 -- 跟上面幾段 append-failure 測試證明「沒有中止」的方式完全一
+# 樣，都是「後面的 PASS 有沒有印出來」，不是子殼層把中止關住讓這裡改印
+# 一則 bad。
+# ------------------------------------------------------------
+
+WAIT_AS_ROOT="$T/wait-agent-states-guard"
+mkdir -p "$WAIT_AS_ROOT"
+printf 'claude some-model dispatched\n' > "$WAIT_AS_ROOT/.roster"
+
+WAIT_AS_OUT="$T/wait-agent-states-guard.out"
+(
+  # shellcheck disable=SC2329  # invoked indirectly: cmd_wait (sourced from run-review.sh) calls this by name
+  _wait_agent_states() { return 1; }
+  cmd_wait --base-dir "$WAIT_AS_ROOT" --deadline-at "$(( $(date +%s) + 3 ))" 2>/dev/null
+) > "$WAIT_AS_OUT"
+# 這裡能執行到，本身就是「沒有中止」的證明。
+pass cmd-wait-agent-states-failure-does-not-abort
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$WAIT_AS_OUT" 2>/dev/null)" = 'event=deadline' ] && pass "cmd_wait 在 _wait_agent_states 失敗時仍能正常前進到死線事件" || bad "cmd_wait 在 _wait_agent_states 失敗時的輸出不正確: $(cat "$WAIT_AS_OUT" 2>/dev/null)"
 
 unset WAIT_HERDR_AGENT_LIST_JSON
 export PATH="$saved_path"
@@ -5803,6 +6679,158 @@ unset WFRUN_HERDR_LEAK_RECORD
 rm -f "$STUB_BIN/herdr"
 
 # ==============================================================
+# cmd_run：.roster 逐格 append 失敗必須跟截斷同一條致命路徑（修正前的縫隙）
+#
+# 修正前，cmd_prepare() 寫 .roster 分兩段：開頭的截斷（`: > .roster`）本
+# 來就用 `|| { ...; exit 1; }` 顯式處理；緊接在後、per-cli 迴圈裡的逐格
+# `>>` append 卻是裸陳述式。這正是上面 WFRUN 那組測試點名的同一種縫隙，
+# 只是換了一行：cmd_run 把 cmd_prepare 包在 `prepare_out="$(cmd_prepare
+# "$@")" || return $?` 這種命令替換 + 條件判斷裡，裸陳述式失敗時單靠
+# set -e 自己冒出來的中止，在這種脈絡下會被吃掉（見 WFRUN 那組自己的文
+# 件）；但這裡的 append 是在迴圈本體裡，不在命令替換自己那層賦值上，會
+# 踩到的是另一半同樣真實的縫隙 -- 沒有顯式 `|| { ... }` 時，這一行失敗
+# 只讓 cmd_prepare() 這個函式呼叫鏈本身（仍在同一個命令替換的子殼層之
+# 內）就地中止，跳過這一行本該印的專屬錯誤訊息，也跳過
+# _dispatch_failed_cleanup，把 worktree 與這次跑出來的分支留在原地不
+# 管。用 `run` 子命令（不是單獨呼叫 `prepare`）當獨立行程呼叫，理由與
+# WFRUN 那組完全相同：只有這個呼叫形狀才會重現 cmd_run 自己那層
+# command substitution，直接呼叫 cmd_prepare() 測不出這個差異。
+#
+# 用真實檔案權限逼出這個失敗，不靠樁：讓 .roster 在 cmd_prepare() 真正
+# 寫到它之前，先變成指向 /dev/full 的 symlink。實測（本機核實，非文件
+# 推斷，bash 5.3.15）：`: > /dev/full`（截斷、`:` 本身不輸出任何
+# bytes）成功、結束碼 0；`printf ... >> /dev/full`（append、寫入真正的
+# bytes）失敗、結束碼 1，stderr 印出核心層的 "裝置上已無多餘空間"
+# （ENOSPC）。這組行為正好對上「截斷成功、append 失敗」這個組合，不需
+# 要另外偽造任何一半，也不必區分 O_TRUNC 與 O_APPEND 兩種開檔模式本來
+# 就分不出的權限位元。
+#
+# base_dir 自己那層目錄名內嵌 `$(date -u +%Y%m%d%H%M%S)-$$`，要等
+# cmd_prepare() 真的跑起來才知道，測試沒辦法事先算出來、事先把 symlink
+# 種好；上層的 "$HOME/.tmp/<repo>-pr-<number>" 這一層則是從已知的
+# owner/repo/number 推得的固定路徑，可以先建。策略是：背景啟動整個
+# `run` 呼叫之後，前景用一個只靠 bash glob（沒有 fork，偵測延遲是微秒
+# 等級）的 busy-poll 迴圈盯著這個固定的上層目錄，一看到 base_dir 出現
+# 就立刻把它底下的 .roster 換成那個 symlink。這確實仍是一個時間窗，但
+# 窗口另一邊是 cmd_prepare() 接下來要做的一次真正的 `git worktree
+# add`/`git fetch`（磁碟 I/O，量級是數十毫秒起跳）再加上整個 per-cli 迴
+# 圈（mkdir、寫 .zshrc、resolve_model、build_prompt、複製材料、chmod、
+# 寫 prompt 檔、量測位元組數），比 busy-poll 一次迭代慢上好幾個數量級
+# -- 這個安全邊際,不是碰運氣,是這個手法能穩定重現的原因。逾時 10 秒還
+# 沒等到 base_dir 出現，判定測試環境本身有問題（並非本節要驗證的行
+# 為），直接 fail 並跳出迴圈，不讓整個測試卡死。
+# ==============================================================
+
+RSTR_ROOT="$T/roster-append-fatal-fixture"
+mkdir -p "$RSTR_ROOT/remotes/rstr-org" "$RSTR_ROOT/work"
+git init -q -b main --bare "$RSTR_ROOT/remotes/rstr-org/rstr-repo.git"
+git init -q -b main "$RSTR_ROOT/work"
+(
+  cd "$RSTR_ROOT/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "https://github.com/rstr-org/rstr-repo.git"
+  git config "url.$RSTR_ROOT/remotes/rstr-org/rstr-repo.git.insteadOf" "https://github.com/rstr-org/rstr-repo.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b feature
+  printf 'feature\n' >> f.txt
+  git commit -aq -m feature
+  git push -q origin feature:refs/pull/1/head
+  git checkout -q main
+)
+
+RSTR_HOME="$T/roster-append-fatal-home"
+mkdir -p "$RSTR_HOME"
+# cmd_prepare() 自己的公式：base_dir="$HOME/.tmp/$repo-pr-$number/..." --
+# 上層這段從 owner/repo/number 就能算出來，下面的 busy-poll 只需要盯著
+# 這個固定路徑，不必先建它（讓 cmd_prepare() 自己的 mkdir -p 第一次建出
+# 整條路徑，更貼近一次全新的 repo/PR 組合）。
+RSTR_PARENT="$RSTR_HOME/.tmp/rstr-repo-pr-1"
+
+RSTR_HERDR_LEAK_RECORD="$T/roster-append-fatal-herdr-leak"
+rm -f "$RSTR_HERDR_LEAK_RECORD"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+: >> "$RSTR_HERDR_LEAK_RECORD"
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+export RSTR_HERDR_LEAK_RECORD
+assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
+
+RSTR_OUT_FILE="$T/roster-append-fatal.out"
+(
+  cd "$RSTR_ROOT/work" && CLAUDE_CONFIG_DIR="" HOME="$RSTR_HOME" \
+  PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 HERDR_WORKSPACE_ID=rstrWs \
+  bash "$RUN_SH" run --pr "https://github.com/rstr-org/rstr-repo/pull/1" --claude
+) > "$RSTR_OUT_FILE" 2>&1 &
+rstr_pid=$!
+
+rstr_base_dir=""
+rstr_deadline=$(( $(date +%s) + 10 ))
+while [ -z "$rstr_base_dir" ]; do
+  for rstr_d in "$RSTR_PARENT"/*/; do
+    [ -d "$rstr_d" ] || continue
+    rstr_base_dir="${rstr_d%/}"
+    break
+  done
+  [ -n "$rstr_base_dir" ] && break
+  if [ "$(date +%s)" -ge "$rstr_deadline" ]; then
+    bad "roster-append-fatal fixture: base_dir 在逾時內從未出現，測試環境本身有問題，非本測試要驗證的行為"
+    break
+  fi
+done
+
+if [ -n "$rstr_base_dir" ]; then
+  ln -sf /dev/full "$rstr_base_dir/.roster"
+fi
+
+if wait "$rstr_pid"; then
+  rstr_rc=0
+else
+  rstr_rc=$?
+fi
+rstr_out="$(cat "$RSTR_OUT_FILE" 2>/dev/null)" || rstr_out=""
+
+# 這條斷言本身不是這個缺陷的判別條件：修正前也量到 rc=1（本機核實，非
+# 推斷），原因不同 -- 修正前 cmd_prepare() 是在命令替換子殼層裡就地中
+# 止，`prepare_out="$(cmd_prepare "$@")" || return $?` 這個賦值本身沒有
+# 失敗（同一種 inherit_errexit 縫隙，見上面 WFRUN 那組文件），於是
+# cmd_run 帶著空的 base_dir/clis 續跑到 _build_reviewer_panes，真的呼叫
+# 了 herdr（見下面那條斷言），最後才在那裡另外失敗、一樣回傳 1。能分辨
+# 這個缺陷「有沒有修好」的是下面兩條斷言（訊息文字、herdr 有沒有被呼
+# 叫），不是這一條 -- 這條只確認修正後的路徑本身回傳值正確，留著是為了
+# 防未來的修改不小心把 exit 1 換成別的數字。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$rstr_rc" -eq 1 ] && pass "cmd_run .roster 逐格 append 失敗時顯式中止、結束碼為 1" \
+  || bad "cmd_run .roster 逐格 append 失敗時結束碼不對，實際為 $rstr_rc: $rstr_out"
+
+case "$rstr_out" in
+  *"run-review.sh: failed to append to $rstr_base_dir/.roster"*) pass "cmd_run .roster 逐格 append 失敗訊息點名 .roster 本身" ;;
+  *) bad "cmd_run .roster 逐格 append 失敗訊息未點名 .roster: $rstr_out" ;;
+esac
+
+# 修正前這行是裸陳述式：失敗時只讓 cmd_prepare() 就地中止，既不印上面
+# 比對的訊息，也不會走到 _dispatch_failed_cleanup -- worktree 會被留
+# 下。這條斷言抓的正是清理有沒有真的被叫到，不是訊息文字本身。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$rstr_base_dir" ] && [ ! -e "$rstr_base_dir/worktree" ] && pass "cmd_run .roster 逐格 append 失敗時 worktree 已被 _dispatch_failed_cleanup 清掉" \
+  || bad "cmd_run .roster 逐格 append 失敗後 worktree 仍留在原地，代表清理沒有被叫到: $rstr_base_dir"
+
+# 排序保證的延伸驗證，手法沿用上面 WFRUN 那組：herdr 從頭到尾沒被呼叫過
+# 一次，證明失敗發生在 _build_reviewer_panes 與 cmd_launch 都還沒開始
+# 之前。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$RSTR_HERDR_LEAK_RECORD" ] && pass "cmd_run .roster 逐格 append 失敗時 herdr 完全沒被呼叫（排序保證）" \
+  || bad "cmd_run .roster 逐格 append 失敗時仍呼叫了 herdr"
+
+unset RSTR_HERDR_LEAK_RECORD
+rm -f "$STUB_BIN/herdr"
+
+# ==============================================================
 # cmd_run：快樂路徑端到端 -- prepare -> _build_reviewer_panes -> launch
 # 全部串在一次呼叫裡完成，驗證決定二（root pane 留著不用，每個 cli 都
 # 各自 split 一格）確實落實：兩個 reviewer 拿到的 pane_id 都不是 tab
@@ -5839,7 +6867,15 @@ mkdir -p "$RUNE2E_HOME"
 # herdr 替身同時扮演兩種角色：_build_reviewer_panes 要用的 tab create /
 # pane split（回傳真正的 JSON，讓 cmd_run 從中解出 tab_id/pane_id），與
 # cmd_launch 的 launch_reviewer_interactive 要用的 agent start / agent
-# prompt / pane read。pane split 的 pane_id 用一個計數檔遞增，不用
+# prompt -- agy 仍是兩段式（見該函式自己「WHY CODEX/OPENCODE/AGY STAY
+# TWO-STEP」一節的文件），claude 則一段式、不會呼叫 agent prompt，但這裡
+# 兩種都回應成功即可，不逐一分流。沒有 pane read 分支，也不該有：那道就
+# 緒守衛已經被移除且不該復原。沒有 agent wait 分支：
+# _confirm_reviewers_working 一樣會呼叫它，落到最後的 exit 1，把兩個
+# reviewer 都記成 unconfirmed（agy 還會先耗盡自己的重送次數，一樣落到
+# exit 1），這對這個情境無妨 -- 這裡驗的是 _build_reviewer_panes 與
+# cmd_launch 的派工串接本身，不是確認步驟的結果（那一段已經在 main-e2e
+# 那組端到端測試裡覆蓋過）。pane split 的 pane_id 用一個計數檔遞增，不用
 # $RANDOM，避免兩個 reviewer 剛好撞號的機率型 flaky。
 RUNE2E_PANE_COUNTER="$T/run-e2e-pane-counter"
 : > "$RUNE2E_PANE_COUNTER"
@@ -5852,7 +6888,6 @@ case "\$1 \$2" in
     printf '%s' "\$n" > "$RUNE2E_PANE_COUNTER"
     printf '{"result":{"pane":{"pane_id":"rune2e:p%s"}}}\n' "\$n"
     exit 0 ;;
-  "pane read") printf 'rune2e-stub-pane-ready'; exit 0 ;;
   "agent start") exit 0 ;;
   "agent prompt") exit 0 ;;
 esac
