@@ -2758,7 +2758,13 @@ fi
 # resent; when agent-prompt-fixes.<pane_id> exists, that same call also
 # overwrites agent-wait-outcome.<pane_id> to "working", simulating a
 # resend that actually recovers the reviewer -- the next `agent wait` call
-# then reads that fresh value.
+# then reads that fresh value. agent-wait-lock-file.<pane_id>, when it names
+# a path, makes this stub `chmod a-w` that path as a side effect of this
+# call, before returning its own outcome -- this is how the append-failure
+# section further down forces a real, non-simulated permission failure on
+# _confirm_reviewers_working's own `>> "$status_file"` write for one
+# specific cli, without touching the file until that cli's own turn in the
+# loop actually comes up.
 # ==============================================================
 
 CONFIRM_ROOT="$T/confirm-reviewers-working"
@@ -2779,6 +2785,10 @@ agent)
       prev="$a"
     done
     printf '%s' "$timeout_ms" > "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.$pane_id"
+    # See this stub's own top comment on agent-wait-lock-file.<pane_id>: a
+    # no-op unless a test writes that control file for this pane_id.
+    lock_file="$(cat "$CONFIRM_RECORD_DIR/agent-wait-lock-file.$pane_id" 2>/dev/null)" || lock_file=""
+    [ -n "$lock_file" ] && chmod a-w "$lock_file" 2>/dev/null
     sleep_secs="$(cat "$CONFIRM_RECORD_DIR/agent-wait-sleep.$pane_id" 2>/dev/null)" || sleep_secs=""
     [ -n "$sleep_secs" ] || sleep_secs=0
     sleep "$sleep_secs"
@@ -2958,6 +2968,86 @@ _confirm_reviewers_working "$CONFIRM_CLAUDE_NO_RESEND" 60 "claude:pane-claude-no
 [ "$(awk '$1=="claude"{print $2}' "$CONFIRM_CLAUDE_NO_RESEND/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-claude-unconfirmed-on-failed-wait || bad "confirm-reviewers-working-claude-unconfirmed-on-failed-wait: $(cat "$CONFIRM_CLAUDE_NO_RESEND/.reviewer-confirm-status" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ ! -f "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-claude-noresend" ] && pass confirm-reviewers-working-claude-never-resends || bad confirm-reviewers-working-claude-never-resends
+
+# --- 追加寫入失敗不得中止流程（本次要修的缺陷）：逐格結果原本用一支
+# 沒有防護的 `>>` append 寫進 $status_file，而 cmd_launch 是以裸呼叫
+# （不落在 if/while/&&/||/`$( )` 任何一種會讓內部指令豁免 errexit 的
+# 語境裡）呼叫這個函式本身（見這個函式自己 docstring 新補的那段）。這裡
+# 一定要用同樣真正裸露的呼叫形狀去驅動一次真的權限失敗，不能包
+# `var="$(...)"`：已實測證實，`$( )` 會另外開一個子殼層，這個子殼層繼承
+# 了 errexit，但 bash 對「子殼層裡迴圈本體中失敗的指令」不會套用 -e 去
+# 中止那個子殼層本身（未開 `inherit_errexit` 這個 shopt 時的既有行為，
+# bash 5.3.15 上驗證：同一支函式、同一個失敗點，改成
+# `out="$(f 2>&1 >/dev/null)"` 這種寫法之後兩格都印出權限錯誤、迴圈正常
+# 跑完、子殼層結束碼仍是 0）；本檔案這個區段稍早所有呼叫
+# _confirm_reviewers_working 的地方（CONFIRM_MIX 等）都是這種
+# `$( )` 形狀，所以都測不出這個缺陷，也不該被誤讀為對「裸呼叫會不會
+# 中止」這件事的既有覆蓋。只有真正不落在任何一種豁免語境裡的裸呼叫，才
+# 會重現 cmd_launch 那一行實際會遇到的行為。修正前，這一行本身就會讓
+# 整支測試檔案從這裡當場中止 -- 後面不會再印出任何 PASS/FAIL，包括這裡
+# 原本要印的那一行；修正後才會正常往下執行到下一行。
+# ------------------------------------------------------------
+
+CONFIRM_APPEND_FAIL="$T/confirm-append-fail"
+mkdir -p "$CONFIRM_APPEND_FAIL"
+CONFIRM_APPEND_FAIL_STATUS="$CONFIRM_APPEND_FAIL/.reviewer-confirm-status"
+
+# claude 這一格先確認成功、正常寫入 -- 要證明它這一行不會被後面 codex
+# 那一格的寫入失敗拖累消失（一次逐格寫入失敗是部分遺失，跟這個函式開頭
+# 建檔失敗那種全有全無的失效範圍不同，見這個函式自己 docstring 新補的
+# 段落）。
+printf 'working' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-appendfail-ok"
+rm -f "$CONFIRM_RECORD_DIR/agent-wait-lock-file.pane-appendfail-ok"
+
+# codex 這一格的 herdr 樁在回報 working 之前，先把 $status_file 本身
+# chmod 成不可寫（見 herdr 樁自己對 agent-wait-lock-file.<pane_id> 的
+# 說明）-- 逼出這個函式接下來要對它做的那次 `>> "$status_file"` 追加真的
+# 失敗，走一次真的 write(2) 權限錯誤路徑，而不是另外裝一支假裝失敗的
+# 旗標去繞過它。
+printf 'working' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-appendfail-trigger"
+printf '%s' "$CONFIRM_APPEND_FAIL_STATUS" > "$CONFIRM_RECORD_DIR/agent-wait-lock-file.pane-appendfail-trigger"
+
+CONFIRM_APPEND_FAIL_STDERR="$T/confirm-append-fail-stderr.log"
+# 裸呼叫 -- 不接 `|| `、不當 if/while 的條件、也不包在 `$( )` 裡，只用
+# 一個純粹的 `2>file` 重導向（重導向本身不會讓一個指令變成被測試的條件，
+# 因此不影響 errexit 是否生效）。修正前這一行會讓整支測試檔案當場中止，
+# 所以這裡不需要，也不能，另外再包一層防護去接它的結束碼。
+_confirm_reviewers_working "$CONFIRM_APPEND_FAIL" 60 "claude:pane-appendfail-ok" "codex:pane-appendfail-trigger" 2>"$CONFIRM_APPEND_FAIL_STDERR"
+# 這裡能執行到，本身就是「沒有中止」的證明 -- 見上面那段說明修正前後的
+# 差異：修正前不會有任何程式碼執行到這裡。
+pass confirm-reviewers-working-append-failure-does-not-abort
+
+# 恢復可寫，讓後面的讀取／後續測試與結尾的 trap 清理不會被這個檔案卡住。
+chmod u+w "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null || true
+
+# 先前成功寫入的那一格（claude）仍保有狀態欄位 -- 沒有被後面那格的失敗
+# 拖累消失。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(awk '$1=="claude"{print $2}' "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)" = working ] && pass confirm-reviewers-working-append-failure-keeps-earlier-successful-line || bad "confirm-reviewers-working-append-failure-keeps-earlier-successful-line: $(cat "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)"
+
+# 追加失敗的那一格完全沒有留下任何一行 -- 不是留下一個錯誤值，是那一行
+# 從未寫成功過。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$(awk '$1=="codex"{print $2}' "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)" ] && pass confirm-reviewers-working-append-failure-leaves-no-entry-for-that-cli || bad "confirm-reviewers-working-append-failure-leaves-no-entry-for-that-cli: $(cat "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)"
+
+# print_summary 讀回這份缺一格的狀態檔時，混合摘要真的印得出來：先前
+# 成功的那格仍帶狀態欄位，追加失敗的那格落到 print_summary 自己「這個
+# cli 在檔案裡沒有對應行」時用的同一條不帶狀態欄位分支（見 print_summary
+# 自己 docstring 與其 case "${confirm_status_by_cli[$cli]:-}" default
+# 分支）。
+confirm_appendfail_summary="$(print_summary "$CONFIRM_APPEND_FAIL" claude:pane-appendfail-ok codex:pane-appendfail-trigger --skipped)"
+confirm_appendfail_claude_line="$(printf '%s\n' "$confirm_appendfail_summary" | awk '/^- claude（/')"
+confirm_appendfail_codex_line="$(printf '%s\n' "$confirm_appendfail_summary" | awk '/^- codex（/')"
+case "$confirm_appendfail_claude_line" in
+  *'狀態：已進入審查中'*) pass confirm-reviewers-working-append-failure-summary-keeps-annotated-line ;;
+  *) bad "confirm-reviewers-working-append-failure-summary-keeps-annotated-line: $confirm_appendfail_claude_line" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$confirm_appendfail_codex_line" ] && pass confirm-reviewers-working-append-failure-summary-still-prints-the-cli-line || bad "confirm-reviewers-working-append-failure-summary-still-prints-the-cli-line: codex 那行整個不見了: $confirm_appendfail_summary"
+case "$confirm_appendfail_codex_line" in
+  *'狀態：'*) bad "confirm-reviewers-working-append-failure-summary-omits-status-for-failed-cli: 不該帶狀態欄位卻帶了: $confirm_appendfail_codex_line" ;;
+  *) pass confirm-reviewers-working-append-failure-summary-omits-status-for-failed-cli ;;
+esac
 
 unset CONFIRM_RECORD_DIR
 export PATH="$saved_path"

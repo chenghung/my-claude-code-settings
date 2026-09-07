@@ -3878,9 +3878,10 @@ _confirm_reviewers_working() {
 
   # A failure to even create this file is reported and skipped, not
   # propagated: see this function's own docstring on why nothing here may
-  # ever fail cmd_launch. Every other write below is a plain `>>` append,
-  # which fails the same "silently give up on confirmation, not on the
-  # launch" way if the directory disappears mid-loop.
+  # ever fail cmd_launch. This is the all-or-nothing failure path -- no
+  # per-pair line has been written yet at this point, so there is nothing
+  # partial to lose; every reviewer this run dispatched simply loses
+  # confirmation reporting together.
   if ! : > "$status_file" 2>/dev/null; then
     printf '_confirm_reviewers_working: failed to create %s; skipping reviewer confirmation for this run\n' \
       "$status_file" >&2
@@ -3889,6 +3890,46 @@ _confirm_reviewers_working() {
 
   deadline=$(( $(date +%s) + budget_seconds ))
 
+  # Every `>> "$status_file"` append below carries its own `|| true`. This
+  # was previously missing, and the comment that used to sit here claimed
+  # each such append already "fails the same silently give up on
+  # confirmation, not on the launch way" as the truncate guard above -- the
+  # opposite of what actually happened. cmd_launch calls this function as a
+  # bare statement (not inside an if/while/&&/||; see cmd_launch's own call
+  # site), so under this file's `set -euo pipefail` a failing append was NOT
+  # exempt from errexit the way the `if json="$(...)"` guard further down
+  # is: it aborted this function, and with it cmd_launch itself, at that
+  # exact line. Reproduced against a real bash 5.3.15 binary: a bare (non-
+  # conditional) `printf ... >> unwritable_file` under `set -euo pipefail`
+  # inside a function called as a plain statement terminates the whole
+  # script right there -- no statement after that line in the function or
+  # at the call site runs, exit status 1 -- while the same call guarded
+  # with `|| true` lets the script continue past it. That is exactly the
+  # contract violation this whole function exists to prevent: every
+  # reviewer here is already dispatched and already being supervised, so
+  # aborting mid-confirmation would orphan them with no dispatch summary
+  # ever printed.
+  #
+  # `|| true` only discards the exit status; it does not make the failure
+  # silent. bash itself still writes one line to stderr for a redirection
+  # it could not open (confirmed the same way, e.g. "bash: line N: FILE:
+  # Permission denied"), `|| true` attached or not. This function adds no
+  # warning of its own on top of that -- unlike the truncate failure above,
+  # which does -- because a single dropped append here is a partial, self-
+  # limiting loss (see next paragraph), not the truncate guard's all-at-
+  # once one.
+  #
+  # A mid-loop append failure is a *partial* loss, not the truncate guard's
+  # all-or-nothing one: whichever cli lines were already appended before
+  # the failure stay on disk, so $status_file can end this function holding
+  # some clis' "working"/"unconfirmed" lines while lacking another's.
+  # print_summary already has a branch for exactly that: a cli with no
+  # entry in this file falls through to its own unannotated dispatch line
+  # (see that function's own docstring and its
+  # `case "${confirm_status_by_cli[$cli]:-}"` default branch) -- the same
+  # branch a caller that never ran this function at all already exercises
+  # -- so a summary printed after a partial loss here mixes annotated and
+  # unannotated lines rather than losing the whole confirmation section.
   for pair in "$@"; do
     cli="${pair%%:*}"
     pane_id="${pair#*:}"
@@ -3898,7 +3939,7 @@ _confirm_reviewers_working() {
       now="$(date +%s)"
       remaining_ms=$(( (deadline - now) * 1000 ))
       if (( remaining_ms <= 0 )); then
-        printf '%s unconfirmed\n' "$cli" >> "$status_file"
+        printf '%s unconfirmed\n' "$cli" >> "$status_file" || true
         break
       fi
 
@@ -3914,7 +3955,7 @@ _confirm_reviewers_working() {
       # exit status, and any command run before capturing it (even a plain
       # assignment) would overwrite that value.
       if json="$(herdr agent wait "$pane_id" --until working --timeout "$remaining_ms" 2>/dev/null)"; then
-        printf '%s working\n' "$cli" >> "$status_file"
+        printf '%s working\n' "$cli" >> "$status_file" || true
         break
       else
         rc=$?
@@ -3938,26 +3979,26 @@ _confirm_reviewers_working() {
         case "$cli" in
           codex|opencode|agy)
             if (( resends_done >= REVIEWER_PROMPT_RESEND_LIMIT )); then
-              printf '%s unconfirmed\n' "$cli" >> "$status_file"
+              printf '%s unconfirmed\n' "$cli" >> "$status_file" || true
               break
             fi
             prompt_file="$base_dir/logs/$cli.prompt"
             if ! prompt_text="$(cat "$prompt_file" 2>/dev/null)"; then
               printf '_confirm_reviewers_working: could not re-read %s to resend the prompt for %s; marking unconfirmed\n' \
                 "$prompt_file" "$cli" >&2
-              printf '%s unconfirmed\n' "$cli" >> "$status_file"
+              printf '%s unconfirmed\n' "$cli" >> "$status_file" || true
               break
             fi
             if ! herdr agent prompt "$pane_id" "$prompt_text" >/dev/null 2>&1; then
               printf '_confirm_reviewers_working: resend of the prompt for %s to pane %s itself failed; marking unconfirmed\n' \
                 "$cli" "$pane_id" >&2
-              printf '%s unconfirmed\n' "$cli" >> "$status_file"
+              printf '%s unconfirmed\n' "$cli" >> "$status_file" || true
               break
             fi
             resends_done=$((resends_done + 1))
             ;;
           *)
-            printf '%s unconfirmed\n' "$cli" >> "$status_file"
+            printf '%s unconfirmed\n' "$cli" >> "$status_file" || true
             break
             ;;
         esac
