@@ -16,11 +16,13 @@
 # debugging and because the existing test suite drives them directly.
 # `run-review.sh wait
 # --base-dir <path> --deadline-at <epoch> [--heartbeat-at <epoch>]
-# [--reported-blocked <cli>]...` (see cmd_wait) blocks one turn of the
-# caller's own poll loop, returning exactly one event line -- a new summary
-# line, a newly blocked reviewer, the heartbeat time, or the deadline --
-# for the caller to interpret; it never decides what to do about the event
-# itself. `run-review.sh cleanup
+# [--reported-blocked <cli>]... [--reported-stalled <cli>]...` (see
+# cmd_wait) blocks one turn of the caller's own poll loop, returning
+# exactly one event line -- a new summary line, a newly blocked reviewer, a
+# reviewer that has gone quiet without being seen working (see
+# REVIEWER_STALLED_THRESHOLD_SECONDS), the heartbeat time, or the deadline
+# -- for the caller to interpret; it never decides what to do about the
+# event itself. `run-review.sh cleanup
 # --base-dir <path>` (see cmd_cleanup) tears a finished run down --
 # removing its worktree and run directory and force-deleting the local
 # branch `prepare` created for it, deriving both the branch name and the
@@ -92,6 +94,22 @@ readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 # ever confirmed to arrive at all four reviewer CLIs intact, unmodified and
 # untruncated, was only ~101KB -- the band between that and 131072 was never
 # exercised. 100000 stays clear of that unverified band.
+#
+# codex/opencode/agy have to cross this limit via `agent prompt`'s own
+# command line rather than folded into `agent start` alongside claude,
+# because `herdr agent start` rejects any AGENT_ARG containing a newline
+# outright -- confirmed against the real binary: exit non-zero,
+# `invalid_agent_argument`, "agent arguments cannot be encoded safely for
+# the target shell", reproduced for all four clis' own would-be one-shot
+# mechanism (`--prompt-interactive`, `--prompt`, and both bare positionals)
+# and unrelated to length -- a two-line, low-byte-count argument was
+# rejected the same way. The reviewer contract is always multi-line
+# markdown, so `agent start` can never carry it for any cli; claude escapes
+# this only because its own contract travels as a *file path*
+# (--append-system-prompt-file), itself a single line, not as the
+# contract's own content (see launch_reviewer_interactive's own docstring
+# for the fuller account, including the one-shot attempt for all four clis
+# that this finding overturned).
 #
 # What that margin is headroom over changed once materials moved out of
 # this prompt and into each reviewer's own copy on disk (see build_prompt's
@@ -169,6 +187,75 @@ readonly PROMPT_BYTE_LIMIT=100000
 # catch-up by the same margin. Re-measure (or replace with something less
 # guessed) if this gap is ever actually observed to run long.
 readonly RUN_DIR_STALE_GRACE_SECONDS=600
+
+# REVIEWER_CONFIRM_BUDGET_SECONDS: the total wall-clock time
+# _confirm_reviewers_working (see its own docstring) may spend confirming
+# that every just-dispatched reviewer actually reached agent_status=working,
+# across every reviewer combined -- not a per-reviewer allowance repeated
+# for each one. Deliberately a shared budget rather than "N reviewers times
+# a per-reviewer timeout": with four platforms, a per-reviewer timeout would
+# let a run where every single one is genuinely stuck (not a hypothetical --
+# this is exactly the failure mode this whole task exists to catch) cost 4x
+# this value before `launch` ever returns, and `launch` returning promptly
+# is a property SKILL.md's own polling design already depends on (see
+# spawn_supervisor_interactive's own docstring). A reasoned bound, not a
+# measured one, the same caveat RUN_DIR_STALE_GRACE_SECONDS above already
+# carries: there is no real binary run timed against a real stuck-at-dialog
+# reviewer to clock this against, only the three herdr `agent wait` facts
+# _confirm_reviewers_working's own docstring cites as independently
+# confirmed against herdr 0.8.2. 60 seconds is chosen to be short enough
+# that a run where every reviewer is genuinely stuck still returns `launch`
+# well inside a human's patience for a single command, while staying long
+# enough to also cover this function's own resend loop for codex/opencode/
+# agy (see its own docstring and REVIEWER_PROMPT_RESEND_LIMIT's) -- every
+# `agent wait` call inside that loop, including the ones between resends,
+# draws from this same shared budget, not a fresh allowance of its own.
+readonly REVIEWER_CONFIRM_BUDGET_SECONDS=60
+
+# REVIEWER_STALLED_THRESHOLD_SECONDS: how long cmd_wait (see its own
+# docstring) will let a dispatched reviewer go without being observed at
+# agent_status=working before reporting `event=stalled` for it. Exists
+# because REVIEWER_CONFIRM_BUDGET_SECONDS above only ever catches a
+# reviewer that never got moving in the first place -- it says nothing
+# about one that started working, then stopped partway (a crash, a network
+# hiccup, a tool-permission dialog neither codex nor opencode has an
+# auto-approve flag for the way claude's --permission-mode auto and agy's
+# --dangerously-skip-permissions do, see launch_reviewer_interactive's own
+# claude- and agy-branch comments) without herdr ever reporting it as
+# agent_status=blocked. Not every such stall reports blocked -- herdr's own
+# blocked detection is necessarily specific to whatever dialog shapes it
+# recognizes, and nothing here guarantees every platform's every possible
+# stopping point is among them; this is the generic backstop for whichever
+# ones aren't. A reasoned bound, not a
+# measured one, for the same reason as the two constants above: five
+# minutes is long enough that this never fires against a reviewer that is
+# simply thinking or running a slow `git diff`/tool call (real reviews take
+# minutes, not seconds, end to end), while still being short enough that a
+# genuinely stuck reviewer is caught well before the wait loop's own much
+# longer overall deadline.
+readonly REVIEWER_STALLED_THRESHOLD_SECONDS=300
+
+# REVIEWER_PROMPT_RESEND_LIMIT: how many times _confirm_reviewers_working
+# (see its own docstring) will resend a dropped first prompt for codex,
+# opencode, and agy -- the three clis with no one-shot startup-prompt
+# mechanism (see launch_reviewer_interactive's own "WHY CODEX/OPENCODE/AGY
+# STAY TWO-STEP" docstring section) -- before giving up and marking that
+# reviewer unconfirmed. claude never resends at all: its whole prompt
+# already crossed in a single `agent start` call, so there is no second
+# send for this constant to apply to.
+#
+# A reasoned bound, not a measured one, for the same reason
+# REVIEWER_CONFIRM_BUDGET_SECONDS and REVIEWER_STALLED_THRESHOLD_SECONDS
+# above both are: both real reproductions of the drop this retry exists
+# for needed only a single resend to recover (agy 1.1.27 via herdr, a
+# 6-second and a 15-second gap between the original send and the retry,
+# same result both times). Capping at 2 gives one resend of margin beyond
+# that observed minimum without turning this into an unbounded loop --
+# REVIEWER_CONFIRM_BUDGET_SECONDS's own shared deadline is the actual hard
+# backstop regardless of this count, since every `agent wait` call inside
+# the retry loop (including the ones between resends) still draws from
+# that same budget.
+readonly REVIEWER_PROMPT_RESEND_LIMIT=2
 
 # _fetch_pr_material <owner> <repo> <number> <out_file> <raw_body_file>
 #
@@ -1703,6 +1790,19 @@ JSON
 # idempotent backup of cmd_prepare's own earlier call (see
 # _write_claude_home_interactive's docstring for why that file matters
 # and which call is the one actually protecting the pane).
+#
+# Both allow rules above are now vestigial, not load-bearing: the caller
+# (launch_reviewer_interactive's own agy branch) starts this reviewer with
+# --dangerously-skip-permissions, which auto-approves every tool permission
+# request regardless of whether it matches anything written here (see that
+# branch's own comment for why that flag was added and what it costs).
+# This function still writes both rules anyway, on purpose: they are the
+# only fallback this reviewer would have left if a future agy release ever
+# renames, narrows, or drops that flag, at which point this file's own
+# allow list -- not a flag argument someone would first have to notice is
+# gone -- would go back to being what actually lets `git diff` through.
+# Left in place rather than deleted for that reason, not because deleting
+# them today would change this reviewer's current behavior at all.
 _write_agy_home_interactive() {
   local dir="$1" reviewer_workdir="$2" worktree_dir="$3"
   local real_gemini="$HOME/.gemini" f
@@ -1757,8 +1857,9 @@ _write_agy_home_interactive() {
 # stays injective whatever alphabet herdr moves to.
 #
 # Being unreadable costs nothing here: launch_reviewer_interactive's own
-# `herdr agent prompt` call still targets the pane id, not this name (see
-# that function's own docstring), and every failure message on this path
+# `herdr agent start` call still targets the pane id via --pane, not this
+# name (see that function's own docstring), and every failure message on
+# this path
 # already prints the real pane id. cmd_wait's own _wait_agent_states is the
 # one place a name coming out of this function is later read back by
 # name -- but even there it only ever matches the "<cli>-" prefix (see
@@ -1779,29 +1880,120 @@ _derive_agent_name() {
 #
 # Starts one reviewer CLI, under the least-privilege rationale documented
 # below, inside an existing, already-created herdr pane via `herdr agent
-# start`, confirms the pane actually rendered before trusting it, then hands
-# it this run's prompt via `herdr agent prompt` -- except for claude, whose
-# branch instead hands it a fixed start signal there, the actual contract
-# having already gone to `agent start` itself as an
-# --append-system-prompt-file path argument (see this function's own
-# claude branch below, and PROMPT_BYTE_LIMIT's own docstring for why that
-# split exists). The merge/synthesis path
-# does not call this function either -- it calls launch_synthesis, an
-# entirely separate function (see spawn_supervisor_interactive's own merge
-# segment).
+# start`, then hands it this run's prompt -- claude gets it folded into
+# that same `agent start` call's own argv (see "ONE-SHOT LAUNCH: CLAUDE
+# ONLY" below for why claude, and only claude, can do this); codex,
+# opencode and agy each get it via a second, separate `herdr agent prompt`
+# call right after (see "WHY CODEX/OPENCODE/AGY STAY TWO-STEP" below). The
+# merge/synthesis path does not call this function either -- it calls
+# launch_synthesis, an entirely separate function (see
+# spawn_supervisor_interactive's own merge segment).
+#
+# ONE-SHOT LAUNCH: CLAUDE ONLY
+#
+# claude's own contract reaches it as a *file path* argument
+# (--append-system-prompt-file), and its own trailing positional carries
+# only the fixed, single-line "開始" launch phrase -- neither one is
+# multi-line content riding inside `agent start`'s own argv, which is
+# exactly what the finding below turns on. Empirically confirmed end to
+# end against a real herdr pane: an 86,367-byte contract with a random
+# marker planted at its head, middle, and tail arrived at claude completely
+# unmangled (all three markers read back correctly), "開始" was consumed as
+# the prompt, and the review ran to completion -- no `agent prompt` call
+# ever made for claude.
+#
+# WHY CODEX/OPENCODE/AGY STAY TWO-STEP
+#
+# An earlier version of this function attempted the same one-shot shape
+# for all four clis -- codex's own bare `[PROMPT]` positional, opencode's
+# own `--prompt <STRING>` flag, and agy's own `--prompt-interactive <TEXT>`
+# flag are all documented on their respective `--help` text as accepting a
+# startup prompt the same way claude's own positional does. That attempt
+# did not survive contact with a real binary: `herdr agent start` rejects
+# any AGENT_ARG containing a newline outright -- exit non-zero,
+# `invalid_agent_argument`, "agent arguments cannot be encoded safely for
+# the target shell" -- reproduced for all three of those mechanisms, and
+# unrelated to length: a two-line, low-byte-count argument was rejected
+# exactly the same way a full 51KB contract would be. The reviewer
+# contract this script hands every reviewer is always multi-line markdown,
+# so none of the three can ever fold it into `agent start`'s own argv --
+# this is a structural ceiling, not a probability worth retrying past.
+# Only claude escapes it, and only because its own contract never has to
+# be AGENT_ARG content in the first place (see "ONE-SHOT LAUNCH: CLAUDE
+# ONLY" above). An earlier reading claiming agy's own one-shot delivery
+# was already confirmed empirically was itself wrong -- that probe used a
+# single-line prompt, and the result did not generalize to this script's
+# actual multi-line contract; corrected here rather than left standing
+# alongside the finding that overturned it.
+#
+# codex/opencode/agy therefore keep the two-step shape this function has
+# always used for them: `agent start` carries no prompt in its own argv at
+# all, and a separate `herdr agent prompt <TARGET> <TEXT>` call right
+# after carries the reviewer's full contract as TEXT -- a call with no
+# line-content restriction of its own (this is the same path
+# PROMPT_BYTE_LIMIT's own docstring already measured up to ~101KB intact).
+#
+# That two-step shape has a real, independently-confirmed failure mode of
+# its own: the first `agent prompt` call right after `agent start` can be
+# silently dropped -- not rejected, not queued, never delivered -- while
+# `agent prompt` itself still reports success regardless (agy 1.1.27 via
+# herdr, two independent reproductions with differing conditions -- a
+# 6-second and a 15-second gap between the two calls -- same result both
+# times: the pane showed agy's own startup banner and an *empty input
+# line*, not a permission dialog of any kind). The `herdr pane read` retry
+# this function used to run before that call -- removed, and deliberately
+# NOT restored -- could not have caught this either way: it only confirms
+# the pane has rendered *something*, and a startup banner renders within
+# about a second; the gap this bug lives in is between "banner rendered"
+# and "this CLI's own TUI input handling is actually ready to accept
+# text", a narrower, later window a non-empty-read check has no
+# visibility into. Restoring that guard would not close this gap -- do not
+# reintroduce it on the assumption that it would. Sending the exact same
+# prompt a second time, moments later, worked immediately every time this
+# was tried -- and the drop is confirmed intermittent, not universal: a
+# real prior run reached completion with all three of codex/opencode/agy
+# receiving their first prompt cleanly, no drop at all. That combination
+# (a real, reproducible drop; a plain resend that reliably recovers it; an
+# intermittent rather than universal failure rate) is exactly what makes a
+# bounded RETRY the right shape here, not a redesign that avoids the
+# two-step call altogether -- which the finding above rules out for these
+# three clis regardless: see cmd_launch's own _confirm_reviewers_working
+# step, which resends a dropped first prompt (via this same `agent prompt`
+# call, up to REVIEWER_PROMPT_RESEND_LIMIT times) for exactly these three
+# clis, using `herdr agent wait --until working` to tell a drop apart from
+# a genuine success. For claude, that same confirmation step also runs,
+# but purely as a safety net (see its own docstring) -- there is no second
+# prompt for it to ever need resending.
+#
+# No `herdr pane read` call is made by this function, for any cli, and
+# none should be reintroduced (see "WHY CODEX/OPENCODE/AGY STAY TWO-STEP"
+# above for why it would not even help): reading a pane's own rendered
+# content would also mean capturing the reviewer's own on-screen output
+# into this script's own process -- content this file's security posture
+# elsewhere treats as attacker-influenced once a reviewer has started
+# reading real PR text (see _wait_agent_states's own docstring on the
+# identical concern for `herdr agent list`'s own `terminal_title` fields).
 #
 # Unlike the now-removed headless launcher, this function backgrounds
 # nothing and returns no PID: the reviewer runs inside a pane herdr itself
 # manages, not as a child process of this script, so there is no PID to
-# track. It returns as soon
-# as the prompt has been accepted, not once the reviewer finishes writing
-# its review -- supervising that to completion is a later task. On success
-# it prints the fixed output file path,
-# <reviewer_workdir>/review.md -- the same path build_prompt already told
-# this reviewer to write its review to (this formula is a fixed decision,
-# not something this function or its caller may invent a different one
-# for) -- so a caller can read that back without re-deriving the formula
-# itself. Prints nothing and returns non-zero on any failure below.
+# track. It returns once `agent start` succeeds and, for codex/opencode/
+# agy, the first `herdr agent prompt` call is also accepted -- not once the
+# reviewer finishes writing its review, and not even once it is confirmed
+# to have actually started acting on that prompt (a first `agent prompt`
+# reporting success is exactly the case that can still be the silent drop
+# described above). That confirmation, and resending a dropped first
+# prompt for the three clis that need it, is cmd_launch's own later,
+# separate step (see _confirm_reviewers_working), deliberately kept one
+# step apart from this function rather than folded into it (see that
+# function's own docstring on why a confirmation failure must never fail
+# this function's own caller). On success this function prints the fixed
+# output file path, <reviewer_workdir>/review.md -- the same path
+# build_prompt already told this reviewer to write its review to (this
+# formula is a fixed decision, not something this function or its caller
+# may invent a different one for) -- so a caller can read that back
+# without re-deriving the formula itself. Prints nothing and returns
+# non-zero on any failure below.
 #
 # The one flag difference that mattered most versus the now-removed
 # headless launcher's claude branch: that branch disallowed Edit/Write/
@@ -1856,23 +2048,24 @@ _derive_agent_name() {
 #     for codex/opencode/agy, the whole prompt still has to cross this
 #     script's own command line as a single argv entry, which the OS caps
 #     hard; claude's own branch below no longer routes its full contract
-#     through this call at all -- it goes to `agent start` instead, as an
-#     --append-system-prompt-file path argument, and this call carries
-#     only a short fixed start signal for claude. TARGET
+#     through this call at all, and this call is never made for claude at
+#     all any more (see "ONE-SHOT LAUNCH: CLAUDE ONLY" above). TARGET
 #     resolves by pane id, not by the agent name `agent start` was given --
 #     confirmed with a read-only probe against `herdr agent get` (a real
 #     pane id resolved to the agent; a terminal id did not), not assumed
 #     from --help, which documents <TARGET> with no explanation at all.
-#   - `herdr agent start`'s own reported success, and a subsequent
-#     agent_status of done/idle, can both be wrong -- confirmed
-#     empirically, not assumed. Neither is trusted here: this function
-#     reads the pane's own rendered content via `herdr pane read` before
-#     ever calling `agent prompt`, and fails explicitly, rather than
-#     guessing, when that read comes back empty twice in a row. A single
-#     empty read immediately after `agent start` is a known, harmless
-#     timing artifact (the terminal has not finished rendering yet) --
-#     re-reading once is enough to tell that apart from a pane that is
-#     genuinely never going to produce output.
+#   - `herdr agent start`'s own reported success, and `herdr agent
+#     prompt`'s own reported success on the first prompt sent right after
+#     it, can both be misleading about whether the reviewer is actually
+#     doing anything -- confirmed empirically (see "WHY CODEX/OPENCODE/AGY
+#     STAY TWO-STEP" above for the two reproductions), not assumed. Neither
+#     is trusted as proof of a working review by this function on its own;
+#     cmd_launch's own _confirm_reviewers_working step, run once across
+#     every dispatched reviewer after this function has already returned
+#     for all of them, is what actually confirms agent_status=working --
+#     and resends a dropped first prompt for codex/opencode/agy -- before
+#     this run's dispatch summary is printed (see that function's own
+#     docstring).
 #
 # The before-snapshot this function records (see _git_status_snapshot's own
 # docstring for why a git-status comparison is needed at all) is keyed by
@@ -2015,7 +2208,7 @@ launch_reviewer_interactive() {
   local cli_name="$1" pane_id="$2" worktree_dir="$3"
   local reviewer_workdir="$4" reviewer_home="$5" prompt_file="$6"
   local output_file="$reviewer_workdir/review.md"
-  local base_dir before_snapshot pane_content prompt_bytes agent_name
+  local base_dir before_snapshot prompt_bytes agent_name
   local -a cmd=()
 
   case "$cli_name" in
@@ -2053,9 +2246,17 @@ launch_reviewer_interactive() {
   # so this comment is the only record of why the name is never repeated.
   case "$cli_name" in
     claude)
+      # Trailing "開始": claude's own bare [prompt] positional
+      # ("Arguments: prompt  Your prompt", per `claude --help`), carrying
+      # only this fixed launch phrase -- see this function's own "ONE-SHOT
+      # LAUNCH: CLAUDE ONLY" docstring section for why claude, uniquely
+      # among the four, folds its whole launch (contract + start signal)
+      # into this one `agent start` call instead of a later, separate
+      # `agent prompt` call. The actual review contract still arrives via
+      # --append-system-prompt-file just below, unaffected by any of this.
       cmd=(herdr agent start "$agent_name" --kind claude --pane "$pane_id" \
         -- --permission-mode auto --disallowedTools "WebFetch" \
-        --append-system-prompt-file "$prompt_file")
+        --append-system-prompt-file "$prompt_file" "開始")
       ;;
     codex)
       cmd=(herdr agent start "$agent_name" --kind codex --pane "$pane_id" \
@@ -2066,8 +2267,59 @@ launch_reviewer_interactive() {
         -- "$reviewer_workdir")
       ;;
     agy)
+      # --dangerously-skip-permissions: once agy is actually running and
+      # its own model tries to invoke its write tool to save review.md,
+      # agy raises its own tool-permission approval request for that
+      # write -- the same class of request claude's own --permission-mode
+      # auto branch above was added to answer for claude's own Write tool.
+      # Left unanswered, nothing in this isolated, unattended pane would
+      # ever click through it. This flag is not what fixes the two-step
+      # prompt-drop bug this function's own docstring describes -- cmd_
+      # launch's own resend logic (see _confirm_reviewers_working) fixes
+      # that -- it is why a reviewer that does get its prompt through
+      # still needs this flag to ever finish writing its review.
+      #
+      # The user's own interactive shell already carries `alias
+      # agy='agy --dangerously-skip-permissions'`, so this is not a new
+      # permission being granted so much as this script catching up to a
+      # gate the user had already turned off for themself -- but that alias
+      # never reached a reviewer pane before this change: herdr's own
+      # --kind agy resolves straight to the real agy executable (see this
+      # function's own docstring on herdr prepending argv[0] itself, never
+      # a shell), and _build_reviewer_panes pins every pane's own ZDOTDIR to
+      # an isolated home directory that never sources the user's real
+      # .zshrc (see that function's own docstring), so a reviewer pane's own
+      # non-interactive-shell exec of agy never saw that alias either way.
+      #
+      # Empirically confirmed (not inferred from a name or a guess): `agy
+      # --help` lists this exact flag, describing it as "Auto-approve all
+      # tool permission requests without prompting".
+      #
+      # That description is broader than just the write-approval request
+      # above: it auto-approves every tool permission request this
+      # reviewer's own model triggers, not only the one this branch needs
+      # answered, and not only the two `command(git diff...)` rules
+      # _write_agy_home_interactive's own allow list still carries (see
+      # that function's own docstring for why those two rules are no longer
+      # the thing actually deciding what this reviewer can run). This is a
+      # real widening of this reviewer's blast radius versus a pane without
+      # this flag, not a no-op -- it was not put through the same
+      # curl/network-exfiltration probe claude's and codex's own branches
+      # above were (see this function's docstring), so it is recorded here
+      # as a deliberate, user-directed tradeoff, not one independently
+      # verified safe the way those two findings were.
+      #
+      # Scoped to this reviewer branch only. launch_synthesis's own agy
+      # branch must NOT get this flag: _select_synthesis_cli prefers agy
+      # for the synthesis pass specifically because headless mode's own
+      # default-deny, with an empty permission allow list, closes its
+      # shell/network surface for exactly the same class of request this
+      # flag auto-approves (see _select_synthesis_cli's own docstring) --
+      # adding it there would remove the one property that makes agy a safe
+      # synthesis pick in the first place.
       cmd=(herdr agent start "$agent_name" --kind agy --pane "$pane_id" \
-        -- --add-dir "$reviewer_workdir" --model gemini-3.8-flash-high)
+        -- --add-dir "$reviewer_workdir" --model gemini-3.8-flash-high \
+        --dangerously-skip-permissions)
       ;;
   esac
 
@@ -2075,25 +2327,6 @@ launch_reviewer_interactive() {
     printf 'launch_reviewer_interactive: herdr failed to start %s in pane %s\n' "$cli_name" "$pane_id" >&2
     return 1
   }
-
-  # agent start's own success, and agent_status done/idle, can both be
-  # false (see this function's docstring) -- read the pane's own rendered
-  # content instead of trusting either. One retry absorbs the known,
-  # harmless "not rendered yet" timing case; two empty reads in a row is
-  # treated as a real failure to reach a confirmable ready state. The
-  # `sleep 1` before the retry is load-bearing, not decoration: back-to-back
-  # reads with nothing between them finish in milliseconds and never give
-  # the pane's own rendering the time this retry exists to absorb.
-  pane_content="$(herdr pane read "$pane_id" 2>/dev/null)" || pane_content=""
-  if [ -z "$pane_content" ]; then
-    sleep 1
-    pane_content="$(herdr pane read "$pane_id" 2>/dev/null)" || pane_content=""
-  fi
-  if [ -z "$pane_content" ]; then
-    printf 'launch_reviewer_interactive: pane %s produced no output after starting %s; cannot confirm it is ready to receive the prompt\n' \
-      "$pane_id" "$cli_name" >&2
-    return 1
-  fi
 
   # Checked explicitly, as its own `if`, rather than trusting `wc -c`'s own
   # exit status through a bare `var="$(wc -c < "$prompt_file")"` assignment:
@@ -2126,12 +2359,15 @@ launch_reviewer_interactive() {
   before_snapshot="$(_git_status_snapshot "$worktree_dir")"
   printf '%s\n' "$before_snapshot" > "$base_dir/.git-status-before-$cli_name"
 
-  if [ "$cli_name" = claude ]; then
-    herdr agent prompt "$pane_id" "開始" || {
-      printf 'launch_reviewer_interactive: herdr failed to submit the start signal to claude in pane %s\n' "$pane_id" >&2
-      return 1
-    }
-  else
+  # claude's whole prompt (contract + "開始" start signal) already crossed
+  # via `agent start` above -- no separate `agent prompt` call for it,
+  # ever (see "ONE-SHOT LAUNCH: CLAUDE ONLY"). codex/opencode/agy still
+  # need this second call: `agent start` above carried no prompt for them
+  # at all (see "WHY CODEX/OPENCODE/AGY STAY TWO-STEP"). This is the call
+  # whose own first attempt can be silently dropped even though it reports
+  # success -- cmd_launch's own _confirm_reviewers_working step is what
+  # resends it when that happens, not this function.
+  if [ "$cli_name" != claude ]; then
     herdr agent prompt "$pane_id" "$(cat "$prompt_file")" || {
       printf 'launch_reviewer_interactive: herdr failed to submit the prompt to %s in pane %s\n' "$cli_name" "$pane_id" >&2
       return 1
@@ -2988,11 +3224,29 @@ spawn_supervisor_interactive() {
 # there is no such thing as a silently-degraded launch left to report) --
 # this function's own tests still call it directly with skipped names, and
 # the section costs nothing to keep correct for that caller.
+#
+# Each dispatched line also carries whatever _confirm_reviewers_working
+# (see its own docstring) found out about that cli, read back from
+# <base_dir>/.reviewer-confirm-status the same optional, silently-omitted-
+# when-absent way the materials section further down reads back
+# .materials-status -- a direct call to this function that never ran
+# _confirm_reviewers_working first (every pre-existing test of this
+# function, and any future one that does not care about this axis) simply
+# gets the plain, unannotated line it always did; this is additive, not a
+# breaking change to this function's own contract. A cli marked "working"
+# gets a short reassurance appended; one marked "unconfirmed" gets an
+# explicit call to action, in the same plain language the rest of this
+# function's own output uses -- print_summary's whole output goes straight
+# to whoever is watching this run, human or orchestrating agent, and an
+# unconfirmed reviewer is exactly the situation where that reader needs to
+# be told to go look at a specific pane, not left to infer it from a status
+# code.
 print_summary() {
   local base_dir="$1"
   shift
   local -a dispatched=() skipped=()
-  local arg mode="dispatched" cli pane_id
+  local arg mode="dispatched" cli pane_id review_md confirm_file confirm_cli confirm_state
+  local -A confirm_status_by_cli=()
 
   for arg in "$@"; do
     if [ "$arg" = "--skipped" ]; then
@@ -3006,6 +3260,14 @@ print_summary() {
     fi
   done
 
+  confirm_file="$base_dir/.reviewer-confirm-status"
+  if [ -f "$confirm_file" ]; then
+    while IFS=' ' read -r confirm_cli confirm_state; do
+      [ -n "$confirm_cli" ] || continue
+      confirm_status_by_cli["$confirm_cli"]="$confirm_state"
+    done < "$confirm_file"
+  fi
+
   printf '本次執行目錄：%s\n' "$base_dir"
   printf '摘要檔：%s\n\n' "$base_dir/summary.txt"
 
@@ -3016,7 +3278,16 @@ print_summary() {
     for arg in "${dispatched[@]+"${dispatched[@]}"}"; do
       cli="${arg%%:*}"
       pane_id="${arg#*:}"
-      printf -- '- %s（pane：%s，輸出檔：%s）\n' "$cli" "$pane_id" "$base_dir/reviewers/$cli/workdir/review.md"
+      review_md="$base_dir/reviewers/$cli/workdir/review.md"
+      case "${confirm_status_by_cli[$cli]:-}" in
+        working)
+          printf -- '- %s（pane：%s，輸出檔：%s，狀態：已進入審查中）\n' "$cli" "$pane_id" "$review_md" ;;
+        unconfirmed)
+          printf -- '- %s（pane：%s，輸出檔：%s，狀態：尚未進入審查中，可能停在權限核准對話框上，請切到該 pane 確認）\n' \
+            "$cli" "$pane_id" "$review_md" ;;
+        *)
+          printf -- '- %s（pane：%s，輸出檔：%s）\n' "$cli" "$pane_id" "$review_md" ;;
+      esac
     done
   fi
 
@@ -3483,7 +3754,216 @@ cmd_prepare() {
   done
 }
 
-# cmd_launch --base-dir <path> --agent <cli>=<pane_id>...
+# _confirm_reviewers_working <base_dir> <budget_seconds> <cli>:<pane_id>...
+#
+# Two roles at once, depending on the cli: for claude, a pure safety net
+# (see below for why); for codex/opencode/agy, the actual remediation for
+# a real, independently-confirmed bug in their own two-step launch (see
+# launch_reviewer_interactive's own "WHY CODEX/OPENCODE/AGY STAY TWO-STEP"
+# docstring section) -- their first `herdr agent prompt` call, right after
+# `agent start`, can be silently dropped while still reporting success.
+# This function is what resends it when that happens. Called once, after
+# every reviewer this run selected has already been through
+# launch_reviewer_interactive (cmd_launch's own caller loop), and before
+# cmd_launch prints its dispatch summary (see print_summary, which reads
+# the file this function writes below), so the summary a human or the
+# orchestrating agent sees next reflects reality rather than "prompt
+# accepted" alone.
+#
+# For claude this is pure observability: its whole launch (contract plus
+# start signal) already crossed in the single `agent start` call
+# launch_reviewer_interactive made, so there is no second prompt for this
+# function to ever resend, and a claude reviewer that fails its one
+# `agent wait` check here is marked unconfirmed on the spot, no different
+# from before this task's own resend logic existed. `herdr agent start`'s
+# own reported success only ever means the process was launched, never
+# that it is actually acting on the prompt it was launched with -- this
+# function is what actually confirms that, for every cli, regardless of
+# whether resending is even possible for it.
+#
+# Three herdr `agent wait` facts this function depends on, all confirmed
+# against the real binary (herdr 0.8.2), not inferred from --help text:
+#   - TARGET accepts a pane id directly, the same as `agent start`'s own
+#     --pane and `agent prompt`'s own TARGET already do (see
+#     launch_reviewer_interactive's own docstring) -- a live probe against
+#     a genuinely working agent returned immediately.
+#   - Reaching agent_status=working exits 0 with a JSON body on stdout that
+#     carries `terminal_title`/`terminal_title_stripped` -- fields that echo
+#     the reviewer's own on-screen output, i.e. attacker-influenced model
+#     text once a reviewer is reading real PR content. This script's own
+#     stdout return straight to the orchestrating agent's context (see
+#     _wait_agent_states's own docstring for the same concern about
+#     `herdr agent list`), so that JSON is captured into $json below and
+#     never printed or parsed on this path -- only the call's own exit
+#     status is ever read for a success.
+#   - Not reaching it within --timeout exits 1 with a JSON error body
+#     instead (`{"error":{"code":"timeout"},...}`), and a TARGET herdr
+#     cannot resolve at all also exits 1 but with a *different* error code
+#     (`agent_not_found`) -- this body carries no model output, so reading
+#     `.error.code` back out of it (the $error_code line below) is safe.
+#     Distinguishing the two is diagnostic only, surfaced solely as a
+#     stderr line for whoever is watching this run's own logs (never
+#     stdout, and never spawn_supervisor_interactive itself since that
+#     supervisor calls no herdr command at all) -- $status recorded for
+#     print_summary is the same "unconfirmed" either way.
+#
+# <budget_seconds> is a parameter, not a direct read of
+# REVIEWER_CONFIRM_BUDGET_SECONDS (cmd_launch's own call site below passes
+# that constant in) -- letting this function's own tests exercise the
+# shared-budget behavior documented on that constant (confirming one slow
+# reviewer visibly shrinks the next one's own --timeout, and that a
+# reviewer past an exhausted budget is marked unconfirmed without herdr
+# ever being invoked for it at all) on a small, fast, deterministic value
+# instead of the real 60 seconds.
+#
+# The budget itself is spent as one wall-clock deadline computed once up
+# front, not a fresh per-reviewer allowance: each `agent wait` call's own
+# --timeout argument, including every retry's own call after a resend for
+# codex/opencode/agy, is whatever is left of that shared deadline at the
+# moment it runs, and a check whose turn comes up after the deadline has
+# already passed never invokes herdr at all -- it is marked unconfirmed on
+# the spot. This is the mechanism REVIEWER_CONFIRM_BUDGET_SECONDS's own
+# docstring is about: four reviewers that are all genuinely stuck, even
+# accounting for resends, cost this function at most that one shared
+# budget.
+#
+# Resending, for codex/opencode/agy only (see REVIEWER_PROMPT_RESEND_LIMIT's
+# own docstring for the cap and its own reasoning): on a failed
+# `agent wait`, this function re-reads that cli's own prompt file --
+# re-derived here as <base_dir>/logs/<cli>.prompt, the same fixed formula
+# cmd_launch itself already uses, not passed in as a parameter, since this
+# function's own caller loop never had a reason to hand prompt paths over
+# until this resend path needed them -- and resubmits it via the same
+# `herdr agent prompt` call launch_reviewer_interactive's own first attempt
+# used, then loops back to `agent wait` again. logs_dir is chmod -R a-w by
+# the time this function runs (see cmd_launch's own dispatch loop), but
+# that only removes write permission; reading a prompt file back out of it
+# here is unaffected. A resend attempt that itself fails (the prompt file
+# can no longer be read, or `agent prompt` itself errors) stops the retry
+# loop immediately rather than trying further resends against what is
+# likely a deeper problem than a dropped prompt.
+#
+# Never fails, regardless of how many (or which) reviewers this confirms,
+# or how many times a given one gets resent to: an unconfirmed reviewer
+# might simply be waiting on a human at a tool-permission dialog neither
+# codex nor opencode has an auto-approve flag for (unlike claude and agy --
+# see launch_reviewer_interactive's own claude- and agy-branch comments),
+# in which case it is not broken and will run to completion normally the
+# moment a human answers it; it might have exhausted its own resend budget
+# against a drop that just kept recurring; or it might just be slower than
+# this budget to report agent_status=working. Failing cmd_launch here on
+# any of those would abandon an already-dispatched, quite possibly
+# perfectly healthy reviewer for no reason.
+#
+# Result lands on disk at <base_dir>/.reviewer-confirm-status, one
+# `<cli> <working|unconfirmed>` line per pair handed in -- not returned on
+# stdout, the same reasoning PROMPT_BYTE_LIMIT's own docstring gives for
+# keeping large/untrusted content off this script's return path, and
+# because print_summary (this function's only current reader) runs in a
+# later, separate step of cmd_launch and has no other channel back to this
+# one's own local variables. Truncated at the start of every call, the same
+# "this call's own facts, not accumulated history" contract .materials-status
+# and .roster already keep elsewhere in this file.
+_confirm_reviewers_working() {
+  local base_dir="$1" budget_seconds="$2"
+  shift 2
+  local status_file="$base_dir/.reviewer-confirm-status"
+  local pair cli pane_id deadline now remaining_ms json rc error_code
+  local resends_done prompt_file prompt_text
+
+  # A failure to even create this file is reported and skipped, not
+  # propagated: see this function's own docstring on why nothing here may
+  # ever fail cmd_launch. Every other write below is a plain `>>` append,
+  # which fails the same "silently give up on confirmation, not on the
+  # launch" way if the directory disappears mid-loop.
+  if ! : > "$status_file" 2>/dev/null; then
+    printf '_confirm_reviewers_working: failed to create %s; skipping reviewer confirmation for this run\n' \
+      "$status_file" >&2
+    return 0
+  fi
+
+  deadline=$(( $(date +%s) + budget_seconds ))
+
+  for pair in "$@"; do
+    cli="${pair%%:*}"
+    pane_id="${pair#*:}"
+    resends_done=0
+
+    while :; do
+      now="$(date +%s)"
+      remaining_ms=$(( (deadline - now) * 1000 ))
+      if (( remaining_ms <= 0 )); then
+        printf '%s unconfirmed\n' "$cli" >> "$status_file"
+        break
+      fi
+
+      # `if json="$(...)"; then` -- the same set -e exemption
+      # launch_reviewer_interactive's own docstring already documents for
+      # its own `if [ ... ]` guards: a function call, or here a command
+      # substitution, run as the condition of an if/while/&&/|| is exempt
+      # from errexit for its whole duration, so `herdr agent wait`'s own
+      # non-zero exit on a timeout is read here deliberately, not one that
+      # would otherwise abort this function. `rc=$?` is deliberately the
+      # else branch's own first statement, not moved below other commands:
+      # bash sets $? on entry to an else branch to the condition's own
+      # exit status, and any command run before capturing it (even a plain
+      # assignment) would overwrite that value.
+      if json="$(herdr agent wait "$pane_id" --until working --timeout "$remaining_ms" 2>/dev/null)"; then
+        printf '%s working\n' "$cli" >> "$status_file"
+        break
+      else
+        rc=$?
+        # Empty stdin (herdr printed nothing at all, e.g. a stub or a herdr
+        # release that changes this body's shape) makes jq itself exit 0
+        # with no output rather than an error (confirmed against a real
+        # jq binary) -- the `|| error_code=""` guard alone would miss that
+        # case, so the empty-string fallback below is a second,
+        # independent guard against the same "diagnostic only, never
+        # load-bearing" failure mode _count_ready's own docstring already
+        # names for a structurally identical gap.
+        error_code="$(printf '%s' "$json" | jq -r '.error.code // "unknown"' 2>/dev/null)" || error_code=""
+        error_code="${error_code:-unknown}"
+        printf '_confirm_reviewers_working: %s in pane %s did not reach agent_status=working within its share of the %ss confirmation budget (herdr agent wait exit %d, error code: %s)\n' \
+          "$cli" "$pane_id" "$budget_seconds" "$rc" "$error_code" >&2
+
+        # Resend only for the three clis whose first `agent prompt` call
+        # can be silently dropped (see this function's own docstring) --
+        # claude has no second prompt to ever resend, so it always falls
+        # through to unconfirmed on its very first failed wait above.
+        case "$cli" in
+          codex|opencode|agy)
+            if (( resends_done >= REVIEWER_PROMPT_RESEND_LIMIT )); then
+              printf '%s unconfirmed\n' "$cli" >> "$status_file"
+              break
+            fi
+            prompt_file="$base_dir/logs/$cli.prompt"
+            if ! prompt_text="$(cat "$prompt_file" 2>/dev/null)"; then
+              printf '_confirm_reviewers_working: could not re-read %s to resend the prompt for %s; marking unconfirmed\n' \
+                "$prompt_file" "$cli" >&2
+              printf '%s unconfirmed\n' "$cli" >> "$status_file"
+              break
+            fi
+            if ! herdr agent prompt "$pane_id" "$prompt_text" >/dev/null 2>&1; then
+              printf '_confirm_reviewers_working: resend of the prompt for %s to pane %s itself failed; marking unconfirmed\n' \
+                "$cli" "$pane_id" >&2
+              printf '%s unconfirmed\n' "$cli" >> "$status_file"
+              break
+            fi
+            resends_done=$((resends_done + 1))
+            ;;
+          *)
+            printf '%s unconfirmed\n' "$cli" >> "$status_file"
+            break
+            ;;
+        esac
+      fi
+    done
+  done
+
+  return 0
+}
+
+# cmd_launch --base-dir <path> --agent <cli>:<pane_id>...
 #
 # The launch half of the pipeline: parse the named flags (see
 # parse_launch_args), confirm every named cli was actually selected by the
@@ -3491,8 +3971,14 @@ cmd_prepare() {
 # named cli is still on PATH (see verify_selection), then for each named
 # cli read back the prompt file cmd_prepare wrote for it and start it
 # inside its already-created herdr pane (see launch_reviewer_interactive),
-# hand every dispatched cli name to spawn_supervisor_interactive, and print
-# the dispatch summary (see print_summary). .roster is already on disk by
+# confirm every one of them actually reached agent_status=working (see
+# _confirm_reviewers_working -- a backstop against launch_reviewer_
+# interactive's own success meaning only "the process was started", never
+# "it is acting on its prompt"; see that function's own docstring for why
+# this step exists at all and what it is and is not a fix for), hand every
+# dispatched cli name to spawn_supervisor_interactive, and print the
+# dispatch summary (see print_summary, which folds the confirmation result
+# into each dispatched line). .roster is already on disk by
 # this point -- cmd_prepare wrote it, not this function (see cmd_prepare's
 # own docstring and its .roster-writing loop) -- and is what
 # _check_agents_selected reads back.
@@ -3583,6 +4069,26 @@ cmd_launch() {
     # round-trip needed, this is the same shell and the same call) and why
     # colon, not equals, is the join character.
     dispatched_agents+=("$cli:${pane_id_by_cli[$cli]}")
+
+    # Baseline for cmd_wait's own event=stalled check (see that function's
+    # own docstring and REVIEWER_STALLED_THRESHOLD_SECONDS's docstring):
+    # recorded at the exact moment this cli is dispatched, not the first
+    # time a later `cmd_wait` poll happens to observe it working, so a
+    # reviewer that never once reports agent_status=working still has a
+    # starting point to measure "how long since last working" from.
+    # cmd_wait is the only reader, and the only writer after this one --
+    # it overwrites this file whenever it later observes a fresh
+    # agent_status=working for this cli (see cmd_wait's own docstring).
+    # Treated as fatal, like .roster's own write above in cmd_prepare: a
+    # write failure here would silently leave event=stalled permanently
+    # blind for this cli for the rest of the run, which is worse than
+    # failing this dispatch loudly right now while cleanup can still run.
+    if ! printf '%s\n' "$(date +%s)" > "$base_dir/.last-working-$cli"; then
+      printf 'run-review.sh: failed to write the stalled-detection baseline for %s: %s\n' \
+        "$cli" "$base_dir/.last-working-$cli" >&2
+      _dispatch_failed_cleanup "$worktree_dir" "${dispatched[@]+"${dispatched[@]}"}"
+      exit 1
+    fi
   done
 
   # logs_dir gets the same read-only treatment as the worktree, applied
@@ -3607,6 +4113,21 @@ cmd_launch() {
   fi
 
   spawn_supervisor_interactive "$worktree_dir" "$summary_file" "${all_reviewers[@]}"
+
+  # Confirm every dispatched reviewer actually reached agent_status=working
+  # before the dispatch summary below is printed -- run after
+  # spawn_supervisor_interactive starts (so its own polling begins
+  # immediately in the background rather than waiting behind this call),
+  # but before print_summary (which reads the file this writes). Never
+  # fails cmd_launch by itself and never aborts/cleans up an already-
+  # dispatched reviewer on an unconfirmed result -- see
+  # _confirm_reviewers_working's own docstring for why. Budget passed in
+  # explicitly rather than read directly from REVIEWER_CONFIRM_BUDGET_
+  # SECONDS inside that function, so its own tests can exercise the
+  # shared-budget behavior on a small, fast value (see that constant's own
+  # docstring).
+  _confirm_reviewers_working "$base_dir" "$REVIEWER_CONFIRM_BUDGET_SECONDS" \
+    "${dispatched_agents[@]+"${dispatched_agents[@]}"}"
 
   # skipped is always empty here: platform selection is explicit and
   # verified during the earlier prepare invocation (see verify_selection),
@@ -3768,10 +4289,10 @@ _cleanup_delete_branch() {
 }
 
 # cmd_wait --base-dir <path> --deadline-at <epoch> [--heartbeat-at <epoch>]
-#          [--reported-blocked <cli>]...
+#          [--reported-blocked <cli>]... [--reported-stalled <cli>]...
 #
 # One turn of the orchestrator's wait loop, moved here out of SKILL.md.
-# Blocks until exactly one of four things happens, prints a single
+# Blocks until exactly one of five things happens, prints a single
 # structured event line, and returns 0. The caller decides what to DO about
 # the event -- what to report, whether to ask the user to terminate a
 # suspected hang, whether to extend the deadline. None of that judgement
@@ -3791,6 +4312,56 @@ _cleanup_delete_branch() {
 # with the caller, because only the caller knows whether it has since
 # sampled that cli as no longer blocked.
 #
+# event=stalled cli=<cli>: the fifth event, fired when a dispatched cli has
+# gone REVIEWER_STALLED_THRESHOLD_SECONDS (see that constant's own
+# docstring for why five minutes, and for what this is a generic backstop
+# against) without being observed at agent_status=working, and has not yet
+# produced a summary line. Two design points that are not obvious from the
+# event's own name:
+#   - blocked takes priority. A cli whose current status is blocked is
+#     handled entirely by the blocked branch above (whether newly blocked
+#     or already suppressed via --reported-blocked) and is skipped by the
+#     stalled check in the same pass -- a cli never gets reported as both
+#     in one call, and blocked's own more specific signal is not
+#     shadowed by this more generic one.
+#   - "how long since last working" has to survive across separate calls
+#     to this function: each invocation of `run-review.sh wait` is its own
+#     process that exits the moment it returns an event, so that duration
+#     cannot live in a local variable -- it is persisted on disk, one file
+#     per cli at <base_dir>/.last-working-<cli>, holding the epoch second
+#     of the last time this cli was observed at agent_status=working. The
+#     very first value ever written there is not from an observation at
+#     all: cmd_launch writes it at the moment this cli is dispatched (see
+#     its own per-cli dispatch loop), so a reviewer that never once reports
+#     working still has a starting point to measure elapsed time from,
+#     rather than never being eligible for this check at all. This
+#     function is the only place that value is later read or overwritten:
+#     every poll pass that observes a fresh agent_status=working for a cli
+#     rewrites this file to the current time (in the same pass that also
+#     checks for blocked/stalled, from one shared `_wait_agent_states`
+#     snapshot -- not a second, separate herdr query), which is what lets a
+#     reviewer that stalls, resumes, and later stalls again get reported
+#     both times: the elapsed-time clock genuinely resets on an observed
+#     resumption, it is not a one-shot latch.
+#
+# --reported-stalled mirrors --reported-blocked exactly, including which
+# half of "re-arming" belongs to which side: it names clis the caller has
+# already told the user are stalled, this call will not return a `stalled`
+# event for them, and un-suppressing one (by no longer passing it) is the
+# caller's own job once it has independently learned that cli is no longer
+# stalled -- this function does not decide that on the caller's behalf, the
+# same as it does not for --reported-blocked. A cli's own elapsed-time
+# clock resetting (the bullet above) is a separate mechanism from this
+# flag: even a cli the caller keeps passing here indefinitely still has its
+# own on-disk timestamp advance every time this function observes it
+# working, so a future removal of the flag reports fresh staleness, not
+# whatever was true when the flag was first added.
+#
+# A cli that already has its own summary line (spawn_supervisor_interactive
+# has already collected it, ready or not) is never reported stalled: once a
+# reviewer is done, "hasn't been seen working lately" stops meaning
+# anything about it.
+#
 # The 5-second poll interval is not a latency target: reviews and the merge
 # both take minutes, so this only bounds how long a signal waits to be
 # seen. A missing summary file counts as zero lines rather than an error --
@@ -3798,8 +4369,9 @@ _cleanup_delete_branch() {
 # printing its coordinates and that file appearing.
 cmd_wait() {
   local base_dir="" deadline_at="" heartbeat_at="" summary_file
-  local -a reported_blocked=()
+  local -a reported_blocked=() reported_stalled=()
   local baseline_lines now current_lines new_cli cli status
+  local agent_states line last_working
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -3807,6 +4379,7 @@ cmd_wait() {
       --deadline-at)      [ "$#" -ge 2 ] || { printf 'run-review.sh: --deadline-at requires a value\n' >&2; exit 2; }; deadline_at="$2"; shift 2 ;;
       --heartbeat-at)     [ "$#" -ge 2 ] || { printf 'run-review.sh: --heartbeat-at requires a value\n' >&2; exit 2; }; heartbeat_at="$2"; shift 2 ;;
       --reported-blocked) [ "$#" -ge 2 ] || { printf 'run-review.sh: --reported-blocked requires a value\n' >&2; exit 2; }; reported_blocked+=("$2"); shift 2 ;;
+      --reported-stalled) [ "$#" -ge 2 ] || { printf 'run-review.sh: --reported-stalled requires a value\n' >&2; exit 2; }; reported_stalled+=("$2"); shift 2 ;;
       *) printf 'run-review.sh: unknown flag for wait: %s\n' "$1" >&2; exit 2 ;;
     esac
   done
@@ -3834,13 +4407,57 @@ cmd_wait() {
       return 0
     fi
 
+    # One `_wait_agent_states` snapshot feeds both the blocked check below
+    # and the working-timestamp refresh / stalled check further down --
+    # not a separate `herdr agent list` query for each, which could
+    # observe a different status a moment apart (a reviewer resuming or
+    # newly blocking in between the two checks) and judge them
+    # inconsistently against each other.
+    agent_states="$(_wait_agent_states "$base_dir")"
+
     while IFS= read -r line; do
+      [ -n "$line" ] || continue
       cli="${line%% *}"; status="${line##* }"
       [ "$status" = blocked ] || continue
       _wait_already_reported "$cli" "${reported_blocked[@]+"${reported_blocked[@]}"}" && continue
       printf 'event=blocked cli=%s\n' "$cli"
       return 0
-    done < <(_wait_agent_states "$base_dir")
+    done <<< "$agent_states"
+
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      cli="${line%% *}"; status="${line##* }"
+      if [ "$status" = working ]; then
+        # Resets this cli's own elapsed-time clock (see this function's
+        # own docstring) -- the mechanism that lets a reviewer which
+        # stalls, resumes, and later stalls again be reported both times,
+        # rather than this file's initial dispatch-time value being the
+        # only timestamp ever written.
+        printf '%s\n' "$now" > "$base_dir/.last-working-$cli"
+        continue
+      fi
+      # blocked already got its own, more specific event above (whether
+      # newly reported or suppressed via --reported-blocked) -- must not
+      # also be judged stalled in this same pass (see this function's own
+      # docstring, "blocked takes priority").
+      [ "$status" = blocked ] && continue
+      # Already has a summary line: spawn_supervisor_interactive already
+      # collected this cli, ready or not -- "hasn't been seen working
+      # lately" stops meaning anything once a reviewer is done.
+      grep -q "^cli=$cli " "$summary_file" 2>/dev/null && continue
+      _wait_already_reported "$cli" "${reported_stalled[@]+"${reported_stalled[@]}"}" && continue
+      last_working="$(cat "$base_dir/.last-working-$cli" 2>/dev/null)" || last_working=""
+      # No baseline on disk at all (a base_dir predating this feature, or
+      # a cli cmd_launch never dispatched) -- nothing to measure elapsed
+      # time from, so this cli is simply never eligible for this check,
+      # the same best-effort spirit as every other missing-state fallback
+      # in this file.
+      [ -n "$last_working" ] || continue
+      if (( now - last_working >= REVIEWER_STALLED_THRESHOLD_SECONDS )); then
+        printf 'event=stalled cli=%s\n' "$cli"
+        return 0
+      fi
+    done <<< "$agent_states"
 
     sleep 5
   done
