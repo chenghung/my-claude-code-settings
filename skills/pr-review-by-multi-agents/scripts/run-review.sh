@@ -247,10 +247,15 @@ readonly REVIEWER_STALLED_THRESHOLD_SECONDS=300
 # A reasoned bound, not a measured one, for the same reason
 # REVIEWER_CONFIRM_BUDGET_SECONDS and REVIEWER_STALLED_THRESHOLD_SECONDS
 # above both are: both real reproductions of the drop this retry exists
-# for needed only a single resend to recover (agy 1.1.27 via herdr, a
-# 6-second and a 15-second gap between the original send and the retry,
-# same result both times). Capping at 2 gives one resend of margin beyond
-# that observed minimum without turning this into an unbounded loop --
+# for needed only a single resend to recover (agy 1.1.27 via herdr). The
+# 6-second and 15-second figures recorded in
+# launch_reviewer_interactive's own docstring are the gaps between
+# `agent start` and the FIRST `agent prompt` -- the variable those probes
+# actually controlled. The delay before the resend was not controlled and
+# is not evidence for any particular retry spacing; what both probes do
+# establish is that one resend was enough. Capping at 2 gives one resend
+# of margin beyond that observed minimum without turning this into an
+# unbounded loop --
 # REVIEWER_CONFIRM_BUDGET_SECONDS's own shared deadline is the actual hard
 # backstop regardless of this count, since every `agent wait` call inside
 # the retry loop (including the ones between resends) still draws from
