@@ -454,8 +454,12 @@ orchestrator 每次下行都要先取得憑據，才走這次下行的下一步�
 
 - 以 `herdr agent prompt` 送出指令：送出與握手併成單次呼叫
   `herdr agent prompt <TARGET> <TEXT> --wait --until working --timeout 10000`。
-  `--wait` 等的是這次送出之後觀測到的第一個匹配狀態，所以不必、也不要再補一次
-  `herdr agent wait`。
+  `<TEXT>` 必須以引號包成單一引數。它裝的是自由文字——轉達的定案、開場指令都是散文，含空
+  白、可能含引號——而這個子命令的 `<TARGET>` 與 `<TEXT>` 是兩個位置引數，不包起來 shell 會
+  在第一個空白處把它切開，後面的字詞變成多餘的位置引數。後果分兩種：整條呼叫失敗，定案
+  根本沒送出；或只有第一段送達，定案被截斷，而這次握手照樣觀測到 `working`、回報成功，
+  orchestrator 於是以為定案已經送到。`--wait` 等的是這次送出之後觀測到的第一個匹配狀態，所
+  以不必、也不要再補一次 `herdr agent wait`。
 - 以 `herdr agent send-keys` 代按核准框，而該核准框是啟動階段的 workspace 信任對話框（使用者
   依「升級清單」第五項答應信任之後由 orchestrator 代按）：不跑 `working` 握手，改為重查「啟動
   成功判準」那三項，三項齊備就送出開場指令（開場指令本身依第一種送出，握手就在那一次呼叫
@@ -515,8 +519,9 @@ agent 收到通知就自行同步。已知落在這一類的是「合併與收�
 個 phase 其實沒接手這則通知、沒有同步 main，而握手回傳看起來一切正常，落差要到後續合併衝突才
 浮現。
 
-自我檢測：這次下行送的是三種的哪一種？第一種，`--wait --until working --timeout 10000` 是不
-是就帶在那一次 `herdr agent prompt` 上，而不是送完再補一次 `herdr agent wait`？第三種（代按
+自我檢測：這次下行送的是三種的哪一種？第一種，要送的那段文字是不是整段包在引號裡、以單一
+引數傳給 `<TEXT>`，而 `--wait --until working --timeout 10000` 是不是就帶在那一次
+`herdr agent prompt` 上，而不是送完再補一次 `herdr agent wait`？第三種（代按
 執行中途核准框），`herdr agent send-keys` 之後我是不是另外呼叫了
 `herdr agent wait <agent 名稱> --until working --timeout 10000`？這兩種都要先拿到那次等待的
 回傳才把這個 phase 放回一般觀測迴圈——第一種等的是觀測到 `working`、逾時、或

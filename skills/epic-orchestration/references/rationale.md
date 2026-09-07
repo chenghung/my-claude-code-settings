@@ -89,7 +89,7 @@ auto 的射程界線要誠實記下。auto 只實測過「以 Bash 工具對工�
 
 依該子命令自己的 `--help` 輸出：`--until` 接受 `idle`、`working`、`blocked`、`done`、`unknown` 五個值，可重複指定以匹配多個狀態；不帶 `--until` 時預設匹配 `idle`、`done`、`blocked` 三者；`--timeout` 的單位是毫秒，不帶時無限等待。
 
-設計因此顯式指定 `idle` 與 `blocked` 兩個值、不用預設值，理由是預設集合還包含 `done`，而 `done` 對一個 Claude Code session 的確切語意尚未實測。這份輸出的另一句——不帶 `--timeout` 時無限等待——涵蓋的是仍走 `herdr agent wait` 的那一種握手，也就是代按執行中途核准框之後另外等的那一次；這一句掛在 `--timeout` 旗標自己的說明上，不在輸出末段。`herdr agent prompt` 那一種握手已經併進送出的同一次呼叫，它的逾時掛在 `herdr agent prompt` 上，依據是那個子命令自己的 `--help` 輸出末段逐字寫的 `Without --timeout, the settled-state wait is indefinite.`——兩邊的出處不同，不要合寫成一句。兩種握手不設逾時的後果相同（orchestrator 永久阻塞在這一次呼叫上，整個 epic 跟著停擺），但走得到那裡的情形兩邊不同：`herdr agent prompt` 那一種是狀態確實變了、卻始終沒走到 `working`（例如 `idle` 轉進 `blocked` 就停住），已被受理、送出時對方處於 `idle` 而單純沒被接手的那一種反而會在 5000 毫秒內以 `agent_prompt_stalled` 回來——在本設計所取的 10000 之下，帶不帶 `--timeout` 都一樣（`--timeout` 短於 5000 才會改回逾時，可調範圍見下面「十輪門檻與握手逾時都是估計值」）；`herdr agent wait` 那一種沒有記載對應的門檻，代按沒被接受、狀態一直停在 `blocked` 時就一路等下去。
+設計因此顯式指定 `idle` 與 `blocked` 兩個值、不用預設值，理由是預設集合還包含 `done`，而 `done` 對一個 Claude Code session 的確切語意尚未實測。這份輸出的另一句——不帶 `--timeout` 時無限等待——涵蓋的是仍走 `herdr agent wait` 的那一種握手，也就是代按執行中途核准框之後另外等的那一次；這一句掛在 `--timeout` 旗標自己的說明上，不在輸出末段。`herdr agent prompt` 那一種握手已經併進送出的同一次呼叫，它的逾時掛在 `herdr agent prompt` 上，依據是那個子命令自己的 `--help` 輸出末段逐字寫的 `Without --timeout, the settled-state wait is indefinite.`，而這句話把射程寫成 settled-state 等待、`working` 卻不在預設 settled 集合裡所留下的缺口，已由下面「`--timeout` 收得住目標狀態不在預設 settled 集合裡的等待」那一節的兩次量測補起來——兩邊的出處不同，不要合寫成一句。兩種握手不設逾時的後果相同（orchestrator 永久阻塞在這一次呼叫上，整個 epic 跟著停擺），但走得到那裡的情形兩邊不同：`herdr agent prompt` 那一種是狀態確實變了、卻始終沒走到 `working`（例如 `idle` 轉進 `blocked` 就停住），已被受理、送出時對方處於 `idle` 而單純沒被接手的那一種反而會在 5000 毫秒內以 `agent_prompt_stalled` 回來——在本設計所取的 10000 之下，帶不帶 `--timeout` 都一樣（`--timeout` 短於 5000 才會改回逾時，可調範圍見下面「十輪門檻與握手逾時都是估計值」）；`herdr agent wait` 那一種沒有記載對應的門檻，代按沒被接受、狀態一直停在 `blocked` 時就一路等下去。
 
 ### 併進送出的那次握手已實測，`herdr agent send-keys` 那一路沒有選項可帶
 
@@ -110,6 +110,16 @@ Arguments:
 
 Use esc as the canonical Escape key name; escape is also accepted.
 ```
+
+### `--timeout` 收得住目標狀態不在預設 settled 集合裡的等待
+
+第一種握手的 `--timeout` 掛在 `herdr agent prompt` 上，依據原本只有該子命令 `--help` 輸出末段那句 `Without --timeout, the settled-state wait is indefinite.`。這句話把射程寫成 settled-state 等待，而第一種握手要等的 `working` 不在預設的 settled 集合（`idle`、`done`、`blocked`）裡，於是留下一個疑慮：`--timeout` 若實際上只約束 settled-state 那一段，`--until working` 這次呼叫就永不回傳，orchestrator 會無徵兆永久停擺。兩次量測依序解掉它，順序本身要記下來——第一次證不出東西，第二次才是決定性的。
+
+第一次不具鑑別力。對一個 `agent_status` 為 `idle` 的 `claude` agent 送出 `herdr agent prompt`，帶 `--wait --until blocked --timeout 8000`，也就是要它去等一個那一輪不會到達的狀態（送的是一則單純回話的 prompt，agent 走 `idle` 轉 `working` 再轉回 `idle`，不會進入 `blocked`）。呼叫在 8.03 秒後回傳，與 `--timeout 8000` 相符。但 `blocked` 本身就落在預設 settled 集合內，所以「`--timeout` 只約束 settled-state 等待」這個疑慮與觀測到的逾時完全相容——兩種讀法都預測會逾時，這一次分辨不出來。
+
+第二次才有鑑別力。同樣的條件，目標狀態改取 `unknown`：它在 `--until` 的可接受值裡，但不在預設 settled 集合內，而那一輪同樣永遠到不了它。呼叫在 8.036 秒後回傳，與 `--timeout 8000` 相符，回傳內容逐字為 `{"error":{"code":"timeout","message":"timed out waiting for agent status"},"id":"cli:agent:prompt"}`；第一次那筆的回傳內容與此完全相同。
+
+結論：目標狀態落在預設 settled 集合之外時同樣受 `--timeout` 約束，在期限上回傳，而且錯誤訊息是通用的 `timed out waiting for agent status`，沒有任何欄位把射程限縮成 settled-state 專屬。所以 `SKILL.md`「下行送出後的握手」那一支——狀態確實變了、卻始終沒走到 `working`（例如 `idle` 轉進 `blocked` 就停住）——由 `--timeout` 收尾這件事不再是推論，是實測支持的：orchestrator 在那一支不會永久阻塞。
 
 ## GitHub API 的實測依據
 
@@ -153,7 +163,7 @@ phase agent 主動送出的訊息應只有報到、決策請求、PR ready、收
 
 ### 十輪門檻與握手逾時都是估計值
 
-「監控節奏」的十輪空轉門檻與「下行送出後的握手」的 10000 毫秒逾時，兩個數字本身都沒有實測依據。十輪是依整輪 60 秒的牆鐘上限推算的，但 60 秒是上限不是下限——其他 phase 早退時整輪遠短於 60 秒，所以十輪可能只有兩三分鐘。握手那一邊只有「不帶 `--timeout` 會無限等待」是查證過的——走 `herdr agent wait` 的那一種見上面 `--until` 那一節，併進 `herdr agent prompt` 的那一種出自該子命令自己的 `--help` 輸出末段——10000 這個值同樣是估的。假設不成立時的失敗形態不是流程中斷，是誤報或漏報：門檻太緊會對正在做事的 phase 一再讀 pane，太鬆則讓真的卡住的 phase 拖很久才被發現。實際使用時若發現誤報或漏報過多，這兩個數字是第一個該調的參數——但第一種握手的那個數字只調得動它兩支走法中的一支。第三種握手掛在 `herdr agent wait` 上，10000 往上往下都直接改變它等多久；第一種併在 `herdr agent prompt` 上，`--wait` 是兩段式的（見 `SKILL.md`「下行送出後的握手」）：已被受理、送出時對方處於 `idle` 的那則下行，5000 毫秒內一次狀態變化都沒有觀測到時回 `agent_prompt_stalled`，這一支釘在那道固定的 5000 毫秒門檻上，把 10000 往上調完全不改變行為，唯一調得動的方向是調到 5000 以下——而那只是把回傳從 `agent_prompt_stalled` 換成逾時，兩者在 `SKILL.md` 裡走同一條處置，等於沒調；狀態變化發生過、卻始終沒走到 `working` 的那一支（例如 `idle` 轉進 `blocked` 就停在那裡）則相反，門檻已經過了、攔不到它，收尾的正是 `--timeout`，10000 直接決定 orchestrator 在這次呼叫上阻塞多久，往上調就是延長阻塞——這一支也正是第一種握手不能省略 `--timeout` 的理由（見上面 `--until` 那一節）。
+「監控節奏」的十輪空轉門檻與「下行送出後的握手」的 10000 毫秒逾時，兩個數字本身都沒有實測依據。十輪是依整輪 60 秒的牆鐘上限推算的，但 60 秒是上限不是下限——其他 phase 早退時整輪遠短於 60 秒，所以十輪可能只有兩三分鐘。握手那一邊只有「不帶 `--timeout` 會無限等待」是查證過的——走 `herdr agent wait` 的那一種見上面 `--until` 那一節，併進 `herdr agent prompt` 的那一種出自該子命令自己的 `--help` 輸出末段，且該旗標收得住目標狀態不在預設 settled 集合裡的等待這一點已另有實測（見上面同名那一節）——10000 這個值同樣是估的。假設不成立時的失敗形態不是流程中斷，是誤報或漏報：門檻太緊會對正在做事的 phase 一再讀 pane，太鬆則讓真的卡住的 phase 拖很久才被發現。實際使用時若發現誤報或漏報過多，這兩個數字是第一個該調的參數——但第一種握手的那個數字只調得動它兩支走法中的一支。第三種握手掛在 `herdr agent wait` 上，10000 往上往下都直接改變它等多久；第一種併在 `herdr agent prompt` 上，`--wait` 是兩段式的（見 `SKILL.md`「下行送出後的握手」）：已被受理、送出時對方處於 `idle` 的那則下行，5000 毫秒內一次狀態變化都沒有觀測到時回 `agent_prompt_stalled`，這一支釘在那道固定的 5000 毫秒門檻上，把 10000 往上調完全不改變行為，唯一調得動的方向是調到 5000 以下——而那只是把回傳從 `agent_prompt_stalled` 換成逾時，兩者在 `SKILL.md` 裡走同一條處置，等於沒調；狀態變化發生過、卻始終沒走到 `working` 的那一支（例如 `idle` 轉進 `blocked` 就停在那裡）則相反，門檻已經過了、攔不到它，收尾的正是 `--timeout`，10000 直接決定 orchestrator 在這次呼叫上阻塞多久，往上調就是延長阻塞——這一支也正是第一種握手不能省略 `--timeout` 的理由（見上面 `--until` 那一節）。
 
 ## 設計取捨：為什麼不寫 shell script
 
