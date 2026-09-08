@@ -74,33 +74,29 @@ eo_require_herdr_env() {
 }
 
 # eo_main_repo
-# 印出主倉庫絕對路徑。優先取環境變數 EO_MAIN_REPO；未設時退回讀取
-# 狀態檔的 main_repo 欄位。
-#
-# 這條 fallback 有先天的雞生蛋問題：狀態檔的路徑（見 eo_state_file）
-# 本身就是由主倉庫路徑推出來的，兩者互為依賴。這裡打破循環的方式是
-# 假設呼叫端目前的工作目錄就在主倉庫內，直接在 "$PWD" 底下找狀態檔，
-# 不透過 eo_state_file／eo_main_repo 遞迴。這條路徑目前沒有被
-# tests/test-epic-orchestration-scripts.sh 涵蓋到（測試全程都有匯出
-# EO_MAIN_REPO），屬於本任務的實作判斷，留給下一位接手者留意。
-# 兩者皆無時以 5 結束。
+# 印出主倉庫絕對路徑。優先取環境變數 EO_MAIN_REPO；未設時改由 git 的
+# common directory 推導：`git rev-parse --path-format=absolute
+# --git-common-dir` 在主倉庫內回傳自己的 .git，在任一 worktree 內也
+# 回傳同一個主倉庫的 .git（而不是 worktree 自己的 .git 檔案），取其
+# 上層目錄即為主倉庫路徑，因此不論從主倉庫或任一 worktree 執行都得到
+# 同一個答案。這條路徑不讀狀態檔的 main_repo 欄位：狀態檔路徑（見
+# eo_state_file）本身就是由本函式推出來的，若又反過來讀狀態檔會構成
+# 循環依賴，故該欄位保留給已經拿到檔案路徑的讀者，不在此處使用。
+# 環境變數與 git common directory 兩者皆不可得時以 5 結束——寧可停
+# 下，也不要用猜的路徑讓狀態檔寫到錯的地方。
 eo_main_repo() {
   if [ -n "${EO_MAIN_REPO:-}" ]; then
     printf '%s\n' "$EO_MAIN_REPO"
     return 0
   fi
 
-  local fallback_state="$PWD/.tmp/epic-orchestration/state.json"
-  if [ -f "$fallback_state" ]; then
-    local value
-    value="$(jq -r '.main_repo // empty' "$fallback_state" 2>/dev/null)" || value=""
-    if [ -n "$value" ]; then
-      printf '%s\n' "$value"
-      return 0
-    fi
+  local git_common_dir
+  if git_common_dir="$(/usr/bin/git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    dirname "$git_common_dir"
+    return 0
   fi
 
-  eo_die 5 "EO_MAIN_REPO 未設，且找不到狀態檔或其 main_repo 欄位（$fallback_state）"
+  eo_die 5 "EO_MAIN_REPO 未設，且目前不在任何 git 倉庫內，無法推導主倉庫路徑"
 }
 
 # eo_agent_name <phase>

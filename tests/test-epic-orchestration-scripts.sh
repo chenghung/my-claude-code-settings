@@ -82,6 +82,27 @@ else
   bad "eo_state_phases 得到 '$(eo_state_phases | tr '\n' ' ')'，預期 '101 102 '"
 fi
 
+# --- eo_main_repo：EO_MAIN_REPO 未設時由 git common directory 推導 ---
+# 這條涵蓋的是環境變數未設時的推導路徑，而它必須從 worktree 內執行也對得回主倉庫。
+got="$(unset EO_MAIN_REPO && eo_main_repo)"
+expected="$(dirname "$(/usr/bin/git rev-parse --path-format=absolute --git-common-dir)")"
+if [ "$got" = "$expected" ]; then
+  pass "eo_main_repo 在 EO_MAIN_REPO 未設時由 git common directory 推導出主倉庫"
+else
+  bad "eo_main_repo 得到 '$got'，預期 '$expected'"
+fi
+
+# --- eo_main_repo：EO_MAIN_REPO 未設且不在任何 git 倉庫時以 5 結束 ---
+# 失敗方向是安全的，寧可停下也不要猜一個路徑，因為猜錯會讓狀態檔寫到別的地方去。
+NO_GIT_DIR="$T/no-git"
+mkdir -p "$NO_GIT_DIR"
+( cd "$NO_GIT_DIR" && unset EO_MAIN_REPO && eo_main_repo ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "eo_main_repo 在無 git 倉庫且 EO_MAIN_REPO 未設時以 5 結束"
+else
+  bad "eo_main_repo 在無 git 倉庫情境下結束碼為 $rc，預期 5"
+fi
+
 # --- workspace 守衛：tab 不在本 workspace 時以 4 結束 ---
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
