@@ -1153,6 +1153,72 @@ else
   bad "unknown 第 4 輪就印了 '$early'"
 fi
 
+# ===== 規格第十四節（中斷恢復）：標記序號倒退代表 phase agent 重啟 =====
+# 「沒有變大」有兩種，規格要求分開：相等是上一回合的標記還留在畫面
+# 上（標記缺席），比記住的值小則代表這個 phase agent 中途重啟過、計
+# 數歸零。合成一條 `-le` 比較的後果是永久性的：基準不重設，之後每一
+# 次比對都落在「沒有變大」，這個 phase 從此每次停下都被判標記缺席，
+# 每次都白派一次調查者。
+#
+# 這四條斷言的順序是刻意的：光驗「印了那則事件」不足以證明基準真的
+# 被重設——重設有沒有生效，要看下一輪的判讀，所以第三、四條才是這組
+# 測試的重點。全部直接呼叫生產的 eo_classify_stop，沒有另外重寫一份
+# 比較邏輯。
+eo_state_set 180 tab_id '"tab_180"'
+eo_state_set 180 last_marker_seq 20
+eo_state_set 180 held_by_orchestrator false
+eo_state_set 180 auto_push_count 3
+
+# 一：序號從 20 倒退到 7 → 印重啟事件，並把基準重設成 7。
+out="$(eo_classify_stop 180 "done" '[PHASE 180] seq=7 state=working-ok')"
+if [ "$out" = "phase=180 AGENT-RESTARTED seq=7" ]; then
+  pass "標記序號倒退時印 AGENT-RESTARTED，不再靜靜判成標記缺席"
+else
+  bad "序號倒退時得到 '$out'，預期 'phase=180 AGENT-RESTARTED seq=7'"
+fi
+
+# 二：基準真的變成 7 了（不是還留在 20）。
+if [ "$(eo_state_get 180 last_marker_seq)" = "7" ]; then
+  pass "序號倒退後以當下值重設基準"
+else
+  bad "序號倒退後基準是 '$(eo_state_get 180 last_marker_seq)'，預期 7"
+fi
+
+# 三：同一個序號再來一次 → 相等的路徑不變，仍是標記缺席。這同時反證
+# 基準沒有停在 20：若還是 20，這一輪也會走「沒有變大」，但那條路徑不
+# 會告訴我們基準是 7 還是 20；配合第四條才分得開。
+out="$(eo_classify_stop 180 "done" '[PHASE 180] seq=7 state=working-ok')"
+if [ "$out" = "phase=180 stopped=done marker=none" ]; then
+  pass "序號相等時維持標記缺席的行為，沒有被重啟那條路徑吃掉"
+else
+  bad "序號相等時得到 '$out'，預期 marker=none"
+fi
+
+# 四：重設之後的下一則真正新標記，必須被判成新的。這是整組測試的重
+# 點：舊行為在這裡會印 marker=none（因為 8 沒有大於舊基準 20），也就
+# 是那個永久退化的症狀。
+out="$(eo_classify_stop 180 "done" '[PHASE 180] seq=8 state=pr-ready pr=789')"
+if [ "$out" = "phase=180 stopped=done marker=pr-ready pr=789" ] \
+   && [ "$(eo_state_get 180 last_marker_seq)" = "8" ]; then
+  pass "重設基準後，下一則真正的新標記被正確判成新的（不再永久退化成標記缺席）"
+else
+  bad "重設後的新標記得到 '$out'，基準='$(eo_state_get 180 last_marker_seq)'，預期事件行與基準 8"
+fi
+
+# 五：重啟事件不動 auto_push_count——本函式只有「交回編排端」那條最終
+# 路徑會歸零它，提早返回的路徑都不碰，這裡比照。第四條把它從 3 帶到
+# 歸零是那條最終路徑做的，所以這一條要在第四條之前的狀態上驗，改用
+# 另一個 phase 獨立驗。
+eo_state_set 181 tab_id '"tab_181"'
+eo_state_set 181 last_marker_seq 20
+eo_state_set 181 auto_push_count 3
+eo_classify_stop 181 "done" '[PHASE 181] seq=2 state=working-ok' > /dev/null
+if [ "$(eo_state_get 181 auto_push_count)" = "3" ]; then
+  pass "重啟事件不重設 auto_push_count（比照其餘提早返回的路徑）"
+else
+  bad "重啟事件把 auto_push_count 改成了 '$(eo_state_get 181 auto_push_count)'，預期維持 3"
+fi
+
 # ===== 修正輪次 2：獨立審查發現的 Critical／High／Medium／Low findings =====
 
 # --- Critical 1：_eo_ensure_phase_defaults 面對「只有三個座標欄位」

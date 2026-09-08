@@ -30,6 +30,14 @@
 #     working 已離開  → 回外層重掛
 #     agent_not_found → 邊緣觸發印 GONE，結束這條迴圈
 #
+# eo_classify_stop 產生的事件行有四種：
+#   phase=<編號> stopped=<idle|done|blocked> marker=<標記行或 none>
+#   phase=<編號> AUTO-PUSH-LIMIT count=<次數>
+#   phase=<編號> AGENT-RESTARTED seq=<畫面上的序號>（規格第十四節，
+#     標記序號倒退代表 phase agent 中途重啟過，見 eo_classify_stop
+#     裡那一段）
+#   （不印任何一行）＝ 判定為自動推進，編排端完全看不到這次停下
+#
 # 低頻掃描每 EO_UNCLASSIFIED_SCAN_INTERVAL_SECONDS 秒一輪 phase-status.sh
 # （這個常數與 EO_AUTO_PUSH_LIMIT／EO_SPINNING_SECONDS／
 # EO_UNCLASSIFIED_ROUNDS 三個門檻都定義在 common.sh，且都標註「未查
@@ -371,6 +379,36 @@ eo_classify_stop() {
 
   last_seq="$(eo_state_get "$phase" last_marker_seq)"
   _eo_require_int "$last_seq" "phase $phase last_marker_seq"
+
+  # ---- 序號變小＝phase agent 中途重啟過（規格第十四節，中斷恢復）----
+  # 「沒有變大」有兩種，規格第十四節明文要求分開處理，不能合成一條
+  # `-le` 比較：
+  #   相等（或只是沒變大）→ 上一回合的標記還留在畫面上，等同標記缺
+  #                          席，見下面那個分支。
+  #   比記住的值小        → 標記序號每回合遞增，不可能自己倒退，所以
+  #                          這代表這個 phase agent 中途重啟過、計數
+  #                          從頭開始。
+  # 不分開的後果規格也寫明了，而且是永久性的：基準不重設，之後每一
+  # 次比對都會落在「沒有變大」，這個 phase 從此每次停下都被判成標記
+  # 缺席，每一次都讓編排端白派一次調查者。而 phase agent 重啟不是罕
+  # 見情形——規格第十四節整節存在就是因為它會發生。
+  #
+  # 規則照規格：以當下這個值重設基準，並印一則事件交回編排端，讓它
+  # 派一次調查者查明重啟原因。重設之後這一輪就結束，不把這則標記當
+  # 成新標記往下分類——基準有沒有真的生效，看的是下一輪：下一則真正
+  # 遞增的標記會被正確判成新的。
+  #
+  # auto_push_count 刻意不動：本函式只有「交回編排端並產生事件行」那
+  # 條最終路徑會歸零它，其餘提早返回的路徑（含標記缺席）都不碰，這
+  # 裡比照那些提早返回的路徑。重啟之後沿用既有的累計次數也是保守的
+  # 方向——這個 phase 已經消耗掉的自動推進次數不因為它重啟就一筆勾
+  # 銷。
+  if [ "$seq" -lt "$last_seq" ]; then
+    eo_state_set "$phase" last_marker_seq "$seq"
+    printf 'phase=%s AGENT-RESTARTED seq=%s\n' "$phase" "$seq"
+    return 0
+  fi
+
   if [ "$seq" -le "$last_seq" ]; then
     # seq 沒有變大：上一回合的標記還留在畫面上，等同標記缺席。危險
     # 方向是舊標記被當成新的，只有 seq 攔得住——這裡絕不能把它當成
