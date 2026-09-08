@@ -436,6 +436,20 @@ else
   bad "close-phase 在 HERDR_TAB_ID 為空時結束碼為 $rc，預期 4"
 fi
 
+# 開放 finding 四：完全不設 HERDR_TAB_ID（而不是賦值為空字串）時，守衛
+# 三一樣要視為不成立——這比空字串賦值更貼近真實部署（呼叫端忘了透
+# 傳、或腳本被非 herdr 管理的環境誤呼叫）。子殼內明確 unset，不能只是
+# 不覆寫：執行這份測試的終端機本身就是一個真實 herdr 管理的 pane，
+# ambient HERDR_TAB_ID 一開始就有值，不 unset 就測不到「完全沒有這個
+# 變數」這件事。
+( unset HERDR_TAB_ID; bash "$SCRIPTS/close-phase.sh" 103 ) >/dev/null 2>&1 \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "close-phase 在 HERDR_TAB_ID 完全未設時視為守衛不成立"
+else
+  bad "close-phase 在 HERDR_TAB_ID 完全未設時結束碼為 $rc，預期 4"
+fi
+
 # 狀態檔記的識別碼與實際不符時也要擋下。
 ( HERDR_TAB_ID=tab_orchestrator bash "$SCRIPTS/close-phase.sh" 999 ) \
   >/dev/null 2>&1 && rc=0 || rc=$?
@@ -444,6 +458,40 @@ if [ "$rc" -eq 5 ]; then
 else
   bad "close-phase 對未知 phase 結束碼為 $rc，預期 5"
 fi
+
+# 開放 finding 二：守衛二必須真的鎖得住「守衛一與守衛二之間 tab_id 被
+# 併發改寫」這個情境，不能只靠靜態樁。前面六條斷言用的三個樁的
+# tab list 分支全部回傳固定 JSON，從不會在守衛一與守衛二之間真的改寫
+# 狀態檔，測不到守衛二的重讀有沒有真的在守衛。這裡改用一個會有副作用
+# 的樁：tab list 分支在回傳前，先把狀態檔裡這個 phase 的 tab_id 改成
+# 別的值，模擬另一個行程（例如常駐的 event-generator.sh）在守衛一那
+# 次 herdr round trip 期間把它併發改寫掉。用獨立的 phase 105，避免
+# 污染前面幾條斷言仍在用的 phase 103／104 狀態。
+eo_state_set 105 tab_id '"tab_105"'
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab list")
+    state_file="$EO_MAIN_REPO/.tmp/epic-orchestration/state.json"
+    tmp="$(mktemp "${state_file}.XXXXXX")"
+    jq '.phases["105"].tab_id = "tab_105_hijacked"' "$state_file" > "$tmp"
+    mv "$tmp" "$state_file"
+    printf '{"result":{"tabs":[{"tab_id":"tab_105"}]}}'
+    exit 0 ;;
+  "tab close") printf '{"result":{"ok":true}}'; exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+close_phase_guard2_err="$T/close-phase-guard2.err"
+( HERDR_TAB_ID=tab_orchestrator bash "$SCRIPTS/close-phase.sh" 105 ) \
+  >/dev/null 2>"$close_phase_guard2_err" && rc=0 || rc=$?
+if [ "$rc" -eq 4 ] && rg -q '守衛二' "$close_phase_guard2_err"; then
+  pass "close-phase 守衛二擋下守衛一與守衛二之間的併發改寫"
+else
+  bad "close-phase 守衛二測試結束碼為 $rc，stderr='$(cat "$close_phase_guard2_err")'"
+fi
+
 export PATH="$saved_path"
 
 exit "$fail"

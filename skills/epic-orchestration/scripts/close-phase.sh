@@ -59,4 +59,8 @@ if [ -z "${HERDR_TAB_ID:-}" ] || [ "$current_tab_id" = "$HERDR_TAB_ID" ]; then
   eo_die 4 "close-phase.sh: 守衛三不成立：目標 tab（$current_tab_id）等於呼叫者自己的 HERDR_TAB_ID，或該變數未設，phase $phase 拒絕關閉"
 fi
 
-eo_herdr tab close "$current_tab_id"
+# 丟棄 herdr 原始回應：本專案一貫的紀律是只轉發自組的最小結果，不轉
+# 發 herdr 原始 JSON（phase-status.sh、start-phase.sh 皆同）。close 動
+# 作沒有任何欄位需要呼叫端進一步解析，因此直接丟棄，不必另外組一行輸
+# 出。
+eo_herdr tab close "$current_tab_id" >/dev/null
