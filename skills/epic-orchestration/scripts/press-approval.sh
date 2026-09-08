@@ -127,6 +127,19 @@ readonly EO_PRESS_APPROVAL_TIMEOUT_MS=10000
 
 target="$(eo_state_get "$phase" agent_name)"
 
+# workspace 守衛：本腳本與 send-to-phase.sh 是唯二會對一個活著的
+# agent 送出輸入（下行文字／按鍵）的腳本，射程比其餘唯讀或只動狀態檔
+# 的腳本都大。狀態檔的 tab_id 與這裡的 target（agent_name）只綁主倉
+# 庫路徑（agent_name 是 phase 編號加主倉庫路徑的雜湊，見 common.sh 的
+# eo_agent_name），同一個主倉庫在兩個不同 workspace 各跑一次 epic
+# 時，兩邊的狀態檔與 agent 名稱會重合，跨 workspace 誤按在這裡不是理
+# 論可能。「本 workspace 為何」的判定集中在 eo_assert_workspace（來
+# 源是 HERDR_WORKSPACE_ID，見 common.sh），本腳本不自行重新推導。狀
+# 態檔裡的 tab_id 不通過這一關就視為記錄過期，以 4 結束，且發生在下
+# 面任何一支 herdr 呼叫（含重查狀態、代按）之前。
+tab_id="$(eo_state_get "$phase" tab_id)"
+eo_assert_workspace "$tab_id"
+
 # 執行前重查狀態仍為 blocked：畫面可能已經換掉，見檔頭「動作順序」說明。
 get_json="$(eo_herdr agent get "$target")"
 current_status="$(printf '%s' "$get_json" | jq -r '.result.agent.agent_status')"

@@ -588,6 +588,10 @@ export PATH="$EO_TEST_PATH"
 # 可能整條失敗，也可能只送出第一段而握手照樣回報成功。
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
+if [ "$1" = "tab" ] && [ "$2" = "list" ]; then
+  printf '{"result":{"tabs":[{"tab_id":"tab_201"}]}}'
+  exit 0
+fi
 if [ "$1" = "agent" ] && [ "$2" = "prompt" ]; then
   printf '%s\n' "$4" > "$EO_TEST_CAPTURE"
   printf '{"result":{"agent_status":"working"}}'
@@ -600,7 +604,11 @@ export PATH="$EO_TEST_PATH"
 assert_herdr_stubbed "$STUB_BIN"
 export EO_TEST_CAPTURE="$T/captured-text"
 eo_state_set 201 agent_name '"phase-201-abcd"'
+eo_state_set 201 tab_id '"tab_201"'
 
+# tab_201 在下面樁的 tab list 回應裡，屬於本 workspace，因此這一條連
+# 同下面幾條沿用 phase 201 的斷言，一併作為「屬於本 workspace 的目標
+# 放行」的證明：新加的守衛沒有誤擋本來就該通過的正常送出。
 out="$(bash "$SCRIPTS/send-to-phase.sh" 201 '第一段 第二段 第三段')"
 if [ "$(cat "$EO_TEST_CAPTURE")" = "第一段 第二段 第三段" ]; then
   pass "send-to-phase 把文字包成單一引數"
@@ -617,8 +625,15 @@ else
 fi
 
 # 對方 blocked 時 herdr 以 agent_blocked 拒絕，文字完全不會送達。
+# tab list 這一支照樣要回本 workspace 有 tab_201，否則守衛會在到
+# 達「blocked」這個真正要測的情境之前就先以另一個理由擋下，測不到
+# 這一條真正宣稱在測的東西。
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
+if [ "$1" = "tab" ] && [ "$2" = "list" ]; then
+  printf '{"result":{"tabs":[{"tab_id":"tab_201"}]}}'
+  exit 0
+fi
 printf '{"error":{"code":"agent_blocked"}}' >&2
 exit 1
 STUB
@@ -634,6 +649,10 @@ fi
 # 握手逾時不是失敗，是「未取得憑據」——出口是 7，交給呼叫端派調查者。
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
+if [ "$1" = "tab" ] && [ "$2" = "list" ]; then
+  printf '{"result":{"tabs":[{"tab_id":"tab_201"}]}}'
+  exit 0
+fi
 printf '{"error":{"code":"timeout"}}' >&2
 exit 1
 STUB
@@ -649,6 +668,10 @@ fi
 # agent_prompt_stalled 與逾時同一類：未取得憑據，出口同樣是 7。
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
+if [ "$1" = "tab" ] && [ "$2" = "list" ]; then
+  printf '{"result":{"tabs":[{"tab_id":"tab_201"}]}}'
+  exit 0
+fi
 printf '{"error":{"code":"agent_prompt_stalled"}}' >&2
 exit 1
 STUB
@@ -664,6 +687,10 @@ fi
 # --no-handshake：合併後廣播 main 動了走這條，收件的每個 phase 都還在 working。
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
+if [ "$1" = "tab" ] && [ "$2" = "list" ]; then
+  printf '{"result":{"tabs":[{"tab_id":"tab_201"}]}}'
+  exit 0
+fi
 if [ "$1" = "agent" ] && [ "$2" = "prompt" ]; then
   # 沒有 --wait 就不該出現 --until
   for a in "$@"; do
@@ -684,6 +711,10 @@ fi
 # --no-handshake 不吞送出當下的拒絕：agent_blocked 仍以 6 結束。
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
+if [ "$1" = "tab" ] && [ "$2" = "list" ]; then
+  printf '{"result":{"tabs":[{"tab_id":"tab_201"}]}}'
+  exit 0
+fi
 printf '{"error":{"code":"agent_blocked"}}' >&2
 exit 1
 STUB
@@ -699,6 +730,10 @@ fi
 # --handshake-timeout 覆寫預設值：把值原樣轉給 herdr 的 --timeout。
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
+if [ "$1" = "tab" ] && [ "$2" = "list" ]; then
+  printf '{"result":{"tabs":[{"tab_id":"tab_201"}]}}'
+  exit 0
+fi
 if [ "$1" = "agent" ] && [ "$2" = "prompt" ]; then
   for i in "$@"; do
     if [ "$prev" = "--timeout" ]; then
@@ -716,6 +751,52 @@ if [ "$(cat "$EO_TEST_CAPTURE")" = "3000" ]; then
   pass "send-to-phase --handshake-timeout 覆寫預設逾時值"
 else
   bad "send-to-phase --handshake-timeout 得到 '$(cat "$EO_TEST_CAPTURE")'，預期 3000"
+fi
+
+# --- workspace 守衛：目標所屬 tab 不屬於本 workspace 時擋下，且確認
+#     沒有送出任何東西 ---
+# 事實依據：狀態檔路徑固定在主倉庫底下的固定位置、agent_name 是 phase
+# 編號加主倉庫路徑的雜湊（見 common.sh 的 eo_agent_name），兩者都不含
+# workspace 資訊；同一個主倉庫在兩個不同 workspace 各跑一次 epic 時，
+# 狀態檔與 agent 名稱會重合，跨 workspace 誤送在這裡不是理論可能。只
+# 驗結束碼不夠：日後若有人把守衛搬到真正送出之後，結束碼仍可能剛好是
+# 某個看似合理的值，測試卻還是綠燈。這裡另外用一個專屬標記檔，只要
+# agent prompt 分支真的被呼叫到就會落地，直接驗證「送出」這個動作本
+# 身有沒有被攔下，不只是驗結束碼。
+export EO_TEST_SENT_MARKER="$T/sent-marker-209"
+rm -f "$EO_TEST_SENT_MARKER"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "tab" ] && [ "$2" = "list" ]; then
+  # 只列出本 workspace 現有的 tab_201，phase 209 狀態檔記錄的
+  # tab_209 不在其中——重現跨 workspace 記錄重合的場景。
+  printf '{"result":{"tabs":[{"tab_id":"tab_201"}]}}'
+  exit 0
+fi
+if [ "$1" = "agent" ] && [ "$2" = "prompt" ]; then
+  touch "$EO_TEST_SENT_MARKER"
+  printf '{"result":{"agent_status":"working"}}'
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$EO_TEST_PATH"
+assert_herdr_stubbed "$STUB_BIN"
+eo_state_set 209 agent_name '"phase-209-abcd"'
+eo_state_set 209 tab_id '"tab_209"'
+
+( bash "$SCRIPTS/send-to-phase.sh" 209 '不該送出的內容' ) >/dev/null 2>&1 \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "send-to-phase workspace 守衛：不屬於本 workspace 的 tab 以 4 結束"
+else
+  bad "send-to-phase workspace 守衛結束碼為 $rc，預期 4"
+fi
+if [ -e "$EO_TEST_SENT_MARKER" ]; then
+  bad "send-to-phase workspace 守衛擋下時仍呼叫了 agent prompt，送出了內容"
+else
+  pass "send-to-phase workspace 守衛擋下時確認未送出任何東西"
 fi
 
 # 開放 finding 二：呼叫端用錯（結束碼 2）的三種情形，全部在觸碰狀態檔
@@ -764,6 +845,7 @@ export PATH="$EO_TEST_PATH"
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_301"},{"tab_id":"tab_302"}]}}'; exit 0 ;;
   "agent get")
     printf '%s' '{"result":{"agent":{"agent_status":"blocked"}}}'
     exit 0 ;;
@@ -793,7 +875,11 @@ chmod +x "$STUB_BIN/herdr"
 export PATH="$EO_TEST_PATH"
 assert_herdr_stubbed "$STUB_BIN"
 eo_state_set 301 agent_name '"phase-301-abcd"'
+eo_state_set 301 tab_id '"tab_301"'
 
+# tab_301 在上面樁的 tab list 回應裡，屬於本 workspace，因此這一條連
+# 同下面沿用 phase 301／302 的斷言，一併作為「屬於本 workspace 的目標
+# 放行」的證明：新加的守衛沒有誤擋本來就該通過的正常代按。
 # --allows 是必填。這是整支腳本存在的理由：把「按之前要指得出放行什麼」
 # 從散文約束變成缺了就跑不動的參數。
 ( bash "$SCRIPTS/press-approval.sh" 301 enter ) >/dev/null 2>&1 && rc=0 || rc=$?
@@ -817,6 +903,7 @@ fi
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_301"},{"tab_id":"tab_302"}]}}'; exit 0 ;;
   "agent get")
     printf '%s' '{"result":{"agent":{"agent_status":"working"}}}'
     exit 0 ;;
@@ -842,9 +929,11 @@ fi
 # 不同的 --until」，不是「其中一條分支預設就會通過、另一條才有事後檢
 # 查」這種不對稱、可能放過假分支的驗證。
 eo_state_set 302 agent_name '"phase-302-abcd"'
+eo_state_set 302 tab_id '"tab_302"'
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_301"},{"tab_id":"tab_302"}]}}'; exit 0 ;;
   "agent get")
     printf '%s' '{"result":{"agent":{"agent_status":"blocked"}}}'
     exit 0 ;;
@@ -878,6 +967,7 @@ fi
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_301"},{"tab_id":"tab_302"}]}}'; exit 0 ;;
   "agent get")
     printf '%s' '{"result":{"agent":{"agent_status":"blocked"}}}'
     exit 0 ;;
@@ -893,6 +983,53 @@ if [ "$rc" -eq 7 ] && [ "$out" = "handshake=none" ]; then
   pass "press-approval 對逾時（未取得憑據）回 handshake=none 並以 7 結束"
 else
   bad "press-approval 逾時得到 rc=$rc out='$out'，預期 rc=7 out=handshake=none"
+fi
+
+# --- workspace 守衛：目標所屬 tab 不屬於本 workspace 時擋下，且確認
+#     沒有代按任何東西 ---
+# 事實依據與理由同任務四 send-to-phase.sh 的同一類斷言：狀態檔路徑固
+# 定在主倉庫底下的固定位置、agent_name 是 phase 編號加主倉庫路徑的雜
+# 湊（見 common.sh 的 eo_agent_name），兩者都不含 workspace 資訊，跨
+# workspace 誤按在這裡不是理論可能。只驗結束碼不夠：這裡另外用一個
+# 專屬標記檔，只要 agent send-keys 分支真的被呼叫到就會落地，直接驗
+# 證「代按」這個動作本身有沒有被攔下。樁把 agent get 設成回報
+# blocked（放行到最容易讓沒守住的實作繼續往下走到 send-keys 的狀
+# 態），讓這個標記檔的驗證力道最大——不是靠讓 agent get 先失敗才勉強
+# 擋下。
+export EO_TEST_SENT_MARKER="$T/sent-marker-309"
+rm -f "$EO_TEST_SENT_MARKER"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab list")
+    # 只列出本 workspace 現有的 tab_301／tab_302，phase 309 狀態檔記
+    # 錄的 tab_309 不在其中——重現跨 workspace 記錄重合的場景。
+    printf '{"result":{"tabs":[{"tab_id":"tab_301"},{"tab_id":"tab_302"}]}}'
+    exit 0 ;;
+  "agent get")
+    printf '%s' '{"result":{"agent":{"agent_status":"blocked"}}}'
+    exit 0 ;;
+  "agent send-keys") touch "$EO_TEST_SENT_MARKER"; printf '{"result":{}}'; exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$EO_TEST_PATH"
+assert_herdr_stubbed "$STUB_BIN"
+eo_state_set 309 agent_name '"phase-309-abcd"'
+eo_state_set 309 tab_id '"tab_309"'
+
+( bash "$SCRIPTS/press-approval.sh" 309 enter --allows '不該被放行的動作' ) \
+  >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "press-approval workspace 守衛：不屬於本 workspace 的 tab 以 4 結束"
+else
+  bad "press-approval workspace 守衛結束碼為 $rc，預期 4"
+fi
+if [ -e "$EO_TEST_SENT_MARKER" ]; then
+  bad "press-approval workspace 守衛擋下時仍呼叫了 agent send-keys，代按了"
+else
+  pass "press-approval workspace 守衛擋下時確認未送出任何按鍵"
 fi
 
 # 全案性的測試要求：呼叫端用錯（結束碼 2）——缺必填參數、選項缺值、
