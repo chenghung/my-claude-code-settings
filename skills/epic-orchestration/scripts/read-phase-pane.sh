@@ -67,6 +67,24 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+# --marker-only 會把 phase 原樣接進下面 grep 的 basic regular
+# expression 樣式（`^\[PHASE ${phase}\] seq=`）。若 phase 帶有正規表
+# 示式特殊字元（例如未跳脫的中括號），grep 會把它解讀成字元類別、吃
+# 掉後面的字元，結果是靜默回報 `marker=none`——這個結果跟「畫面上真
+# 的沒有標記行」完全無法區分，不會有任何錯誤訊息（獨立審查以自建樁
+# 重現過）。因此在組出 grep 樣式之前，先驗證 phase 是純數字（本專案
+# 命名慣例裡 sub-issue 編號恆為數字），不符就以呼叫端用錯的 2 明確拒
+# 絕，不留給 grep 去靜默吞掉。這項驗證只在 --marker-only 需要用到
+# grep 時才做：預設模式不把 phase 接進任何正規表示式，不受這個問題
+# 影響，不必連帶收緊介面。
+if [ "$marker_only" -eq 1 ]; then
+  case "$phase" in
+    ''|*[!0-9]*)
+      eo_die 2 "read-phase-pane.sh: --marker-only 要求 <sub-issue 編號> 是純數字（會被接進 grep 的比對樣式），收到：$phase"
+      ;;
+  esac
+fi
+
 pane_id="$(eo_state_get "$phase" pane_id)"
 tab_id="$(eo_state_get "$phase" tab_id)"
 

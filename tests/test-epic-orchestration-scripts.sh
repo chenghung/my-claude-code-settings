@@ -935,4 +935,38 @@ else
   bad "read-phase-pane 未知選項時結束碼為 $rc，預期 2"
 fi
 
+# 開放 finding（Medium，修正輪次 1）：--marker-only 把 phase 原樣接進
+# grep 的 basic regular expression 樣式，若 phase 帶有未跳脫的正規表
+# 示式特殊字元（例如中括號），會被解讀成字元類別、吃掉後面字元，導致
+# 明明畫面上逐字存在對應的標記行，卻靜默回報 marker=none——這個結果
+# 跟「畫面上真的沒有標記行」完全無法區分，沒有任何錯誤訊息。以下重現
+# 這個情境：狀態檔的 phase 鍵值故意設成含中括號的字串，畫面文字裡逐
+# 字存在對應的標記行，驗證修正後的行為是在碰到 grep 之前就以呼叫端用
+# 錯的 2 明確拒絕，不是放行到 grep 那一步再靜默回 marker=none。herdr
+# 樁在此仍完整提供 tab list／pane read（且 pane read 回傳的畫面文字
+# 真的逐字含有這個標記行），確保這條斷言測的是「明確拒絕」本身，而不
+# 是湊巧在更早的步驟（狀態檔或 workspace 守衛）就失敗。
+bad_phase='10[9'
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_bad_phase"}]}}'; exit 0 ;;
+  "pane read") printf '[PHASE 10[9] seq=7 state=working\n'; exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$STUB_BIN:$saved_path"
+assert_herdr_stub_only "$PATH" "$STUB_BIN"
+eo_state_set "$bad_phase" pane_id '"pane_bad_phase"'
+eo_state_set "$bad_phase" tab_id '"tab_bad_phase"'
+
+out="$( ( bash "$SCRIPTS/read-phase-pane.sh" "$bad_phase" --marker-only ) 2>/dev/null )" && rc=0 || rc=$?
+if [ "$rc" -eq 2 ] && [ "$out" != "marker=none" ]; then
+  pass "read-phase-pane --marker-only 對含正規表示式特殊字元的 phase 編號明確拒絕，不是靜默回報 marker=none"
+else
+  bad "read-phase-pane --marker-only 對特殊字元 phase 編號得到 rc=$rc out='$out'，預期 rc=2 且不是 marker=none"
+fi
+export PATH="$saved_path"
+
 exit "$fail"
