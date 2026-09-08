@@ -357,4 +357,93 @@ fi
 
 export PATH="$saved_path"
 
+# ===== 任務三：start-phase.sh 與 close-phase.sh =====
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab create")
+    printf '%s' '{"result":{"tab":{"tab_id":"tab_new"},
+                  "root_pane":{"pane_id":"pane_new"}}}'; exit 0 ;;
+  "agent start") printf '{"result":{"ok":true}}'; exit 0 ;;
+  "agent get")
+    printf '%s' '{"result":{"agent":{"agent_status":"idle"}}}'
+    exit 0 ;;
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_new"}]}}'; exit 0 ;;
+  "tab close") printf '{"result":{"ok":true}}'; exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$STUB_BIN:$saved_path"
+assert_herdr_stub_only "$PATH" "$STUB_BIN"
+
+out="$(bash "$SCRIPTS/start-phase.sh" 103)"
+if printf '%s' "$out" | rg -q '^tab_id=tab_new pane_id=pane_new agent=phase-103-'; then
+  pass "start-phase 輸出三項座標"
+else
+  bad "start-phase 得到 '$out'"
+fi
+if [ "$(eo_state_get 103 pane_id)" = "pane_new" ]; then
+  pass "start-phase 把座標寫進狀態檔"
+else
+  bad "start-phase 未寫入狀態檔"
+fi
+
+# 啟動未就緒時必須以 8 結束，且不得繼續。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab create")
+    printf '%s' '{"result":{"tab":{"tab_id":"tab_bad"},
+                  "root_pane":{"pane_id":"pane_bad"}}}'; exit 0 ;;
+  "agent start") exit 1 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+( bash "$SCRIPTS/start-phase.sh" 104 ) >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 8 ]; then
+  pass "start-phase 對啟動未就緒以 8 結束"
+else
+  bad "start-phase 啟動未就緒時結束碼為 $rc，預期 8"
+fi
+
+# close-phase 守衛三：不得關掉 orchestrator 自己所在的 tab。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_new"}]}}'; exit 0 ;;
+  "tab close") printf '{"result":{"ok":true}}'; exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+( HERDR_TAB_ID=tab_new bash "$SCRIPTS/close-phase.sh" 103 ) >/dev/null 2>&1 \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "close-phase 拒絕關掉 HERDR_TAB_ID 指向的 tab"
+else
+  bad "close-phase 對自己的 tab 結束碼為 $rc，預期 4"
+fi
+
+# HERDR_TAB_ID 為空時，守衛三視為不成立——不能因為變數沒設就放行。
+# shellcheck disable=SC1007 # 刻意寫法：HERDR_TAB_ID= 後接空白再接 bash，是「只為這次呼叫把該變數設為空字串」的合法慣用語法，不是漏打等號右值
+( HERDR_TAB_ID= bash "$SCRIPTS/close-phase.sh" 103 ) >/dev/null 2>&1 \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "close-phase 在 HERDR_TAB_ID 為空時視為守衛不成立"
+else
+  bad "close-phase 在 HERDR_TAB_ID 為空時結束碼為 $rc，預期 4"
+fi
+
+# 狀態檔記的識別碼與實際不符時也要擋下。
+( HERDR_TAB_ID=tab_orchestrator bash "$SCRIPTS/close-phase.sh" 999 ) \
+  >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "close-phase 對不在狀態檔的 phase 以 5 結束"
+else
+  bad "close-phase 對未知 phase 結束碼為 $rc，預期 5"
+fi
+export PATH="$saved_path"
+
 exit "$fail"
