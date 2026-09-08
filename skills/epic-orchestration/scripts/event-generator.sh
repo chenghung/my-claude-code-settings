@@ -17,8 +17,7 @@
 # 每個 phase 一條迴圈，以子行程執行；main 每輪重讀狀態檔決定監看清
 # 單，派工與收尾都不必重啟本腳本。Monitor 只吃單一指令，動態增減監
 # 看對象沒有現成機制可借，本腳本得自己起停這些子行程（見 main／
-# _eo_cleanup）；main 也監督低頻掃描那條子行程是否還活著，跟 phase
-# 迴圈用同一套「不在了就重起」邏輯。
+# _eo_cleanup）。
 #
 # 每條邊緣迴圈分外層／內層兩段：
 #   外層  等 idle／done／blocked 其中之一（逾時 EO_WAIT_TIMEOUT_MS）
@@ -44,28 +43,53 @@
 #                                            位，見 _eo_scan_gone）
 #   狀態連續多輪都是 unknown              → UNCLASSIFIED
 #
-# main 對每個 phase 的邊緣迴圈子行程也有監督重起，見
-# _eo_phase_supervise：連續重起會退避（每次加倍延遲），超過
-# EO_PHASE_RESPAWN_GIVEUP_THRESHOLD 次就放棄並印一則事件：
-#   phase=<編號> RESPAWN-LIMIT count=<連續重起次數>
-# 邊緣迴圈自己確認 agent_not_found（agent_gone 欄位為 true）時也不
-# 會被重啟，但不會另外印一則事件——那個情境的事件已經在偵測到的當
-# 下由 GONE 印過了。這兩種「不重啟」的情境共用同一套恢復機制：狀態
-# 記錄有變動（例如操作者關掉這個 phase 重新 start-phase）才恢復。
+# ---- 存活契約：這支腳本不重起自己，也不重起自己的子行程 ----
+# 規格第七節「通道死掉不是靜默的」已經把重掛責任指派給編排端：
+# Monitor 的串流結束會另外送一則通知（實測），orchestrator 收到就立
+# 刻重掛一次並向使用者報一行；真正無聲的只剩「重掛也失敗」，那要據
+# 實升級。既然那條偵測與重掛路徑已經存在，本腳本就不再自己實作第二
+# 套——早先版本加過 setsid 自我重啟、process group 廣播、pidfile 單
+# 例守衛、指數退避與放棄門檻，那疊機制正是把規格已指派給編排端的職
+# 責又實作了一次，而三輪審查裡的每一個 Critical 都出自它、或出自為
+# 了修它而加的下一層。看到這段不要以為是漏了該補：拿掉是刻意的。
+#
+# 落實成邊緣迴圈的結束碼契約：
+#   0    自願結束——已印過 GONE，或這個 phase 已不在狀態檔（收尾）。
+#        main 記住不再重起。
+#   非 0 異常——main 印一行 stderr 診斷，並以同一個碼結束整支腳本，
+#        讓串流結束、由編排端重掛。一個 phase 的壞記錄因此會停掉全
+#        部監看，這是刻意的取捨：換成「一次、可見、走既有通道」，
+#        取代早先「無聲每 5 秒重試一次、永無上界」。
+# 低頻掃描那條子行程套同一規則，只是它不該有自願結束，任何結束都算
+# 異常。
+#
+# 唯一的恢復入口：已自願結束（印過 GONE）的 phase，若之後讀到的
+# pane 識別碼與當時不同，代表它換了新 pane 復活，重新起一條迴圈。沒
+# 有這一步，一個印過 GONE 的 phase 就再也不會被重新監看。這個判斷只
+# 讀 pane 識別碼、只存在行程記憶、不寫狀態檔、不與任何靜音欄位耦
+# 合——早先版本把重起閘門與報告靜音放在同一個會被低頻掃描改寫的欄
+# 位上，造成永不停止的重複，那個形狀在這裡結構上不可能重現。
 #
 # ---- 測試方式：EO_GENERATOR_NO_MAIN ----
-# 本檔是常駐迴圈，不能整支跑進測試。設定 EO_GENERATOR_NO_MAIN 時，本
-# 檔只定義函式就返回，不進入 main；測試藉此把本檔直接 source 進自己
-# 的行程，單獨呼叫可測的函式並斷言其行為。凡是不需要 herdr 樁就測得
-# 起來的串接層判斷（狀態檔欄位補齊、seq 追蹤的行程內記憶、
-# EO_GENERATOR_DRY_RUN 開關、退避與放棄的計數邏輯），都必須有對應測
-# 試——這條規則本身是這一輪修正的直接教訓：早先版本裡好幾個嚴重問
-# 題，正是因為決策函式各自測起來都對、但串接它們的膠水程式碼從未被
-# 任何測試碰過。這條規則同樣適用於呼叫本專案自己另一支姊妹腳本
-# （send-to-phase.sh、phase-status.sh）的路徑：那些不是外部二進位，
-# 樁化的難度跟樁化 herdr 完全不同量級，不能以「這條路徑要呼叫別的腳
-# 本」為理由跟「需要 herdr 樁」混為一談而免測——見
-# EO_SEND_TO_PHASE_SCRIPT／EO_PHASE_STATUS_SCRIPT 兩個環境變數。
+# 本檔是常駐迴圈，但「不能整支跑進測試」只對「在測試行程自己裡面跑」
+# 成立：測試可以、而且必須把整支起成獨立的背景行程來驗證常駐行為（見
+# 測試檔的端對端段落）。這個任務最大的教訓正是這件事——早先為訊號處
+# 理補的回歸測試不跑 main，而是另外寫一支「結構相同」的腳本並先手動
+# setsid，把真正的病灶整段跳過，所以它必然通過而生產路徑照樣壞掉。凡
+# 是驗證串接層的測試，都要執行生產程式碼那一份。
+#
+# 設定 EO_GENERATOR_NO_MAIN 時，本檔只定義函式就返回，不進入 main；
+# 測試藉此把本檔直接 source 進自己的行程，單獨呼叫可測的函式並斷言其
+# 行為。凡是不需要 herdr 樁就測得起來的串接層判斷（狀態檔欄位補齊、
+# seq 追蹤的行程內記憶、EO_GENERATOR_DRY_RUN 開關、行程內追蹤的清
+# 理、親子確認），都必須有對應測試——這條規則本身是修正過程的直接教
+# 訓：早先版本裡好幾個嚴重問題，正是因為決策函式各自測起來都對、但
+# 串接它們的膠水程式碼從未被任何測試碰過。這條規則同樣適用於呼叫本
+# 專案自己另一支姊妹腳本（send-to-phase.sh、phase-status.sh、
+# read-phase-pane.sh）的路徑：那些不是外部二進位，樁化的難度跟樁化
+# herdr 完全不同量級，不能以「這條路徑要呼叫別的腳本」為理由跟「需要
+# herdr 樁」混為一談而免測——見 EO_SEND_TO_PHASE_SCRIPT／
+# EO_PHASE_STATUS_SCRIPT／EO_READ_PHASE_PANE_SCRIPT 三個環境變數。
 #
 # ---- EO_GENERATOR_DRY_RUN：把「測不了」變成「測得了」----
 # 這支腳本唯一會主動對真實 agent 送下行的動作，是自動推進時呼叫
@@ -75,10 +99,20 @@
 # 段原本零測試覆蓋的迴圈層變得可以在完全不需要 herdr 樁的情況下驗證
 # ——見上方「測試方式」那條規則。
 #
-# ---- 單例守衛：pidfile ----
-# 常駐產生器只能同時存在一份，見 main 開頭的 _eo_acquire_singleton與
-# 其註解：兩個產生器同時寫 last_marker_seq，會讓「seq 只會變大」這個
-# 整條事件通道賴以判斷「標記是新是舊」的假設失效。
+# ---- 刻意不做單例守衛，以及它留下的窗口 ----
+# 兩個產生器同時寫 last_marker_seq 會讓「seq 只會變大」這個判讀假設
+# 失效，但本檔刻意不設 pidfile 單例守衛。守衛的代價是把操作者鎖在門
+# 外——pidfile 指著一個還有存活成員的群組時，新產生器一律被拒，操作
+# 者必須自己找出並收掉孤兒才能恢復。改成在源頭讓雙寫者無法長期存
+# 在：main 被 SIGKILL（繞過所有 trap）時，每條邊緣迴圈在自己下一次
+# 外層迭代開頭會發現 main 已經不在而自行結束（見
+# _eo_phase_edge_loop 裡的親代存活檢查）。
+#
+# 殘餘暴露面，講明白不藏：最長一個 wait 週期（EO_WAIT_TIMEOUT_MS，
+# 120 秒）的窗口內，尚未發現 main 已死的孤兒子行程與新起的產生器可
+# 能同時寫標記序號。後果是新產生器把一個真正的新標記判成序號不夠
+# 大、印出 marker=none、白派一次調查者。那是刻意選的安全失敗方向，
+# 而且看得見——不是無聲漏判，也不需要操作者去收拾行程。
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -115,15 +149,15 @@ readonly EO_WAIT_TIMEOUT_MS=120000
 readonly _EO_WAIT_TIMEOUT_RC=124
 readonly _EO_WAIT_NOT_FOUND_RC=125
 
-# event-generator.sh 專屬、不屬於七支腳本共用結束碼表（0–8）的碼：
-# 9＝單例守衛擋下第二個常駐產生器（見 _eo_acquire_singleton）。只有
-# 這支腳本會產生 9，因此不併入 common.sh 的共用表，只在這裡文件化。
-readonly EO_SINGLETON_CONFLICT_EXIT_CODE=9
-
 # 這個值只決定「新派工或剛收尾的 phase 多快被本迴圈接住監看」，不影
 # 響任何事件是否正確，只影響延遲，因此不算三個未查證門檻之一，不必
-# 逐字照抄或加校準註記。
-readonly EO_PHASE_POLL_SECONDS=5
+# 逐字照抄或加校準註記。也正因為它不是門檻，這裡刻意讓它可以被環境
+# 變數覆寫：端對端測試要跑真實的 main（不是另外寫一支結構相同的腳
+# 本——見檔頭「測試方式」），把輪詢調快才能在幾秒內驗證「移除的
+# phase 會被收掉」這類跨輪行為。這個覆寫只適用於本值；
+# EO_WAIT_TIMEOUT_MS 與 common.sh 那三個待校準門檻一律不得為了測試
+# 而壓縮。
+readonly EO_PHASE_POLL_SECONDS="${EO_PHASE_POLL_SECONDS:-5}"
 
 # ---- 自動推進送出的文字：權威在 phase-agent-contract.md，這裡只是
 #      跟著同一份定案 ----
@@ -139,23 +173,19 @@ readonly EO_PHASE_POLL_SECONDS=5
 # eo_classify_stop 判成標記缺席（marker=none），白派一次調查者。
 readonly EO_AUTO_PUSH_TEXT='繼續進行你的 phase 任務。回合結束時依契約在畫面最後一行印出狀態標記。'
 
-# ---- phase 邊緣迴圈連續重起的退避與放棄門檻 ----
-# 未查證推估，首次真實跑 epic 為校準回合，與 common.sh 那三個門檻同
-# 樣待校準：連續重起超過這個次數就放棄，改印一則事件交回
-# orchestrator，直到狀態記錄有變動才恢復（見 _eo_phase_supervise）。
-readonly EO_PHASE_RESPAWN_GIVEUP_THRESHOLD=6
-# 未查證推估，首次真實跑 epic 為校準回合：退避延遲的上限秒數，避免
-# 加倍下去無限增長。
-readonly EO_PHASE_RESPAWN_BACKOFF_MAX_SECONDS=300
-
 # ---- 常駐迴圈用的行程內狀態（不落地狀態檔，隨本行程結束而消失）----
 declare -A _EO_PHASE_PIDS    # phase -> 該 phase 邊緣迴圈子行程的 PID
+declare -A _EO_PHASE_DONE    # phase -> 非空代表那條迴圈已自願結束，不再重起
+declare -A _EO_PHASE_DONE_PANE  # phase -> 自願結束當下的 pane 識別碼（唯一的恢復入口，見檔頭）
 _EO_LOW_FREQ_PID=""          # 低頻掃描子行程的 PID
 declare -A _EO_SPIN_SEQ      # phase -> 低頻掃描上次觀測到的 state_change_seq
 declare -A _EO_SPIN_EPOCH    # phase -> 上面那個 seq 第一次被觀測到的 epoch 秒
-declare -A _EO_PHASE_RESPAWN_COUNT       # phase -> 連續重起次數（健康時歸零）
-declare -A _EO_PHASE_NEXT_RESPAWN_EPOCH  # phase -> 退避延遲下，下次允許重起的 epoch 秒
-declare -A _EO_PHASE_GIVEUP_FINGERPRINT  # phase -> 放棄重起當下的狀態指紋；非空代表目前處於放棄狀態
+
+# main 自己的 pid，在 main 開頭設定，之後 fork 出去的每條子行程都會
+# 繼承這份值。子行程用它判斷「產生器本體是否還在」（見
+# _eo_phase_edge_loop 的親代存活檢查），main 自己用它確認一個記錄下
+# 來的 pid 是否仍是自己的子行程（見 _eo_kill_own_child）。
+_EO_MAIN_PID=""
 
 # _eo_require_int <value> <desc>（內部輔助函式）
 # 狀態檔讀出來、即將進算術展開（`$(( ))`）或整數比較的數值欄位，先
@@ -238,11 +268,20 @@ _eo_ensure_field() {
 # 計數本來就該是 0，跟 schema 描述的欄位語意（累計次數）並不衝突；
 # held_by_orchestrator schema 範例是 false，直接採用。
 #
-# agent_gone 是這一輪（修正輪次 3／5，High B）新增、不在 constraints.md
-# 原始七個欄位之列的第八個欄位：只由 _eo_phase_edge_loop 自己確認
-# agent_not_found 時設成 true，只由 _eo_phase_supervise 的放棄指紋
-# 機制在狀態記錄變動時清回 false，低頻掃描完全不 touch 它——理由見
-# _eo_scan_gone 與 _eo_phase_edge_loop 裡對應分支的說明。
+# 這七個就是全部——constraints.md schema 列的就是這七個，本檔不再自
+# 己多加第八個欄位。早先版本加過一個 agent_gone 當「這條迴圈該不該
+# 被重起」的閘門，那是為了配合已經拿掉的監督重起層而存在的；現在
+# 「不重起」由 main 的行程內記憶處理（見檔頭的存活契約），不需要落
+# 地到狀態檔。
+#
+# ---- 呼叫端必須先確認記錄存在 ----
+# 本函式只補欄位，不判斷這筆記錄該不該存在：eo_state_set 對不存在的
+# phase 會以 `.phases[$p] //= {}` 建出新記錄，因此對一個已經被收尾移
+# 除的 phase 呼叫本函式，會生出一筆「八個非座標欄位、零個座標欄位」
+# 的殘骸記錄，而且它會出現在 eo_state_phases 的結果裡，讓 main 下一
+# 輪又把它當成待監看的 phase。獨立審查對真實 jq 重現過。所以每個呼
+# 叫點都必須先過 _eo_phase_record_exists（見 _eo_phase_edge_loop 與
+# _eo_low_freq_process_one）。
 _eo_ensure_phase_defaults() {
   local phase="$1"
   _eo_ensure_field "$phase" last_marker_seq 0
@@ -252,7 +291,20 @@ _eo_ensure_phase_defaults() {
   _eo_ensure_field "$phase" spinning_muted false
   _eo_ensure_field "$phase" gone_muted false
   _eo_ensure_field "$phase" unclassified_muted false
-  _eo_ensure_field "$phase" agent_gone false
+}
+
+# _eo_phase_record_exists <phase>（內部輔助函式）
+# 這個 phase 在狀態檔裡還有記錄嗎？以座標欄位 tab_id 為準：它由
+# start-phase.sh 在建立記錄時就寫入，收尾時整筆記錄被
+# eo_state_remove_phase 移除，因此它的存在等同「這筆記錄還在」。刻意
+# 不用非座標欄位判斷——那些是讀取端補上的，補了反而會讓一筆殘骸記錄
+# 看起來像還在。
+#
+# eo_state_get 讀不到就 eo_die，也就是真正的 exit，所以這裡把它包進
+# `( )` 子殼：exit 只終止子殼，函式拿到的是子殼的結束碼。理由與
+# _eo_ensure_field 上方那一大段完全相同，不重複。
+_eo_phase_record_exists() {
+  ( eo_state_get "$1" tab_id ) >/dev/null 2>&1
 }
 
 # eo_classify_stop <phase> <停下狀態> <標記行>
@@ -408,27 +460,27 @@ eo_scan_unknown() {
 }
 
 # _eo_scan_gone <phase> <這輪查詢是否看得到這個 phase：0|1>（內部輔助函式）
-# GONE 事件本身的邊緣觸發（純粹是「要不要印這一行」的報告用靜音，
-# 不是要不要重啟邊緣迴圈的判斷——那個判斷是 agent_gone 欄位的責
-# 任，見 _eo_phase_edge_loop 與 _eo_phase_supervise）。兩條通道共用
-# 同一個 gone_muted 欄位：外層／內層邊緣迴圈偵測到 agent_not_found
-# 時呼叫（present=0），低頻掃描見到 phase-status.sh 查全部模式回報
-# 這個 phase 是 ERROR 時也呼叫（present=0）——同一次消失不論哪條通
-# 道先看到，都只印一次；present=1 只會由低頻掃描呼叫，用來在 phase
-# 重新出現於查詢結果時解除這個報告用的靜音。
+# GONE 事件的邊緣觸發，而且是純粹的「要不要印這一行」報告用靜音——
+# 這個欄位不決定任何行程要不要被起停。兩條通道共用同一個 gone_muted
+# 欄位：外層／內層邊緣迴圈偵測到 agent_not_found 時呼叫（present=0），
+# 低頻掃描見到 phase-status.sh 查全部模式回報這個 phase 是 ERROR 時
+# 也呼叫（present=0）——同一次消失不論哪條通道先看到，都只印一次；
+# present=1 只會由低頻掃描呼叫，用來在 phase 重新出現於查詢結果時解
+# 除這個報告用的靜音。
 #
-# ---- 為什麼不能也拿這個欄位決定要不要重啟邊緣迴圈（High B，獨立審
-#      查修正輪次 3／5 找到的問題）----
+# ---- 為什麼「報告靜音」不能同時當「要不要重起迴圈」的閘門 ----
 # 兩條通道認的是不同識別碼：邊緣迴圈等的是 eo_agent_name 推導出來的
-# agent 名稱，低頻掃描比對的是狀態檔的 pane 識別碼是否還在
-# snapshot 裡。當 pane 還在、但那個 agent 名稱已經不再註冊時，低頻
-# 掃描的 present=1 會把這個共用欄位解回 false；若同一個欄位也被拿
-# 來當「main 該不該重啟這條迴圈」的閘門，閘門就會被打開，重啟後立
-# 刻又撞上 agent_not_found、再印一次 GONE，兩個判讀只要持續不一
-# 致，這個循環就永遠不會停（已被獨立審查實測：45 秒印 4 則）。因此
-# 「這一次消失有沒有報告過」（本欄位）與「這條迴圈該不該被重啟」
-# （agent_gone）必須是兩個獨立欄位，後者只由邊緣迴圈自己設定、只由
-# 狀態指紋變動時清除，低頻掃描完全不 touch 它。
+# agent 名稱，低頻掃描比對的是狀態檔的 pane 識別碼是否還在 snapshot
+# 裡。pane 還在、但那個 agent 名稱已經不再註冊時，低頻掃描的
+# present=1 會把這個欄位解回 false；早先版本把同一個欄位也當成「main
+# 該不該重起這條迴圈」的閘門，於是閘門被打開、重起、立刻又撞上
+# agent_not_found、再印一次 GONE，兩個判讀只要持續不一致就永遠不會
+# 停（獨立審查實測：45 秒印 4 則，換算四個 phase 併行約每小時 220
+# 則，超過致命值 120）。後來拆成兩個欄位仍然沒有解決，因為新欄位還
+# 留在重起判斷的輸入裡。現在的做法是根本沒有重起這件事：邊緣迴圈印
+# 完 GONE 就以 0 結束，main 記在行程內、永不重起（見檔頭的存活契
+# 約）。低頻掃描要怎麼改寫這個欄位都無所謂，它打不開任何東西——這
+# 才是那個無界重複在結構上不可能重現的原因。
 _eo_scan_gone() {
   local phase="$1" present="$2"
   local muted
@@ -585,10 +637,22 @@ _eo_run_auto_push_or_fallback() {
 
 # _eo_phase_edge_loop <phase>（內部輔助函式，以背景子行程執行）
 # 單一 phase 的邊緣迴圈，見檔頭「整體形狀」那段的外層／內層說明。
+#
+# 結束碼就是檔頭那份存活契約：0 代表自願結束（印過 GONE，或這個
+# phase 已不在狀態檔），main 據此記住不再重起；任何非 0 都是異常，
+# main 會印一行診斷並結束整支腳本、讓編排端重掛。
 _eo_phase_edge_loop() {
   local phase="$1"
   local agent
 
+  # 先確認記錄存在，才補預設值——順序不能反。反過來的話，對一個已
+  # 被收尾移除的 phase 呼叫本函式（main 讀到清單與這裡真正執行之間
+  # 有時間差，close-phase.sh 可能剛好在這個空隙裡移除記錄）會由
+  # _eo_ensure_phase_defaults 生出一筆沒有任何座標欄位的殘骸記錄，
+  # 而那筆記錄會出現在 eo_state_phases 裡、讓 main 下一輪又把它當成
+  # 待監看的 phase，永久留在狀態檔。理由詳見
+  # _eo_ensure_phase_defaults 上方「呼叫端必須先確認記錄存在」。
+  _eo_phase_record_exists "$phase" || return 0
   agent="$(eo_agent_name "$phase")"
   _eo_ensure_phase_defaults "$phase"
 
@@ -597,18 +661,23 @@ _eo_phase_edge_loop() {
 
     # 每次外層迴圈重新開始前，先確認這個 phase 還在狀態檔裡——它可
     # 能在等待期間被收尾移除（close-phase.sh 呼叫
-    # eo_state_remove_phase）。找不到就安靜結束這條迴圈，不印任何驚
-    # 動人的訊息：這是成功收尾的正常後果，不是故障（Medium C，獨立
-    # 審查修正輪次 3／5 找到的問題）。main 的監督邏輯本來就會在下一
-    # 輪呼叫 _eo_forget_phase 順便收掉這條迴圈，這裡只是讓它不必等
-    # 到下一次 wait 才發現、也不會在半路因為 eo_classify_stop 內部
-    # 某個 eo_state_get 讀不到欄位而印出看起來像 bug 的內部錯誤訊
-    # 息。
-    local still_exists
-    # shellcheck disable=SC2034 # 只需要命令替換帶來的子殼隔離與它的結束碼；欄位值本身不需要用到，理由同 _eo_ensure_field
-    if still_exists="$(eo_state_get "$phase" tab_id 2>/dev/null)"; then
-      :
-    else
+    # eo_state_remove_phase）。找不到就以 0 安靜結束這條迴圈，不印任
+    # 何驚動人的訊息：這是成功收尾的正常後果，不是故障。main 下一輪
+    # 也會呼叫 _eo_forget_phase 收掉這條迴圈，這裡只是讓它不必等到下
+    # 一次 wait 返回才發現（最長兩分鐘），也不會在半路因為
+    # eo_classify_stop 內部某個 eo_state_get 讀不到欄位而印出看起來
+    # 像 bug 的內部錯誤訊息。
+    _eo_phase_record_exists "$phase" || return 0
+
+    # 親代存活檢查：產生器本體（main）若被 SIGKILL 收掉，所有 trap
+    # 都繞過了，這條子行程會變成孤兒被 reparent、繼續寫狀態檔、繼續
+    # 對真實 agent 自動推進。本檔刻意不設 pidfile 單例守衛（理由見檔
+    # 頭），代價由這一行承擔：main 不在了就自行結束，孤兒最長只活到
+    # 自己這一次 wait 返回為止，而不是永久。用 kill -0 而不是查
+    # /proc 或 ps：不需要外部工具，也不需要知道自己被 reparent 到
+    # 誰。已知限制是 pid 若被回收再指派給別的行程，這個檢查會誤判成
+    # 「main 還在」，那只是讓孤兒多活一個 wait 週期，方向是安全的。
+    if [ -n "${_EO_MAIN_PID:-}" ] && ! kill -0 "$_EO_MAIN_PID" 2>/dev/null; then
       return 0
     fi
 
@@ -629,39 +698,73 @@ _eo_phase_edge_loop() {
         ;;
       "$_EO_WAIT_NOT_FOUND_RC")
         # 印一次 GONE（gone_muted，跟低頻掃描共用同一個報告用靜音欄
-        # 位，見 _eo_scan_gone），並且把 agent_gone 設成 true——這個
-        # 欄位只由這裡（邊緣迴圈自己確認 agent_not_found）設定，只由
-        # _eo_phase_supervise 的放棄指紋機制清除，低頻掃描完全不
-        # touch 它。main 的監督邏輯靠 agent_gone 決定不重新起一條迴
-        # 圈，不是靠 gone_muted：兩者一度共用同一個欄位，導致 pane
-        # 還在、但這個推導出來的 agent 名稱已經不再註冊時，低頻掃描
-        # （認的是 pane_id，不是 agent 名稱）判定「這個 phase 還
-        # 在」、把共用欄位解回 false，監督層的閘門被打開、重起邊緣
-        # 迴圈、立刻又撞上 agent_not_found、再印一次 GONE——已被獨
-        # 立審查實測：45 秒印 4 則，換算生產值約每 phase 每小時 55
-        # 則，四個 phase 併行約 220 則，超過簡報定案的致命值 120，
-        # 而且只要兩條通道的判讀持續不一致就永遠不會停。拆成兩個欄
-        # 位後，低頻掃描的「重新出現」只解除 gone_muted（報告用），
-        # 不會再打開這個重啟閘門。
+        # 位，見 _eo_scan_gone），然後以 0 結束這條迴圈：這是自願結
+        # 束，main 會記住不再重起（見檔頭的存活契約）。這裡不再往狀
+        # 態檔寫任何「不要重起我」的旗標——那個旗標一度存在，是為了
+        # 配合已經拿掉的監督重起層；把它留在狀態檔裡，低頻掃描與邊
+        # 緣迴圈對「這個 phase 還在不在」的兩種判讀就又有機會互相打
+        # 架，而那正是無界重複的來源。
         _eo_scan_gone "$phase" 0
-        eo_state_set "$phase" agent_gone true
         return 0
         ;;
       0)
-        local stopped_status marker event
+        local stopped_status marker event classify_rc
         stopped_status="$(printf '%s' "$wait_result" | jq -r '.result.agent.agent_status')"
 
         # read-phase-pane.sh 失敗時一律視同 marker=none：失敗方向是
         # 安全的（頂多多派一次 investigator），真正的 GONE 由上面的
         # agent_not_found 與低頻掃描各自獨立偵測，不必在這裡重做一次
         # 判斷。
-        if marker="$(bash "$SCRIPT_DIR/read-phase-pane.sh" "$phase" --marker-only 2>/dev/null)"; then
+        #
+        # EO_READ_PHASE_PANE_SCRIPT 與 EO_SEND_TO_PHASE_SCRIPT／
+        # EO_PHASE_STATUS_SCRIPT 同一個用途、同一個理由（見
+        # _eo_do_auto_push 上方那段）：這裡呼叫的是明確路徑而不是 PATH
+        # 解析的裸指令名，樁化 herdr 那套手法用不上，所以留一個環境變
+        # 數讓測試換成假腳本。這條路徑特別需要它：read-phase-pane.sh
+        # 自己還會做 workspace 守衛（要 HERDR_WORKSPACE_ID 與一次
+        # herdr tab list），若不換掉，任何想驗證「拿到標記行之後怎麼
+        # 分類」的測試都會先卡在守衛上、拿到 marker=none，測到的是另
+        # 一條分支。
+        local read_pane_script="${EO_READ_PHASE_PANE_SCRIPT:-$SCRIPT_DIR/read-phase-pane.sh}"
+        if marker="$(bash "$read_pane_script" "$phase" --marker-only 2>/dev/null)"; then
           :
         else
           marker="marker=none"
         fi
 
-        event="$(eo_classify_stop "$phase" "$stopped_status" "$marker")"
+        # ---- 「分類失敗」與「判定為自動推進」必須分得開 ----
+        # eo_classify_stop 用「印出空字串」表示判定為自動推進，而它失
+        # 敗時 stdout 也是空的，兩者只差在結束碼。舊版寫成裸賦值
+        # `event="$(...)"` 再判 `[ -z "$event" ]`，等於把這兩件事混成
+        # 同一個分支，而且完全依賴 errexit 去攔下失敗——那個依賴不成
+        # 立。已對真實 bash 量測：函式被包在命令替換裡呼叫時，它內部
+        # 「賦值＋命令替換」的失敗不會中止它（同一個函式裸呼叫時會，
+        # 命令替換內的單純指令失敗也會），所以 eo_classify_stop 會一
+        # 路跑到真正 exit 的那一行才停。因此這裡改成顯式檢查結束碼，
+        # 不假設 errexit 會替我們攔下任何東西。本檔每一個決策函式的呼
+        # 叫點都套用同一個寫法。
+        if event="$(eo_classify_stop "$phase" "$stopped_status" "$marker")"; then
+          classify_rc=0
+        else
+          classify_rc=$?
+        fi
+
+        if [ "$classify_rc" -ne 0 ]; then
+          # 分類失敗最常見的原因就是這個 phase 在本次迭代中途被收尾
+          # 移除（eo_classify_stop 讀 last_marker_seq 時記錄已經不
+          # 在），那是正常收尾、不是故障，以 0 安靜結束即可；記錄還
+          # 在卻分類失敗才是真的異常（例如狀態檔數值欄位被寫壞），
+          # 交給檔頭的存活契約處理：印一行診斷、以非 0 結束，讓 main
+          # 結束整支腳本、由編排端重掛。無論哪一種都不會走到自動推
+          # 進——絕不能對一個分類失敗的 phase 送下行。
+          if ! _eo_phase_record_exists "$phase"; then
+            return 0
+          fi
+          printf 'event-generator.sh: phase %s 的停下分類以結束碼 %s 失敗，狀態記錄仍存在，視為異常\n' \
+            "$phase" "$classify_rc" >&2
+          return "$classify_rc"
+        fi
+
         if [ -z "$event" ]; then
           # 自動推進（或送出失敗時的回退事件）：見
           # _eo_run_auto_push_or_fallback 的說明，那段失敗處理邏輯獨
@@ -698,19 +801,16 @@ _eo_phase_edge_loop() {
               break
               ;;
             "$_EO_WAIT_NOT_FOUND_RC")
-              # 同上方外層那個分支：agent_gone 只由邊緣迴圈自己確認
-              # agent_not_found 時設定，見那裡的完整說明。
+              # 同上方外層那個分支：印一次 GONE、以 0 自願結束。
               _eo_scan_gone "$phase" 0
-              eo_state_set "$phase" agent_gone true
               return 0
               ;;
             *)
               # 未預期的結束碼：不是逾時、不是離開 working、不是
-              # agent_not_found。main 的監督邏輯會在下一輪把這條迴
-              # 圈重新起來（這是刻意的自我修復，不是本項要擋的
-              # GONE 風暴——這裡沒有已經印過的事件會被重印），但這
-              # 個死亡本身不該無聲無息，記一行到 stderr 供排錯。
-              printf 'event-generator.sh: phase %s 的內層等待收到未預期結束碼 %s，這條迴圈即將結束（main 會重新監看）\n' \
+              # agent_not_found。依存活契約以非 0 結束，讓 main 結束
+              # 整支腳本、由編排端重掛一次。這裡記一行到 stderr 是為
+              # 了讓「為什麼整支結束了」在排錯時看得見。
+              printf 'event-generator.sh: phase %s 的內層等待收到未預期結束碼 %s，視為異常\n' \
                 "$phase" "$inner_rc" >&2
               return "$inner_rc"
               ;;
@@ -718,7 +818,8 @@ _eo_phase_edge_loop() {
         done
         ;;
       *)
-        printf 'event-generator.sh: phase %s 的外層等待收到未預期結束碼 %s，這條迴圈即將結束（main 會重新監看）\n' \
+        # 同內層那個分支：異常，交給存活契約。
+        printf 'event-generator.sh: phase %s 的外層等待收到未預期結束碼 %s，視為異常\n' \
           "$phase" "$rc" >&2
         return "$rc"
         ;;
@@ -734,6 +835,13 @@ _eo_phase_edge_loop() {
 # 包進隔離子殼呼叫，任何需要「寫回父行程」的狀態都不能放在這裡。
 _eo_low_freq_process_one() {
   local phase="$1" status="$2" seq="$3" changed_epoch="$4"
+
+  # 先確認記錄存在再補預設值，順序不能反：phase-status.sh 印出這一行
+  # 到這裡真正處理它之間有時間差，記錄可能已經被收尾移除，而
+  # _eo_ensure_phase_defaults 對不存在的 phase 會生出一筆殘骸記錄
+  # （理由見它上方的說明）。這條路徑與 _eo_phase_edge_loop 起步那條
+  # 是同一個缺陷的兩個入口，要一起修。
+  _eo_phase_record_exists "$phase" || return 0
 
   _eo_ensure_phase_defaults "$phase"
 
@@ -822,7 +930,22 @@ _eo_low_freq_scan_once() {
     # 追蹤必須留在不被隔離的這一層才寫得回去（見上）。
     set +e
     (set -euo pipefail; _eo_low_freq_process_one "$phase" "$status" "$seq" "$changed_epoch")
+    local process_rc=$?
     set -e
+
+    # 隔離子殼失敗時記一行：隔離讓這一輪繼續處理其餘 phase 是對的，
+    # 但 `set +e` 會把失敗整個吞掉，那個 phase 就每 60 秒無聲地從三
+    # 種低頻事件裡掉出去一次，沒有任何痕跡。低頻掃描這三個決策函式
+    # （_eo_scan_gone／eo_scan_unknown／eo_scan_spinning）都是裸呼
+    # 叫，失敗會被子殼自己的 errexit 攔下並反映在這個結束碼上——這
+    # 是「每個決策函式的呼叫點都要顯式處理失敗」在這條路徑上的落
+    # 點，與 _eo_phase_edge_loop 裡對 eo_classify_stop 的顯式檢查是
+    # 同一條規則。這裡刻意只記錄、不升級成整支結束：低頻掃描是輔助
+    # 通道，單一 phase 的狀態欄位壞掉不該停掉所有 phase 的事件推送。
+    if [ "$process_rc" -ne 0 ]; then
+      printf 'event-generator.sh: 低頻掃描處理 phase %s 時以結束碼 %s 失敗，這一輪跳過它（其餘 phase 不受影響）\n' \
+        "$phase" "$process_rc" >&2
+    fi
   done <<<"$output"
 }
 
@@ -837,138 +960,95 @@ _eo_low_freq_scan_loop() {
   done
 }
 
-# _eo_pidfile_path（內部輔助函式）
-_eo_pidfile_path() {
-  printf '%s/.tmp/epic-orchestration/event-generator.pid\n' "$(eo_main_repo)"
+# _eo_kill_own_child <pid>（內部輔助函式）
+# 收掉一個由本行程 fork 出來的子行程，連同它此刻正卡著的孫行程（幾
+# 乎總是一次 herdr 呼叫）。
+#
+# ---- 為什麼先確認親子關係才送訊號 ----
+# 記錄下來的 pid 可能早就結束、而那個號碼被作業系統回收再指派給一個
+# 毫不相干的行程；直接 kill 就會打到它。這裡先讀 /proc/<pid>/status
+# 的 PPid 確認它現在仍然是本行程的子行程：不用 ps（`ps` 對不存在的
+# pid 是空輸出加非 0 結束碼，任何拿它的輸出做字串比較的條件都會在
+# ps 失敗時得到「不相等」而誤判——早先版本的 process group 判斷就是
+# 這樣寫壞的），也不用 kill -0（那只答得出「這個號碼上有行程」，答
+# 不出「是不是我的」）。/proc 目錄不存在就代表那個 pid 已經不在，本
+# 來就沒有東西該殺，直接返回是正確的失敗方向。
+#
+# ---- 為什麼要收整個子樹，不只是那個子行程本身 ----
+# 已實測：一條卡在前景指令裡的背景子行程收到 TERM 會立刻死掉（bash
+# 在子殼裡把繼承來的 trap 一律重設回預設處置，所以不會被自訂 handler
+# 延後），但它底下的行程收不到任何訊號，會被 reparent 之後繼續跑到自
+# 己逾時。而這棵子樹比直覺深：邊緣迴圈等一次 herdr 的實際形狀是
+#   邊緣迴圈 → `wait_result="$( _eo_agent_wait ... )"` 的子殼
+#             → `output="$( herdr ... )"` 的子殼 → herdr → 它的子行程
+# 也就是四層以上（已用 `ps -o pid=,ppid=` 對真實執行中的產生器逐層核
+# 對過）。只收「子行程加它的直接子行程」會留下更深的那幾層，實測每個
+# phase 會殘留兩個仍在跑的行程；「送一次 TERM 之後整棵樹在數秒內結
+# 束」是這支腳本的驗收條件之一，所以這裡要走完整棵子樹。
+_eo_kill_own_child() {
+  local pid="$1" ppid victims v
+  [ -n "$pid" ] || return 0
+
+  ppid="$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null || true)"
+  [ "$ppid" = "$_EO_MAIN_PID" ] || return 0
+
+  # 先把整棵子樹列出來，才開始送訊號：一旦上層先死，底下的行程就被
+  # reparent，pgrep -P 再也問不出它們屬於誰。
+  victims="$(_eo_descendants_deepest_first "$pid")"
+  while IFS= read -r v; do
+    [ -n "$v" ] || continue
+    kill -TERM "$v" 2>/dev/null || true
+  done <<<"$victims"
 }
 
-# _eo_acquire_singleton（內部輔助函式）
-# 單例守衛：pidfile 記的是整個 process group 的 id，不是單一 pid
-# ——main 呼叫這裡之前已經透過 _eo_ensure_own_process_group 保證自己
-# 是該 group 的 leader，此時 `$$` 同時是自己的 pid 與 pgid。pidfile
-# 存在且該 group 仍有任何存活成員就拒絕啟動第二個常駐產生器，以
-# EO_SINGLETON_CONFLICT_EXIT_CODE（9）結束；group 已經沒有任何存活
-# 成員才視為可以接手，蓋掉舊 pidfile。
+# _eo_descendants_deepest_first <pid>（內部輔助函式）
+# 每行印一個 pid：<pid> 的全部子孫，最深的先印，最後才是 <pid> 自己。
 #
-# ---- 為什麼記錄整個 group、用「group 是否還有任何成員」判斷，不是
-#      記錄單一 pid 再用 kill -0 那一個 pid（獨立審查修正輪次 3／5
-#      找到的問題，這一版取代舊版）----
-# 舊版記單一 pid，SIGKILL 收掉 main 之後，main 自己的 pid 確實死
-# 了，但它的子行程（每個 phase 的邊緣迴圈）與孫行程（它們呼叫的
-# herdr）全部繼續存活變成孤兒——已被獨立審查實測：SIGKILL 掉 main
-# 後有 7 個孤兒存活，包含真正會寫 last_marker_seq 的那些行程。舊版
-# `kill -0 <舊 pid>` 對已死的 main 自己那個 pid 當然不成立，於是新
-# 產生器順利接手，跟孤兒同時存在、同時寫 last_marker_seq——這正是
-# 「seq 只會變大」這個整條事件通道賴以判斷「標記是新是舊」的假設會
-# 失效的那個情境，這道守衛存在的理由正是要擋下它，舊版卻沒有真的擋
-# 下（這裡不重複舊版註解「這裡擋的正是這個情境」與「舊 pid 已死就視
-# 為可以接手」前後矛盾的問題：舊版程式碼做的其實是後者，卻同時聲稱
-# 做到前者）。現在用 `kill -0 -<pgid>`（對負的 pgid 送訊號 0，
-# POSIX 定義為檢查該 process group 是否還有任何存活成員，不會真的
-# 送出訊號）取代單一 pid 檢查：孤兒們雖然各自的直接父行程 main 已經
-# 不在，但仍然留在同一個 group 裡（見 main 開頭
-# _eo_ensure_own_process_group 與 _eo_cleanup 的說明：不開 job
-# control，子行程與孫行程都留在同一個 group），因此只要有任何一個
-# 孤兒還活著，這個檢查就會抓到，正確拒絕啟動第二個——已對
-# `kill -0 -<pgid>` 的這個語意實測驗證過（對存在的 group 回傳 0、對
-# 不存在的 group 回傳非 0）。這個修正同時推翻了任務七上一輪一項裁
-# 定的前提：帶鎖的讀-改-寫更新函式之所以被判為延後，理由之一是「兩
-# 個產生器同時存在由這道守衛擋掉」，但那個前提在舊版單一 pid 設計下
-# 是假的；這一版修好守衛本身，而不是另外加鎖——加鎖只能擋住遺失更
-# 新，擋不住「孤兒把序號推進之後新產生器把真正的新標記判成缺席」，
-# 而後者才是致命的那一半，鎖解決不了語意層的雙寫者問題。
-_eo_acquire_singleton() {
-  local pidfile old_pgid
-  pidfile="$(_eo_pidfile_path)"
-  mkdir -p "$(dirname "$pidfile")"
-
-  if [ -f "$pidfile" ]; then
-    old_pgid="$(cat "$pidfile" 2>/dev/null || true)"
-    if [ -n "$old_pgid" ] && kill -0 -"$old_pgid" 2>/dev/null; then
-      eo_die "$EO_SINGLETON_CONFLICT_EXIT_CODE" \
-        "event-generator.sh: 偵測到既有的常駐產生器（含其子孫行程）仍有存活成員（process group $old_pgid，$pidfile），拒絕啟動第二個——兩個產生器同時寫 last_marker_seq 會讓『seq 只會變大』這個假設失效"
-    fi
-  fi
-
-  printf '%s\n' "$$" > "$pidfile"
-}
-
-# _eo_ensure_own_process_group（內部輔助函式）
-# 確保目前這個行程是自己 process group 的 leader（pgid 等於自己的
-# pid）；不是的話用 `setsid --wait` 把自己整個重啟進一個獨立的新
-# session（也就是新的 process group），重啟後的那個行程一定是新
-# group 的 leader，再檢查一次時條件成立、直接往下執行，不會無窮遞
-# 迴。main 必須在做任何其他事之前先呼叫這個函式。
-#
-# ---- 為什麼需要這個（Critical A，獨立審查修正輪次 3／5 找到的問
-#      題）----
-# 這支腳本設計上要掛在 Claude Code 的 Monitor 上跑，而它既不呼叫
-# setsid、也不檢查自己是不是 group leader，是否安全完全取決於啟動
-# 者恰好怎麼開它——不開 job control 時，main 與啟動它的那個行程共用
-# 同一個 group 是預設行為，_eo_cleanup 對這個共用 group 廣播 TERM
-# 就會連啟動者、以及同一個 group 裡任何無關的行程一起殺掉。獨立審查
-# 實測過：generator、一支無關的 sleep、以及啟動腳本三者 pgid 都相
-# 同，只對 generator 送一次 TERM，三者全部死亡；而 _eo_cleanup 掛在
-# EXIT 上，任何離開路徑（含 errexit 死亡）都會觸發，不只 SIGTERM。
-#
-# ---- 為什麼用 `setsid --wait CMD`，不是 `exec setsid CMD` ----
-# 直接 `exec setsid CMD` 有個副作用：setsid() 這個系統呼叫要求呼叫
-# 者不能已經是自己 process group 的 leader，若呼叫端已經是（不常
-# 見，但不能排除），setsid 這個外部工具必須先 fork 出一個子行程才能
-# 成功呼叫 setsid()——而 fork 之後，父行程（也就是 exec 換上去、原
-# 本 Monitor 在追蹤的那個 pid）預設會立刻結束，不等子行程。Monitor
-# 若是靠「行程結束」判斷串流已經停止，就會在真正的常駐邏輯都還沒開
-# 始跑的時候，誤判成串流已經結束。改用 `setsid --wait CMD`（不
-# exec，讓目前這個 bash 繼續存在、以前景方式呼叫它）：不論 setsid
-# 內部要不要 fork，`--wait` 都讓外層行程一直等到 CMD 真正結束才返
-# 回、也才真正終止；CMD 的 stdout 是從外層行程繼承來的同一個檔案描
-# 述符，不需要另外接管線，Monitor 追蹤的 pid 全程存活、也全程看得到
-# CMD 的輸出，直到真正該結束的時候才結束。已用獨立重現腳本驗證：一
-# 個會先印一行、睡數秒、再印一行的內層腳本，外層在 `setsid --wait`
-# 返回前那整段期間都還在等待（藉由外層自己緊接著寫的下一行只在內層
-# 完全跑完之後才出現來確認），兩行輸出都正確經由外層原本的 stdout
-# 重導向被完整收下；也驗證過 `setsid CMD &`（不帶 --wait）確實會讓
-# 實際執行內容的那個行程成為自己 pgid 等於 pid 的新 group leader。
-_eo_ensure_own_process_group() {
-  if [ "$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')" != "$$" ]; then
-    setsid --wait bash "${BASH_SOURCE[0]}"
-    exit $?
-  fi
+# ---- 遞迴的終止條件刻意掛在「沒有子行程」而不是任何外部工具的成敗
+#      ----
+# pgrep 查不到子行程時輸出空字串，這一層就不再往下遞迴。萬一 pgrep
+# 本身不可用，得到的同樣是空字串，於是遞迴立刻停止、只是少收幾層行
+# 程——方向是安全的。這一點要跟早先版本那個「掛在 ps 上的遞迴」分清
+# 楚：那個寫法是把終止條件寫成「ps 的輸出等於自己的 pid」，ps 失敗時
+# 輸出空字串、條件恆為不相等，於是每一層都再包一層，形成沒有上界的
+# 行程鏈。差別就在工具失效時條件往哪一邊倒。
+_eo_descendants_deepest_first() {
+  local pid="$1" kid kids
+  kids="$(pgrep -P "$pid" 2>/dev/null || true)"
+  while IFS= read -r kid; do
+    [ -n "$kid" ] || continue
+    _eo_descendants_deepest_first "$kid"
+  done <<<"$kids"
+  printf '%s\n' "$pid"
 }
 
 # _eo_cleanup（內部輔助函式，掛在 EXIT trap 上）
-# 不論這個行程怎麼結束（正常、或被 _eo_signal_exit 呼叫 exit），都在
-# 這裡做一次性的善後：移除 pidfile、把整個 process group 一次收掉。
+# 不論這個行程怎麼結束（正常、異常、或被 _eo_signal_exit 呼叫
+# exit），都在這裡把自己起的子行程與它們的孫行程逐一收掉。
 #
-# ---- 為什麼對整個 group 廣播是安全的 ----
-# main 在呼叫這裡之前已經透過 _eo_ensure_own_process_group 保證自己
-# 是一個獨立、新建 session 的 process group leader（見該函式的說
-# 明），這個 group 裡只會有本行程自己與它之後起的子孫（每個 phase
-# 的邊緣迴圈、低頻掃描，以及它們呼叫的 herdr）——不開 job control
-# 時，子行程與孫行程預設就跟父行程共用同一個 group（已用獨立重現腳
-# 本驗證：三層 `ps` 顯示 pgid 相同），因此對這個 group 送一次訊號就
-# 能連孫行程一起收，不必逐一記錄、逐一收拾每個子行程的 pid。這與早
-# 先版本「不開 set -m」的推理不同：早先版本以為「不開 job control 就
-# 安全」，但那只保證子孫共用同一個 group，沒有保證那個 group 不會被
-# 啟動者或其他無關行程共用——真正的安全性來自 main 主動把自己隔進一
-# 個新 group，不是「不開 set -m」這件事本身。
+# ---- 為什麼是逐一收，不是對 process group 廣播 ----
+# 廣播看起來更省事，實際上不安全：不開 job control 時 main 與「啟動
+# 它的那個行程」共用同一個 process group，對自己所在的 group 送
+# TERM 會連啟動者、以及那個 group 裡任何無關行程一起殺掉（獨立審查
+# 實測過：generator、一支無關的 sleep、啟動腳本三者 pgid 相同，只對
+# generator 送一次 TERM，三者全部死亡）。早先版本為了讓廣播變安全，
+# 改用 setsid 把自己重啟進獨立 session，結果是外層被 TERM 殺掉之後
+# 內層變孤兒繼續跑——把「TERM 停不掉常駐迴圈」這個已修過的問題從另
+# 一個入口帶了回來（同樣實測重現）。逐一收沒有這個兩難：只碰確認過
+# 是自己子行程的 pid，波及範圍在結構上不可能超出自己的子孫，也不需
+# 要 setsid、不需要知道自己的 pgid。已實測這個形狀：七個行程的樹
+# （main、三條迴圈、三個孫行程），對 main 送一次 TERM，1034 毫秒內
+# 全數結束，啟動者本身完全不受影響。
 #
-# ---- 為什麼要先關掉自己的 trap，再對含自己在內的整個 group 送訊號 ----
-# 已用獨立最小重現腳本驗證：若不先關掉 TERM／INT 的攔截，對包含本行
-# 程自己在內的整個 process group 送 TERM，這個行程自己還開著的 trap
-# 會把這個自己送出的訊號重新攔下、再次呼叫同一個 handler，變成無窮
-# 迴圈（重現腳本裡 "cleanup fired" 訊息無限重複印出）。先
-# `trap - TERM INT` 拿掉攔截，同一段 kill 之後三層行程（main、子行
-# 程、孫行程）乾淨結束、訊息只印一次。
+# 這裡也不再需要「先 trap - TERM INT 再送訊號」那一步——那是廣播時
+# 才有的問題（自己送給整個 group 的訊號會被自己的 trap 再攔一次，形
+# 成無窮迴圈，已實測重現）。現在送出的訊號不含自己，沒有這個迴圈。
 _eo_cleanup() {
-  rm -f "$(_eo_pidfile_path)" 2>/dev/null || true
-
-  local mypgid
-  mypgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
-  if [ -n "$mypgid" ]; then
-    trap - TERM INT
-    kill -TERM -"$mypgid" 2>/dev/null || true
-  fi
+  local p
+  for p in "${!_EO_PHASE_PIDS[@]}"; do
+    _eo_kill_own_child "${_EO_PHASE_PIDS[$p]}"
+  done
+  _eo_kill_own_child "${_EO_LOW_FREQ_PID:-}"
 }
 
 # _eo_signal_exit（內部輔助函式，掛在 INT／TERM trap 上）
@@ -983,193 +1063,164 @@ _eo_cleanup() {
 # 方（例如恢復 sleep、恢復 main 的 while 迴圈）——SIGTERM 因此完全
 # 停不掉這支常駐腳本，已用獨立最小重現腳本驗證：沒有這個 exit，逾時
 # 送 TERM 後行程仍在跑；加上這個 exit 之後，行程與其背景子行程、孫
-# 行程全部確實結束。獨立審查另外指出這個問題還有一個更嚴重的併發後
-# 果：main 對低頻掃描沒有監督重啟（早先版本），SIGTERM 收到後
-# _eo_cleanup 把子行程都殺了，但因為沒有 exit，main 的 while 迴圈會
-# 恢復執行，下一輪又把 phase 迴圈重新起回來（main 有監督重啟這
-# 段），變成「送了 TERM 卻停不下來、只是把低頻掃描永久殺死」的半盲
-# 活屍——低頻掃描沒有監督重啟，一旦被這樣殺掉就再也不會回來。這一
-# 版把低頻掃描也納入 main 的監督重啟（見下方 main），並修好這裡的
-# exit，兩處要一起看才是完整的修法。
+# 行程全部確實結束。
 _eo_signal_exit() {
   exit 0
 }
 
-# _eo_phase_fingerprint <phase>（內部輔助函式）
-# 印出這個 phase 目前狀態記錄的一份簡單指紋（座標三欄位加八個邊緣
-# 觸發欄位，串成一個字串）。用在 _eo_phase_supervise 判斷「放棄重起
-# 之後，狀態記錄是不是有變動」——包含座標欄位是刻意的：操作者若把這
-# 個卡住的 phase 關掉、重新 start-phase 一次，tab_id／pane_id 會換
-# 新，這正是「值得恢復監督」的訊號。任何一個欄位讀不到（缺漏）都當
-# 空字串處理，不因此讓指紋計算本身失敗。
-_eo_phase_fingerprint() {
-  local phase="$1" field value out=""
-  for field in tab_id pane_id agent_name last_marker_seq held_by_orchestrator \
-    auto_push_count unknown_rounds spinning_muted gone_muted unclassified_muted \
-    agent_gone; do
-    if value="$(eo_state_get "$phase" "$field" 2>/dev/null)"; then
-      :
-    else
-      value=""
+# _eo_phase_watch <phase>（內部輔助函式）
+# main 主迴圈每輪對每個列在狀態檔裡的 phase 呼叫一次，決定要不要
+# （重）啟動它的邊緣迴圈。這是整份存活契約（見檔頭）的落點，依序：
+#   1. 這條迴圈已自願結束過：比對現在的 pane 識別碼與當時記下的那
+#      個。相同就什麼都不做；不同代表這個 phase 換了新 pane 復活
+#      （操作者重新 start-phase 過），清掉標記重新起一條。這是唯一
+#      的恢復入口；沒有它，一個印過 GONE 的 phase 就再也不會被重新
+#      監看。
+#   2. 子行程還活著：什麼都不做。
+#   3. 子行程已經不在了、而且先前記錄過它的 pid：用 wait 取它的結束
+#      碼。0 是自願結束，記下標記與當時的 pane 識別碼，不再重起；非
+#      0 是異常，回傳那個碼讓 main 結束整支腳本。
+#   4. 以上都不適用（也就是第一次看到這個 phase）：起一條邊緣迴圈。
+#
+# ---- 為什麼用 wait 而不是查狀態檔判斷「是自願還是異常」----
+# 已實測：對一個已經結束的背景子行程呼叫 `wait <pid>`，bash 仍然回
+# 傳它真正的結束碼（不會因為行程已經消失就取不到）。用結束碼的關鍵
+# 好處是這條通道只有邊緣迴圈自己寫得到——若改成讀狀態檔某個欄位來
+# 判斷，那個欄位就會同時被低頻掃描寫到，而「重起判斷的輸入被另一條
+# 認不同識別碼的通道改寫」正是先前那個無界重複的成因。拿不到結束碼
+# （wait 回 127，代表 bash 已經把這個子行程的紀錄丟掉）一律當異常處
+# 理：失明是這支腳本存在的理由要消滅的東西，寧可整支結束讓編排端重
+# 掛，也不要靜靜地不再監看某個 phase。
+_eo_phase_watch() {
+  local phase="$1" pane rc
+
+  if [ -n "${_EO_PHASE_DONE[$phase]:-}" ]; then
+    pane="$(_eo_phase_pane_id "$phase")"
+    if [ "$pane" = "${_EO_PHASE_DONE_PANE[$phase]:-}" ]; then
+      return 0
     fi
-    out="${out}${field}=${value};"
-  done
-  printf '%s' "$out"
+    unset '_EO_PHASE_DONE[$phase]' '_EO_PHASE_DONE_PANE[$phase]'
+    unset '_EO_PHASE_PIDS[$phase]'
+  fi
+
+  if [ -n "${_EO_PHASE_PIDS[$phase]:-}" ]; then
+    if kill -0 "${_EO_PHASE_PIDS[$phase]}" 2>/dev/null; then
+      return 0
+    fi
+
+    # 包在 if 裡取結束碼，不寫成裸的 `wait` 再讀 $?：wait 回傳非 0
+    # 時 errexit 會在下一行執行之前就把 main 帶走，那樣就永遠印不出
+    # 下面那行診斷、也分不出自願與異常（common.sh 的 eo_herdr 上方對
+    # 同一個陷阱有更長的說明）。
+    if wait "${_EO_PHASE_PIDS[$phase]}"; then
+      rc=0
+    else
+      rc=$?
+    fi
+
+    if [ "$rc" -eq 0 ]; then
+      _EO_PHASE_DONE[$phase]=1
+      _EO_PHASE_DONE_PANE[$phase]="$(_eo_phase_pane_id "$phase")"
+      return 0
+    fi
+
+    printf 'event-generator.sh: phase %s 的邊緣迴圈以結束碼 %s 異常結束，本產生器即將結束，請編排端重掛\n' \
+      "$phase" "$rc" >&2
+    return "$rc"
+  fi
+
+  _eo_phase_edge_loop "$phase" &
+  _EO_PHASE_PIDS[$phase]=$!
 }
 
-# _eo_phase_supervise <phase>（內部輔助函式）
-# main 主迴圈每輪對每個列在狀態檔裡的 phase 呼叫一次，決定要不要
-# （重）啟動它的邊緣迴圈。依序：
-#   1. 先前已經放棄重起（_EO_PHASE_GIVEUP_FINGERPRINT 非空，不論放
-#      棄的原因是 agent_gone 還是連續重起超過門檻，見步驟 2 與步驟
-#      4）：比對目前的狀態指紋，沒變就繼續放棄；變了才清掉放棄標
-#      記、歸零重起計數、把 agent_gone 重設回 false，恢復正常監
-#      督——這是本函式唯一的恢復入口，agent_gone 與 RESPAWN-LIMIT
-#      兩種放棄共用同一套指紋比對。
-#   2. agent_gone 已經是 true：邊緣迴圈自己確認過 agent_not_found，
-#      這是自願結束、不是異常死亡，不重新起一條——否則會變成事件風
-#      暴（見 _eo_phase_edge_loop 裡對應分支的說明；這裡刻意不是檢
-#      查 gone_muted，理由見 _eo_scan_gone 的說明：那個欄位會被低頻
-#      掃描的「重新出現」解除，若拿它當重啟閘門會在兩條通道判讀不
-#      一致時形成永不停止的重複）。第一次偵測到就順便記錄放棄指
-#      紋，供步驟 1 比對。
-#   3. 子行程還活著（kill -0 成立）：健康，把連續重起計數歸零。
-#   4. 子行程不在了，且先前有記錄過 PID（代表這不是第一次啟動，是
-#      死掉之後要重起）：套用退避——連續重起次數每次加倍延遲下次允
-#      許重起的時間，超過 EO_PHASE_RESPAWN_GIVEUP_THRESHOLD 次就放
-#      棄，印一則 RESPAWN-LIMIT 事件交回 orchestrator、記錄當下的狀
-#      態指紋，之後每輪都在步驟 1 被擋下，直到指紋改變。
-#   5. 通過以上檢查（含第一次啟動，不受退避規則約束）：(重)啟動
-#      _eo_phase_edge_loop。
-#
-# ---- 為什麼需要這一整套，不能只「不在了就重起」----
-# 早先版本的「不在了就重起」在死亡原因是持續性的情況下會變成無窮迴
-# 圈，而且後果分兩種、兩種都不好：死在印出事件之前的入口（例如
-# _eo_agent_wait 內部的等待失敗、解析回應失敗被 errexit 帶走）重起
-# 不會產生任何 stdout 事件，只有 stderr 噪音——監看端不會被自動停
-# 掉，但 orchestrator 也永遠收不到這個 phase 的任何消息，那就是失明
-# 本身，只是變吵了；死在印出事件之後的入口（內層把結束碼原樣回傳那
-# 個分支）重起之後外層立刻再命中同一個停下，標記序號已經推進過，會
-# 印出標記缺席那種事件，變成另一種風暴。退避＋放棄把「無聲每 5 秒一
-# 次」換成「有界、可見、而且會升級」。
-_eo_phase_supervise() {
-  local p="$1"
-
-  if [ -n "${_EO_PHASE_GIVEUP_FINGERPRINT[$p]:-}" ]; then
-    local current_fp
-    current_fp="$(_eo_phase_fingerprint "$p")"
-    if [ "$current_fp" = "${_EO_PHASE_GIVEUP_FINGERPRINT[$p]}" ]; then
-      return 0
-    fi
-    unset '_EO_PHASE_GIVEUP_FINGERPRINT[$p]'
-    _EO_PHASE_RESPAWN_COUNT[$p]=0
-    eo_state_set "$p" agent_gone false
+# _eo_phase_pane_id <phase>（內部輔助函式）
+# 印出這個 phase 目前的 pane 識別碼；讀不到就印空字串。只有
+# _eo_phase_watch 的恢復判斷用得到它，刻意只讀這一個欄位：這個判斷
+# 要答的問題就是「這個 phase 是不是換了新 pane 復活」，多讀欄位只會
+# 讓不相干的欄位變動（例如某個計數加一）誤觸恢復。
+_eo_phase_pane_id() {
+  local value
+  if value="$( ( eo_state_get "$1" pane_id ) 2>/dev/null )"; then
+    printf '%s' "$value"
+  else
+    printf ''
   fi
-
-  local agent_gone
-  if agent_gone="$(eo_state_get "$p" agent_gone 2>/dev/null)" && [ "$agent_gone" = "true" ]; then
-    _EO_PHASE_GIVEUP_FINGERPRINT[$p]="$(_eo_phase_fingerprint "$p")"
-    return 0
-  fi
-
-  if [ -n "${_EO_PHASE_PIDS[$p]:-}" ] && kill -0 "${_EO_PHASE_PIDS[$p]}" 2>/dev/null; then
-    _EO_PHASE_RESPAWN_COUNT[$p]=0
-    return 0
-  fi
-
-  if [ -n "${_EO_PHASE_PIDS[$p]:-}" ]; then
-    local now_epoch next_allowed
-    now_epoch="$(date +%s)"
-    next_allowed="${_EO_PHASE_NEXT_RESPAWN_EPOCH[$p]:-0}"
-    if [ "$now_epoch" -lt "$next_allowed" ]; then
-      return 0
-    fi
-
-    local respawn_count delay
-    respawn_count=$(( ${_EO_PHASE_RESPAWN_COUNT[$p]:-0} + 1 ))
-    _EO_PHASE_RESPAWN_COUNT[$p]=$respawn_count
-
-    if [ "$respawn_count" -gt "$EO_PHASE_RESPAWN_GIVEUP_THRESHOLD" ]; then
-      printf 'phase=%s RESPAWN-LIMIT count=%s\n' "$p" "$respawn_count"
-      _EO_PHASE_GIVEUP_FINGERPRINT[$p]="$(_eo_phase_fingerprint "$p")"
-      return 0
-    fi
-
-    delay=$(( EO_PHASE_POLL_SECONDS * (1 << (respawn_count - 1)) ))
-    if [ "$delay" -gt "$EO_PHASE_RESPAWN_BACKOFF_MAX_SECONDS" ]; then
-      delay="$EO_PHASE_RESPAWN_BACKOFF_MAX_SECONDS"
-    fi
-    _EO_PHASE_NEXT_RESPAWN_EPOCH[$p]="$(( now_epoch + delay ))"
-  fi
-
-  _eo_phase_edge_loop "$p" &
-  _EO_PHASE_PIDS[$p]=$!
 }
 
 # _eo_forget_phase <phase>（內部輔助函式）
-# 收掉一個已經不在狀態檔清單裡的 phase：若還記錄著存活的子行程 pid
-# 就送 TERM 直接結束它，並把這個 phase 從全部行程內關聯陣列裡清乾
-# 淨（Medium C，獨立審查修正輪次 3／5 找到的問題）。
+# 收掉一個已經不在狀態檔清單裡的 phase：若還記錄著子行程 pid 就把它
+# 連同它的孫行程收掉，並把這個 phase 從全部行程內關聯陣列裡清乾淨。
 #
 # ---- 為什麼需要這個 ----
 # phase 的記錄被 close-phase.sh 呼叫 eo_state_remove_phase 移除之
 # 後，若不主動收掉，有兩個後果：(1) 那條邊緣迴圈會繼續跑到它自己下
 # 一次 wait 返回為止（最長 EO_WAIT_TIMEOUT_MS，也就是最長兩分鐘），
-# 之後才會因為讀不到狀態記錄而死掉，讀起來像故障，其實是成功收尾的
-# 正常後果；(2) pid 陣列從不清除，若之後又有新的 phase 重新使用同一
-# 個編號，main 會看到殘留的存活 pid 誤判成「已在監看」而不起新迴
-# 圈，那筆重建的記錄就一直只有三個座標欄位。這裡主動 kill 掉還存活
-# 的子行程、清空全部相關陣列，兩個後果都不會發生。
+# 之後才會因為讀不到狀態記錄而結束；(2) pid 陣列從不清除，若之後又
+# 有新的 phase 重新使用同一個編號，main 會看到殘留的存活 pid 誤判成
+# 「已在監看」而不起新迴圈，那筆重建的記錄就一直只有三個座標欄位。
 #
-# ---- 為什麼直接 kill 這個子行程是安全的、不會意外觸發整個產生器的
-#      清理邏輯 ----
-# `_eo_phase_edge_loop "$p" &` 這個背景子行程是用 fork 產生的，會繼
-# 承 main 當下已經註冊好的 trap 設定（含掛在 EXIT 上的 _eo_cleanup
-# 與掛在 INT／TERM 上的 _eo_signal_exit），但已用獨立重現腳本驗證
-# 過：對一個「只是繼承了 trap 設定、自己從未真的執行過對應訊號處理
-# 邏輯」的背景子行程送預設訊號（TERM，無自訂 handler 主動攔截時的
-# 預設處置是立即終止），它會直接終止，不會執行繼承來的 trap——重現
-# 腳本裡子行程被 kill 之後，「EXIT-trap 已觸發」與「TERM-trap 已觸
-# 發」兩則訊息都只在父行程自己自然結束時各印一次，從未在子行程的真
-# 實 pid 下出現過。因此這裡對單一子行程送 kill，不會意外連鎖觸發整
-# 支產生器的 process group 廣播清理。
+# ---- 為什麼直接 kill 這個子行程不會意外觸發整支產生器的清理 ----
+# 已用獨立重現腳本驗證兩件事：一是背景子行程雖然繼承了 main 註冊的
+# trap 設定，但 bash 在子殼裡把它們重設回預設處置，收到 TERM 就直接
+# 終止、不會執行繼承來的 handler；二是背景子行程正常返回（不論結束
+# 碼是 0 或非 0）時也不會執行繼承來的 EXIT trap——重現腳本裡
+# "cleanup ran" 只在 main 自己的 pid 下出現過一次。所以這裡對單一子
+# 行程送訊號不會連鎖觸發 _eo_cleanup。
 _eo_forget_phase() {
   local p="$1"
-  if [ -n "${_EO_PHASE_PIDS[$p]:-}" ]; then
-    kill "${_EO_PHASE_PIDS[$p]}" 2>/dev/null || true
-  fi
-  unset '_EO_PHASE_PIDS[$p]' '_EO_PHASE_RESPAWN_COUNT[$p]' \
-    '_EO_PHASE_NEXT_RESPAWN_EPOCH[$p]' '_EO_PHASE_GIVEUP_FINGERPRINT[$p]' \
+  _eo_kill_own_child "${_EO_PHASE_PIDS[$p]:-}"
+  unset '_EO_PHASE_PIDS[$p]' '_EO_PHASE_DONE[$p]' '_EO_PHASE_DONE_PANE[$p]' \
     '_EO_SPIN_SEQ[$p]' '_EO_SPIN_EPOCH[$p]'
 }
 
 # main（無參數）
-# 常駐主迴圈：先確保自己是獨立 process group 的 leader（見
-# _eo_ensure_own_process_group），再取得單例守衛，起低頻掃描一次，
-# 之後每 EO_PHASE_POLL_SECONDS 秒重讀狀態檔，並且：
-#   - 若低頻掃描的子行程已經不在了（不論是異常死亡還是先前沒能起
-#     來），重新起一條——跟 phase 迴圈用同一套「不在了就重起」邏
-#     輯，早先版本只在 main 開頭起一次，一旦死掉就永久消失，SIGTERM
-#     誤用的後果見 _eo_signal_exit 的說明。
-#   - 對每個列在狀態檔裡的 phase 呼叫 _eo_phase_supervise，把「要不
-#     要（重）啟動」的判斷交給它（含 agent_gone 跳過、退避、放棄門
-#     檻，見該函式的說明）。
+# 常駐主迴圈：起低頻掃描，之後每 EO_PHASE_POLL_SECONDS 秒重讀狀態
+# 檔，並且：
+#   - 對每個列在狀態檔裡的 phase 呼叫 _eo_phase_watch，把「要不要
+#     （重）啟動」的判斷交給它（見該函式與檔頭的存活契約）。它回傳
+#     非 0 代表某條邊緣迴圈異常結束，main 跟著結束整支腳本，讓串流
+#     結束、由編排端重掛一次。
 #   - 讀完這一輪的清單後，把已經不在清單內、但行程內還記錄著的
-#     phase 交給 _eo_forget_phase 收掉（Medium C）。
+#     phase 交給 _eo_forget_phase 收掉。
+#   - 低頻掃描那條子行程若不在了，一律當異常：它是常駐迴圈，不該有
+#     自願結束。同樣結束整支腳本交給編排端，而不是自己重起——早先版
+#     本自己重起，結果是 SIGTERM 只殺得掉低頻掃描、main 又把 phase
+#     迴圈起回來，變成停不下來的半盲活屍。
 main() {
-  _eo_ensure_own_process_group
-  _eo_acquire_singleton
+  local phases p low_freq_rc watch_rc
+
+  # 這個集合必須每輪重新歸零，所以宣告刻意留在 while 迴圈外、每輪開
+  # 頭用 `=()` 清空：bash 對一個已經存在的關聯陣列再跑一次
+  # `declare -A`／`local -A` 不會重置它（已實測：宣告寫在迴圈裡時，
+  # 連續三輪的 keys 分別是 `1`、`2 1`、`3 2 1`；宣告在迴圈外、每輪
+  # `=()` 清空則是 `1`、`2`、`3`）。舊版把宣告寫在迴圈裡，於是這個
+  # 集合累積了每一輪見過的所有 phase，「已經不在清單內」的判斷式永
+  # 遠為假，下面那段收尾在生產路徑上是死碼、一次都不會執行——獨立審
+  # 查實測：移除一個 phase 之後 14 秒（約三輪）那條邊緣迴圈仍然存
+  # 活。不要為了「宣告靠近使用處」把它搬回迴圈內。
+  local -A current_phase_set=()
+
+  _EO_MAIN_PID=$$
 
   trap '_eo_cleanup' EXIT
   trap '_eo_signal_exit' INT TERM
 
-  while true; do
-    if [ -z "${_EO_LOW_FREQ_PID:-}" ] || ! kill -0 "$_EO_LOW_FREQ_PID" 2>/dev/null; then
-      _eo_low_freq_scan_loop &
-      _EO_LOW_FREQ_PID=$!
-    fi
+  _eo_low_freq_scan_loop &
+  _EO_LOW_FREQ_PID=$!
 
-    local phases p
+  while true; do
+    if ! kill -0 "$_EO_LOW_FREQ_PID" 2>/dev/null; then
+      # 理由同 _eo_phase_watch 裡那段：包在 if 裡取結束碼，不然
+      # errexit 會在印出診斷之前就把 main 帶走。
+      if wait "$_EO_LOW_FREQ_PID"; then
+        low_freq_rc=0
+      else
+        low_freq_rc=$?
+      fi
+      printf 'event-generator.sh: 低頻掃描迴圈以結束碼 %s 結束，本產生器即將結束，請編排端重掛\n' \
+        "$low_freq_rc" >&2
+      return 1
+    fi
 
     # 狀態檔還不存在（generator 比第一個 start-phase 先起）時
     # eo_state_phases 會以 5 結束；這裡接住，視同「目前沒有任何
@@ -1180,11 +1231,18 @@ main() {
       phases=""
     fi
 
-    local -A current_phase_set
+    current_phase_set=()
     while IFS= read -r p; do
       [ -n "$p" ] || continue
       current_phase_set[$p]=1
-      _eo_phase_supervise "$p"
+      if _eo_phase_watch "$p"; then
+        watch_rc=0
+      else
+        watch_rc=$?
+      fi
+      if [ "$watch_rc" -ne 0 ]; then
+        return "$watch_rc"
+      fi
     done <<<"$phases"
 
     for p in "${!_EO_PHASE_PIDS[@]}"; do

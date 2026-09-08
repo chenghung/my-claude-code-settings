@@ -11,7 +11,27 @@ T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 STUB_BIN="$T/bin"
 mkdir -p "$STUB_BIN"
-saved_path="$PATH"
+
+# ---- 樁遮蔽的結構性修法：這份套件全程不讓真實 herdr 出現在 PATH 上 ----
+# 舊版把 PATH 設成「樁目錄＋原本的 PATH」，需要樁的段落各自前插、跑
+# 完再還原成真實 PATH。那個形狀有兩個問題已經真的發生過：一是後來新
+# 增的段落跑在還原後的真實 PATH 上、沒有樁（其中一條的立論還正好是
+# 「驗證它不會走到會呼叫 herdr 的那個函式」——那個檢查一退化，測試
+# 就會拿真實 herdr 去等待，而斷言分不出「沒呼叫」與「呼叫了真實的之
+# 後恰好失敗」）；二是忘了建的樁不會報錯，那個名字只是靜靜解析過樁
+# 目錄、跑真實二進位，測試就在對真實 session 動手。
+#
+# 改法不是再補一條斷言，而是讓那件事在結構上不可能：整份套件的 PATH
+# 一律是「樁目錄＋系統目錄」，真實 herdr 所在的目錄（本機是
+# ~/.local/bin）從頭到尾不在 PATH 上。已查證受測腳本與本套件用到的
+# 其餘工具（jq／flock／mktemp／date／sha256sum／awk／ps／pgrep／rg／
+# cat／cut／tr／sort／head／wc／sleep／bash）全部位於 /usr/bin，而
+# herdr 只在 ~/.local/bin，所以這個 PATH 足夠跑完全部測試、又打不到
+# 真實二進位。忘了建樁的段落會得到 command-not-found 而失敗，不再是
+# 靜默地改打真實 session。common.sh 呼叫 git 時用的是絕對路徑
+# /usr/bin/git，不受影響。
+EO_TEST_PATH="$STUB_BIN:/usr/bin:/bin"
+export PATH="$EO_TEST_PATH"
 
 # Medium 11（修正輪次 2）：明確設定 HERDR_ENV，不依賴執行這份測試的
 # 終端機本身剛好是 herdr 管理的環境（本機開發環境恰好是，但套件不
@@ -30,16 +50,27 @@ export HERDR_ENV=1
 # 分不必因為某一條測試需要驗證真正的送出路徑，就跟著失去這層保護。
 export EO_GENERATOR_DRY_RUN=1
 
-# PATH 洩漏守衛：確認樁目錄確實遮蔽了真實 herdr。少了這道，
-# 忘了建的樁會靜默解析到真實二進位，測試就在對真實 session 動手。
-assert_herdr_stub_only() {
-  local check_path="$1" stub_dir="$2" resolved
-  resolved="$(PATH="$check_path" command -v herdr 2>/dev/null)" || resolved=""
-  if [ "$resolved" != "$stub_dir/herdr" ]; then
-    bad "PATH guard: herdr 解析到 '$resolved'，不是樁 '$stub_dir/herdr'"
-    return 1
-  fi
-  return 0
+# PATH 遮蔽守衛：樁目錄裡每一個可執行檔，都必須是那個名字在目前
+# PATH 上解析到的東西。
+#
+# 名單刻意不是手寫的，而是從樁目錄自己的內容機械推導出來——這份套件
+# 先前兩次遮蔽缺口都是手寫名單漏了一項造成的，不是斷言本身寫錯，所
+# 以問題出在「名單由人維護」這件事，補一條斷言修不掉它。上面那道結
+# 構性的 PATH 收斂負責「忘了建樁不會靜默改打真實二進位」，這道守衛
+# 負責「樁目錄真的排在前面」（例如日後有人調換 PATH 順序、或某支腳
+# 本自己改寫 PATH）。兩道分工不同，都要有。
+assert_stubs_shadow_real() {
+  local stub_dir="$1" f name resolved ok=0
+  for f in "$stub_dir"/*; do
+    [ -x "$f" ] || continue
+    name="${f##*/}"
+    resolved="$(command -v "$name" 2>/dev/null)" || resolved=""
+    if [ "$resolved" != "$f" ]; then
+      bad "PATH guard: $name 解析到 '$resolved'，不是樁 '$f'"
+      ok=1
+    fi
+  done
+  return "$ok"
 }
 
 # shellcheck source=/dev/null
@@ -181,8 +212,8 @@ fi
 exit 1
 STUB
 chmod +x "$STUB_BIN/herdr"
-export PATH="$STUB_BIN:$saved_path"
-assert_herdr_stub_only "$PATH" "$STUB_BIN"
+export PATH="$EO_TEST_PATH"
+assert_stubs_shadow_real "$STUB_BIN"
 ( eo_assert_workspace tab_other ) 2>/dev/null && rc=0 || rc=$?
 if [ "$rc" -eq 4 ]; then
   pass "eo_assert_workspace 對外部 workspace 的 tab 以 4 結束"
@@ -229,7 +260,7 @@ if [ "$rc" -eq 6 ]; then
 else
   bad "eo_herdr 裸呼叫得到 $rc，預期 6"
 fi
-export PATH="$saved_path"
+export PATH="$EO_TEST_PATH"
 
 # ===== 任務二：phase-status.sh =====
 # 以下回應形狀已對真實 herdr 0.8.2 執行 api snapshot 查證：
@@ -265,8 +296,8 @@ fi
 exit 1
 STUB
 chmod +x "$STUB_BIN/herdr"
-export PATH="$STUB_BIN:$saved_path"
-assert_herdr_stub_only "$PATH" "$STUB_BIN"
+export PATH="$EO_TEST_PATH"
+assert_stubs_shadow_real "$STUB_BIN"
 eo_state_set 101 pane_id '"pane_101"'
 eo_state_set 101 tab_id '"tab_101"'
 
@@ -372,7 +403,7 @@ else
   bad "查全部＋--explain：有 phase 失敗但結束碼為 0"
 fi
 
-export PATH="$saved_path"
+export PATH="$EO_TEST_PATH"
 
 # ===== 任務三：start-phase.sh 與 close-phase.sh =====
 cat > "$STUB_BIN/herdr" <<'STUB'
@@ -391,8 +422,8 @@ esac
 exit 1
 STUB
 chmod +x "$STUB_BIN/herdr"
-export PATH="$STUB_BIN:$saved_path"
-assert_herdr_stub_only "$PATH" "$STUB_BIN"
+export PATH="$EO_TEST_PATH"
+assert_stubs_shadow_real "$STUB_BIN"
 
 out="$(bash "$SCRIPTS/start-phase.sh" 103)"
 if printf '%s' "$out" | rg -q '^tab_id=tab_new pane_id=pane_new agent=phase-103-'; then
@@ -509,7 +540,7 @@ else
   bad "close-phase 守衛二測試結束碼為 $rc，stderr='$(cat "$close_phase_guard2_err")'"
 fi
 
-export PATH="$saved_path"
+export PATH="$EO_TEST_PATH"
 
 # ===== 任務四：send-to-phase.sh =====
 # 既有測試用 phase 101 到 107，這裡改用 201 避免污染。
@@ -525,8 +556,8 @@ fi
 exit 1
 STUB
 chmod +x "$STUB_BIN/herdr"
-export PATH="$STUB_BIN:$saved_path"
-assert_herdr_stub_only "$PATH" "$STUB_BIN"
+export PATH="$EO_TEST_PATH"
+assert_stubs_shadow_real "$STUB_BIN"
 export EO_TEST_CAPTURE="$T/captured-text"
 eo_state_set 201 agent_name '"phase-201-abcd"'
 
@@ -679,7 +710,7 @@ if [ "$rc" -eq 2 ]; then
 else
   bad "send-to-phase 未知選項時結束碼為 $rc，預期 2"
 fi
-export PATH="$saved_path"
+export PATH="$EO_TEST_PATH"
 
 # ===== 任務五：press-approval.sh =====
 # 開發期查證發現的落差：任務簡報 Step 1 原始測試樁把 agent get 的回應
@@ -719,8 +750,8 @@ esac
 exit 1
 STUB
 chmod +x "$STUB_BIN/herdr"
-export PATH="$STUB_BIN:$saved_path"
-assert_herdr_stub_only "$PATH" "$STUB_BIN"
+export PATH="$EO_TEST_PATH"
+assert_stubs_shadow_real "$STUB_BIN"
 eo_state_set 301 agent_name '"phase-301-abcd"'
 
 # --allows 是必填。這是整支腳本存在的理由：把「按之前要指得出放行什麼」
@@ -858,7 +889,7 @@ else
   bad "press-approval 未知選項時結束碼為 $rc，預期 2"
 fi
 
-export PATH="$saved_path"
+export PATH="$EO_TEST_PATH"
 
 # ===== 任務六：read-phase-pane.sh =====
 cat > "$STUB_BIN/herdr" <<'STUB'
@@ -876,8 +907,8 @@ esac
 exit 1
 STUB
 chmod +x "$STUB_BIN/herdr"
-export PATH="$STUB_BIN:$saved_path"
-assert_herdr_stub_only "$PATH" "$STUB_BIN"
+export PATH="$EO_TEST_PATH"
+assert_stubs_shadow_real "$STUB_BIN"
 eo_state_set 107 pane_id '"pane_107"'
 eo_state_set 107 tab_id '"tab_107"'
 
@@ -932,7 +963,7 @@ if [ "$rc" -eq 6 ]; then
 else
   bad "read-phase-pane 對 pane_not_found 結束碼為 $rc，預期 6"
 fi
-export PATH="$saved_path"
+export PATH="$EO_TEST_PATH"
 
 # 全案性的測試要求：呼叫端用錯（結束碼 2）——缺必填參數、未知選項。
 # 這兩種情形都在觸碰狀態檔或呼叫 herdr 之前就先結束，不需要 herdr
@@ -973,8 +1004,8 @@ esac
 exit 1
 STUB
 chmod +x "$STUB_BIN/herdr"
-export PATH="$STUB_BIN:$saved_path"
-assert_herdr_stub_only "$PATH" "$STUB_BIN"
+export PATH="$EO_TEST_PATH"
+assert_stubs_shadow_real "$STUB_BIN"
 eo_state_set "$bad_phase" pane_id '"pane_bad_phase"'
 eo_state_set "$bad_phase" tab_id '"tab_bad_phase"'
 
@@ -984,7 +1015,7 @@ if [ "$rc" -eq 2 ] && [ "$out" != "marker=none" ]; then
 else
   bad "read-phase-pane --marker-only 對特殊字元 phase 編號得到 rc=$rc out='$out'，預期 rc=2 且不是 marker=none"
 fi
-export PATH="$saved_path"
+export PATH="$EO_TEST_PATH"
 
 # ===== 任務七：event-generator.sh =====
 # shellcheck source=/dev/null
@@ -1140,6 +1171,11 @@ fi
 # 讓下一次真的消失還印得出來。_eo_low_freq_process_one 對
 # status=ERROR 的處理就是低頻掃描版的 GONE 通道，不需要 herdr 樁就
 # 測得起來。 ---
+# 這筆記錄要有座標欄位：_eo_low_freq_process_one 現在會先確認記錄存
+# 在（以 tab_id 為準）才動作，否則它會對一個已被收尾移除的 phase 生
+# 出殘骸記錄。只設非座標欄位的話這條測試測到的是「記錄不存在就直接
+# 返回」那條分支，不是 GONE 靜音本身。
+eo_state_set 114 tab_id '"tab_114"'
 eo_state_set 114 gone_muted false
 out_gone_edge="$(_eo_scan_gone 114 0)"
 out_gone_lowfreq="$(_eo_low_freq_process_one 114 ERROR - 0)"
@@ -1228,93 +1264,6 @@ else
   bad "EO_GENERATOR_DRY_RUN 開啟時得到 '$out'"
 fi
 
-# --- High 7（上，修正輪次 3／5 更新為 process group）：pidfile 單例
-# 守衛。不需要 herdr 樁：只操作 pidfile 與 process group 存活檢查。
-# 三種情況：pidfile 不存在（成功並寫入自己的 pid，main 呼叫這裡之前
-# 已保證自己是 group leader，所以自己的 pid 同時也是自己的
-# pgid）、pidfile 裡的 pgid 已死（視為可以接手）、pidfile 裡的 pgid
-# 還有存活成員（用測試腳本自己目前的 process group，拒絕啟動第二
-# 個，以 9 結束）。 ---
-pidfile_path="$(_eo_pidfile_path)"
-rm -f "$pidfile_path"
-
-_eo_acquire_singleton
-if [ -f "$pidfile_path" ] && [ "$(cat "$pidfile_path")" = "$$" ]; then
-  pass "_eo_acquire_singleton 在 pidfile 不存在時成功並寫入自己的 pid"
-else
-  bad "_eo_acquire_singleton 未正確寫入 pidfile"
-fi
-
-printf '999999999\n' > "$pidfile_path"
-if _eo_acquire_singleton 2>/dev/null; then
-  pass "_eo_acquire_singleton 對已死的 pgid 視為可以接手"
-else
-  bad "_eo_acquire_singleton 對已死的 pgid 誤判成仍在跑"
-fi
-
-my_pgid="$(ps -o pgid= -p $$ | tr -d ' ')"
-printf '%s\n' "$my_pgid" > "$pidfile_path"
-( _eo_acquire_singleton ) 2>/dev/null && rc=0 || rc=$?
-if [ "$rc" -eq 9 ]; then
-  pass "_eo_acquire_singleton 對仍有存活成員的 pgid 以 9 結束"
-else
-  bad "_eo_acquire_singleton 對仍有存活成員的 pgid 得到 $rc，預期 9"
-fi
-rm -f "$pidfile_path"
-
-# --- Critical 3／High 7（下）：INT／TERM 必須真的能停掉常駐迴圈，
-# 而且要連同背景子行程自己起的孫行程一起收掉，不留孤兒。不起真正的
-# main()（那需要 herdr 樁跑低頻掃描），只驗證訊號處理與子行程清理本
-# 身：把本檔 source 進一支獨立腳本、裝上跟 main() 相同的 trap 結
-# 構、一個會一直跑的迴圈、以及一個模擬孫行程（herdr 呼叫）的背景
-# sleep，用 setsid 把它整個放進一個跟本測試行程無關的新
-# session／process group 再啟動——這一步是安全上的必要條件，不是隨
-# 意的講究：_eo_cleanup 會對整個 process group 送 TERM，若不隔離，
-# 送出的訊號會波及啟動這份測試套件的行程本身；已在獨立的重現腳本裡
-# 用 `ps` 核對過 setsid 之後的 pgid 確實與外層測試行程不同、送出
-# TERM 後外層行程確實不受影響，才把這個手法帶進正式測試。 ---
-sig_test_dir="$T/sig-test"
-mkdir -p "$sig_test_dir"
-sig_test_script="$sig_test_dir/run.sh"
-cat > "$sig_test_script" <<EOF
-#!/usr/bin/env bash
-printf '%s\n' "\$\$" > "$sig_test_dir/main.pid"
-EO_GENERATOR_NO_MAIN=1 source "$SCRIPTS/event-generator.sh"
-trap '_eo_cleanup' EXIT
-trap '_eo_signal_exit' INT TERM
-( sleep 300 ) &
-printf '%s\n' "\$!" > "$sig_test_dir/grandchild.pid"
-while true; do sleep 1; done
-EOF
-chmod +x "$sig_test_script"
-sig_test_launcher="$sig_test_dir/launch.sh"
-cat > "$sig_test_launcher" <<EOF
-#!/usr/bin/env bash
-setsid bash "$sig_test_script" </dev/null >"$sig_test_dir/out.log" 2>&1 &
-disown
-EOF
-chmod +x "$sig_test_launcher"
-"$sig_test_launcher"
-sleep 0.6
-sig_test_pid="$(cat "$sig_test_dir/main.pid" 2>/dev/null || true)"
-sig_test_grandchild_pid="$(cat "$sig_test_dir/grandchild.pid" 2>/dev/null || true)"
-if [ -n "$sig_test_pid" ]; then
-  kill -TERM "$sig_test_pid"
-  sleep 1.5
-  main_dead=1
-  kill -0 "$sig_test_pid" 2>/dev/null && main_dead=0
-  grandchild_dead=1
-  [ -n "$sig_test_grandchild_pid" ] && kill -0 "$sig_test_grandchild_pid" 2>/dev/null && grandchild_dead=0
-  if [ "$main_dead" -eq 1 ] && [ "$grandchild_dead" -eq 1 ]; then
-    pass "SIGTERM 停掉常駐迴圈，並連同其背景子行程自己起的孫行程一起收掉（Critical 3／High 7 回歸測試）"
-  else
-    bad "SIGTERM 後仍有殘留：main 存活=$([ "$main_dead" -eq 1 ] && echo no || echo yes)，grandchild 存活=$([ "$grandchild_dead" -eq 1 ] && echo no || echo yes)"
-    kill -9 "$sig_test_pid" "$sig_test_grandchild_pid" 2>/dev/null || true
-  fi
-else
-  bad "SIGTERM 回歸測試未能取得受測行程的 pid，測試環境本身有問題"
-fi
-
 # ===== 修正輪次 2／5：High 5、Medium 8、退避與放棄門檻 =====
 # 這三項都不需要 herdr 樁：High 5／Medium 8 要樁化的是本專案自己的
 # 姊妹腳本（send-to-phase.sh／phase-status.sh），不是外部二進位，用
@@ -1336,8 +1285,8 @@ printf 'unexpected herdr invocation: %s\n' "\$*" > "$T/high5-medium8-herdr-invok
 exit 9
 STUB
 chmod +x "$STUB_BIN/herdr"
-export PATH="$STUB_BIN:$saved_path"
-assert_herdr_stub_only "$PATH" "$STUB_BIN"
+export PATH="$EO_TEST_PATH"
+assert_stubs_shadow_real "$STUB_BIN"
 rm -f "$T/high5-medium8-herdr-invoked"
 
 # --- High 5：自動推進送出失敗後必須印事件，不能靜默吞掉，因為那是
@@ -1415,130 +1364,31 @@ if [ ! -e "$T/high5-medium8-herdr-invoked" ]; then
 else
   bad "High 5／Medium 8 情境意外呼叫了 herdr：$(cat "$T/high5-medium8-herdr-invoked")"
 fi
-export PATH="$saved_path"
+export PATH="$EO_TEST_PATH"
 
-# --- 第四項：同一個 phase 連續重起要退避、超過門檻要放棄並印事
-# 件。用假的（保證不存在的）pid 代表「已經死掉」，直接操作
-# _eo_phase_supervise 依賴的行程內關聯陣列來控制它認為自己在第幾次
-# 連續重起，不必真的等退避的秒數流逝，也不需要真的讓它 spawn
-# 一條會呼叫 herdr 的邊緣迴圈。
-#
-# 呼叫 _eo_phase_supervise 一律用「重導向到檔案」而不是命令替換
-# `$(...)` 擷取輸出：命令替換會開一個子殼，_eo_phase_supervise 對
-# 行程內關聯陣列（_EO_PHASE_RESPAWN_COUNT 等）的寫入會留在子殼裡、
-# 隨子殼結束而消失，回不到這個測試腳本自己的行程——這正是 Critical 2
-# 那個「seq 追蹤寫進被隔離子殼」的同一種錯誤，這裡刻意避開，改用單
-# 純輸出重導向（不開子殼）把要印的事件行存進暫存檔，需要時再讀出
-# 來，陣列的寫入則直接留在目前這個行程裡。 ---
-eo_state_set 130 tab_id '"tab_130"'
-eo_state_set 130 pane_id '"pane_130"'
-eo_state_set 130 agent_name '"phase-130-abcd"'
-supervise_out="$T/supervise-out.txt"
+# ===== 修正輪次 4：行程內追蹤的清理，以及親子確認 =====
 
-# 情況一：退避延遲尚未到期，這一輪不該嘗試重起（連續重起計數不變）。
-_EO_PHASE_PIDS[130]=999999998
-_EO_PHASE_RESPAWN_COUNT[130]=2
-_EO_PHASE_NEXT_RESPAWN_EPOCH[130]=$(( $(date +%s) + 100 ))
-_eo_phase_supervise 130 > "$supervise_out"
-out="$(cat "$supervise_out")"
-if [ -z "$out" ] && [ "${_EO_PHASE_RESPAWN_COUNT[130]}" = "2" ]; then
-  pass "退避延遲尚未到期時不嘗試重起，連續重起計數不變"
-else
-  bad "退避延遲尚未到期時得到 out='$out'，count=${_EO_PHASE_RESPAWN_COUNT[130]}"
-fi
-
-# 情況二：連續重起次數已經到達門檻前一次，退避已到期，這一次重起會
-# 超過門檻（EO_PHASE_RESPAWN_GIVEUP_THRESHOLD=6），應該放棄並印
-# RESPAWN-LIMIT，同時記錄放棄當下的狀態指紋。
-_EO_PHASE_PIDS[130]=999999998
-_EO_PHASE_RESPAWN_COUNT[130]=6
-_EO_PHASE_NEXT_RESPAWN_EPOCH[130]=0
-_eo_phase_supervise 130 > "$supervise_out"
-out="$(cat "$supervise_out")"
-if [ "$out" = "phase=130 RESPAWN-LIMIT count=7" ] && [ -n "${_EO_PHASE_GIVEUP_FINGERPRINT[130]:-}" ]; then
-  pass "連續重起超過門檻時印 RESPAWN-LIMIT 並記錄放棄當下的狀態指紋"
-else
-  bad "超過門檻時得到 out='$out'，fingerprint 是否已記錄＝$([ -n "${_EO_PHASE_GIVEUP_FINGERPRINT[130]:-}" ] && echo yes || echo no)"
-fi
-
-# 情況三：已經放棄、狀態指紋沒有變動，這一輪應該繼續保持沉默（不重
-# 新嘗試、不再印任何東西）。
-_eo_phase_supervise 130 > "$supervise_out"
-out="$(cat "$supervise_out")"
-if [ -z "$out" ] && [ -n "${_EO_PHASE_GIVEUP_FINGERPRINT[130]:-}" ]; then
-  pass "已放棄且狀態指紋未變動時保持沉默，不重複嘗試"
-else
-  bad "已放棄狀態下得到 out='$out'"
-fi
-
-# 情況四：狀態指紋改變後（模擬操作者處理了這個卡住的 phase，重新
-# start-phase 換了新的 tab_id／pane_id），恢復監督：放棄標記與連續
-# 重起計數都要歸零。這裡把 _EO_PHASE_PIDS[130] 換成測試腳本自己的
-# $$（kill -0 對自己必然成立），確保驗證的是計數與指紋重置的邏輯本
-# 身，不會意外落到後面 spawn 一條真正呼叫 herdr 的邊緣迴圈那一行。
-eo_state_set 130 pane_id '"pane_130_new"'
-_EO_PHASE_PIDS[130]=$$
-_eo_phase_supervise 130 > "$supervise_out"
-out="$(cat "$supervise_out")"
-if [ -z "$out" ] && [ -z "${_EO_PHASE_GIVEUP_FINGERPRINT[130]:-}" ] && [ "${_EO_PHASE_RESPAWN_COUNT[130]}" = "0" ]; then
-  pass "狀態指紋改變後恢復監督：放棄標記與連續重起計數都歸零"
-else
-  bad "指紋改變後得到 out='$out'，fingerprint 是否還在＝$([ -n "${_EO_PHASE_GIVEUP_FINGERPRINT[130]:-}" ] && echo yes || echo no)，count=${_EO_PHASE_RESPAWN_COUNT[130]}"
-fi
-unset '_EO_PHASE_PIDS[130]' '_EO_PHASE_RESPAWN_COUNT[130]' '_EO_PHASE_NEXT_RESPAWN_EPOCH[130]' '_EO_PHASE_GIVEUP_FINGERPRINT[130]'
-
-# ===== 修正輪次 3／5：High B、Medium C =====
-
-# --- High B：兩條 GONE 通道認的是不同識別碼（邊緣迴圈認 agent 名
-# 稱，低頻掃描認 pane 識別碼），低頻掃描的「重新出現」只能解除報告
-# 用的 gone_muted，不能連帶打開 agent_gone 這個重啟閘門，否則 pane
-# 還在、但 agent 名稱已經不再註冊時會形成永不停止的重複。 ---
-eo_state_set 140 gone_muted true
-eo_state_set 140 agent_gone true
-_eo_low_freq_process_one 140 "done" 1 0 > /dev/null
-if [ "$(eo_state_get 140 gone_muted)" = "false" ] && [ "$(eo_state_get 140 agent_gone)" = "true" ]; then
-  pass "低頻掃描的重新出現只解除 gone_muted，不動 agent_gone（High B 回歸測試）"
-else
-  bad "低頻掃描重新出現後 gone_muted=$(eo_state_get 140 gone_muted) agent_gone=$(eo_state_get 140 agent_gone)"
-fi
-
-_EO_PHASE_PIDS[140]=999999997
-supervise_out2="$T/supervise-out2.txt"
-_eo_phase_supervise 140 > "$supervise_out2"
-out140="$(cat "$supervise_out2")"
-if [ -z "$out140" ] && [ -n "${_EO_PHASE_GIVEUP_FINGERPRINT[140]:-}" ]; then
-  pass "agent_gone 為 true 時 main 不重啟這條迴圈，即使 gone_muted 已被低頻掃描解除"
-else
-  bad "agent_gone 為 true 卻仍嘗試重啟：out='$out140'"
-fi
-unset '_EO_PHASE_PIDS[140]' '_EO_PHASE_GIVEUP_FINGERPRINT[140]' '_EO_PHASE_RESPAWN_COUNT[140]'
-
-# --- Medium C：main 每輪讀完清單後，要把已經不在清單內的 phase 從
-# 行程內關聯陣列清掉，並收掉對應還在跑的邊緣迴圈——不然那條迴圈會
-# 繼續跑到它自己下一次 wait 返回為止，且 pid 陣列殘留會讓同一個編
-# 號日後重建時被誤判成「已在監看」。用真正存在的行程（測試腳本自己
-# 背景跑的一個 sleep）驗證 _eo_forget_phase 真的會把它 kill 掉。 ---
+# --- 清理函式要收掉還存活的子行程，並清空這個 phase 在全部行程內關
+# 聯陣列裡的項目。這裡把 _EO_MAIN_PID 設成測試腳本自己的 pid，因為
+# `sleep 30 &` 真的是這個行程的子行程——這樣跑到的是
+# _eo_kill_own_child 真正的親子確認邏輯，不是繞過它。 ---
+_EO_MAIN_PID=$$
 sleep 30 &
 forget_test_pid=$!
-# 背景起這個子行程之後先讓出一次排程再送 kill：已實際重現過「fork
+# 背景起這個子行程之後先讓出一次排程再送訊號：已實際重現過「fork
 # 完立刻 kill」這個時序在本測試環境下偶爾會讓訊號送不到剛起步、還
-# 沒真正進入 sleep 狀態的子行程（用診斷過的重現腳本確認：在 kill 之
-# 前插一次會讓出排程的動作，如 `ps`，間歇性失敗就消失），因此在正
-# 式呼叫 _eo_forget_phase 之前先短暫等一下，避免測試本身的時序造成
-# 誤判。
+# 沒真正進入 sleep 狀態的子行程。
 sleep 0.1
 _EO_PHASE_PIDS[150]=$forget_test_pid
-_EO_PHASE_RESPAWN_COUNT[150]=3
-_EO_PHASE_NEXT_RESPAWN_EPOCH[150]=999999999999
-_EO_PHASE_GIVEUP_FINGERPRINT[150]="dummy"
+_EO_PHASE_DONE[150]=1
+_EO_PHASE_DONE_PANE[150]="pane_150"
 _EO_SPIN_SEQ[150]="7"
 _EO_SPIN_EPOCH[150]="123"
 
 _eo_forget_phase 150
 # 用有上限的輪詢等它真的死掉，不用固定的單次 sleep：訊號送出到行程
-# 真的被回收之間的延遲會隨排程波動，固定 0.3 秒偶爾不夠（已實際遇
-# 過一次間歇性失敗，kill 當下已經成功但檢查時機太早）；輪詢最多 2
-# 秒，一確認死亡就提早結束。
+# 真的被回收之間的延遲會隨排程波動，固定值偶爾不夠（已實際遇過一次
+# 間歇性失敗，kill 當下已經成功但檢查時機太早）。
 forget_wait_ticks=0
 while kill -0 "$forget_test_pid" 2>/dev/null && [ "$forget_wait_ticks" -lt 20 ]; do
   sleep 0.1
@@ -1547,64 +1397,46 @@ done
 forget_ok=1
 kill -0 "$forget_test_pid" 2>/dev/null && forget_ok=0
 [ -n "${_EO_PHASE_PIDS[150]:-}" ] && forget_ok=0
-[ -n "${_EO_PHASE_RESPAWN_COUNT[150]:-}" ] && forget_ok=0
-[ -n "${_EO_PHASE_NEXT_RESPAWN_EPOCH[150]:-}" ] && forget_ok=0
-[ -n "${_EO_PHASE_GIVEUP_FINGERPRINT[150]:-}" ] && forget_ok=0
+[ -n "${_EO_PHASE_DONE[150]:-}" ] && forget_ok=0
+[ -n "${_EO_PHASE_DONE_PANE[150]:-}" ] && forget_ok=0
 [ -n "${_EO_SPIN_SEQ[150]:-}" ] && forget_ok=0
 [ -n "${_EO_SPIN_EPOCH[150]:-}" ] && forget_ok=0
 if [ "$forget_ok" -eq 1 ]; then
-  pass "_eo_forget_phase 收掉還存活的子行程並清空全部行程內關聯陣列（Medium C 回歸測試）"
+  pass "_eo_forget_phase 收掉還存活的子行程並清空全部行程內關聯陣列"
 else
   bad "_eo_forget_phase 未完全清理：子行程存活＝$(kill -0 "$forget_test_pid" 2>/dev/null && echo yes || echo no)"
   kill -9 "$forget_test_pid" 2>/dev/null || true
 fi
 
-# main 讀完清單後主動呼叫 _eo_forget_phase：用真正的狀態檔驗證——
-# phase 160 在清單內時不受影響，被移除後即使 _EO_PHASE_PIDS 裡還留
-#著一個真正存活的行程，也要在下一輪被收掉。這裡直接重現 main 迴圈
-# 裡「讀清單、比對、收尾」那一段邏輯的效果，不需要真的跑 main（那
-# 需要 herdr 樁跑低頻掃描）。
-eo_state_set 160 tab_id '"tab_160"'
-sleep 30 &
-forget_test_pid2=$!
-# 理由同上一段：fork 完先短暫等一下再繼續，避免測試自己的時序造成
-# kill 送不到剛起步的子行程。
-sleep 0.1
-_EO_PHASE_PIDS[160]=$forget_test_pid2
-eo_state_remove_phase 160
-if eo_state_phases | rg -qx '160'; then
-  bad "測試前置失敗：phase 160 應該已經被移除"
-else
-  declare -A current_phase_set_test
-  phases_test="$(eo_state_phases)"
-  while IFS= read -r p_test; do
-    [ -n "$p_test" ] || continue
-    current_phase_set_test[$p_test]=1
-  done <<<"$phases_test"
-  for p_test in "${!_EO_PHASE_PIDS[@]}"; do
-    if [ -z "${current_phase_set_test[$p_test]:-}" ]; then
-      _eo_forget_phase "$p_test"
-    fi
-  done
-  # 同上一段：用有上限的輪詢等它真的死掉，不用固定的單次 sleep。
-  forget_wait_ticks2=0
-  while kill -0 "$forget_test_pid2" 2>/dev/null && [ "$forget_wait_ticks2" -lt 20 ]; do
-    sleep 0.1
-    forget_wait_ticks2=$((forget_wait_ticks2 + 1))
-  done
-  if [ -z "${_EO_PHASE_PIDS[160]:-}" ] && ! kill -0 "$forget_test_pid2" 2>/dev/null; then
-    pass "main 讀完清單後把已移除的 phase 收掉、清空追蹤（Medium C 整合回歸測試）"
+# --- _eo_kill_own_child 必須先確認那個 pid 現在仍是自己的子行程才送
+# 訊號：記錄下來的 pid 可能早就結束、號碼被回收再指派給無關的行程，
+# 直接 kill 就會打到它。用一個真的不是本行程子行程的存活行程驗證
+# ——起一支 `bash -c` 讓它在自己結束前先背景起一個 sleep，那個 sleep
+# 的父行程隨即消失、被 reparent，PPid 因此不是本測試行程。 ---
+orphan_pid_file="$T/orphan.pid"
+bash -c 'sleep 30 & printf "%s\n" "$!" > "'"$orphan_pid_file"'"; sleep 0.1'
+orphan_pid="$(cat "$orphan_pid_file")"
+sleep 0.3
+orphan_ppid="$(awk '/^PPid:/{print $2}' "/proc/$orphan_pid/status" 2>/dev/null || true)"
+if [ -n "$orphan_ppid" ] && [ "$orphan_ppid" != "$$" ]; then
+  _eo_kill_own_child "$orphan_pid"
+  sleep 0.3
+  if kill -0 "$orphan_pid" 2>/dev/null; then
+    pass "_eo_kill_own_child 不對「不是自己子行程」的存活 pid 送訊號"
   else
-    bad "phase 160 移除後仍殘留：_EO_PHASE_PIDS[160]='${_EO_PHASE_PIDS[160]:-}'，子行程存活＝$(kill -0 "$forget_test_pid2" 2>/dev/null && echo yes || echo no)"
-    kill -9 "$forget_test_pid2" 2>/dev/null || true
+    bad "_eo_kill_own_child 殺掉了一個不屬於自己的行程（PPid=$orphan_ppid，本行程=$$）"
   fi
+  kill -9 "$orphan_pid" 2>/dev/null || true
+else
+  bad "測試前置失敗：無法造出一個 PPid 不是本行程的存活行程（PPid='$orphan_ppid'）"
 fi
 
-# --- Medium C（下）：邊緣迴圈自己也要能在外層迴圈重新開始前，安靜
-# 發現自己的 phase 記錄已經被移除並優雅結束——不必等 main 的下一輪
-# 才被強制 kill，也不會印出看起來像故障的內部錯誤訊息。用一個從未
-# 存在過的 phase 編號直接呼叫 _eo_phase_edge_loop，驗證它在第一次
-# 檢查時就安靜返回，不會往下走到會呼叫 herdr 的 _eo_agent_wait。 ---
+# --- 邊緣迴圈自己也要能在外層迴圈重新開始前，安靜發現自己的 phase
+# 記錄已經被移除並優雅結束（結束碼 0＝自願結束），不必等 main 的下
+# 一輪才被收掉，也不會印出看起來像故障的內部錯誤訊息。用一個從未存
+# 在過的 phase 編號直接呼叫真實的 _eo_phase_edge_loop。這一段跑在只
+# 含樁目錄與系統目錄的 PATH 上（見套件開頭），所以就算這個檢查日後
+# 退化、真的往下走到 _eo_agent_wait，也打不到真實 herdr。 ---
 edge_loop_out="$T/edge-loop-removed.out"
 edge_loop_err="$T/edge-loop-removed.err"
 if _eo_phase_edge_loop 888888 > "$edge_loop_out" 2>"$edge_loop_err"; then
@@ -1613,9 +1445,301 @@ else
   edge_loop_rc=$?
 fi
 if [ "$edge_loop_rc" -eq 0 ] && [ ! -s "$edge_loop_out" ] && [ ! -s "$edge_loop_err" ]; then
-  pass "邊緣迴圈對從未存在的 phase 安靜返回，不印任何訊息、不呼叫 herdr"
+  pass "邊緣迴圈對從未存在的 phase 以 0 安靜返回，不印任何訊息"
 else
   bad "邊緣迴圈對不存在的 phase 得到 rc=$edge_loop_rc，stdout='$(cat "$edge_loop_out")'，stderr='$(cat "$edge_loop_err")'"
+fi
+
+# --- 補預設值不得讓一個已被移除的 phase 復活成殘骸記錄：呼叫過邊緣
+# 迴圈之後，那個編號不能出現在狀態檔裡。舊版把
+# _eo_ensure_phase_defaults 排在存在性檢查之前，於是生出一筆「八個
+# 非座標欄位、零個座標欄位」的記錄，main 下一輪又把它當成待監看的
+# phase，永久留在狀態檔。 ---
+if eo_state_phases | rg -qx '888888'; then
+  bad "邊緣迴圈把一個不存在的 phase 寫回了狀態檔：$(jq -c '.phases["888888"]' "$(eo_state_file)")"
+else
+  pass "邊緣迴圈不會把已移除的 phase 寫回狀態檔（補預設值排在存在性檢查之後）"
+fi
+
+# 低頻掃描那條路徑是同一個缺陷的另一個入口，要一起驗證。
+_eo_low_freq_process_one 888889 "done" 1 0 > /dev/null
+if eo_state_phases | rg -qx '888889'; then
+  bad "低頻掃描把一個不存在的 phase 寫回了狀態檔"
+else
+  pass "低頻掃描不會把已移除的 phase 寫回狀態檔"
+fi
+
+# ===== 端對端：跑真實的 main =====
+# 這一段的存在理由是這個任務最大的教訓：前一輪為訊號處理補的回歸測
+# 試不跑 main，而是另外寫一支「結構相同」的腳本、還先手動 setsid，把
+# 真正的病灶整段跳過，所以它必然通過，而生產路徑照樣壞掉。所以以下
+# 全部直接執行 `bash "$SCRIPTS/event-generator.sh"`，也就是編排端真
+# 正會跑的那一份。
+#
+# 安全性：PATH 只含樁目錄與系統目錄（真實 herdr 不在上面，見套件開
+# 頭），EO_MAIN_REPO 指向本輪專用的丟棄式假倉庫，套件開頭已全域
+# export EO_GENERATOR_DRY_RUN=1（自動推進絕不真的送出），
+# EO_PHASE_STATUS_SCRIPT 換成一支什麼都不做的假腳本讓低頻掃描保持惰
+# 性。EO_PHASE_POLL_SECONDS 調成 1 只是為了在幾秒內看到跨輪行為，它
+# 是簡報明文說「只影響延遲、不是三個待校準門檻之一」的那個值；
+# EO_WAIT_TIMEOUT_MS 與三個門檻一律不動。
+e2e_dir="$T/e2e"
+mkdir -p "$e2e_dir"
+
+e2e_phase_status="$e2e_dir/fake-phase-status.sh"
+cat > "$e2e_phase_status" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+chmod +x "$e2e_phase_status"
+
+# e2e_make_repo <名稱> <phase 編號...>：造一份只有座標欄位的狀態檔，
+# 也就是 start-phase.sh 真正會寫的那三個欄位。
+e2e_make_repo() {
+  local name="$1"; shift
+  local repo="$e2e_dir/$name" p json
+  mkdir -p "$repo/.tmp/epic-orchestration"
+  json='{"parent_issue":100,"main_repo":"e2e","phases":{}}'
+  for p in "$@"; do
+    json="$(printf '%s' "$json" | jq --arg p "$p" \
+      '.phases[$p] = {tab_id:("tab_" + $p), pane_id:("pane_" + $p), agent_name:("phase-" + $p + "-e2e")}')"
+  done
+  printf '%s\n' "$json" > "$repo/.tmp/epic-orchestration/state.json"
+  printf '%s' "$repo"
+}
+
+# e2e_start <repo>：起一支真實的產生器，印出它的 pid。
+#
+# 用 `env` 帶環境變數，不用指令前綴賦值：本套件已經把
+# event-generator.sh source 進自己的行程（為了單獨呼叫決策函式），因
+# 此 EO_PHASE_POLL_SECONDS 在這個 shell 裡已經是 readonly，前綴賦值
+# 會直接失敗（實測訊息：「EO_PHASE_POLL_SECONDS：唯讀的變數」）而且不
+# 會讓斷言失敗、只是靜靜地用了預設值。env 是在子行程的環境裡設定，不
+# 碰本 shell 的變數。
+e2e_start() {
+  local repo="$1"
+  env EO_MAIN_REPO="$repo" EO_PHASE_POLL_SECONDS=1 EO_PHASE_STATUS_SCRIPT="$e2e_phase_status" \
+    bash "$SCRIPTS/event-generator.sh" >"$repo/gen.out" 2>"$repo/gen.err" &
+  printf '%s' "$!"
+}
+
+# e2e_loop_kids <pid>：這支產生器目前有幾條迴圈子行程。
+#
+# 刻意排除 main 自己那個前景 `sleep`（輪詢間隔）：它也是 main 的子行
+# 程，直接數 pgrep 的行數會多算一個，而且會隨採樣時機時有時無——第一
+# 次寫這條斷言就是這樣得到 4 而不是 3。留下來的都是跑本腳本的 bash 子
+# 殼，也就是低頻掃描那條加上每個 phase 的邊緣迴圈。
+e2e_loop_kids() {
+  pgrep -P "$1" -a 2>/dev/null | awk '$2 != "sleep"' | wc -l
+}
+
+# e2e_descendants <pid>：印出這個 pid 與它全部子孫的 pid，遞迴到底。
+#
+# 刻意遞迴，不是「往下兩層」：第一版寫成固定兩層（以為樹就是 main →
+# 迴圈 → herdr），結果斷言變成假的綠燈——真實的樹是 main → 邊緣迴圈
+# → 命令替換子殼 → 再一層命令替換子殼 → herdr → herdr 的子行程，比
+# 兩層深得多，於是「TERM 之後 0 個存活」只檢查到淺的那幾層，實測每個
+# phase 都還有兩個行程在跑（用 `ps -o pid=,ppid=` 逐層核對出來的）。
+# 這條測試如果只看兩層，就正好是這個任務最大教訓的另一個版本：通過
+# 的原因就是它看不到真實形狀。
+e2e_descendants() {
+  local root="$1" kid
+  printf '%s\n' "$root"
+  while IFS= read -r kid; do
+    [ -n "$kid" ] || continue
+    e2e_descendants "$kid"
+  done < <(pgrep -P "$root" 2>/dev/null || true)
+}
+
+# e2e_alive_count <pid...>：這些 pid 裡還有幾個活著。
+e2e_alive_count() {
+  local p n=0
+  for p in "$@"; do
+    kill -0 "$p" 2>/dev/null && n=$((n + 1))
+  done
+  printf '%s' "$n"
+}
+
+# e2e_stop <pid>：確保收乾淨，測試結束不留背景行程。
+e2e_stop() {
+  local pid="$1" p
+  kill -TERM "$pid" 2>/dev/null || true
+  sleep 1
+  for p in $(e2e_descendants "$pid" 2>/dev/null); do
+    kill -9 "$p" 2>/dev/null || true
+  done
+}
+
+# --- 端對端一：對啟動者追蹤的那個 pid 送 TERM，整棵樹要在數秒內結
+# 束。這是本輪的核心驗收：舊版在 main 開頭用 `setsid --wait` 把自己
+# 重啟進獨立 session，外層被 TERM 殺掉之後內層變孤兒、被 reparent、
+# 繼續寫狀態檔、繼續對真實 agent 自動推進，而 pidfile 指著一個還活
+# 著的 group，新起的產生器一律被拒（已對生產程式碼實測重現：TERM 之
+# 後 5 個行程存活、第二支產生器以 9 結束）。 ---
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+# 站在 herdr agent wait 的位置：一直不返回，讓邊緣迴圈穩定卡在這裡，
+# 樹的形狀（main → 迴圈 → 孫行程）才觀察得到
+sleep 300
+STUB
+chmod +x "$STUB_BIN/herdr"
+assert_stubs_shadow_real "$STUB_BIN"
+
+e2e_repo1="$(e2e_make_repo term-tree 301 302)"
+e2e_pid1="$(e2e_start "$e2e_repo1")"
+sleep 2
+mapfile -t e2e_tree1 < <(e2e_descendants "$e2e_pid1")
+if [ "${#e2e_tree1[@]}" -ge 4 ]; then
+  kill -TERM "$e2e_pid1"
+  e2e_wait_ticks=0
+  while [ "$(e2e_alive_count "${e2e_tree1[@]}")" -gt 0 ] && [ "$e2e_wait_ticks" -lt 50 ]; do
+    sleep 0.1
+    e2e_wait_ticks=$((e2e_wait_ticks + 1))
+  done
+  e2e_survivors="$(e2e_alive_count "${e2e_tree1[@]}")"
+  if [ "$e2e_survivors" -eq 0 ]; then
+    pass "對啟動者追蹤的 pid 送 TERM，整棵樹（${#e2e_tree1[@]} 個行程）在數秒內全部結束"
+  else
+    bad "TERM 之後仍有 $e2e_survivors 個行程存活：$(ps -o pid=,args= -p "$(IFS=,; printf '%s' "${e2e_tree1[*]}")" 2>/dev/null | tr '\n' ';')"
+  fi
+else
+  bad "端對端前置失敗：產生器的樹只有 ${#e2e_tree1[@]} 個行程，預期至少 4（main、兩條邊緣迴圈、低頻掃描）"
+fi
+e2e_stop "$e2e_pid1"
+
+# 送出的訊號不得波及啟動者：本測試行程就是啟動者，舊版對整個 process
+# group 廣播 TERM 時會連它一起殺掉（實測過），所以這條斷言能跑到就
+# 是它成立。
+pass "TERM 清理沒有波及啟動者（本測試行程仍在執行）"
+
+# --- 端對端二：phase 從狀態檔被移除之後，只有它那條邊緣迴圈被收
+# 掉，其餘的不受影響；而且那個編號不會被寫回狀態檔。舊版的清理函式
+# 在生產路徑上是死碼——集合宣告寫在 while 迴圈裡，bash 對已存在的關
+# 聯陣列不重置，於是集合累積了每一輪見過的所有 phase，「已不在清單
+# 內」永遠為假（實測：移除後 14 秒那條迴圈仍存活）。 ---
+e2e_repo2="$(e2e_make_repo remove-phase 311 312)"
+e2e_pid2="$(e2e_start "$e2e_repo2")"
+sleep 2
+e2e_kids_before="$(e2e_loop_kids "$e2e_pid2")"
+if [ "$e2e_kids_before" -eq 3 ]; then
+  EO_MAIN_REPO="$e2e_repo2" eo_state_remove_phase 311
+  e2e_wait_ticks=0
+  while [ "$(e2e_loop_kids "$e2e_pid2")" -gt 2 ] && [ "$e2e_wait_ticks" -lt 60 ]; do
+    sleep 0.1
+    e2e_wait_ticks=$((e2e_wait_ticks + 1))
+  done
+  e2e_kids_after="$(e2e_loop_kids "$e2e_pid2")"
+  if [ "$e2e_kids_after" -eq 2 ]; then
+    pass "phase 從狀態檔移除後，真實 main 在數輪內收掉它那條邊緣迴圈（子行程 3→2）"
+  else
+    bad "移除 phase 311 之後子行程數是 $e2e_kids_after，預期 2（低頻掃描＋phase 312 那條）"
+  fi
+  if EO_MAIN_REPO="$e2e_repo2" eo_state_phases | rg -qx '311'; then
+    bad "已移除的 phase 311 又被寫回狀態檔：$(jq -c '.phases["311"]' "$e2e_repo2/.tmp/epic-orchestration/state.json")"
+  else
+    pass "已移除的 phase 不會被真實 main 或邊緣迴圈寫回狀態檔"
+  fi
+else
+  bad "端對端前置失敗：產生器的子行程數是 $e2e_kids_before，預期 3（低頻掃描＋兩條邊緣迴圈）"
+fi
+e2e_stop "$e2e_pid2"
+
+# --- 端對端三：agent 消失時只印一則 GONE，而且那條迴圈不會被重起。
+# 舊版把「這一次消失有沒有報告過」與「這條迴圈該不該重起」綁在會被
+# 低頻掃描改寫的同一個欄位上，兩條通道認的識別碼又不同（邊緣迴圈認
+# agent 名稱、低頻掃描認 pane 識別碼），於是閘門被反覆打開、每次重
+# 起立刻再撞 agent_not_found、再印一則 GONE，沒有上界（實測 45 秒 4
+# 則，換算四個 phase 併行約每小時 220 則，超過致命值 120）。 ---
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"agent_not_found","message":"stub"}}\n' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+assert_stubs_shadow_real "$STUB_BIN"
+
+e2e_repo3="$(e2e_make_repo gone-once 321)"
+e2e_pid3="$(e2e_start "$e2e_repo3")"
+sleep 6
+e2e_gone_count="$(rg -c '^phase=321 GONE$' "$e2e_repo3/gen.out" 2>/dev/null || printf '0')"
+e2e_gen3_alive=0
+kill -0 "$e2e_pid3" 2>/dev/null && e2e_gen3_alive=1
+e2e_kids3="$(e2e_loop_kids "$e2e_pid3")"
+if [ "$e2e_gone_count" -eq 1 ] && [ "$e2e_gen3_alive" -eq 1 ] && [ "$e2e_kids3" -eq 1 ]; then
+  pass "agent 消失時只印一則 GONE，那條迴圈不被重起，產生器本身照常存活（約 6 輪輪詢）"
+else
+  bad "GONE 行數=$e2e_gone_count（預期 1），產生器存活=$e2e_gen3_alive（預期 1），子行程數=$e2e_kids3（預期 1，只剩低頻掃描）"
+fi
+e2e_stop "$e2e_pid3"
+
+# --- 端對端四：分類失敗不得被當成「該自動推進」。這裡讓狀態記錄存
+# 在、但 last_marker_seq 是一段非數字，於是 eo_classify_stop 會在
+# _eo_require_int 那一關以 5 結束；邊緣迴圈必須以非 0 結束並留下診
+# 斷，而且絕不呼叫 send-to-phase.sh。舊版寫成裸賦值再判空字串，把
+# 「判定為自動推進」（空字串、結束碼 0）與「分類失敗」（空字串、結束
+# 碼非 0）混成同一個分支，而且依賴 errexit 去攔下失敗——實測那個依
+# 賴不成立：函式被包在命令替換裡呼叫時，它內部「賦值＋命令替換」的
+# 失敗不會中止它。 ---
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+# 站在外層 wait 的位置：立刻回報對方停在 done
+printf '{"result":{"agent":{"agent_status":"done"}}}\n'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+assert_stubs_shadow_real "$STUB_BIN"
+
+# 換掉 read-phase-pane.sh：它自己還有 workspace 守衛（要
+# HERDR_WORKSPACE_ID 與一次 herdr tab list），不換掉的話這條測試會先
+# 卡在守衛上、拿到 marker=none，那條路徑分類會成功、測到的是另一條分
+# 支（第一次寫這條測試就是這樣，結果整支測試變成無窮迴圈）。
+e2e_read_pane_stub="$e2e_dir/fake-read-phase-pane.sh"
+cat > "$e2e_read_pane_stub" <<'FAKE'
+#!/usr/bin/env bash
+# 畫面上有一則序號比狀態檔大的新標記，逼分類走到數值檢查那一關
+printf '[PHASE %s] seq=9 state=working-ok\n' "$1"
+FAKE
+chmod +x "$e2e_read_pane_stub"
+
+e2e_send_marker="$T/e2e-send-to-phase-invoked"
+rm -f "$e2e_send_marker"
+e2e_send_stub="$e2e_dir/fake-send-to-phase.sh"
+cat > "$e2e_send_stub" <<FAKE
+#!/usr/bin/env bash
+printf 'send-to-phase.sh 不該被呼叫：%s\n' "\$*" > "$e2e_send_marker"
+exit 0
+FAKE
+chmod +x "$e2e_send_stub"
+
+e2e_repo4="$(e2e_make_repo classify-fail 331)"
+EO_MAIN_REPO="$e2e_repo4" eo_state_set 331 last_marker_seq '"not-a-number"'
+e2e_edge_out="$e2e_dir/edge-classify-fail.out"
+e2e_edge_err="$e2e_dir/edge-classify-fail.err"
+# 用另起一支 bash 執行生產函式，並且套上 timeout：跑的仍然是
+# skills/ 下那一份 _eo_phase_edge_loop（不是重寫的等價邏輯），但萬一
+# 這個分支日後退化成「分類失敗被當成該自動推進」而繼續繞外層迴圈，
+# timeout 會讓它以 124 結束、變成一條紅燈，而不是讓整份套件掛在那裡
+# 不動。
+e2e_edge_runner="$e2e_dir/run-edge-loop.sh"
+cat > "$e2e_edge_runner" <<RUNNER
+#!/usr/bin/env bash
+set -euo pipefail
+# shellcheck source=/dev/null
+source "$SCRIPTS/lib/common.sh"
+# shellcheck source=/dev/null
+EO_GENERATOR_NO_MAIN=1 source "$SCRIPTS/event-generator.sh"
+_eo_phase_edge_loop "\$1"
+RUNNER
+chmod +x "$e2e_edge_runner"
+timeout 15 env EO_MAIN_REPO="$e2e_repo4" EO_GENERATOR_DRY_RUN='' \
+  EO_SEND_TO_PHASE_SCRIPT="$e2e_send_stub" \
+  EO_READ_PHASE_PANE_SCRIPT="$e2e_read_pane_stub" \
+  bash "$e2e_edge_runner" 331 > "$e2e_edge_out" 2>"$e2e_edge_err" && e2e_edge_rc=0 || e2e_edge_rc=$?
+if [ "$e2e_edge_rc" -ne 0 ] && [ "$e2e_edge_rc" -ne 124 ] && [ ! -e "$e2e_send_marker" ] \
+   && rg -q '停下分類以結束碼' "$e2e_edge_err"; then
+  pass "分類失敗時邊緣迴圈以非 0 結束並留下診斷，絕不送下行（rc=$e2e_edge_rc）"
+else
+  bad "分類失敗處理不正確：rc=$e2e_edge_rc（124＝逾時，代表它還在繞迴圈），send-to-phase 是否被呼叫＝$([ -e "$e2e_send_marker" ] && echo yes || echo no)，stderr='$(cat "$e2e_edge_err")'"
 fi
 
 # --- 新增：eo_state_remove_phase（狀態記錄的移除能力）。共用
@@ -1634,7 +1758,7 @@ else
   bad "eo_state_remove_phase 對不存在的 phase 意外失敗"
 fi
 
-export PATH="$saved_path"
+export PATH="$EO_TEST_PATH"
 
 # ===== 新增：close-phase.sh 三道守衛全過、成功關閉 tab 之後呼叫
 # eo_state_remove_phase 移除狀態記錄 =====
@@ -1651,8 +1775,8 @@ esac
 exit 1
 STUB
 chmod +x "$STUB_BIN/herdr"
-export PATH="$STUB_BIN:$saved_path"
-assert_herdr_stub_only "$PATH" "$STUB_BIN"
+export PATH="$EO_TEST_PATH"
+assert_stubs_shadow_real "$STUB_BIN"
 if HERDR_TAB_ID=tab_orchestrator bash "$SCRIPTS/close-phase.sh" 113; then
   pass "close-phase 三道守衛全過時成功關閉 tab"
 else
@@ -1663,7 +1787,7 @@ if eo_state_phases | rg -qx '113'; then
 else
   pass "close-phase 成功關閉後，eo_state_remove_phase 移除了該筆記錄"
 fi
-export PATH="$saved_path"
+export PATH="$EO_TEST_PATH"
 
 # 全案性的測試要求：呼叫端用錯（結束碼 2）。event-generator.sh 不接
 # 受任何參數，帶了參數就是呼叫端用錯；這條檢查在 eo_require_herdr_env
@@ -1684,8 +1808,8 @@ printf 'unexpected herdr invocation: %s\n' "\$*" > "$T/event-generator-herdr-inv
 exit 9
 STUB
 chmod +x "$STUB_BIN/herdr"
-export PATH="$STUB_BIN:$saved_path"
-assert_herdr_stub_only "$PATH" "$STUB_BIN"
+export PATH="$EO_TEST_PATH"
+assert_stubs_shadow_real "$STUB_BIN"
 rm -f "$T/event-generator-herdr-invoked"
 ( bash "$SCRIPTS/event-generator.sh" unexpected-arg ) >/dev/null 2>&1 && rc=0 || rc=$?
 if [ "$rc" -eq 2 ] && [ ! -e "$T/event-generator-herdr-invoked" ]; then
@@ -1693,6 +1817,6 @@ if [ "$rc" -eq 2 ] && [ ! -e "$T/event-generator-herdr-invoked" ]; then
 else
   bad "event-generator 帶參數時結束碼為 $rc，herdr 是否被呼叫過＝$([ -e "$T/event-generator-herdr-invoked" ] && echo yes || echo no)"
 fi
-export PATH="$saved_path"
+export PATH="$EO_TEST_PATH"
 
 exit "$fail"
