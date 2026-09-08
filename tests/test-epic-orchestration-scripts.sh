@@ -2112,6 +2112,74 @@ else
   pass "set-phase-field.sh 拒絕寫入後，phase 607 沒有出現在狀態檔的列舉結果裡"
 fi
 
+# --- eo_state_update：存在性判斷與寫入落在同一把鎖內（修正輪次 1／5，
+# Medium）---
+# 上面 607 那條驗的是「檢查會擋下不存在的 phase」；這條要驗的是「這道
+# 檢查現在真的在鎖內」，不是只挑對了結束碼。手法：先建一筆帶完整座標
+# 欄位的記錄（608），外部搶下跟 eo_state_update 相同的鎖檔並握住 1.5
+# 秒；一拿到鎖就立刻對狀態檔做一次等價於 eo_state_remove_phase 的刪
+# 除（同一套 jq／mv 手法，不呼叫 eo_state_remove_phase 本身，避免它
+# 自己再對同一把鎖另開一次 fd，混淆判讀），刪完才睡滿剩下的時間、真
+# 正釋放鎖。與此同時對 608 呼叫 set-phase-field.sh，量測它從呼叫到結
+# 束一共花了多久。
+#
+# 判讀關鍵是「花了多久」，不是只看結束碼——這一點是實際做過一次對照
+# 實驗才確認的：把腳本暫時還原成修正前「先呼叫 eo_state_get 探測、
+# 探測通過才呼叫 eo_state_set 寫入」的兩段式，重跑這條測試，結束碼仍
+# 然正確地是 5（因為這個實驗的刪除發生在鎖一到手就立刻做，遠早於呼
+# 叫端 0.3 秒後才開始探測，不管探測有沒有持鎖，讀到的都已經是刪除後
+# 的內容），但耗時只有 11 毫秒，遠低於外部持有的 1.5 秒——證明修正
+# 前的 `eo_state_get` 探測完全沒有排隊等鎖，只是直接讀了當下的檔案內
+# 容，純屬巧合才躲過這個特定時序的結果錯誤。因此斷言同時核對結束碼
+# 是 5「且」耗時貼近外部持有的整段時間（≥800ms），後者才是真正分辨
+# 新舊行為的訊號：新版必須先排隊等到鎖釋放才拿得到、才做得了判斷，
+# 舊版完全不用等。
+#
+# 這條測試沒辦法、也不必排除的另一種寫法：若 eo_state_update 內部把
+# 「判斷存在」跟「寫入」拆成兩次各自獨立的 flock 取放（而不是現在這
+# 樣同一次 flock 涵蓋兩者），要在「判斷通過」這個分支下用黑箱測試把
+# 一次外部刪除精準插進兩次取放之間的縫，得讓被測腳本自己內部也配合
+# 睡一下才有辦法對準——這正是協調端描述的原始重現手法：在有問題的
+# 版本裡於探測通過之後、寫入之前插入一段睡眠，把縫放大到看得見。但
+# 這代表要驗證「縫已經關閉」，得先在修正後的正式腳本裡人為開一個一
+# 樣的縫才能測，而正式腳本本來就不該有這種為了測試才加的睡眠。這一
+# 段的正確性因此改靠讀 lib/common.sh 的原始碼佐證：eo_state_update 從
+# `exec {lock_fd}>"$lock_file"; flock -x "$lock_fd"` 到寫入完成的
+# `mv "$tmp" "$file"` 之間只有一次鎖的取得，中間沒有任何一次
+# `exec {lock_fd}>&-` 提前把鎖放掉，是單一連續的臨界區，不是兩段式。
+# 這是明確回報的難處與改用的替代驗證方式，不是省略這條測試。
+eo_state_set 608 tab_id '"tab_608"'
+eo_state_set 608 pane_id '"pane_608"'
+eo_state_set 608 agent_name '"phase-608-test"'
+LOCK_FILE="$(eo_state_file).lock"
+(
+  exec 8>"$LOCK_FILE"
+  flock -x 8
+  # 持鎖期間直接刪掉 608：手法等同 eo_state_remove_phase 的「讀-改-
+  # 寫＋暫存檔＋mv」，見上方說明。
+  eo_lock_test_tmp="$(mktemp "$(eo_state_file).XXXXXX")"
+  jq 'del(.phases["608"])' "$(eo_state_file)" > "$eo_lock_test_tmp"
+  mv "$eo_lock_test_tmp" "$(eo_state_file)"
+  sleep 1.5
+) &
+holder_pid=$!
+sleep 0.3
+start_ms=$(date +%s%3N)
+( bash "$SCRIPTS/set-phase-field.sh" 608 stage running ) >/dev/null 2>&1 && rc=0 || rc=$?
+end_ms=$(date +%s%3N)
+wait "$holder_pid"
+elapsed_ms=$((end_ms - start_ms))
+if [ "$rc" -eq 5 ] && [ "$elapsed_ms" -ge 800 ]; then
+  pass "set-phase-field.sh 排隊等到鎖之後，正確看到鎖內發生的刪除、以 5 拒絕（elapsed_ms=$elapsed_ms）"
+else
+  bad "存在性檢查未確實落在鎖內：結束碼=$rc（預期 5），elapsed_ms=$elapsed_ms（預期 ≥800，太短代表沒有真的排隊等鎖）"
+fi
+if eo_state_phases | rg -qx '608'; then
+  bad "set-phase-field.sh 把鎖內已被刪除的 phase 608 救了回來"
+else
+  pass "phase 608 被鎖內刪除後，set-phase-field.sh 沒有把它救回來"
+fi
+
 # --- 白名單擋下事件產生器擁有的欄位：last_marker_seq、
 # auto_push_count、unknown_rounds，以及三個靜音旗標。這條測的是設計
 # 性質的強制執行本身，不是隨口挑幾個名字——這六個正是腳本檔頭「白名
@@ -2151,6 +2219,20 @@ else
     pass "set-phase-field.sh 以呼叫端用錯（2）擋下不合法的 stage 值"
   else
     bad "set-phase-field.sh 擋下不合法的 stage 值，但結束碼是 $rc，預期 2"
+  fi
+fi
+
+# --- stage 的 pending 值被擋（修正輪次 1／5）：pending 描述的是「記
+# 錄還不存在」那個狀態，跟這支腳本「記錄必須已存在才寫入」互相矛
+# 盾，因此從合法值清單移除，理由見腳本檔頭「值也要驗證」一節。 ---
+if bash "$SCRIPTS/set-phase-field.sh" 605 stage pending >/dev/null 2>&1; then
+  bad "set-phase-field.sh 沒有擋下 stage 的 pending 值（pending 描述的是記錄不存在，跟本腳本要求記錄已存在互相矛盾）"
+else
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    pass "set-phase-field.sh 以呼叫端用錯（2）擋下 stage 的 pending 值"
+  else
+    bad "set-phase-field.sh 擋下 stage 的 pending 值，但結束碼是 $rc，預期 2"
   fi
 fi
 

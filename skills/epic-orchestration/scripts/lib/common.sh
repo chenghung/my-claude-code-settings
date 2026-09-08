@@ -121,7 +121,8 @@ eo_state_file() {
 
 # _eo_state_file_or_die（內部輔助函式，非公開介面）
 # 回傳狀態檔路徑；檔案不存在時以 5 結束。供 eo_state_get／
-# eo_state_set／eo_state_phases 共用，避免三處重複同一段檢查。
+# eo_state_set／eo_state_update／eo_state_phases／eo_state_remove_phase
+# 共用，避免各處重複同一段檢查。
 _eo_state_file_or_die() {
   local file
   file="$(eo_state_file)"
@@ -192,6 +193,62 @@ eo_state_set() {
   tmp="$(mktemp "${file}.XXXXXX")"
   jq --arg p "$phase" --arg f "$field" --argjson v "$json_value" \
     '.phases[$p] //= {} | .phases[$p][$f] = $v' "$file" > "$tmp"
+  mv "$tmp" "$file"
+
+  exec {lock_fd}>&-
+}
+
+# eo_state_update <phase> <field> <json_value>
+# 跟 eo_state_set 用同一套暫存檔加 mv 原子寫入、同一把鎖檔，差別只有
+# 一點：該 phase 必須已經存在於狀態檔，不存在就以 5（狀態檔缺漏）結
+# 束、不落地暫存檔、不建立新記錄。`eo_state_set` 本身的「不存在就用
+# `.phases[$p] //= {}` 自動起孔」這個行為維持不變、不受影響——
+# event-generator.sh 依賴那個形式在讀取端補齊預設欄位，本函式是另開
+# 一個名字的獨立函式，不是改寫 `eo_state_set`。
+#
+# 這個函式存在的理由是修一個真實重現過的競態：呼叫端若自己先呼叫
+# `eo_state_get` 探測該 phase 存不存在、探測通過後才呼叫
+# `eo_state_set` 寫入，這兩步是兩次獨立呼叫、各自對鎖檔開關一次，中
+# 間有一段完全不持鎖的空窗。獨立審查用一個放大到一秒的睡眠窗口決定
+# 性重現過：一個帶完整座標欄位的 phase 通過探測、進入睡眠，睡眠期間
+# 另一個行程呼叫 `eo_state_remove_phase` 合法地把記錄移除，睡眠結束
+# 後 `eo_state_set` 照跑，落地的正是這個函式要防的那種「只有剛寫的
+# 那個欄位、沒有任何座標欄位」的幻影記錄，而呼叫端整支腳本以結束碼
+# 0 結束、完全拿不到任何失敗訊號。把存在性判斷搬進本函式自己的臨界
+# 區、跟寫入共用同一把鎖，兩者之間不再有任何行程能插進來改變狀態
+# 檔，這條路徑因此不成立。
+#
+# 合法性檢查與 eo_state_set 完全相同：見上方 eo_state_set 的註解，理
+# 由不重複。
+eo_state_update() {
+  if [ "$#" -lt 3 ]; then
+    eo_die 2 "eo_state_update 缺少必填參數 <phase> <field> <json_value>"
+  fi
+  local phase="$1" field="$2" json_value="$3" file tmp lock_file lock_fd exists
+
+  file="$(_eo_state_file_or_die)"
+
+  if ! jq -e '. as $x | true' >/dev/null 2>&1 <<<"$json_value"; then
+    eo_die 2 "eo_state_update 的第三個參數不是合法 JSON：$json_value"
+  fi
+
+  lock_file="${file}.lock"
+  exec {lock_fd}>"$lock_file"
+  flock -x "$lock_fd"
+
+  # 存在性判斷刻意放在拿到鎖之後：這就是本函式要解決的那個時間差
+  # ——判斷與後面的寫入落在同一個臨界區，中間不會有其他行程插進來把
+  # 這筆記錄移除或改變。
+  exists="$(jq -r --arg p "$phase" \
+    'if (.phases[$p] // null) == null then "missing" else "present" end' "$file")"
+  if [ "$exists" != "present" ]; then
+    exec {lock_fd}>&-
+    eo_die 5 "phase $phase 不存在於狀態檔，eo_state_update 拒絕建立新記錄"
+  fi
+
+  tmp="$(mktemp "${file}.XXXXXX")"
+  jq --arg p "$phase" --arg f "$field" --argjson v "$json_value" \
+    '.phases[$p][$f] = $v' "$file" > "$tmp"
   mv "$tmp" "$file"
 
   exec {lock_fd}>&-
