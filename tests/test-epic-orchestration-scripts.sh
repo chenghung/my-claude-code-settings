@@ -843,4 +843,96 @@ fi
 
 export PATH="$saved_path"
 
+# ===== 任務六：read-phase-pane.sh =====
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_107"}]}}'; exit 0 ;;
+  "pane read")
+    cat <<'SCREEN'
+[PHASE 107] seq=3 state=working-ok
+一些中間輸出
+[PHASE 107] seq=4 state=need-decision
+SCREEN
+    exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$STUB_BIN:$saved_path"
+assert_herdr_stub_only "$PATH" "$STUB_BIN"
+eo_state_set 107 pane_id '"pane_107"'
+eo_state_set 107 tab_id '"tab_107"'
+
+# 畫面上會同時存在好幾個回合的標記（實測一屏內看到 seq=1,1,2,2,3,4,4），
+# 所以要取最後一個，而且不得用出現次數判斷。
+out="$(bash "$SCRIPTS/read-phase-pane.sh" 107 --marker-only)"
+if [ "$out" = "[PHASE 107] seq=4 state=need-decision" ]; then
+  pass "read-phase-pane --marker-only 取最後一個標記行"
+else
+  bad "read-phase-pane --marker-only 得到 '$out'"
+fi
+
+# 預設模式（不帶 --marker-only）：原樣輸出畫面文字。
+out="$(bash "$SCRIPTS/read-phase-pane.sh" 107)"
+expected_screen="$(printf '[PHASE 107] seq=3 state=working-ok\n一些中間輸出\n[PHASE 107] seq=4 state=need-decision')"
+if [ "$out" = "$expected_screen" ]; then
+  pass "read-phase-pane 預設模式原樣輸出畫面文字"
+else
+  bad "read-phase-pane 預設模式得到 '$out'"
+fi
+
+# 沒有標記行時回 marker=none，交由呼叫端派調查者。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_107"}]}}'; exit 0 ;;
+  "pane read") printf '沒有任何標記行\n'; exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+if [ "$(bash "$SCRIPTS/read-phase-pane.sh" 107 --marker-only)" = "marker=none" ]; then
+  pass "read-phase-pane 無標記行時回 marker=none"
+else
+  bad "read-phase-pane 無標記行時未回 marker=none"
+fi
+
+# pane_not_found 代表這個 pane 已經不在了，歸 GONE 處置，
+# 與「讀取失敗或回傳空白」是不同的兩件事，不能混在一起。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_107"}]}}'; exit 0 ;;
+  "pane read") printf '{"error":{"code":"pane_not_found"}}' >&2; exit 1 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+( bash "$SCRIPTS/read-phase-pane.sh" 107 ) >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 6 ]; then
+  pass "read-phase-pane 對 pane_not_found 以 6 結束"
+else
+  bad "read-phase-pane 對 pane_not_found 結束碼為 $rc，預期 6"
+fi
+export PATH="$saved_path"
+
+# 全案性的測試要求：呼叫端用錯（結束碼 2）——缺必填參數、未知選項。
+# 這兩種情形都在觸碰狀態檔或呼叫 herdr 之前就先結束，不需要 herdr
+# 樁、也不依賴 phase 999 是否存在於狀態檔——用 999 只是取一個明顯與
+# 其他斷言無關的號碼（沿用任務四、任務五同一類測試已用過的慣例）。
+( bash "$SCRIPTS/read-phase-pane.sh" ) >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "read-phase-pane 完全未帶參數時以 2 結束"
+else
+  bad "read-phase-pane 完全未帶參數時結束碼為 $rc，預期 2"
+fi
+
+( bash "$SCRIPTS/read-phase-pane.sh" 999 --unknown-flag ) >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "read-phase-pane 未知選項時以 2 結束"
+else
+  bad "read-phase-pane 未知選項時結束碼為 $rc，預期 2"
+fi
+
 exit "$fail"
