@@ -986,18 +986,24 @@ else
 fi
 
 # --- workspace 守衛：目標所屬 tab 不屬於本 workspace 時擋下，且確認
-#     沒有代按任何東西 ---
+#     守衛真的排在「下面任何一支 herdr 呼叫」之前，不只是排在最後一
+#     支代按之前 ---
 # 事實依據與理由同任務四 send-to-phase.sh 的同一類斷言：狀態檔路徑固
 # 定在主倉庫底下的固定位置、agent_name 是 phase 編號加主倉庫路徑的雜
 # 湊（見 common.sh 的 eo_agent_name），兩者都不含 workspace 資訊，跨
-# workspace 誤按在這裡不是理論可能。只驗結束碼不夠：這裡另外用一個
-# 專屬標記檔，只要 agent send-keys 分支真的被呼叫到就會落地，直接驗
-# 證「代按」這個動作本身有沒有被攔下。樁把 agent get 設成回報
-# blocked（放行到最容易讓沒守住的實作繼續往下走到 send-keys 的狀
-# 態），讓這個標記檔的驗證力道最大——不是靠讓 agent get 先失敗才勉強
-# 擋下。
+# workspace 誤按在這裡不是理論可能。只驗結束碼不夠，且只驗「代按」這
+# 一個標記也不夠：若日後有人把守衛從執行前重查狀態（agent get）之前
+# 誤搬到 agent get 之後、代按（agent send-keys）之前，只認 send-keys
+# 那一支的測試看到的結束碼與代按標記仍會維持現狀（4／未代按），照樣
+# 綠燈卻放過了這次誤搬。這裡改成對 agent get 與 agent send-keys 各設
+# 一個專屬標記檔，只要對應分支真的被呼叫到就會落地，才分辨得出「守衛
+# 先於重查狀態」與「守衛只先於最終代按」這兩種情形。樁把 agent get 設
+# 成回報 blocked（放行到最容易讓沒守住的實作繼續往下走到 send-keys 的
+# 狀態），讓兩個標記檔的驗證力道最大——不是靠讓 agent get 先失敗才勉
+# 強擋下。
+export EO_TEST_GET_MARKER="$T/get-marker-309"
 export EO_TEST_SENT_MARKER="$T/sent-marker-309"
-rm -f "$EO_TEST_SENT_MARKER"
+rm -f "$EO_TEST_GET_MARKER" "$EO_TEST_SENT_MARKER"
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
 case "$1 $2" in
@@ -1007,6 +1013,7 @@ case "$1 $2" in
     printf '{"result":{"tabs":[{"tab_id":"tab_301"},{"tab_id":"tab_302"}]}}'
     exit 0 ;;
   "agent get")
+    touch "$EO_TEST_GET_MARKER"
     printf '%s' '{"result":{"agent":{"agent_status":"blocked"}}}'
     exit 0 ;;
   "agent send-keys") touch "$EO_TEST_SENT_MARKER"; printf '{"result":{}}'; exit 0 ;;
@@ -1025,6 +1032,11 @@ if [ "$rc" -eq 4 ]; then
   pass "press-approval workspace 守衛：不屬於本 workspace 的 tab 以 4 結束"
 else
   bad "press-approval workspace 守衛結束碼為 $rc，預期 4"
+fi
+if [ -e "$EO_TEST_GET_MARKER" ]; then
+  bad "press-approval workspace 守衛擋下時仍呼叫了 agent get，重查了狀態"
+else
+  pass "press-approval workspace 守衛擋下時確認未呼叫 agent get 重查狀態"
 fi
 if [ -e "$EO_TEST_SENT_MARKER" ]; then
   bad "press-approval workspace 守衛擋下時仍呼叫了 agent send-keys，代按了"
