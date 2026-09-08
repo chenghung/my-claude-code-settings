@@ -513,11 +513,19 @@ assert_herdr_stub_only "$PATH" "$STUB_BIN"
 export EO_TEST_CAPTURE="$T/captured-text"
 eo_state_set 201 agent_name '"phase-201-abcd"'
 
-bash "$SCRIPTS/send-to-phase.sh" 201 '第一段 第二段 第三段' >/dev/null
+out="$(bash "$SCRIPTS/send-to-phase.sh" 201 '第一段 第二段 第三段')"
 if [ "$(cat "$EO_TEST_CAPTURE")" = "第一段 第二段 第三段" ]; then
   pass "send-to-phase 把文字包成單一引數"
 else
   bad "send-to-phase 送出的是 '$(cat "$EO_TEST_CAPTURE")'，文字被切開了"
+fi
+
+# 開放 finding 一：handshake=ok 是文件化的契約字串，呼叫端依它判斷，
+# 必須有斷言直接比對，不能只間接靠外層 errexit 守成功結束碼。
+if [ "$out" = "handshake=ok" ]; then
+  pass "send-to-phase 取得憑據時輸出 handshake=ok"
+else
+  bad "send-to-phase 取得憑據時輸出 '$out'，預期 handshake=ok"
 fi
 
 # 對方 blocked 時 herdr 以 agent_blocked 拒絕，文字完全不會送達。
@@ -620,6 +628,39 @@ if [ "$(cat "$EO_TEST_CAPTURE")" = "3000" ]; then
   pass "send-to-phase --handshake-timeout 覆寫預設逾時值"
 else
   bad "send-to-phase --handshake-timeout 得到 '$(cat "$EO_TEST_CAPTURE")'，預期 3000"
+fi
+
+# 開放 finding 二：呼叫端用錯（結束碼 2）的三種情形，全部在觸碰狀態檔
+# 或呼叫 herdr 之前就先結束，不需要 herdr 樁，也不依賴 phase 999 是否
+# 存在於狀態檔——用 999 只是取一個明顯與其他斷言無關的號碼。
+( bash "$SCRIPTS/send-to-phase.sh" ) >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "send-to-phase 完全未帶參數時以 2 結束"
+else
+  bad "send-to-phase 完全未帶參數時結束碼為 $rc，預期 2"
+fi
+
+( bash "$SCRIPTS/send-to-phase.sh" 999 ) >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "send-to-phase 缺少必填參數 <文字> 時以 2 結束"
+else
+  bad "send-to-phase 缺少 <文字> 時結束碼為 $rc，預期 2"
+fi
+
+( bash "$SCRIPTS/send-to-phase.sh" 999 '定案內容' --handshake-timeout ) \
+  >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "send-to-phase --handshake-timeout 缺值時以 2 結束"
+else
+  bad "send-to-phase --handshake-timeout 缺值時結束碼為 $rc，預期 2"
+fi
+
+( bash "$SCRIPTS/send-to-phase.sh" 999 '定案內容' --unknown-flag ) \
+  >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "send-to-phase 未知選項時以 2 結束"
+else
+  bad "send-to-phase 未知選項時結束碼為 $rc，預期 2"
 fi
 export PATH="$saved_path"
 
