@@ -92,14 +92,19 @@ readonly _EO_WAIT_NOT_FOUND_RC=125
 # 逐字照抄或加校準註記。
 readonly EO_PHASE_POLL_SECONDS=5
 
-# ---- 自動推進送出的文字：與 phase-agent-contract.md 的用詞耦合 ----
-# 這裡送出的文字必須是 phase agent 契約定義的「請繼續、這不是新任
-# 務」那句話，讓 phase agent 分辨這只是推進、不是新指令。本任務（任
-# 務七）完成時 phase-agent-contract.md 尚未依本設計改寫（那是後續任
-# 務），措辭因此還沒有唯一答案；先用一個容易辨識、之後好搜尋替換的
-# 占位字串。改寫 phase-agent-contract.md 的任務必須回頭對齊這裡，不
-# 能兩邊各自表述兩套「繼續」的說法。
-readonly EO_AUTO_PUSH_TEXT='[event-generator] continue, this is not a new instruction'
+# ---- 自動推進送出的文字：權威在 phase-agent-contract.md，這裡只是
+#      跟著同一份定案 ----
+# 已由編排端定案（任務七審查裁定，2026-09-08）：這段文字的權威來源
+# 是 phase-agent-contract.md，不是這支腳本——契約改寫任務會把同一段
+# 文字帶進契約檔，讓兩邊一致。這裡逐字抄一份，是因為腳本要能獨立執
+# 行，不能在執行期讀契約檔的內文來組這個下行。往後任何一邊改了這段
+# 文字，另一邊要一起改，不能各自表述兩套「繼續」的說法。
+#
+# 措辭本身的理由：自動推進這條路徑的語意只有一件事——對方剛結束一
+# 個回合、沒有待決事項，推它繼續，不需要引入任何新詞彙；提醒維持標
+# 記行的約定，是因為標記行是整條事件通道的判讀依據，漏印一次就會被
+# eo_classify_stop 判成標記缺席（marker=none），白派一次調查者。
+readonly EO_AUTO_PUSH_TEXT='繼續進行你的 phase 任務。回合結束時依契約在畫面最後一行印出狀態標記。'
 
 # ---- 常駐迴圈用的行程內狀態（不落地狀態檔，隨本行程結束而消失）----
 declare -A _EO_PHASE_PIDS    # phase -> 該 phase 邊緣迴圈子行程的 PID
@@ -118,8 +123,20 @@ declare -A _EO_SPIN_EPOCH    # phase -> 上面那個 seq 第一次被觀測到�
 # eo_state_get 對不存在的欄位一律以 5 結束（見 common.sh），若不在
 # 這裡自己補齊，事件產生器第一次替任何 phase 分類就會因為欄位缺漏
 # 讓那條邊緣迴圈的子行程悄悄死掉——剛好重現這個專案要修的那種「監
-# 控視野漏判」。這是任務七實作過程中發現、但修法落在本檔案範圍內、
-# 不需要改動其他任一支既有腳本的落差，已在任務報告裡回報。
+# 控視野漏判」。
+#
+# ---- 這是消費端的職責，不是產生端漏了該補（編排端裁定，任務七審
+#      查階段，2026-09-08）----
+# 容忍欄位缺漏必須留在讀取這些欄位的一方（本檔案），不能改成依賴
+# start-phase.sh 在 phase 啟動時把七個欄位一次寫齊。理由是狀態記錄
+# 至少有兩條會繞過 start-phase.sh 的路徑：中斷恢復會依 GitHub 與
+# herdr 的現況重建狀態記錄，狀態檔本身也可能被人手動編輯過——這兩
+# 條路徑都不經過 start-phase.sh，若把「欄位一定齊全」的假設寄託在它
+# 身上，遇到這兩條路徑一樣會缺漏。反過來，讓消費端自己容忍缺漏、缺
+# 了就補上預設值，不論欄位是被誰用哪一種方式建立的都成立。也因此不
+# 要把這段邏輯搬去 start-phase.sh、或看到這裡就以為是遺漏而想拿掉：
+# 在產生端也做一次初始化只是多一層冗餘，換不到消費端仍然要有的這層
+# 容忍。
 _eo_ensure_field() {
   local phase="$1" field="$2" default="$3"
   if ! eo_state_get "$phase" "$field" >/dev/null 2>&1; then
@@ -132,6 +149,15 @@ _eo_ensure_field() {
 # 起步時、_eo_low_freq_process_one 每次處理某個 phase 時）各自獨立呼
 # 叫一次，成本是最多七次 `jq -e` 查詢，換來不必假設有任何人已經初始
 # 化過這些欄位。
+#
+# 下面七個預設值已核對過與 constraints.md 狀態檔 schema 一致：三個
+# 靜音欄位（spinning_muted／gone_muted／unclassified_muted）schema 裡
+# 就是 false，直接採用；unknown_rounds schema 範例本來就是 0，直接
+# 採用；last_marker_seq／auto_push_count 兩個計數欄位 schema 範例分
+# 別是 17／3，但那是一個「已經跑過一陣子」的 phase 的示範值，不是初
+# 始值——一個剛起步、還沒看過任何標記、還沒自動推過的 phase，這兩個
+# 計數本來就該是 0，跟 schema 描述的欄位語意（累計次數）並不衝突；
+# held_by_orchestrator schema 範例是 false，直接採用。
 _eo_ensure_phase_defaults() {
   local phase="$1"
   _eo_ensure_field "$phase" last_marker_seq 0
