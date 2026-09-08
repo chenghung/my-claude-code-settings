@@ -158,6 +158,19 @@ readonly _EO_WAIT_NOT_FOUND_RC=125
 # EO_WAIT_TIMEOUT_MS 與 common.sh 那三個待校準門檻一律不得為了測試
 # 而壓縮。
 readonly EO_PHASE_POLL_SECONDS="${EO_PHASE_POLL_SECONDS:-5}"
+# 這個值直接進 sleep，而它的來源是環境變數，跟狀態檔的數值欄位一樣不
+# 可信：外界殘留的匯出值會靜靜改掉生產節奏，而 0 會讓主輪詢變成不睡
+# 的忙迴圈。所以比照 _eo_require_int 對狀態檔欄位的處理先驗證是純數
+# 字，再要求至少 1 秒。這裡不能呼叫 _eo_require_int——它定義在下面，
+# 而這段在載入期就要跑。
+case "$EO_PHASE_POLL_SECONDS" in
+  ''|*[!0-9]*)
+    eo_die 2 "event-generator.sh: EO_PHASE_POLL_SECONDS 必須是純數字秒數，收到：$EO_PHASE_POLL_SECONDS"
+    ;;
+esac
+if [ "$EO_PHASE_POLL_SECONDS" -lt 1 ]; then
+  eo_die 2 "event-generator.sh: EO_PHASE_POLL_SECONDS 至少要 1 秒（0 會讓主輪詢變成忙迴圈），收到：$EO_PHASE_POLL_SECONDS"
+fi
 
 # ---- 自動推進送出的文字：權威在 phase-agent-contract.md，這裡只是
 #      跟著同一份定案 ----
@@ -642,6 +655,13 @@ _eo_run_auto_push_or_fallback() {
 # phase 已不在狀態檔），main 據此記住不再重起；任何非 0 都是異常，
 # main 會印一行診斷並結束整支腳本、讓編排端重掛。
 _eo_phase_edge_loop() {
+  # 進入時重下安全選項：這條迴圈是以背景子行程執行的，而子行程繼承的
+  # 選項狀態取決於 main fork 它的當下——main 那一側刻意用 set +e 包住
+  # 呼叫（理由見 main 裡那段長註解：唯一修得掉「if 條件豁免會終生傳染
+  # 給子行程」的組合，就是「fork 在 set +e 下」加「子行程重下」兩者一
+  # 起做）。這一行是那個組合的後半，單獨存在沒有用，也不能省。
+  set -euo pipefail
+
   local phase="$1"
   local agent
 
@@ -704,6 +724,17 @@ _eo_phase_edge_loop() {
         # 配合已經拿掉的監督重起層；把它留在狀態檔裡，低頻掃描與邊
         # 緣迴圈對「這個 phase 還在不在」的兩種判讀就又有機會互相打
         # 架，而那正是無界重複的來源。
+        #
+        # 印之前要再確認一次記錄還在：正常收尾（close-phase.sh 關掉
+        # tab 之後移除記錄）會同時造成「agent 找不到」與「記錄不
+        # 在」，而 _eo_scan_gone 會 eo_state_set 寫 gone_muted，對一
+        # 筆已經不存在的記錄寫下去就是生出一筆只有 gone_muted、零個座
+        # 標欄位的殘骸——它會出現在列舉結果裡，所以 main 每輪都當它是
+        # 清單內的 phase、清理永遠不會為它執行；而它沒有 pane 識別
+        # 碼，所以恢復入口的比對永遠相等、永久不被監看。已在完全正常
+        # 的收尾路徑上重現過。記錄不在就直接以 0 結束，連 GONE 都不必
+        # 印：那不是消失，那是收尾。
+        _eo_phase_record_exists "$phase" || return 0
         _eo_scan_gone "$phase" 0
         return 0
         ;;
@@ -801,7 +832,10 @@ _eo_phase_edge_loop() {
               break
               ;;
             "$_EO_WAIT_NOT_FOUND_RC")
-              # 同上方外層那個分支：印一次 GONE、以 0 自願結束。
+              # 同上方外層那個分支：先確認記錄還在（否則
+              # _eo_scan_gone 的寫入會生出殘骸記錄，完整理由見那
+              # 裡），再印一次 GONE、以 0 自願結束。
+              _eo_phase_record_exists "$phase" || return 0
               _eo_scan_gone "$phase" 0
               return 0
               ;;
@@ -872,6 +906,13 @@ _eo_low_freq_process_one() {
 _eo_low_freq_scan_once() {
   local output rc stderr_file script
   local phase_kv status_kv seq_kv now
+
+  # 這一輪查詢結果裡出現過的 phase，供函式尾端決定要忘掉哪些 seq 追
+  # 蹤。宣告在函式層級（每次呼叫都是一個新的區域變數實例，所以每輪本
+  # 來就是空的），不是在下面的 while 迴圈裡——理由與 main 那個
+  # current_phase_set 完全相同：bash 對已存在的關聯陣列再宣告一次不會
+  # 重置它。
+  local -A seen_this_round
 
   stderr_file="$(mktemp)"
   # 函式層級的 RETURN trap：不論下面用哪一條路徑離開這個函式，暫存
@@ -946,11 +987,34 @@ _eo_low_freq_scan_once() {
       printf 'event-generator.sh: 低頻掃描處理 phase %s 時以結束碼 %s 失敗，這一輪跳過它（其餘 phase 不受影響）\n' \
         "$phase" "$process_rc" >&2
     fi
+
+    seen_this_round[$phase]=1
   done <<<"$output"
+
+  # ---- 這一輪沒出現的 phase，把它的 seq 追蹤忘掉 ----
+  # 這兩個關聯陣列只有本行程（低頻掃描子行程）寫得到，所以也只有本行
+  # 程忘得掉：main 的 _eo_forget_phase 跑在另一個行程、另一份記憶體，
+  # 在那裡 unset 這兩個 key 是恆為無操作的（早先版本就是那樣寫的，測
+  # 試之所以看起來通過，是因為測試在自己的行程裡先給這兩個陣列賦過
+  # 值，斷言的是一條生產上不可能發生的路徑）。不忘掉的後果是同一個
+  # phase 編號日後被重用時沿用舊的變動時間戳，讓經過時間一開始就超過
+  # SPINNING 門檻、提前印出事件；順帶也讓這兩個陣列在長時間執行下只
+  # 增不減。
+  local tracked
+  for tracked in "${!_EO_SPIN_SEQ[@]}"; do
+    if [ -z "${seen_this_round[$tracked]:-}" ]; then
+      unset '_EO_SPIN_SEQ[$tracked]' '_EO_SPIN_EPOCH[$tracked]'
+    fi
+  done
 }
 
 # _eo_low_freq_scan_loop（內部輔助函式，以背景子行程執行）
 _eo_low_freq_scan_loop() {
+  # 理由同 _eo_phase_edge_loop 開頭：背景迴圈自己重下安全選項，讓這條
+  # 迴圈的 errexit 保證是本地的，不取決於 main fork 它的當下處在什麼
+  # 上下文。
+  set -euo pipefail
+
   while true; do
     _eo_low_freq_scan_once
     # EO_UNCLASSIFIED_SCAN_INTERVAL_SECONDS 定義在 common.sh，未查證
@@ -1166,11 +1230,16 @@ _eo_phase_pane_id() {
 # 碼是 0 或非 0）時也不會執行繼承來的 EXIT trap——重現腳本裡
 # "cleanup ran" 只在 main 自己的 pid 下出現過一次。所以這裡對單一子
 # 行程送訊號不會連鎖觸發 _eo_cleanup。
+# ---- 為什麼這裡不清 _EO_SPIN_SEQ／_EO_SPIN_EPOCH ----
+# 那兩個陣列只由低頻掃描子行程寫入，而本函式跑在 main。兩者是不同行
+# 程、不同記憶體，在這裡 unset 那兩個 key 恆為無操作——早先版本就是那
+# 樣寫的，而測試之所以看起來通過，是因為測試在自己的行程裡先給那兩個
+# 陣列賦過值，斷言的是一條生產上不可能發生的路徑。真正的遺忘由擁有它
+# 們的那個行程自己做，見 _eo_low_freq_scan_once 尾端。
 _eo_forget_phase() {
   local p="$1"
   _eo_kill_own_child "${_EO_PHASE_PIDS[$p]:-}"
-  unset '_EO_PHASE_PIDS[$p]' '_EO_PHASE_DONE[$p]' '_EO_PHASE_DONE_PANE[$p]' \
-    '_EO_SPIN_SEQ[$p]' '_EO_SPIN_EPOCH[$p]'
+  unset '_EO_PHASE_PIDS[$p]' '_EO_PHASE_DONE[$p]' '_EO_PHASE_DONE_PANE[$p]'
 }
 
 # main（無參數）
@@ -1198,7 +1267,11 @@ main() {
   # 遠為假，下面那段收尾在生產路徑上是死碼、一次都不會執行——獨立審
   # 查實測：移除一個 phase 之後 14 秒（約三輪）那條邊緣迴圈仍然存
   # 活。不要為了「宣告靠近使用處」把它搬回迴圈內。
-  local -A current_phase_set=()
+  #
+  # 宣告刻意不帶 `=()` 初始化：每輪開頭那個 `current_phase_set=()` 已
+  # 經負責清空，而宣告時的空陣列初始化在較舊的 bash 上行為如何本機無
+  # 法查證，拿掉就少一個查證不了的面，行為完全不變。
+  local -A current_phase_set
 
   _EO_MAIN_PID=$$
 
@@ -1235,11 +1308,33 @@ main() {
     while IFS= read -r p; do
       [ -n "$p" ] || continue
       current_phase_set[$p]=1
-      if _eo_phase_watch "$p"; then
-        watch_rc=0
-      else
-        watch_rc=$?
-      fi
+
+      # ---- 這裡刻意不用 `if _eo_phase_watch "$p"; then`，理由是一個
+      #      會傳染給子行程的 bash 語意 ----
+      # _eo_phase_watch 內部會 fork 出邊緣迴圈子行程。bash 對「正在被
+      # if／while／&&／|| 當條件測試的指令」給的 errexit 豁免，不是
+      # errexit 這個選項被關掉，而是另一個內部旗標；那個旗標會隨 fork
+      # 繼承進子行程，而且在子行程裡終生有效。把這個呼叫寫成 if 條
+      # 件，等於讓每一條邊緣迴圈整個生命期的 errexit 都是關著的——後
+      # 果是存活契約的「非 0 代表異常」只剩顯式檢查那一半，凡是原本
+      # 靠 errexit 攔下的失敗都不再反映成非 0 結束碼。
+      #
+      # 關鍵在於：**子行程自己重下 `set -euo pipefail` 修不掉這件事**
+      # ——那是選項，蓋不掉上面那個內部旗標。已實測四種組合，只有第
+      # 四種真的把 errexit 修回來：
+      #   fork 在 if 條件裡 ＋ 子行程不重下      → 失敗被吞，結束碼 0
+      #   fork 在 if 條件裡 ＋ 子行程重下 set -e → 失敗仍被吞，結束碼 0
+      #   fork 在 set +e 下  ＋ 子行程不重下      → 失敗被吞，結束碼 0
+      #   fork 在 set +e 下  ＋ 子行程重下 set -e → 失敗攔下，結束碼 7
+      # 所以要兩處一起做：這裡用 set +e／裸呼叫／取結束碼／set -e（讓
+      # 子行程繼承的是「選項關著」而不是那個清不掉的豁免旗標），並且
+      # 由 _eo_phase_edge_loop 在進入時重下 set -euo pipefail。看到這
+      # 段不要「簡化」回 if 條件，也不要以為只留子行程那一行就夠。
+      set +e
+      _eo_phase_watch "$p"
+      watch_rc=$?
+      set -e
+
       if [ "$watch_rc" -ne 0 ]; then
         return "$watch_rc"
       fi
