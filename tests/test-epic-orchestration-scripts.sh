@@ -1301,6 +1301,146 @@ else
   bad "SIGTERM 回歸測試未能取得受測行程的 pid，測試環境本身有問題"
 fi
 
+# ===== 修正輪次 2／5：High 5、Medium 8、退避與放棄門檻 =====
+# 這三項都不需要 herdr 樁：High 5／Medium 8 要樁化的是本專案自己的
+# 姊妹腳本（send-to-phase.sh／phase-status.sh），不是外部二進位，用
+# EO_SEND_TO_PHASE_SCRIPT／EO_PHASE_STATUS_SCRIPT 兩個環境變數換成假
+# 腳本即可；退避與放棄門檻只操作行程內的關聯陣列與狀態檔。
+
+# --- High 5：自動推進送出失敗後必須印事件，不能靜默吞掉，因為那是
+# 「有沒有事件抵達 orchestrator」的分界。假的 send-to-phase.sh 只要
+# 照文件化契約回傳 handshake=none／結束碼 7 即可，不需要處理任何
+# herdr JSON 回應形狀。 ---
+fake_send_to_phase_fail="$T/fake-send-to-phase-fail.sh"
+cat > "$fake_send_to_phase_fail" <<'FAKE'
+#!/usr/bin/env bash
+printf 'handshake=none\n'
+exit 7
+FAKE
+chmod +x "$fake_send_to_phase_fail"
+out="$(EO_SEND_TO_PHASE_SCRIPT="$fake_send_to_phase_fail" _eo_run_auto_push_or_fallback 999 "done")"
+if [ "$out" = "phase=999 stopped=done marker=working-ok" ]; then
+  pass "自動推進送出失敗（send-to-phase.sh 回傳 7）時印事件交回 orchestrator（High 5 回歸測試）"
+else
+  bad "自動推進送出失敗時得到 '$out'"
+fi
+
+fake_send_to_phase_ok="$T/fake-send-to-phase-ok.sh"
+cat > "$fake_send_to_phase_ok" <<'FAKE'
+#!/usr/bin/env bash
+printf 'handshake=ok\n'
+exit 0
+FAKE
+chmod +x "$fake_send_to_phase_ok"
+out="$(EO_SEND_TO_PHASE_SCRIPT="$fake_send_to_phase_ok" _eo_run_auto_push_or_fallback 999 "done")"
+if [ -z "$out" ]; then
+  pass "自動推進送出成功時不印任何事件"
+else
+  bad "自動推進送出成功時卻印了 '$out'"
+fi
+
+# --- Medium 8：低頻掃描整輪失敗（phase-status.sh 整支以非 0／1 結
+# 束）時要記一行到 stderr，不能無聲無息；掃到零個 phase（結束碼 0、
+# 輸出空字串）是正常情形，不該印診斷訊息，兩者要分得開。 ---
+fake_phase_status_fail="$T/fake-phase-status-fail.sh"
+cat > "$fake_phase_status_fail" <<'FAKE'
+#!/usr/bin/env bash
+printf 'phase-status.sh: herdr 本身連不上（模擬）\n' >&2
+exit 6
+FAKE
+chmod +x "$fake_phase_status_fail"
+scan_err="$T/low-freq-scan.err"
+( EO_PHASE_STATUS_SCRIPT="$fake_phase_status_fail" _eo_low_freq_scan_once ) 2>"$scan_err"
+if rg -q '結束碼 6' "$scan_err"; then
+  pass "低頻掃描整輪失敗時記一行到 stderr，不再無聲無息（Medium 8 回歸測試）"
+else
+  bad "低頻掃描整輪失敗時 stderr 內容：'$(cat "$scan_err")'"
+fi
+
+fake_phase_status_empty="$T/fake-phase-status-empty.sh"
+cat > "$fake_phase_status_empty" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+chmod +x "$fake_phase_status_empty"
+scan_err_empty="$T/low-freq-scan-empty.err"
+( EO_PHASE_STATUS_SCRIPT="$fake_phase_status_empty" _eo_low_freq_scan_once ) 2>"$scan_err_empty"
+if [ ! -s "$scan_err_empty" ]; then
+  pass "低頻掃描掃到零個 phase 時不印診斷訊息，跟整輪失敗是兩件不同的事"
+else
+  bad "低頻掃描掃到零個 phase 時卻印了：'$(cat "$scan_err_empty")'"
+fi
+
+# --- 第四項：同一個 phase 連續重起要退避、超過門檻要放棄並印事
+# 件。用假的（保證不存在的）pid 代表「已經死掉」，直接操作
+# _eo_phase_supervise 依賴的行程內關聯陣列來控制它認為自己在第幾次
+# 連續重起，不必真的等退避的秒數流逝，也不需要真的讓它 spawn
+# 一條會呼叫 herdr 的邊緣迴圈。
+#
+# 呼叫 _eo_phase_supervise 一律用「重導向到檔案」而不是命令替換
+# `$(...)` 擷取輸出：命令替換會開一個子殼，_eo_phase_supervise 對
+# 行程內關聯陣列（_EO_PHASE_RESPAWN_COUNT 等）的寫入會留在子殼裡、
+# 隨子殼結束而消失，回不到這個測試腳本自己的行程——這正是 Critical 2
+# 那個「seq 追蹤寫進被隔離子殼」的同一種錯誤，這裡刻意避開，改用單
+# 純輸出重導向（不開子殼）把要印的事件行存進暫存檔，需要時再讀出
+# 來，陣列的寫入則直接留在目前這個行程裡。 ---
+eo_state_set 130 tab_id '"tab_130"'
+eo_state_set 130 pane_id '"pane_130"'
+eo_state_set 130 agent_name '"phase-130-abcd"'
+supervise_out="$T/supervise-out.txt"
+
+# 情況一：退避延遲尚未到期，這一輪不該嘗試重起（連續重起計數不變）。
+_EO_PHASE_PIDS[130]=999999998
+_EO_PHASE_RESPAWN_COUNT[130]=2
+_EO_PHASE_NEXT_RESPAWN_EPOCH[130]=$(( $(date +%s) + 100 ))
+_eo_phase_supervise 130 > "$supervise_out"
+out="$(cat "$supervise_out")"
+if [ -z "$out" ] && [ "${_EO_PHASE_RESPAWN_COUNT[130]}" = "2" ]; then
+  pass "退避延遲尚未到期時不嘗試重起，連續重起計數不變"
+else
+  bad "退避延遲尚未到期時得到 out='$out'，count=${_EO_PHASE_RESPAWN_COUNT[130]}"
+fi
+
+# 情況二：連續重起次數已經到達門檻前一次，退避已到期，這一次重起會
+# 超過門檻（EO_PHASE_RESPAWN_GIVEUP_THRESHOLD=6），應該放棄並印
+# RESPAWN-LIMIT，同時記錄放棄當下的狀態指紋。
+_EO_PHASE_PIDS[130]=999999998
+_EO_PHASE_RESPAWN_COUNT[130]=6
+_EO_PHASE_NEXT_RESPAWN_EPOCH[130]=0
+_eo_phase_supervise 130 > "$supervise_out"
+out="$(cat "$supervise_out")"
+if [ "$out" = "phase=130 RESPAWN-LIMIT count=7" ] && [ -n "${_EO_PHASE_GIVEUP_FINGERPRINT[130]:-}" ]; then
+  pass "連續重起超過門檻時印 RESPAWN-LIMIT 並記錄放棄當下的狀態指紋"
+else
+  bad "超過門檻時得到 out='$out'，fingerprint 是否已記錄＝$([ -n "${_EO_PHASE_GIVEUP_FINGERPRINT[130]:-}" ] && echo yes || echo no)"
+fi
+
+# 情況三：已經放棄、狀態指紋沒有變動，這一輪應該繼續保持沉默（不重
+# 新嘗試、不再印任何東西）。
+_eo_phase_supervise 130 > "$supervise_out"
+out="$(cat "$supervise_out")"
+if [ -z "$out" ] && [ -n "${_EO_PHASE_GIVEUP_FINGERPRINT[130]:-}" ]; then
+  pass "已放棄且狀態指紋未變動時保持沉默，不重複嘗試"
+else
+  bad "已放棄狀態下得到 out='$out'"
+fi
+
+# 情況四：狀態指紋改變後（模擬操作者處理了這個卡住的 phase，重新
+# start-phase 換了新的 tab_id／pane_id），恢復監督：放棄標記與連續
+# 重起計數都要歸零。這裡把 _EO_PHASE_PIDS[130] 換成測試腳本自己的
+# $$（kill -0 對自己必然成立），確保驗證的是計數與指紋重置的邏輯本
+# 身，不會意外落到後面 spawn 一條真正呼叫 herdr 的邊緣迴圈那一行。
+eo_state_set 130 pane_id '"pane_130_new"'
+_EO_PHASE_PIDS[130]=$$
+_eo_phase_supervise 130 > "$supervise_out"
+out="$(cat "$supervise_out")"
+if [ -z "$out" ] && [ -z "${_EO_PHASE_GIVEUP_FINGERPRINT[130]:-}" ] && [ "${_EO_PHASE_RESPAWN_COUNT[130]}" = "0" ]; then
+  pass "狀態指紋改變後恢復監督：放棄標記與連續重起計數都歸零"
+else
+  bad "指紋改變後得到 out='$out'，fingerprint 是否還在＝$([ -n "${_EO_PHASE_GIVEUP_FINGERPRINT[130]:-}" ] && echo yes || echo no)，count=${_EO_PHASE_RESPAWN_COUNT[130]}"
+fi
+unset '_EO_PHASE_PIDS[130]' '_EO_PHASE_RESPAWN_COUNT[130]' '_EO_PHASE_NEXT_RESPAWN_EPOCH[130]' '_EO_PHASE_GIVEUP_FINGERPRINT[130]'
+
 # --- 新增：eo_state_remove_phase（狀態記錄的移除能力）。共用
 # eo_state_set 同一把鎖檔，見 common.sh 的實作與註解。 ---
 eo_state_set 112 pane_id '"pane_112"'

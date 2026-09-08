@@ -44,14 +44,26 @@
 #                                            位，見 _eo_scan_gone）
 #   狀態連續多輪都是 unknown              → UNCLASSIFIED
 #
+# main 對每個 phase 的邊緣迴圈子行程也有監督重起，見
+# _eo_phase_supervise：連續重起會退避（每次加倍延遲），超過
+# EO_PHASE_RESPAWN_GIVEUP_THRESHOLD 次就放棄並印一則事件：
+#   phase=<編號> RESPAWN-LIMIT count=<連續重起次數>
+# 放棄後不再重起，直到狀態記錄有變動（例如操作者關掉這個 phase 重新
+# start-phase）才恢復。
+#
 # ---- 測試方式：EO_GENERATOR_NO_MAIN ----
 # 本檔是常駐迴圈，不能整支跑進測試。設定 EO_GENERATOR_NO_MAIN 時，本
 # 檔只定義函式就返回，不進入 main；測試藉此把本檔直接 source 進自己
 # 的行程，單獨呼叫可測的函式並斷言其行為。凡是不需要 herdr 樁就測得
 # 起來的串接層判斷（狀態檔欄位補齊、seq 追蹤的行程內記憶、
-# EO_GENERATOR_DRY_RUN 開關），都必須有對應測試——這條規則本身是這
-# 一輪修正的直接教訓：早先版本裡好幾個嚴重問題，正是因為決策函式各
-# 自測起來都對、但串接它們的膠水程式碼從未被任何測試碰過。
+# EO_GENERATOR_DRY_RUN 開關、退避與放棄的計數邏輯），都必須有對應測
+# 試——這條規則本身是這一輪修正的直接教訓：早先版本裡好幾個嚴重問
+# 題，正是因為決策函式各自測起來都對、但串接它們的膠水程式碼從未被
+# 任何測試碰過。這條規則同樣適用於呼叫本專案自己另一支姊妹腳本
+# （send-to-phase.sh、phase-status.sh）的路徑：那些不是外部二進位，
+# 樁化的難度跟樁化 herdr 完全不同量級，不能以「這條路徑要呼叫別的腳
+# 本」為理由跟「需要 herdr 樁」混為一談而免測——見
+# EO_SEND_TO_PHASE_SCRIPT／EO_PHASE_STATUS_SCRIPT 兩個環境變數。
 #
 # ---- EO_GENERATOR_DRY_RUN：把「測不了」變成「測得了」----
 # 這支腳本唯一會主動對真實 agent 送下行的動作，是自動推進時呼叫
@@ -125,11 +137,23 @@ readonly EO_PHASE_POLL_SECONDS=5
 # eo_classify_stop 判成標記缺席（marker=none），白派一次調查者。
 readonly EO_AUTO_PUSH_TEXT='繼續進行你的 phase 任務。回合結束時依契約在畫面最後一行印出狀態標記。'
 
+# ---- phase 邊緣迴圈連續重起的退避與放棄門檻 ----
+# 未查證推估，首次真實跑 epic 為校準回合，與 common.sh 那三個門檻同
+# 樣待校準：連續重起超過這個次數就放棄，改印一則事件交回
+# orchestrator，直到狀態記錄有變動才恢復（見 _eo_phase_supervise）。
+readonly EO_PHASE_RESPAWN_GIVEUP_THRESHOLD=6
+# 未查證推估，首次真實跑 epic 為校準回合：退避延遲的上限秒數，避免
+# 加倍下去無限增長。
+readonly EO_PHASE_RESPAWN_BACKOFF_MAX_SECONDS=300
+
 # ---- 常駐迴圈用的行程內狀態（不落地狀態檔，隨本行程結束而消失）----
 declare -A _EO_PHASE_PIDS    # phase -> 該 phase 邊緣迴圈子行程的 PID
 _EO_LOW_FREQ_PID=""          # 低頻掃描子行程的 PID
 declare -A _EO_SPIN_SEQ      # phase -> 低頻掃描上次觀測到的 state_change_seq
 declare -A _EO_SPIN_EPOCH    # phase -> 上面那個 seq 第一次被觀測到的 epoch 秒
+declare -A _EO_PHASE_RESPAWN_COUNT       # phase -> 連續重起次數（健康時歸零）
+declare -A _EO_PHASE_NEXT_RESPAWN_EPOCH  # phase -> 退避延遲下，下次允許重起的 epoch 秒
+declare -A _EO_PHASE_GIVEUP_FINGERPRINT  # phase -> 放棄重起當下的狀態指紋；非空代表目前處於放棄狀態
 
 # _eo_require_int <value> <desc>（內部輔助函式）
 # 狀態檔讀出來、即將進算術展開（`$(( ))`）或整數比較的數值欄位，先
@@ -492,13 +516,48 @@ _eo_agent_wait() {
 # 不需要任何 herdr 樁就測得起來，依規定必須有測試（見任務報告
 # Medium 13、檔頭「測試方式」）。回傳 send-to-phase.sh 的結束碼；
 # dry-run 模式視為成功，回傳 0。
+#
+# ---- EO_SEND_TO_PHASE_SCRIPT：測試樁化 send-to-phase.sh 用 ----
+# 這裡呼叫的是「$SCRIPT_DIR/send-to-phase.sh」這個明確路徑，不是靠
+# PATH 解析的裸指令名，herdr 樁那套「在 PATH 前面插一個樁目錄」的手
+# 法在這裡用不上——樁化 herdr 遮蔽的是一個外部二進位的名字，這裡要
+# 遮蔽的是本專案自己另一支腳本的絕對路徑。改用環境變數間接：預設值
+# 就是真正的路徑，測試設定這個變數就能換成一支假腳本（不需要處理
+# herdr 的 JSON 回應形狀，只要照 send-to-phase.sh 的文件化契約回傳
+# 對應結束碼即可，樁化難度跟樁化 herdr 完全不同量級），正常執行時
+# 完全不受影響。
 _eo_do_auto_push() {
-  local phase="$1"
+  local phase="$1" script
   if [ -n "${EO_GENERATOR_DRY_RUN:-}" ]; then
     printf 'phase=%s DRY-RUN-AUTO-PUSH\n' "$phase" >&2
     return 0
   fi
-  bash "$SCRIPT_DIR/send-to-phase.sh" "$phase" "$EO_AUTO_PUSH_TEXT" >/dev/null 2>&1
+  script="${EO_SEND_TO_PHASE_SCRIPT:-$SCRIPT_DIR/send-to-phase.sh}"
+  bash "$script" "$phase" "$EO_AUTO_PUSH_TEXT" >/dev/null 2>&1
+}
+
+# _eo_run_auto_push_or_fallback <phase> <停下狀態>（內部輔助函式）
+# 呼叫 _eo_do_auto_push；成功就什麼都不印，失敗就印一則
+# stopped=<狀態> marker=working-ok 事件交回 orchestrator。
+#
+# ---- 為什麼這段失敗處理要抽成獨立函式 ----
+# 自動推進送出失敗（agent_blocked、握手逾時等）不能靜默吞掉：
+# eo_classify_stop 判定過這是 working-ok 且該自動推進，會走到這裡的
+# 必然是 state=working-ok，因此可以直接印出對應的 stopped 事件。
+# eo_classify_stop 已經把 last_marker_seq 推進過，若這裡什麼都不
+# 印，這個 phase 會直接卡進內層 wait -- until working 永遠等不到
+# （沒有人真的送出東西讓它離開 done），下一輪外層 wait 就算重新命中
+# 同一個標記也只會判成 marker=none——沒有回退路徑，只能在這裡當下
+# 就把控制權交還給 orchestrator。抽成獨立函式是為了讓這段失敗處理
+# 邏輯可以在不需要 herdr 樁的情況下，用一支回傳 7 的 send-to-phase.sh
+# 樁單獨驗證——這是有沒有事件抵達 orchestrator 的分界，重要性不容許
+# 只靠人工核對程式碼邏輯。
+_eo_run_auto_push_or_fallback() {
+  local phase="$1" stopped="$2"
+  if _eo_do_auto_push "$phase"; then
+    return 0
+  fi
+  printf 'phase=%s stopped=%s marker=working-ok\n' "$phase" "$stopped"
 }
 
 # _eo_phase_edge_loop <phase>（內部輔助函式，以背景子行程執行）
@@ -555,23 +614,10 @@ _eo_phase_edge_loop() {
 
         event="$(eo_classify_stop "$phase" "$stopped_status" "$marker")"
         if [ -z "$event" ]; then
-          if _eo_do_auto_push "$phase"; then
-            : # 自動推進成功，orchestrator 不必知道這次停下
-          else
-            # 自動推進送出失敗（agent_blocked、握手逾時等）：
-            # eo_classify_stop 判定過這是 working-ok 且該自動推進，
-            # 會走到這裡的必然是 state=working-ok，因此可以直接印出
-            # 對應的 stopped 事件。不能靜默吞掉這個失敗——
-            # eo_classify_stop 已經把 last_marker_seq 推進過，若這裡
-            # 什麼都不印，這個 phase 會直接卡進下面的內層
-            # wait -- until working 永遠等不到（沒有人真的送出東西
-            # 讓它離開 done），下一輪外層 wait 就算重新命中同一個標
-            # 記也只會判成 marker=none——沒有回退路徑，只能在這裡當
-            # 下就把控制權交還給 orchestrator（獨立審查指出舊版註解
-            # 宣稱「下一輪外層等待會再次看到同樣的停下狀態」，但程
-            # 式碼並不提供那個回退路徑，是註解與行為不符）。
-            printf 'phase=%s stopped=%s marker=working-ok\n' "$phase" "$stopped_status"
-          fi
+          # 自動推進（或送出失敗時的回退事件）：見
+          # _eo_run_auto_push_or_fallback 的說明，那段失敗處理邏輯獨
+          # 立成函式是為了讓它能在不需要 herdr 樁的情況下單獨測試。
+          _eo_run_auto_push_or_fallback "$phase" "$stopped_status"
         else
           printf '%s\n' "$event"
         fi
@@ -656,8 +702,15 @@ _eo_low_freq_process_one() {
 
 # _eo_low_freq_scan_once（內部輔助函式）
 # 低頻掃描的一輪：呼叫一次 phase-status.sh 查全部，逐行處理。
+#
+# ---- EO_PHASE_STATUS_SCRIPT：測試樁化 phase-status.sh 用 ----
+# 跟 _eo_do_auto_push 對 send-to-phase.sh 的處理方式相同：這裡呼叫
+# 的是「$SCRIPT_DIR/phase-status.sh」這個明確路徑，不是 PATH 解析的
+# 裸指令名，herdr 那套樁化手法用不上。改用環境變數間接，預設值是真
+# 正的路徑，測試可以換成一支假腳本（同樣不需要處理 herdr 的 JSON 回
+# 應形狀，只要照 phase-status.sh 文件化的結束碼契約回傳即可）。
 _eo_low_freq_scan_once() {
-  local output rc stderr_file
+  local output rc stderr_file script
   local phase_kv status_kv seq_kv now
 
   stderr_file="$(mktemp)"
@@ -670,8 +723,9 @@ _eo_low_freq_scan_once() {
   # 已經拿到的那些行，不能讓聚合失敗擋掉其餘還在跑的 phase，因此這
   # 裡先關掉 -e 再呼叫，不用 if 包（if 包只測「要不要繼續」，這裡兩
   # 種結束碼都要繼續，沒有分支好測）。
+  script="${EO_PHASE_STATUS_SCRIPT:-$SCRIPT_DIR/phase-status.sh}"
   set +e
-  output="$(bash "$SCRIPT_DIR/phase-status.sh" 2>"$stderr_file")"
+  output="$(bash "$script" 2>"$stderr_file")"
   rc=$?
   set -e
 
@@ -829,6 +883,107 @@ _eo_signal_exit() {
   exit 0
 }
 
+# _eo_phase_fingerprint <phase>（內部輔助函式）
+# 印出這個 phase 目前狀態記錄的一份簡單指紋（座標三欄位加七個邊緣
+# 觸發欄位，串成一個字串）。用在 _eo_phase_supervise 判斷「放棄重起
+# 之後，狀態記錄是不是有變動」——包含座標欄位是刻意的：操作者若把這
+# 個卡住的 phase 關掉、重新 start-phase 一次，tab_id／pane_id 會換
+# 新，這正是「值得恢復監督」的訊號。任何一個欄位讀不到（缺漏）都當
+# 空字串處理，不因此讓指紋計算本身失敗。
+_eo_phase_fingerprint() {
+  local phase="$1" field value out=""
+  for field in tab_id pane_id agent_name last_marker_seq held_by_orchestrator \
+    auto_push_count unknown_rounds spinning_muted gone_muted unclassified_muted; do
+    if value="$(eo_state_get "$phase" "$field" 2>/dev/null)"; then
+      :
+    else
+      value=""
+    fi
+    out="${out}${field}=${value};"
+  done
+  printf '%s' "$out"
+}
+
+# _eo_phase_supervise <phase>（內部輔助函式）
+# main 主迴圈每輪對每個列在狀態檔裡的 phase 呼叫一次，決定要不要
+# （重）啟動它的邊緣迴圈。依序：
+#   1. gone_muted 已經是 true：這個 phase 已經自願印過 GONE 結束了
+#      它的邊緣迴圈，不是異常死亡，不重新起一條——否則會變成事件風
+#      暴（見 _eo_phase_edge_loop 裡對應分支的說明）。
+#   2. 先前已經放棄重起（_EO_PHASE_GIVEUP_FINGERPRINT 非空）：比對
+#      目前的狀態指紋，沒變就繼續放棄；變了才清掉放棄標記、歸零重
+#      起計數，恢復正常監督。
+#   3. 子行程還活著（kill -0 成立）：健康，把連續重起計數歸零。
+#   4. 子行程不在了，且先前有記錄過 PID（代表這不是第一次啟動，是
+#      死掉之後要重起）：套用退避——連續重起次數每次加倍延遲下次允
+#      許重起的時間，超過 EO_PHASE_RESPAWN_GIVEUP_THRESHOLD 次就放
+#      棄，印一則 RESPAWN-LIMIT 事件交回 orchestrator、記錄當下的狀
+#      態指紋，之後每輪都在步驟 2 被擋下，直到指紋改變。
+#   5. 通過以上檢查（含第一次啟動，不受退避規則約束）：(重)啟動
+#      _eo_phase_edge_loop。
+#
+# ---- 為什麼需要這一整套，不能只「不在了就重起」----
+# 早先版本的「不在了就重起」在死亡原因是持續性的情況下會變成無窮迴
+# 圈，而且後果分兩種、兩種都不好：死在印出事件之前的入口（例如
+# _eo_agent_wait 內部的等待失敗、解析回應失敗被 errexit 帶走）重起
+# 不會產生任何 stdout 事件，只有 stderr 噪音——監看端不會被自動停
+# 掉，但 orchestrator 也永遠收不到這個 phase 的任何消息，那就是失明
+# 本身，只是變吵了；死在印出事件之後的入口（內層把結束碼原樣回傳那
+# 個分支）重起之後外層立刻再命中同一個停下，標記序號已經推進過，會
+# 印出標記缺席那種事件，變成另一種風暴。退避＋放棄把「無聲每 5 秒一
+# 次」換成「有界、可見、而且會升級」。
+_eo_phase_supervise() {
+  local p="$1"
+  local gone_muted
+
+  if gone_muted="$(eo_state_get "$p" gone_muted 2>/dev/null)" && [ "$gone_muted" = "true" ]; then
+    return 0
+  fi
+
+  if [ -n "${_EO_PHASE_GIVEUP_FINGERPRINT[$p]:-}" ]; then
+    local current_fp
+    current_fp="$(_eo_phase_fingerprint "$p")"
+    if [ "$current_fp" = "${_EO_PHASE_GIVEUP_FINGERPRINT[$p]}" ]; then
+      return 0
+    fi
+    unset '_EO_PHASE_GIVEUP_FINGERPRINT[$p]'
+    _EO_PHASE_RESPAWN_COUNT[$p]=0
+  fi
+
+  if [ -n "${_EO_PHASE_PIDS[$p]:-}" ] && kill -0 "${_EO_PHASE_PIDS[$p]}" 2>/dev/null; then
+    _EO_PHASE_RESPAWN_COUNT[$p]=0
+    return 0
+  fi
+
+  if [ -n "${_EO_PHASE_PIDS[$p]:-}" ]; then
+    local now_epoch next_allowed
+    now_epoch="$(date +%s)"
+    next_allowed="${_EO_PHASE_NEXT_RESPAWN_EPOCH[$p]:-0}"
+    if [ "$now_epoch" -lt "$next_allowed" ]; then
+      return 0
+    fi
+
+    local respawn_count delay
+    respawn_count=$(( ${_EO_PHASE_RESPAWN_COUNT[$p]:-0} + 1 ))
+    _EO_PHASE_RESPAWN_COUNT[$p]=$respawn_count
+
+    if [ "$respawn_count" -gt "$EO_PHASE_RESPAWN_GIVEUP_THRESHOLD" ]; then
+      printf 'phase=%s RESPAWN-LIMIT count=%s\n' "$p" "$respawn_count"
+      _EO_PHASE_GIVEUP_FINGERPRINT[$p]="$(_eo_phase_fingerprint "$p")"
+      return 0
+    fi
+
+    delay=$(( EO_PHASE_POLL_SECONDS * (1 << (respawn_count - 1)) ))
+    if [ "$delay" -gt "$EO_PHASE_RESPAWN_BACKOFF_MAX_SECONDS" ]; then
+      delay="$EO_PHASE_RESPAWN_BACKOFF_MAX_SECONDS"
+    fi
+    _EO_PHASE_NEXT_RESPAWN_EPOCH[$p]="$(( now_epoch + delay ))"
+  fi
+
+  _eo_phase_edge_loop "$p" &
+  _EO_PHASE_PIDS[$p]=$!
+}
+
 # main（無參數）
 # 常駐主迴圈：先取得單例守衛，起低頻掃描一次，之後每
 # EO_PHASE_POLL_SECONDS 秒重讀狀態檔，並且：
@@ -837,11 +992,9 @@ _eo_signal_exit() {
 #     輯，這是這一輪修正新增的部分：早先版本只在 main 開頭起一次，
 #     一旦死掉就永久消失，SIGTERM 誤用的後果見上面 _eo_signal_exit
 #     的說明。
-#   - 對每個列在狀態檔裡的 phase，先看 gone_muted 是不是已經是
-#     true——是的話代表這個 phase 已經自願印過 GONE 結束了它的邊緣
-#     迴圈，不是異常死亡，不重新起一條，否則會變成事件風暴（見
-#     _eo_phase_edge_loop 裡對應分支的說明）；不是 true 才照舊用
-#     kill -0 檢查對應的子行程是否還活著、不在了才重起。
+#   - 對每個列在狀態檔裡的 phase 呼叫 _eo_phase_supervise，把「要不
+#     要（重）啟動」的判斷交給它（含 gone_muted 跳過、退避、放棄門
+#     檻，見該函式的說明）。
 main() {
   _eo_acquire_singleton
 
@@ -867,16 +1020,7 @@ main() {
 
     while IFS= read -r p; do
       [ -n "$p" ] || continue
-
-      local gone_muted
-      if gone_muted="$(eo_state_get "$p" gone_muted 2>/dev/null)" && [ "$gone_muted" = "true" ]; then
-        continue
-      fi
-
-      if [ -z "${_EO_PHASE_PIDS[$p]:-}" ] || ! kill -0 "${_EO_PHASE_PIDS[$p]}" 2>/dev/null; then
-        _eo_phase_edge_loop "$p" &
-        _EO_PHASE_PIDS[$p]=$!
-      fi
+      _eo_phase_supervise "$p"
     done <<<"$phases"
 
     sleep "$EO_PHASE_POLL_SECONDS"
