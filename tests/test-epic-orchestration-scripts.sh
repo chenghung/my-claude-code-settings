@@ -681,11 +681,21 @@ case "$1 $2" in
     exit 0 ;;
   "agent send-keys") printf '{"result":{}}'; exit 0 ;;
   "agent wait")
-    # 一般核准框等 working，不是 idle：若實作把 --startup 的邏輯用反
-    # 了，這裡會抓到。
+    # 一般核准框必須正面帶到 --until working，且絕不能帶 --until
+    # idle。只擋 idle（負面單向）測不出「兩條分支其實共用同一段邏
+    # 輯、只是換個訊息」這種假分支：若實作永遠等某個第三個值（例如
+    # done），這裡的舊寫法會誤判通過。改成正面要求看到 working、同
+    # 時仍然禁止 idle，才與下面 --startup 那組的 saw_idle 正面判斷對
+    # 稱，合起來才真的證明兩條分支各自送出不同的 --until 值。
+    saw_working=0
     for a in "$@"; do
       [ "$a" = "idle" ] && { printf 'unexpected --until idle\n' >&2; exit 9; }
+      [ "$a" = "working" ] && saw_working=1
     done
+    if [ "$saw_working" -ne 1 ]; then
+      printf '未見 --until working\n' >&2
+      exit 9
+    fi
     printf '%s' '{"result":{"agent":{"agent_status":"working"}}}'
     exit 0 ;;
 esac
@@ -738,7 +748,11 @@ fi
 # --startup：不等 working，改為確認狀態已離開 blocked 回到 idle。用獨
 # 立的 phase 302，樁直接檢查 herdr agent wait 收到的是 --until idle 而
 # 不是 --until working，正面驗證兩種取憑據方式真的走了不同分支，而不
-# 只是靠回應內容湊巧對得上。
+# 只是靠回應內容湊巧對得上。跟上面 phase 301 那組（正面要求
+# --until working、同時禁止 idle）合在一起看：兩邊都各自正面斷言自己
+# 該送出的值、也各自禁止對方那個值，證明的是「兩條分支真的各自送出
+# 不同的 --until」，不是「其中一條分支預設就會通過、另一條才有事後檢
+# 查」這種不對稱、可能放過假分支的驗證。
 eo_state_set 302 agent_name '"phase-302-abcd"'
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
