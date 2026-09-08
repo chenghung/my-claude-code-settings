@@ -969,4 +969,111 @@ else
 fi
 export PATH="$saved_path"
 
+# ===== 任務七：event-generator.sh =====
+# shellcheck source=/dev/null
+EO_GENERATOR_NO_MAIN=1 source "$SCRIPTS/event-generator.sh"
+
+# 分流：working-ok 且 seq 變大 → 自動推進，不印任何一行。
+eo_state_set 108 last_marker_seq 5
+eo_state_set 108 auto_push_count 0
+eo_state_set 108 held_by_orchestrator false
+out="$(eo_classify_stop 108 "done" '[PHASE 108] seq=6 state=working-ok')"
+if [ -z "$out" ]; then
+  pass "working-ok 且 seq 變大時不產生事件行"
+else
+  bad "working-ok 不該印事件，卻印了 '$out'"
+fi
+if [ "$(eo_state_get 108 last_marker_seq)" = "6" ]; then
+  pass "自動推進後更新 last_marker_seq"
+else
+  bad "自動推進後未更新 last_marker_seq"
+fi
+
+# seq 沒變大 ＝ 抓到的是上一回合殘留的舊標記，等同標記缺席。
+# 這是整個機制的關鍵：危險方向是舊標記被當成新的，只有 seq 攔得住。
+out="$(eo_classify_stop 108 "done" '[PHASE 108] seq=6 state=working-ok')"
+if [ "$out" = "phase=108 stopped=done marker=none" ]; then
+  pass "seq 沒變大時視同標記缺席"
+else
+  bad "seq 沒變大時得到 '$out'，預期 marker=none"
+fi
+
+# pr-ready 要進 orchestrator，不能被自動推掉。
+out="$(eo_classify_stop 108 "done" '[PHASE 108] seq=7 state=pr-ready pr=456')"
+if [ "$out" = "phase=108 stopped=done marker=pr-ready pr=456" ]; then
+  pass "pr-ready 產生事件行"
+else
+  bad "pr-ready 得到 '$out'"
+fi
+
+# 互斥：orchestrator 持有中時，產生器不得自動推。
+eo_state_set 108 held_by_orchestrator true
+eo_state_set 108 last_marker_seq 7
+out="$(eo_classify_stop 108 "done" '[PHASE 108] seq=8 state=working-ok')"
+if [ -n "$out" ]; then
+  pass "orchestrator 持有中時不自動推、改交回事件"
+else
+  bad "orchestrator 持有中時仍自動推了"
+fi
+eo_state_set 108 held_by_orchestrator false
+
+# 自動推進上限 40 次：超過就交回 orchestrator。
+eo_state_set 108 auto_push_count 40
+eo_state_set 108 last_marker_seq 8
+out="$(eo_classify_stop 108 "done" '[PHASE 108] seq=9 state=working-ok')"
+if [ "$out" = "phase=108 AUTO-PUSH-LIMIT count=40" ]; then
+  pass "自動推進達 40 次時印 AUTO-PUSH-LIMIT"
+else
+  bad "達上限時得到 '$out'"
+fi
+
+# 邊緣觸發：SPINNING 印過就靜音，直到 seq 變動才解除。
+eo_state_set 109 spinning_muted false
+first="$(eo_scan_spinning 109 3 "$(( $(date +%s) - 1600 ))")"
+second="$(eo_scan_spinning 109 3 "$(( $(date +%s) - 1600 ))")"
+if [ "$first" = "phase=109 SPINNING" ] && [ -z "$second" ]; then
+  pass "SPINNING 邊緣觸發：第二次靜音"
+else
+  bad "SPINNING 邊緣觸發失效：first='$first' second='$second'"
+fi
+third="$(eo_scan_spinning 109 4 "$(date +%s)")"
+fourth="$(eo_scan_spinning 109 4 "$(( $(date +%s) - 1600 ))")"
+if [ -z "$third" ] && [ "$fourth" = "phase=109 SPINNING" ]; then
+  pass "SPINNING 在 seq 變動後解除靜音"
+else
+  bad "SPINNING 靜音未解除：third='$third' fourth='$fourth'"
+fi
+
+# unknown 要連續 5 輪才印。少了這一條，落進 unknown 的 phase
+# 兩條通道都抓不到，會從編排端的視野裡無聲消失。
+eo_state_set 110 unknown_rounds 0
+eo_state_set 110 unclassified_muted false
+last=""
+for _ in 1 2 3 4 5; do last="$(eo_scan_unknown 110 unknown)"; done
+if [ "$last" = "phase=110 UNCLASSIFIED" ]; then
+  pass "unknown 連續 5 輪後印 UNCLASSIFIED"
+else
+  bad "unknown 第 5 輪得到 '$last'"
+fi
+eo_state_set 110 unknown_rounds 0
+eo_state_set 110 unclassified_muted false
+early=""
+for _ in 1 2 3 4; do early="$(eo_scan_unknown 110 unknown)"; done
+if [ -z "$early" ]; then
+  pass "unknown 未滿 5 輪不印"
+else
+  bad "unknown 第 4 輪就印了 '$early'"
+fi
+
+# 全案性的測試要求：呼叫端用錯（結束碼 2）。event-generator.sh 不接
+# 受任何參數，帶了參數就是呼叫端用錯；這條檢查在 eo_require_herdr_env
+# 之後、main（含它的常駐迴圈）之前就先結束，不需要 herdr 樁、也不會
+# 讓測試卡進常駐迴圈。
+( bash "$SCRIPTS/event-generator.sh" unexpected-arg ) >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "event-generator 帶任何參數時以 2 結束"
+else
+  bad "event-generator 帶參數時結束碼為 $rc，預期 2"
+fi
+
 exit "$fail"
