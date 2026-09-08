@@ -214,4 +214,42 @@ else
 fi
 export PATH="$saved_path"
 
+# ===== 任務二：phase-status.sh =====
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "api" ] && [ "$2" = "snapshot" ]; then
+  printf '%s' '{"result":{"agents":[
+    {"pane_id":"pane_101","tab_id":"tab_101","workspace_id":"ws_mine",
+     "agent_status":"done","state_change_seq":9,
+     "terminal_title":"模型自己寫的中文標題"}]}}'
+  exit 0
+fi
+if [ "$1" = "tab" ] && [ "$2" = "list" ]; then
+  printf '{"result":{"tabs":[{"tab_id":"tab_101"}]}}'; exit 0
+fi
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$STUB_BIN:$saved_path"
+assert_herdr_stub_only "$PATH" "$STUB_BIN"
+eo_state_set 101 pane_id '"pane_101"'
+eo_state_set 101 tab_id '"tab_101"'
+
+out="$(bash "$SCRIPTS/phase-status.sh" 101)"
+if [ "$out" = "phase=101 status=done seq=9" ]; then
+  pass "phase-status 回傳最小結果"
+else
+  bad "phase-status 得到 '$out'"
+fi
+
+# 這是本腳本最重要的一條：任何模型產出文字都不得出現在輸出裡。
+# 做法是只回自己組出來的欄位，不是從原始回應剝掉幾個具名欄位——
+# 承載模型文字的出口至少三處，列舉必漏。
+if printf '%s' "$out" | rg -q '模型自己寫的中文標題'; then
+  bad "phase-status 把 terminal_title 洩漏進輸出"
+else
+  pass "phase-status 未洩漏 terminal_title"
+fi
+export PATH="$saved_path"
+
 exit "$fail"
