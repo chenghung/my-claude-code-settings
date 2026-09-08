@@ -82,6 +82,57 @@ else
   bad "eo_state_phases 得到 '$(eo_state_phases | tr '\n' ' ')'，預期 '101 102 '"
 fi
 
+# --- eo_state_set／eo_state_get：JSON false／null 往返（開放 finding 一）---
+# 舊版合法性檢查用 `jq -e .`，結束碼是依「最後輸出值的真假」判定，
+# 不是依語法——合法的 JSON false／null 的輸出值本身是假，會被 -e
+# 誤判成不合法。狀態檔 schema 裡 held_by_orchestrator／spinning_muted／
+# gone_muted／unclassified_muted 四個欄位都是布林、預設 false，這裡
+# 直接驗證這個真實會被寫入的值。
+eo_state_set 101 held_by_orchestrator false
+eo_state_set 101 some_null_field null
+if [ "$(eo_state_get 101 held_by_orchestrator)" = "false" ] \
+   && [ "$(eo_state_get 101 some_null_field)" = "null" ]; then
+  pass "eo_state_set 接受合法的 JSON false／null，往返一致"
+else
+  bad "eo_state_set 對 false／null 的往返不一致"
+fi
+
+# --- eo_state_set：第三參數是空字串時仍要以 2 結束 ---
+# 這條不是審查點名的三項之一，是修 finding 一時另外驗證到的邊界：
+# 若直接改用最單純的 `jq empty` 判斷合法性，空字串會被誤判成合法
+# （`empty` 篩選器本來就不輸出任何東西，「沒輸出」跟「合法但空」在
+# 它底下分不出來），因此改用 `jq -e '. as $x | true'` 而不是
+# `jq empty`。這裡驗證這個邊界沒有被新寫法帶回來。
+( eo_state_set 101 some_field "" ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "eo_state_set 對空字串第三參數以 2 結束（不是合法 JSON）"
+else
+  bad "eo_state_set 對空字串第三參數結束碼為 $rc，預期 2"
+fi
+
+# --- eo_state_set：讀-改-寫由 flock 序列化，不遺失並行寫入（開放 finding 三）---
+# 手法：外部搶下與 eo_state_set 相同的鎖檔並握住 1.5 秒，驗證
+# eo_state_set 真的會等待（花費時間），而不是繞過鎖直接寫、蓋掉別人
+# 稍早的變更。
+LOCK_FILE="$(eo_state_file).lock"
+(
+  exec 8>"$LOCK_FILE"
+  flock -x 8
+  sleep 1.5
+) &
+holder_pid=$!
+sleep 0.3
+start_ms=$(date +%s%3N)
+eo_state_set 101 concurrent_probe '"done"'
+end_ms=$(date +%s%3N)
+wait "$holder_pid"
+elapsed_ms=$((end_ms - start_ms))
+if [ "$(eo_state_get 101 concurrent_probe)" = "done" ] && [ "$elapsed_ms" -ge 800 ]; then
+  pass "eo_state_set 在鎖被外部持有時會等待，讀-改-寫序列化、沒有遺失更新"
+else
+  bad "eo_state_set 併發防護測試失敗：elapsed_ms=$elapsed_ms"
+fi
+
 # --- eo_main_repo：EO_MAIN_REPO 未設時由 git common directory 推導 ---
 # 這條涵蓋的是環境變數未設時的推導路徑，而它必須從 worktree 內執行也對得回主倉庫。
 got="$(unset EO_MAIN_REPO && eo_main_repo)"
@@ -139,6 +190,27 @@ if [ "$rc" -eq 6 ]; then
   pass "eo_herdr 把 herdr 結束碼 1 映射成 6"
 else
   bad "eo_herdr 映射得到 $rc，預期 6"
+fi
+
+# --- eo_herdr：裸呼叫（未被 if／&&／|| 保護）仍要映射成 6（開放 finding 二）---
+# 上面那條測試把 eo_herdr 包在子殼＋&&/|| 左側，剛好命中 bash 對
+# errexit 的豁免情境，測不到真實會發生的裸呼叫用法。這裡在一支獨立、
+# 也設了 set -euo pipefail 的子行程裡把 eo_herdr 當一般陳述句呼叫，
+# 重現審查描述的用法：豁免必須發生在 eo_herdr 函式自己身上，不能靠
+# 呼叫端怎麼寫。
+BARE_SCRIPT="$T/bare-eo-herdr.sh"
+cat > "$BARE_SCRIPT" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "$SCRIPTS/lib/common.sh"
+eo_herdr agent get phase-101
+EOF
+chmod +x "$BARE_SCRIPT"
+( bash "$BARE_SCRIPT" ) >/dev/null 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 6 ]; then
+  pass "eo_herdr 裸呼叫（不受 if/&&/|| 保護）仍把 herdr 結束碼 1 映射成 6"
+else
+  bad "eo_herdr 裸呼叫得到 $rc，預期 6"
 fi
 export PATH="$saved_path"
 

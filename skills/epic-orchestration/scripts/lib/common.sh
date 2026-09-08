@@ -157,21 +157,43 @@ eo_state_get() {
 # 呼叫端自帶引號（例如 '"running"'），這樣數字與布林不必另開函式。
 # 暫存檔與目的檔同一目錄，確保 mv 落在同一個檔案系統上、是真的原子
 # 置換。
+#
+# 合法性檢查刻意不用 `jq -e .`：`-e` 的結束碼是依「最後輸出值的真假」
+# 決定，不是依「語法是否合法」——輸入合法的 JSON `false` 或 `null`
+# 時，`-e` 一樣回傳非 0，會被誤判成不合法（獨立審查用真實 jq 1.8.2
+# 重現過）。這裡改用 `. as $x | true`：不管 `$x`（也就是輸入值）本身
+# 真假，永遠輸出字面上的 `true`，所以 `-e` 判的是「有沒有解析出東
+# 西」而不是「解析出來的東西是不是真值」。也不能直接換成單純的
+# `jq empty`：`empty` 對完全空字串或純空白輸入一樣回傳 0（因為它本來
+# 就不輸出任何東西，`empty` 篩選器的『沒輸出』跟『合法但空』分不出
+# 來），會把呼叫端漏帶引號、傳出空字串這種明確錯誤放行，這一點已用
+# 真實 jq 驗證過（`jq empty <<<''` 回 0）。
 eo_state_set() {
   if [ "$#" -lt 3 ]; then
     eo_die 2 "eo_state_set 缺少必填參數 <phase> <field> <json_value>"
   fi
-  local phase="$1" field="$2" json_value="$3" file tmp
+  local phase="$1" field="$2" json_value="$3" file tmp lock_file lock_fd
   file="$(_eo_state_file_or_die)"
 
-  if ! jq -e . >/dev/null 2>&1 <<<"$json_value"; then
+  if ! jq -e '. as $x | true' >/dev/null 2>&1 <<<"$json_value"; then
     eo_die 2 "eo_state_set 的第三個參數不是合法 JSON：$json_value"
   fi
+
+  # 讀-改-寫（讀舊檔→算新內容→mv 換檔）整段用 flock 序列化，不只是
+  # mv 那一刻：mv 本身雖然原子，但擋不住「兩個行程都讀到同一份舊內容
+  # 後各自算出新內容、後寫入者蓋掉先寫入者變更」這種遺失更新。鎖檔用
+  # `<狀態檔>.lock`，鎖只在本函式呼叫期間持有，函式結束就明確關閉
+  # 對應的檔案描述符、釋放鎖。
+  lock_file="${file}.lock"
+  exec {lock_fd}>"$lock_file"
+  flock -x "$lock_fd"
 
   tmp="$(mktemp "${file}.XXXXXX")"
   jq --arg p "$phase" --arg f "$field" --argjson v "$json_value" \
     '.phases[$p] //= {} | .phases[$p][$f] = $v' "$file" > "$tmp"
   mv "$tmp" "$file"
+
+  exec {lock_fd}>&-
 }
 
 # eo_state_phases
@@ -216,12 +238,29 @@ eo_assert_workspace() {
 # 6；herdr 結束碼 2（語法錯誤，視為腳本呼叫方式有 bug）原樣拋出，並
 # 在 stderr 額外註明是哪一次呼叫。herdr 自身印出的訊息不受影響、照
 # 常出現在 stderr 上，只有結束碼被攔截改寫。
+#
+# `herdr "$@"` 這一句刻意包在 `if` 的條件裡，不是寫成後面接一行
+# `rc=$?` 的裸陳述句：bash 的 errexit 只在「一個指令的失敗正在被
+# if／while／until 的條件、或 &&／|| 左側測試」時才豁免，其餘情況失
+# 敗當下就終止整個 shell。呼叫端的腳本一律有 `set -e`，若 herdr 在
+# 這裡是裸陳述句，一旦失敗，errexit 會在到達下面 `rc=$?` 與 case 之
+# 前就先把整個呼叫端腳本終止，本函式的結束碼映射邏輯永遠執行不到
+# ——這正是獨立審查用真實樁重現出的問題：外層腳本收到的是 herdr 原始
+# 的 1，而不是約定的 6。把測試點放在 `if` 內部，讓豁免發生在本函式
+# 自己身上，不必依賴呼叫端怎麼寫（是否包在子殼、邏輯運算子裡）。
 eo_herdr() {
-  local rc
-  herdr "$@"
-  rc=$?
+  local rc=0
+  # 刻意用 if／else 兩個分支各自處理，不是「if 判斷完再看 $?」：
+  # `if cmd; then ...; fi`（沒有 else）在條件為假、又沒有 else 時，
+  # 整個 if 陳述句本身的結束碼固定是 0，不是 cmd 失敗當下的原始結束
+  # 碼——`$?` 要在 else 分支裡、緊接著失敗的那個當下取，才會是 herdr
+  # 真正的結束碼。
+  if herdr "$@"; then
+    return 0
+  else
+    rc=$?
+  fi
   case "$rc" in
-    0) return 0 ;;
     1) eo_die 6 "eo_herdr: herdr 以結束碼 1 拒絕（見上方 herdr 錯誤訊息）：herdr $*" ;;
     2) eo_die 2 "eo_herdr: herdr 以結束碼 2 拒絕，疑似腳本呼叫語法錯誤：herdr $*" ;;
     *) exit "$rc" ;;
