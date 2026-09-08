@@ -494,4 +494,133 @@ fi
 
 export PATH="$saved_path"
 
+# ===== 任務四：send-to-phase.sh =====
+# 既有測試用 phase 101 到 107，這裡改用 201 避免污染。
+# 文字必須包成單一引數。不包起來 shell 會在第一個空白處切開，
+# 可能整條失敗，也可能只送出第一段而握手照樣回報成功。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "agent" ] && [ "$2" = "prompt" ]; then
+  printf '%s\n' "$4" > "$EO_TEST_CAPTURE"
+  printf '{"result":{"agent_status":"working"}}'
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$STUB_BIN:$saved_path"
+assert_herdr_stub_only "$PATH" "$STUB_BIN"
+export EO_TEST_CAPTURE="$T/captured-text"
+eo_state_set 201 agent_name '"phase-201-abcd"'
+
+bash "$SCRIPTS/send-to-phase.sh" 201 '第一段 第二段 第三段' >/dev/null
+if [ "$(cat "$EO_TEST_CAPTURE")" = "第一段 第二段 第三段" ]; then
+  pass "send-to-phase 把文字包成單一引數"
+else
+  bad "send-to-phase 送出的是 '$(cat "$EO_TEST_CAPTURE")'，文字被切開了"
+fi
+
+# 對方 blocked 時 herdr 以 agent_blocked 拒絕，文字完全不會送達。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"agent_blocked"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+( bash "$SCRIPTS/send-to-phase.sh" 201 '定案內容' ) >/dev/null 2>&1 \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 6 ]; then
+  pass "send-to-phase 對 blocked 對象以 6 結束"
+else
+  bad "send-to-phase 對 blocked 對象結束碼為 $rc，預期 6"
+fi
+
+# 握手逾時不是失敗，是「未取得憑據」——出口是 7，交給呼叫端派調查者。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"timeout"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+out="$( ( bash "$SCRIPTS/send-to-phase.sh" 201 '定案內容' ) 2>/dev/null )" \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 7 ] && [ "$out" = "handshake=none" ]; then
+  pass "send-to-phase 對逾時回 handshake=none 並以 7 結束"
+else
+  bad "send-to-phase 逾時得到 rc=$rc out='$out'，預期 rc=7 out=handshake=none"
+fi
+
+# agent_prompt_stalled 與逾時同一類：未取得憑據，出口同樣是 7。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"agent_prompt_stalled"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+out="$( ( bash "$SCRIPTS/send-to-phase.sh" 201 '定案內容' ) 2>/dev/null )" \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 7 ] && [ "$out" = "handshake=none" ]; then
+  pass "send-to-phase 對 agent_prompt_stalled 回 handshake=none 並以 7 結束"
+else
+  bad "send-to-phase 對 agent_prompt_stalled 得到 rc=$rc out='$out'，預期 rc=7 out=handshake=none"
+fi
+
+# --no-handshake：合併後廣播 main 動了走這條，收件的每個 phase 都還在 working。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "agent" ] && [ "$2" = "prompt" ]; then
+  # 沒有 --wait 就不該出現 --until
+  for a in "$@"; do
+    [ "$a" = "--until" ] && { printf 'unexpected --until\n' >&2; exit 9; }
+  done
+  printf '{"result":{}}'; exit 0
+fi
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+out="$(bash "$SCRIPTS/send-to-phase.sh" 201 'main 動了' --no-handshake)"
+if [ "$out" = "handshake=skipped" ]; then
+  pass "send-to-phase --no-handshake 不帶 --until 且回 skipped"
+else
+  bad "send-to-phase --no-handshake 得到 '$out'"
+fi
+
+# --no-handshake 不吞送出當下的拒絕：agent_blocked 仍以 6 結束。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"agent_blocked"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+( bash "$SCRIPTS/send-to-phase.sh" 201 '定案內容' --no-handshake ) \
+  >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 6 ]; then
+  pass "send-to-phase --no-handshake 對送出當下的 blocked 仍以 6 結束"
+else
+  bad "send-to-phase --no-handshake 對 blocked 結束碼為 $rc，預期 6"
+fi
+
+# --handshake-timeout 覆寫預設值：把值原樣轉給 herdr 的 --timeout。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "agent" ] && [ "$2" = "prompt" ]; then
+  for i in "$@"; do
+    if [ "$prev" = "--timeout" ]; then
+      printf '%s' "$i" > "$EO_TEST_CAPTURE"
+    fi
+    prev="$i"
+  done
+  printf '{"result":{"agent_status":"working"}}'; exit 0
+fi
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+bash "$SCRIPTS/send-to-phase.sh" 201 '定案內容' --handshake-timeout 3000 >/dev/null
+if [ "$(cat "$EO_TEST_CAPTURE")" = "3000" ]; then
+  pass "send-to-phase --handshake-timeout 覆寫預設逾時值"
+else
+  bad "send-to-phase --handshake-timeout 得到 '$(cat "$EO_TEST_CAPTURE")'，預期 3000"
+fi
+export PATH="$saved_path"
+
 exit "$fail"
