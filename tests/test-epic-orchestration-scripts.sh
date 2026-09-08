@@ -215,17 +215,35 @@ fi
 export PATH="$saved_path"
 
 # ===== 任務二：phase-status.sh =====
+# 以下回應形狀已對真實 herdr 0.8.2 執行 api snapshot 查證：
+# agents 在 result 底下的 snapshot 底下；直接取 result 底下的 agents 會得到 null。
+# 另外多加了 agent explain 分支，回應裡塞一個可辨識字串到 evidence，
+# 供下面 --explain 那一段斷言它沒有洩漏（開放 finding 二）。
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
 if [ "$1" = "api" ] && [ "$2" = "snapshot" ]; then
-  printf '%s' '{"result":{"agents":[
+  printf '%s' '{"result":{"snapshot":{"agents":[
     {"pane_id":"pane_101","tab_id":"tab_101","workspace_id":"ws_mine",
      "agent_status":"done","state_change_seq":9,
-     "terminal_title":"模型自己寫的中文標題"}]}}'
+     "terminal_title":"模型自己寫的中文標題"},
+    {"pane_id":"pane_103","tab_id":"tab_103","workspace_id":"ws_mine",
+     "agent_status":"working","state_change_seq":42,
+     "terminal_title":"另一個模型標題"}]}}}'
   exit 0
 fi
 if [ "$1" = "tab" ] && [ "$2" = "list" ]; then
-  printf '{"result":{"tabs":[{"tab_id":"tab_101"}]}}'; exit 0
+  printf '{"result":{"tabs":[{"tab_id":"tab_101"},{"tab_id":"tab_103"}]}}'; exit 0
+fi
+if [ "$1" = "agent" ] && [ "$2" = "explain" ]; then
+  # pane_103 刻意讓 agent explain 失敗（herdr 結束碼 1），用來驗證
+  # process_phase 的隔離子殼會在指令替換巢狀失敗時正確提早中止，不會
+  # 吞掉失敗後繼續印出一行內容是空字串的 rule=（開放 finding 四，見下
+  # 面「巢狀指令替換」那一段斷言）。
+  if [ "$5" = "pane_103" ]; then
+    exit 1
+  fi
+  printf '%s' '{"matched_rule":{"id":"stub_explain_rule"},"evaluated_rules":[{"evidence":{"region_preview":"審查用可辨識explain洩漏字串"}}]}'
+  exit 0
 fi
 exit 1
 STUB
@@ -250,6 +268,93 @@ if printf '%s' "$out" | rg -q '模型自己寫的中文標題'; then
 else
   pass "phase-status 未洩漏 terminal_title"
 fi
+
+# --- 開放 finding 二：--explain 模式沒有進版控的回歸測試 ---
+# 樁在 agent explain 的 evidence 裡塞了可辨識字串，斷言它不出現在
+# stdout；同時確認 rule= 那一行有正常印出規則名（不是空字串）。
+explain_out="$(bash "$SCRIPTS/phase-status.sh" 101 --explain)"
+if printf '%s' "$explain_out" | rg -q '審查用可辨識explain洩漏字串'; then
+  bad "phase-status --explain 把 evidence 洩漏進輸出"
+else
+  pass "phase-status --explain 未洩漏 evidence"
+fi
+if printf '%s' "$explain_out" | rg -q '^rule=stub_explain_rule$'; then
+  pass "phase-status --explain 印出規則名"
+else
+  bad "phase-status --explain 得到 '$explain_out'，未見預期的 rule= 行"
+fi
+
+# --- 開放 finding 四：查全部模式對每個 phase 隔離失敗 ---
+# phase 102 的 tab_id 刻意設成不在樁回傳的 tab 清單裡（樁的 tab list
+# 只有 tab_101），讓它在 workspace 守衛就失敗，重現審查者用真實跨
+# workspace 資料重現的那個場景。查全部模式底下，102 的失敗不得讓 101
+# 的正常輸出消失，且必須以可辨識的錯誤標記呈現、整體以非零結束碼結束。
+eo_state_set 102 pane_id '"pane_102"'
+eo_state_set 102 tab_id '"tab_202"'
+
+out_all="$(bash "$SCRIPTS/phase-status.sh" 2>/dev/null)" && rc_all=0 || rc_all=$?
+if printf '%s' "$out_all" | rg -q '^phase=101 status=done seq=9$'; then
+  pass "查全部模式：phase 101 仍正常輸出"
+else
+  bad "查全部模式：未見 phase 101 的正常輸出，得到 '$out_all'"
+fi
+if printf '%s' "$out_all" | rg -q '^phase=102 status=ERROR'; then
+  pass "查全部模式：phase 102 workspace 不符時印出可辨識錯誤標記並繼續"
+else
+  bad "查全部模式：未見 phase 102 的錯誤標記，得到 '$out_all'"
+fi
+if [ "$rc_all" -ne 0 ]; then
+  pass "查全部模式：任一 phase 失敗時整體以非零結束碼結束"
+else
+  bad "查全部模式：有 phase 失敗但結束碼為 0"
+fi
+
+# 查單一 phase 模式不受 finding 四影響：同一個 workspace 不符的 phase，
+# 單獨查詢時仍是失敗即結束（結束碼 4），不會印錯誤標記後繼續。
+( bash "$SCRIPTS/phase-status.sh" 102 ) >/dev/null 2>/dev/null && rc_single=0 || rc_single=$?
+if [ "$rc_single" -eq 4 ]; then
+  pass "查單一 phase 模式：workspace 不符時仍是失敗即結束（結束碼 4）"
+else
+  bad "查單一 phase 模式結束碼為 $rc_single，預期 4"
+fi
+
+# --- 開放 finding 四（補強）：巢狀指令替換的失敗也要被隔離子殼攔下 ---
+# phase 102 的失敗（workspace 不符）是 eo_assert_workspace 內部直接
+# 裸呼叫 eo_die，這種失敗不管有沒有正確隔離都會終止當下的行程，測不出
+# 「隔離手法選對了沒有」。真正測得出來的是失敗發生在指令替換裡面的情
+# 形，例如 `explain_json="$(eo_herdr agent explain …)"`：如果隔離子殼
+# 是包成 `if ( process_phase "$p" ); then …`，bash 會把整個子殼執行期
+# 間的 errexit 都當成「正在被測試而暫停」，這一步的失敗會被吞掉、繼續
+# 執行到 `rule="$(… // "none")"`，因為輸入是空字串，jq 對這個 filter
+# 印出空字串又以 0 結束，最後印出一行看起來合法但完全是假資料的
+# `rule=`（用真實 jq 1.8.2 驗證過）。phase 103 就是設計成先讓狀態行成
+# 功印出、再讓 agent explain 失敗，藉此把這個巢狀失敗攤開來檢查。
+eo_state_set 103 pane_id '"pane_103"'
+eo_state_set 103 tab_id '"tab_103"'
+
+out_explain_all="$(bash "$SCRIPTS/phase-status.sh" --explain 2>/dev/null)" && rc_explain_all=0 || rc_explain_all=$?
+if printf '%s' "$out_explain_all" | rg -q '^phase=103 status=working seq=42$'; then
+  pass "查全部＋--explain：phase 103 的狀態行仍先正常印出"
+else
+  bad "查全部＋--explain：未見 phase 103 的狀態行，得到 '$out_explain_all'"
+fi
+if printf '%s' "$out_explain_all" | rg -q '^phase=103 status=ERROR seq=- rc=6$'; then
+  pass "查全部＋--explain：phase 103 的 agent explain 失敗被隔離子殼攔下，映射成 6"
+else
+  bad "查全部＋--explain：未見 phase 103 的錯誤標記（結束碼 6），得到 '$out_explain_all'"
+fi
+rule_line_count="$(printf '%s' "$out_explain_all" | rg -c '^rule=' || true)"
+if [ "$rule_line_count" = "1" ]; then
+  pass "查全部＋--explain：只有真的成功的 phase 101 印出 rule= 行，103 沒有假資料的 rule= 行"
+else
+  bad "查全部＋--explain：rule= 行數是 $rule_line_count，預期只有 1（來自 phase 101）"
+fi
+if [ "$rc_explain_all" -ne 0 ]; then
+  pass "查全部＋--explain：agent explain 失敗也計入整體非零結束碼"
+else
+  bad "查全部＋--explain：有 phase 失敗但結束碼為 0"
+fi
+
 export PATH="$saved_path"
 
 exit "$fail"
