@@ -1986,6 +1986,10 @@ fi
 # 錄」的收斂 PATH 即可，沒有新的遮蔽需要另外守。
 
 # --- 三個允許欄位各自寫入後讀得回來 ---
+# 先各自寫一個 tab_id，模擬 start-phase.sh 已經建過記錄：新加的記錄
+# 存在性檢查要求該 phase 已經有座標欄位，否則以 5 拒絕，直接對一個空
+# 白 phase 呼叫 set-phase-field.sh 會撞上那道檢查而不是測到寫入本身。
+eo_state_set 601 tab_id '"tab_601"'
 if bash "$SCRIPTS/set-phase-field.sh" 601 stage running; then
   got="$(eo_state_get 601 stage)"
   if [ "$got" = "running" ]; then
@@ -1997,6 +2001,7 @@ else
   bad "set-phase-field.sh 寫入合法的 stage 值（running）卻失敗"
 fi
 
+eo_state_set 602 tab_id '"tab_602"'
 if bash "$SCRIPTS/set-phase-field.sh" 602 pr 456; then
   got="$(eo_state_get 602 pr)"
   if [ "$got" = "456" ]; then
@@ -2008,6 +2013,7 @@ else
   bad "set-phase-field.sh 寫入合法的 pr 值（456）卻失敗"
 fi
 
+eo_state_set 603 tab_id '"tab_603"'
 if bash "$SCRIPTS/set-phase-field.sh" 603 held_by_orchestrator true; then
   got="$(eo_state_get 603 held_by_orchestrator)"
   if [ "$got" = "true" ]; then
@@ -2017,6 +2023,27 @@ if bash "$SCRIPTS/set-phase-field.sh" 603 held_by_orchestrator true; then
   fi
 else
   bad "set-phase-field.sh 寫入合法的 held_by_orchestrator 值（true）卻失敗"
+fi
+
+# --- 記錄存在性檢查：對一個從未被 start-phase.sh 建過記錄的編號呼叫
+# 合法欄位與合法值，必須以狀態檔缺漏（5）拒絕、不寫入。第二個斷言是
+# 重點，不只驗結束碼：狀態檔事後不能多出這個編號，否則就算日後有人
+# 把檢查誤移到 eo_state_set 之後（讓它先自動建出空白記錄、事後才發現
+# 要拒絕），只驗結束碼的版本一樣會綠燈，測不出那個回歸。 ---
+if bash "$SCRIPTS/set-phase-field.sh" 607 stage running >/dev/null 2>&1; then
+  bad "set-phase-field.sh 對從未建過記錄的 phase 607 竟然寫入成功"
+else
+  rc=$?
+  if [ "$rc" -eq 5 ]; then
+    pass "set-phase-field.sh 對不存在的 phase 以狀態檔缺漏（5）拒絕"
+  else
+    bad "set-phase-field.sh 對不存在的 phase 結束碼是 $rc，預期 5"
+  fi
+fi
+if eo_state_phases | rg -qx '607'; then
+  bad "set-phase-field.sh 對不存在的 phase 607 仍在狀態檔留下了記錄（記錄存在性檢查形同虛設）"
+else
+  pass "set-phase-field.sh 拒絕寫入後，phase 607 沒有出現在狀態檔的列舉結果裡"
 fi
 
 # --- 白名單擋下事件產生器擁有的欄位：last_marker_seq、

@@ -55,6 +55,28 @@
 # held_by_orchestrator 寫成 true／false，不加引號）。鎖與原子寫入（暫
 # 存檔＋mv）全部在 eo_state_set 內部完成，見 lib/common.sh 的實作與
 # 註解，本腳本不重做那一層。
+#
+# ---- 寫入前先查該 phase 已經存在：這支腳本不建立記錄，只修改既有記
+#      錄 ----
+# eo_state_set 對不存在的 phase 會用 `.phases[$p] //= {}` 自動建出一筆
+# 空白記錄——這是它原本替 start-phase.sh 之外的其他正常呼叫路徑保留的
+# 彈性，但用在這支腳本上會有實際後果：對一個不存在的編號呼叫，會建出
+# 一筆只有剛寫的那個欄位、沒有任何座標欄位（tab_id／pane_id／
+# agent_name）的記錄。這筆記錄會出現在 eo_state_phases 的列舉結果裡，
+# 事件產生器下一輪就會開始監看這個從未被啟動過的幻影 phase：補齊預設
+# 欄位、邊緣迴圈對一個不存在的 agent 名稱等待、拿到 agent_not_found、
+# 印一則消失事件、靜音，而這筆記錄永久留在狀態檔、沒有任何路徑會清掉
+# 它——跟任務七在 event-generator.sh 那一側耗費多輪才消滅的「只有部分
+# 欄位的殘骸記錄」是同一種形狀。建立記錄是 start-phase.sh 的職責，在
+# 啟動 agent 之前把 tab_id／pane_id／agent_name 三個座標欄位一次寫齊；
+# 這支腳本的正當用途永遠發生在那之後，因此在此额外查一次該 phase 是
+# 否已經存在，不存在就以狀態檔缺漏的結束碼（5）拒絕、不寫入，不讓自
+# 己有機會把同一種殘骸記錄從編排端這一側做回來。用 tab_id 當存在性探
+# 針：它跟 pane_id、agent_name 一起在 start-phase.sh 建立記錄的當下寫
+# 入，真正被啟動過的 phase 一定有它；查不到（不論是整個 phase 不存
+# 在，還是這個座標欄位缺漏）都代表這不是一筆由正常啟動流程建立的記
+# 錄，直接沿用 eo_state_get 既有的結束碼 5 語意，不必為此另外重寫一次
+# 判斷邏輯。
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -111,5 +133,11 @@ case "$field" in
     eo_die 2 "set-phase-field.sh: 欄位 $field 不在編排端可寫的白名單內（只允許 stage、pr、held_by_orchestrator），拒絕寫入"
     ;;
 esac
+
+# 記錄存在性檢查，見檔頭「寫入前先查該 phase 已經存在」一節：這支腳
+# 本不建立記錄，只修改既有記錄。刻意排在欄位與值驗證之後——呼叫端傳
+# 錯欄位或值本身就是純粹的參數錯誤（結束碼 2），跟這個 phase 在狀態
+# 檔裡存不存在無關，不該因為查了狀態檔而被結束碼 5 蓋過去。
+eo_state_get "$phase" tab_id >/dev/null
 
 eo_state_set "$phase" "$field" "$json_value"
