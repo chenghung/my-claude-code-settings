@@ -664,4 +664,169 @@ else
 fi
 export PATH="$saved_path"
 
+# ===== 任務五：press-approval.sh =====
+# 開發期查證發現的落差：任務簡報 Step 1 原始測試樁把 agent get 的回應
+# 寫成扁平結構 {"result":{"agent_status":...}}，與已查證事實衝突——
+# 已對真實 herdr 0.8.2 執行 `herdr agent get <target>` 唯讀查證，回應
+# 是巢狀的：欄位在 result 底下的 agent 底下。任務三 start-phase.sh 的
+# 既有測試樁（見上方任務三段落）已經是巢狀結構，這裡的樁改用同樣的巢
+# 狀結構，與腳本的巢狀解析對齊，避免「樁與實作共享同一個錯誤假設、綠
+# 燈掩蓋真實環境失效」。既有測試用到 phase 101 到 107 與 201 到 202，
+# 這裡改用 301／302 避免污染。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "agent get")
+    printf '%s' '{"result":{"agent":{"agent_status":"blocked"}}}'
+    exit 0 ;;
+  "agent send-keys") printf '{"result":{}}'; exit 0 ;;
+  "agent wait")
+    # 一般核准框等 working，不是 idle：若實作把 --startup 的邏輯用反
+    # 了，這裡會抓到。
+    for a in "$@"; do
+      [ "$a" = "idle" ] && { printf 'unexpected --until idle\n' >&2; exit 9; }
+    done
+    printf '%s' '{"result":{"agent":{"agent_status":"working"}}}'
+    exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$STUB_BIN:$saved_path"
+assert_herdr_stub_only "$PATH" "$STUB_BIN"
+eo_state_set 301 agent_name '"phase-301-abcd"'
+
+# --allows 是必填。這是整支腳本存在的理由：把「按之前要指得出放行什麼」
+# 從散文約束變成缺了就跑不動的參數。
+( bash "$SCRIPTS/press-approval.sh" 301 enter ) >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "press-approval 缺 --allows 時以 2 結束"
+else
+  bad "press-approval 缺 --allows 時結束碼為 $rc，預期 2"
+fi
+
+# 開放落差：直接比對 handshake=ok 這個文件化的契約字串，不只間接靠外
+# 層 errexit 守成功結束碼（沿用任務四對 send-to-phase.sh 的同一種強化）。
+out="$(bash "$SCRIPTS/press-approval.sh" 301 enter \
+     --allows '寫入 skills/epic-orchestration/scripts/start-phase.sh')" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "handshake=ok" ]; then
+  pass "press-approval 帶 --allows 時放行並取得憑據"
+else
+  bad "press-approval 帶 --allows 時得到 rc=$rc out='$out'"
+fi
+
+# 執行前必須重查狀態仍為 blocked。畫面已經換掉時按下去會按在別的東西上。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "agent get")
+    printf '%s' '{"result":{"agent":{"agent_status":"working"}}}'
+    exit 0 ;;
+  "agent send-keys") printf 'send-keys 不該被呼叫\n' >&2; exit 9 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+( bash "$SCRIPTS/press-approval.sh" 301 enter --allows '任意動作' ) \
+  >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 6 ]; then
+  pass "press-approval 在狀態已非 blocked 時拒絕代按"
+else
+  bad "press-approval 在狀態已非 blocked 時結束碼為 $rc，預期 6"
+fi
+
+# --startup：不等 working，改為確認狀態已離開 blocked 回到 idle。用獨
+# 立的 phase 302，樁直接檢查 herdr agent wait 收到的是 --until idle 而
+# 不是 --until working，正面驗證兩種取憑據方式真的走了不同分支，而不
+# 只是靠回應內容湊巧對得上。
+eo_state_set 302 agent_name '"phase-302-abcd"'
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "agent get")
+    printf '%s' '{"result":{"agent":{"agent_status":"blocked"}}}'
+    exit 0 ;;
+  "agent send-keys") printf '{"result":{}}'; exit 0 ;;
+  "agent wait")
+    saw_idle=0
+    for a in "$@"; do
+      [ "$a" = "working" ] && { printf 'unexpected --until working in --startup mode\n' >&2; exit 9; }
+      [ "$a" = "idle" ] && saw_idle=1
+    done
+    if [ "$saw_idle" -ne 1 ]; then
+      printf '未見 --until idle\n' >&2
+      exit 9
+    fi
+    printf '%s' '{"result":{"agent":{"agent_status":"idle"}}}'
+    exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+out="$(bash "$SCRIPTS/press-approval.sh" 302 enter --allows '啟動階段信任對話框' --startup)" \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "handshake=ok" ]; then
+  pass "press-approval --startup 等的是 idle 而不是 working"
+else
+  bad "press-approval --startup 得到 rc=$rc out='$out'"
+fi
+
+# --startup 逾時（未離開 blocked 回到 idle）：未取得憑據，以 7 結束，
+# 不當成失敗——跟一般核准框逾時同一類，交給呼叫端判斷。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "agent get")
+    printf '%s' '{"result":{"agent":{"agent_status":"blocked"}}}'
+    exit 0 ;;
+  "agent send-keys") printf '{"result":{}}'; exit 0 ;;
+  "agent wait") printf '{"error":{"code":"timeout"}}' >&2; exit 1 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+out="$( ( bash "$SCRIPTS/press-approval.sh" 302 enter --allows '啟動階段信任對話框' --startup ) 2>/dev/null )" \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 7 ] && [ "$out" = "handshake=none" ]; then
+  pass "press-approval 對逾時（未取得憑據）回 handshake=none 並以 7 結束"
+else
+  bad "press-approval 逾時得到 rc=$rc out='$out'，預期 rc=7 out=handshake=none"
+fi
+
+# 全案性的測試要求：呼叫端用錯（結束碼 2）——缺必填參數、選項缺值、
+# 未知選項。這四種情形全部在觸碰狀態檔或呼叫 herdr 之前就先結束，不
+# 需要 herdr 樁、也不依賴 phase 999 是否存在於狀態檔——用 999 只是取
+# 一個明顯與其他斷言無關的號碼（沿用任務四 send-to-phase.sh 同一類測
+# 試已用過的慣例）。
+( bash "$SCRIPTS/press-approval.sh" ) >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "press-approval 完全未帶參數時以 2 結束"
+else
+  bad "press-approval 完全未帶參數時結束碼為 $rc，預期 2"
+fi
+
+( bash "$SCRIPTS/press-approval.sh" 999 ) >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "press-approval 缺少必填參數 <按鍵> 時以 2 結束"
+else
+  bad "press-approval 缺少 <按鍵> 時結束碼為 $rc，預期 2"
+fi
+
+( bash "$SCRIPTS/press-approval.sh" 999 enter --allows ) >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "press-approval --allows 缺值時以 2 結束"
+else
+  bad "press-approval --allows 缺值時結束碼為 $rc，預期 2"
+fi
+
+( bash "$SCRIPTS/press-approval.sh" 999 enter --allows '定案內容' --unknown-flag ) \
+  >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "press-approval 未知選項時以 2 結束"
+else
+  bad "press-approval 未知選項時結束碼為 $rc，預期 2"
+fi
+
+export PATH="$saved_path"
+
 exit "$fail"
