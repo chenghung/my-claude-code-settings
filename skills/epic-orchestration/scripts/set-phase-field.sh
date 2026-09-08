@@ -66,10 +66,22 @@
 #   held_by_orchestrator   只接受 true 或 false 兩個布林字面值。
 #
 # ---- 寫入一律經共用函式庫的寫入函式，不自行 jq、不自行處理鎖 ----
-# 第三個參數是 JSON 值而非字串：字串要自己帶引號（例如 stage 寫成
-# '"running"'），數字與布林直接寫（pr 寫成 456、held_by_orchestrator
-# 寫成 true／false，不加引號）。鎖與原子寫入（暫存檔＋mv）全部在共用
-# 函式庫內部完成，見 lib/common.sh 的實作與註解，本腳本不重做那一層。
+# 這裡有兩個「第三個參數」，層級不同，分開講：命令列的第三個引數（也
+# 就是用法裡的 <值>）是裸值，不要帶引號——呼叫時寫
+# `set-phase-field.sh <phase> stage running`，不是
+# `set-phase-field.sh <phase> stage '"running"'`；帶著引號的裸值不在
+# 下面「值也要驗證」那組合法值清單裡，會被以 2 拒絕，而不是被接受。
+# `eo_state_update`（共用函式庫的寫入函式）的第三個參數才是 JSON
+# 值：字串要自己帶引號（例如 '"running"'），數字與布林直接寫（pr 寫
+# 成 456、held_by_orchestrator 寫成 true／false，不加引號）。本腳本
+# 在下面的 case 驗證完命令列收到的裸值之後，自己把它轉成這個 JSON
+# 值（stage 用 printf 補上引號成字串；pr／held_by_orchestrator 收到
+# 的裸值本來就是合法的 JSON 數字／布林字面值，原樣傳遞），才交給
+# `eo_state_update`——這正是命令列引數必須是裸值、不必也不該由呼叫端
+# 自己先包一層引號的原因：轉換這一步已經在本腳本裡做過，呼叫端不需
+# 要知道下一層的 JSON 引號規則。鎖與原子寫入（暫存檔＋mv）全部在
+# `eo_state_update` 內部完成，見 lib/common.sh 的實作與註解，本腳本
+# 不重做那一層。
 #
 # ---- 寫入前必須確認該 phase 已經存在，而且這個確認要跟寫入同一把鎖
 #      ----

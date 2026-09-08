@@ -2,7 +2,7 @@
 #
 # skills/epic-orchestration/scripts/lib/common.sh
 #
-# 職責：epic-orchestration 事件驅動機制層的共用函式庫。六支操作腳本與
+# 職責：epic-orchestration 事件驅動機制層的共用函式庫。七支操作腳本與
 # event-generator.sh 常駐迴圈都會 `source` 本檔，取得：
 #   - 環境前提檢查（HERDR_ENV）與 workspace 歸屬守衛
 #   - 狀態檔（state.json）的讀寫，一律經 jq，寫入用「暫存檔＋mv」做到

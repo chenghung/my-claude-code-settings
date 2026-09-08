@@ -129,8 +129,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ---- 重複 source 的風險：common.sh 用 readonly 定義門檻常數 ----
 # 測試的做法是把本檔直接 source 進「已經 source 過 common.sh」的那個
-# 測試行程（見檔頭「測試方式」），不是像其餘六支腳本那樣用 `bash
-# foo.sh` 開新子行程執行。若這裡跟其餘六支腳本一樣無條件
+# 測試行程（見檔頭「測試方式」），不是像其餘七支腳本那樣用 `bash
+# foo.sh` 開新子行程執行。若這裡跟其餘七支腳本一樣無條件
 # `source lib/common.sh`，common.sh 裡的 `readonly EO_AUTO_PUSH_LIMIT=40`
 # 等敘述會在同一個行程裡對已經是 readonly 的變數再賦值一次，在
 # set -e 下讓當下的 shell（也就是整個測試腳本）直接終止。用函式是否
@@ -1391,7 +1391,7 @@ main() {
 # EO_GENERATOR_NO_MAIN：設定時只定義上面這些函式就返回，供測試
 # source 進自己的行程單獨呼叫三個決策函式。不接受任何參數——帶了參
 # 數視為呼叫端用錯，以 2 結束；這個檢查刻意放在 eo_require_herdr_env
-# 之後、main 之前，跟其餘六支腳本「先查環境前提、再驗參數」的順序
+# 之後、main 之前，跟其餘七支腳本「先查環境前提、再驗參數」的順序
 # 一致。
 if [ -z "${EO_GENERATOR_NO_MAIN:-}" ]; then
   eo_require_herdr_env
