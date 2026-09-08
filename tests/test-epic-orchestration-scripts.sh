@@ -1979,4 +1979,144 @@ else
   done
 fi
 
+# ===== 新增：set-phase-field.sh（補狀態檔 stage／pr／
+# held_by_orchestrator 三個欄位一直缺的寫入路徑）=====
+# 這支腳本不呼叫 herdr，全程只透過 eo_state_set 寫狀態檔，所以不需要
+# 也不會建立任何新的 herdr 樁；PATH 沿用套件開頭那個「樁目錄＋系統目
+# 錄」的收斂 PATH 即可，沒有新的遮蔽需要另外守。
+
+# --- 三個允許欄位各自寫入後讀得回來 ---
+if bash "$SCRIPTS/set-phase-field.sh" 601 stage running; then
+  got="$(eo_state_get 601 stage)"
+  if [ "$got" = "running" ]; then
+    pass "set-phase-field.sh 寫入 stage 後，eo_state_get 讀回同一個值"
+  else
+    bad "set-phase-field.sh 寫入 stage 後讀回的值是 '$got'，預期 running"
+  fi
+else
+  bad "set-phase-field.sh 寫入合法的 stage 值（running）卻失敗"
+fi
+
+if bash "$SCRIPTS/set-phase-field.sh" 602 pr 456; then
+  got="$(eo_state_get 602 pr)"
+  if [ "$got" = "456" ]; then
+    pass "set-phase-field.sh 寫入 pr 後，eo_state_get 讀回同一個值"
+  else
+    bad "set-phase-field.sh 寫入 pr 後讀回的值是 '$got'，預期 456"
+  fi
+else
+  bad "set-phase-field.sh 寫入合法的 pr 值（456）卻失敗"
+fi
+
+if bash "$SCRIPTS/set-phase-field.sh" 603 held_by_orchestrator true; then
+  got="$(eo_state_get 603 held_by_orchestrator)"
+  if [ "$got" = "true" ]; then
+    pass "set-phase-field.sh 寫入 held_by_orchestrator 後，eo_state_get 讀回同一個值"
+  else
+    bad "set-phase-field.sh 寫入 held_by_orchestrator 後讀回的值是 '$got'，預期 true"
+  fi
+else
+  bad "set-phase-field.sh 寫入合法的 held_by_orchestrator 值（true）卻失敗"
+fi
+
+# --- 白名單擋下事件產生器擁有的欄位：last_marker_seq、
+# auto_push_count、unknown_rounds，以及三個靜音旗標。這條測的是設計
+# 性質的強制執行本身，不是隨口挑幾個名字——這六個正是腳本檔頭「白名
+# 單不是防呆」一節點名、編排端與事件產生器刻意不重疊的另一半。 ---
+for eo_generator_field in last_marker_seq auto_push_count unknown_rounds \
+  spinning_muted gone_muted unclassified_muted; do
+  if bash "$SCRIPTS/set-phase-field.sh" 604 "$eo_generator_field" 1 >/dev/null 2>&1; then
+    bad "set-phase-field.sh 沒有擋下事件產生器擁有的欄位 $eo_generator_field，白名單的設計前提已被破壞"
+  else
+    rc=$?
+    if [ "$rc" -eq 2 ]; then
+      pass "set-phase-field.sh 以呼叫端用錯（2）擋下事件產生器擁有的欄位 $eo_generator_field"
+    else
+      bad "set-phase-field.sh 擋下欄位 $eo_generator_field，但結束碼是 $rc，預期 2"
+    fi
+  fi
+done
+
+# --- 白名單也擋下完全不存在的欄位名（不只是擋事件產生器那六個） ---
+if bash "$SCRIPTS/set-phase-field.sh" 606 not_a_real_field x >/dev/null 2>&1; then
+  bad "set-phase-field.sh 沒有擋下白名單外、根本不存在的欄位 not_a_real_field"
+else
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    pass "set-phase-field.sh 以呼叫端用錯（2）擋下白名單外的未知欄位"
+  else
+    bad "set-phase-field.sh 擋下未知欄位，但結束碼是 $rc，預期 2"
+  fi
+fi
+
+# --- stage 的非法值被擋 ---
+if bash "$SCRIPTS/set-phase-field.sh" 605 stage bogus-stage >/dev/null 2>&1; then
+  bad "set-phase-field.sh 沒有擋下不合法的 stage 值 bogus-stage"
+else
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    pass "set-phase-field.sh 以呼叫端用錯（2）擋下不合法的 stage 值"
+  else
+    bad "set-phase-field.sh 擋下不合法的 stage 值，但結束碼是 $rc，預期 2"
+  fi
+fi
+
+# --- pr 的非法值被擋（非純數字） ---
+if bash "$SCRIPTS/set-phase-field.sh" 605 pr not-a-number >/dev/null 2>&1; then
+  bad "set-phase-field.sh 沒有擋下不合法的 pr 值 not-a-number"
+else
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    pass "set-phase-field.sh 以呼叫端用錯（2）擋下不合法的 pr 值"
+  else
+    bad "set-phase-field.sh 擋下不合法的 pr 值，但結束碼是 $rc，預期 2"
+  fi
+fi
+
+# --- held_by_orchestrator 的非法值被擋（只接受 true／false 字面值） ---
+if bash "$SCRIPTS/set-phase-field.sh" 605 held_by_orchestrator yes >/dev/null 2>&1; then
+  bad "set-phase-field.sh 沒有擋下不合法的 held_by_orchestrator 值 yes"
+else
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    pass "set-phase-field.sh 以呼叫端用錯（2）擋下不合法的 held_by_orchestrator 值"
+  else
+    bad "set-phase-field.sh 擋下不合法的 held_by_orchestrator 值，但結束碼是 $rc，預期 2"
+  fi
+fi
+
+# --- 呼叫端用錯：缺參數（0／1／2 個位置引數） ---
+if bash "$SCRIPTS/set-phase-field.sh" >/dev/null 2>&1; then
+  bad "set-phase-field.sh 不帶任何參數時竟然成功，預期因缺參數而失敗"
+else
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    pass "set-phase-field.sh 不帶任何參數時以呼叫端用錯（2）結束"
+  else
+    bad "set-phase-field.sh 不帶任何參數時結束碼是 $rc，預期 2"
+  fi
+fi
+
+if bash "$SCRIPTS/set-phase-field.sh" 606 >/dev/null 2>&1; then
+  bad "set-phase-field.sh 只帶一個參數時竟然成功，預期因缺參數而失敗"
+else
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    pass "set-phase-field.sh 只帶一個參數時以呼叫端用錯（2）結束"
+  else
+    bad "set-phase-field.sh 只帶一個參數時結束碼是 $rc，預期 2"
+  fi
+fi
+
+if bash "$SCRIPTS/set-phase-field.sh" 606 stage >/dev/null 2>&1; then
+  bad "set-phase-field.sh 只帶兩個參數時竟然成功，預期因缺參數而失敗"
+else
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    pass "set-phase-field.sh 只帶兩個參數時以呼叫端用錯（2）結束"
+  else
+    bad "set-phase-field.sh 只帶兩個參數時結束碼是 $rc，預期 2"
+  fi
+fi
+
 exit "$fail"
