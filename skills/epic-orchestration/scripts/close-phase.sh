@@ -7,7 +7,9 @@
 # 三道守衛依序全過才呼叫 herdr tab close；任一不過以 4 結束，並在
 # stderr 指出是哪一道。狀態檔缺漏（檔案不存在，或該 phase 不在檔內）
 # 由 eo_state_get 既有邏輯以 5 結束，發生在三道守衛之前，不算其中一
-# 道。
+# 道。tab close 成功後移除該 phase 在狀態檔裡的整筆記錄（見下方最後
+# 一行）：設計規格生命週期第六步明文要求收尾要把記錄移出狀態檔，記
+# 錄留著不刪，事件產生器會一直監看一個已經收尾的 phase。
 #
 #   守衛一：該 tab 屬於本 workspace（eo_assert_workspace，判定依據集
 #           中在 common.sh、來源是 HERDR_WORKSPACE_ID，本腳本不重新
@@ -64,3 +66,8 @@ fi
 # 作沒有任何欄位需要呼叫端進一步解析，因此直接丟棄，不必另外組一行輸
 # 出。
 eo_herdr tab close "$current_tab_id" >/dev/null
+
+# tab 確實關閉後才移除狀態記錄，順序是實質的：若中途失敗（走上面的
+# eo_herdr 錯誤路徑），狀態檔要留著讓下一次呼叫還找得到這個 phase 的
+# tab_id 再試一次；只有真的關成功了，這筆記錄才算收尾完成。
+eo_state_remove_phase "$phase"

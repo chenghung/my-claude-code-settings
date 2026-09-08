@@ -205,6 +205,36 @@ eo_state_phases() {
   jq -r '.phases | keys[]' "$file"
 }
 
+# eo_state_remove_phase <phase>
+# 移除該 phase 在狀態檔裡的整筆記錄。與 eo_state_set 共用同一把鎖檔
+# 與同一套「讀-改-寫＋暫存檔＋mv」手法（理由見 eo_state_set 上方註
+# 解：讀改寫這整段要在鎖內，不只是 mv 那一刻）。用在 close-phase.sh
+# 三道守衛全數通過、成功關閉 tab 之後——設計規格生命週期第六步明文
+# 要求收尾時把記錄移出狀態檔，記錄一旦留著不刪，事件產生器會一直監
+# 看一個已經收尾的 phase。
+#
+# 對不存在的 phase 呼叫是幂等的，不報錯：jq 的 `del()` 對本來就不存
+# 在的路徑是無操作，不是錯誤。這件事本身也是刻意的，不是湊巧——收
+# 尾流程可能在同一個 phase 上被重複觸發（例如收尾一半中斷後重跑），
+# 第二次呼叫不該因為記錄已經不在而失敗。
+eo_state_remove_phase() {
+  if [ "$#" -lt 1 ]; then
+    eo_die 2 "eo_state_remove_phase 缺少必填參數 <phase>"
+  fi
+  local phase="$1" file tmp lock_file lock_fd
+  file="$(_eo_state_file_or_die)"
+
+  lock_file="${file}.lock"
+  exec {lock_fd}>"$lock_file"
+  flock -x "$lock_fd"
+
+  tmp="$(mktemp "${file}.XXXXXX")"
+  jq --arg p "$phase" 'del(.phases[$p])' "$file" > "$tmp"
+  mv "$tmp" "$file"
+
+  exec {lock_fd}>&-
+}
+
 # eo_assert_workspace <tab_id>
 # 以 `herdr tab list --workspace` 確認該 tab 屬於本 workspace，不符
 # 時以 4 結束。

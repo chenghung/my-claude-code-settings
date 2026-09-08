@@ -13,6 +13,13 @@ STUB_BIN="$T/bin"
 mkdir -p "$STUB_BIN"
 saved_path="$PATH"
 
+# Medium 11（修正輪次 2）：明確設定 HERDR_ENV，不依賴執行這份測試的
+# 終端機本身剛好是 herdr 管理的環境（本機開發環境恰好是，但套件不
+# 該因此變得只在那個環境下才 hermetic）。已實測：沒有這一行時，在
+# 沒有 HERDR_ENV 的環境下跑這份套件，原本預期以 2 結束的斷言會得到
+# 3（HERDR_ENV 前提不成立），不是真的在測參數檢查。
+export HERDR_ENV=1
+
 # PATH 洩漏守衛：確認樁目錄確實遮蔽了真實 herdr。少了這道，
 # 忘了建的樁會靜默解析到真實二進位，測試就在對真實 session 動手。
 assert_herdr_stub_only() {
@@ -1065,15 +1072,310 @@ else
   bad "unknown 第 4 輪就印了 '$early'"
 fi
 
+# ===== 修正輪次 2：獨立審查發現的 Critical／High／Medium／Low findings =====
+
+# --- Critical 1：_eo_ensure_phase_defaults 面對「只有三個座標欄位」
+# 的狀態檔（也就是 start-phase.sh 真正會寫的那三個：tab_id／
+# pane_id／agent_name）時，必須真的把七個邊緣觸發欄位補齊，而不是讓
+# 行程被 eo_state_get 的 exit 5（沒有包進命令替換就裸呼叫會直接終止
+# 呼叫端）悄悄帶走。這是每個由 start-phase.sh 建立的 phase 的預設狀
+# 態，修不好會讓事件產生器在真實流程下對每個 phase 都悄悄死掉。 ---
+eo_state_set 111 tab_id '"tab_111"'
+eo_state_set 111 pane_id '"pane_111"'
+eo_state_set 111 agent_name '"phase-111-abcd"'
+_eo_ensure_phase_defaults 111
+if [ "$(eo_state_get 111 last_marker_seq)" = "0" ] \
+   && [ "$(eo_state_get 111 held_by_orchestrator)" = "false" ] \
+   && [ "$(eo_state_get 111 auto_push_count)" = "0" ] \
+   && [ "$(eo_state_get 111 unknown_rounds)" = "0" ] \
+   && [ "$(eo_state_get 111 spinning_muted)" = "false" ] \
+   && [ "$(eo_state_get 111 gone_muted)" = "false" ] \
+   && [ "$(eo_state_get 111 unclassified_muted)" = "false" ]; then
+  pass "_eo_ensure_phase_defaults 補齊只有三個座標欄位的 phase（Critical 1 回歸測試）"
+else
+  bad "_eo_ensure_phase_defaults 未補齊全部七個欄位"
+fi
+
+# --- Critical 2：seq 追蹤本身（_eo_track_spin_seq）要能通過「同一個
+# seq 連續兩輪，時間戳不得被重設」的驗證。舊版把追蹤寫在會被隔離子
+# 殼呼叫的 _eo_low_freq_process_one 裡，子殼寫進行程內關聯陣列的值
+# 離開子殼就消失，SPINNING 整條事件類型因此永遠不會觸發。這條測試
+# 直接對著追蹤函式本身斷言（完全不需要 herdr 樁），才測得出「有沒
+# 有真的留在同一個行程裡」這件事，不是像舊版測試那樣把時間戳直接餵
+# 給決策函式、繞過了真正的追蹤邏輯。 ---
+_EO_SPIN_SEQ=()
+_EO_SPIN_EPOCH=()
+_eo_track_spin_seq 120 working 7
+first_epoch="${_EO_SPIN_EPOCH[120]}"
+sleep 1.1
+_eo_track_spin_seq 120 working 7
+second_epoch="${_EO_SPIN_EPOCH[120]}"
+if [ -n "$first_epoch" ] && [ "$first_epoch" = "$second_epoch" ]; then
+  pass "_eo_track_spin_seq：同一個 seq 連續兩輪，時間戳不被重設（Critical 2 回歸測試）"
+else
+  bad "_eo_track_spin_seq 時間戳被重設：first='$first_epoch' second='$second_epoch'"
+fi
+sleep 1.1
+_eo_track_spin_seq 120 working 8
+third_epoch="${_EO_SPIN_EPOCH[120]}"
+if [ -n "$third_epoch" ] && [ "$third_epoch" != "$second_epoch" ]; then
+  pass "_eo_track_spin_seq：seq 變動後時間戳跟著更新到新的現在"
+else
+  bad "_eo_track_spin_seq 在 seq 變動時未更新時間戳：third='$third_epoch'"
+fi
+
+# --- Critical 4／Low 14 第 3 項：邊緣迴圈的 GONE 與低頻掃描的 GONE
+# 共用同一個 gone_muted 欄位，同一次消失不論哪條通道先看到都只印一
+# 次；phase 重新出現在低頻掃描的查詢結果裡（present=1）會解除靜音，
+# 讓下一次真的消失還印得出來。_eo_low_freq_process_one 對
+# status=ERROR 的處理就是低頻掃描版的 GONE 通道，不需要 herdr 樁就
+# 測得起來。 ---
+eo_state_set 114 gone_muted false
+out_gone_edge="$(_eo_scan_gone 114 0)"
+out_gone_lowfreq="$(_eo_low_freq_process_one 114 ERROR - 0)"
+if [ "$out_gone_edge" = "phase=114 GONE" ] && [ -z "$out_gone_lowfreq" ]; then
+  pass "GONE 兩條通道共用 gone_muted，同一次消失只印一次"
+else
+  bad "GONE 共用靜音失效：edge='$out_gone_edge' lowfreq='$out_gone_lowfreq'"
+fi
+out_gone_reappear="$(_eo_low_freq_process_one 114 "done" 5 0)"
+out_gone_again="$(_eo_scan_gone 114 0)"
+if [ -z "$out_gone_reappear" ] && [ "$out_gone_again" = "phase=114 GONE" ]; then
+  pass "GONE 靜音在低頻掃描見到重新出現後解除，下一次消失會再印"
+else
+  bad "GONE 靜音解除失效：reappear='$out_gone_reappear' again='$out_gone_again'"
+fi
+
+# --- High 6：狀態檔的數值欄位在進算術展開前先驗證是純數字，防的是
+# 已被獨立審查用真實 jq 1.8.2 重現過的注入——把 unknown_rounds 設成
+# 一段含指令替換的字串，呼叫決策函式後真的建立了檔案。這裡對三個
+# `$(( ))` 站點（eo_scan_unknown 的 unknown_rounds、eo_classify_stop
+# 的 auto_push_count 與 last_marker_seq）分別驗證修正後會被明確拒
+# 絕、不會被執行，不是只補審查者指出的那一個欄位。 ---
+# shellcheck disable=SC2016 # 刻意寫法：單引號段落是要保持字面不展開的惡意 payload 文字本身（$(touch ...)），只有 "$T" 那一段是特意用雙引號接上的真實路徑，兩段拼接不是誤用單引號
+malicious_unknown_rounds='"$(touch '"$T"'/pwned-unknown-rounds)"'
+eo_state_set 115 unknown_rounds "$malicious_unknown_rounds"
+eo_state_set 115 unclassified_muted false
+( eo_scan_unknown 115 unknown ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 5 ] && [ ! -e "$T/pwned-unknown-rounds" ]; then
+  pass "eo_scan_unknown 拒絕非純數字的 unknown_rounds，不執行內容（High 6 回歸測試）"
+else
+  bad "eo_scan_unknown 注入防護測試得到 rc=$rc，pwned 檔案存在＝$([ -e "$T/pwned-unknown-rounds" ] && echo yes || echo no)"
+fi
+
+# shellcheck disable=SC2016 # 刻意寫法，理由同上一段的 malicious_unknown_rounds
+malicious_last_seq='"$(touch '"$T"'/pwned-last-seq)"'
+eo_state_set 116 last_marker_seq "$malicious_last_seq"
+( eo_classify_stop 116 "done" '[PHASE 116] seq=1 state=working-ok' ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 5 ] && [ ! -e "$T/pwned-last-seq" ]; then
+  pass "eo_classify_stop 拒絕非純數字的 last_marker_seq，不執行內容（High 6 回歸測試）"
+else
+  bad "eo_classify_stop 對 last_marker_seq 注入防護測試得到 rc=$rc"
+fi
+
+# shellcheck disable=SC2016 # 刻意寫法，理由同上面 malicious_unknown_rounds 那一段
+malicious_auto_count='"$(touch '"$T"'/pwned-auto-count)"'
+eo_state_set 117 last_marker_seq 0
+eo_state_set 117 held_by_orchestrator false
+eo_state_set 117 auto_push_count "$malicious_auto_count"
+( eo_classify_stop 117 "done" '[PHASE 117] seq=1 state=working-ok' ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 5 ] && [ ! -e "$T/pwned-auto-count" ]; then
+  pass "eo_classify_stop 拒絕非純數字的 auto_push_count，不執行內容（High 6 回歸測試）"
+else
+  bad "eo_classify_stop 對 auto_push_count 注入防護測試得到 rc=$rc"
+fi
+
+# --- Low 14 第 1 項：eo_classify_stop 要核對標記行裡的 phase 編號與
+# 參數一致，不能只信任呼叫端（例如 read-phase-pane.sh）已經用
+# pane_id 對過號——那是函式契約外的依賴。標記行編號對不上時視同標
+# 記缺席，這一步在碰到狀態檔之前就發生，不需要事先設定任何欄位。 ---
+out="$(eo_classify_stop 118 "done" '[PHASE 999] seq=5 state=working-ok')"
+if [ "$out" = "phase=118 stopped=done marker=none" ]; then
+  pass "eo_classify_stop 核對標記行裡的 phase 編號，不符時視同缺席"
+else
+  bad "eo_classify_stop 標記編號不符時得到 '$out'"
+fi
+
+# --- Low 14 第 2 項：stopped_status 必須限制在 idle／done／blocked
+# 三者之一，不能直接信任呼叫端傳來的字串——真實流程裡它是 herdr 回
+# 報的 agent_status，理論上不該是別的值，但決策函式自己要有這道白
+# 名單，不依賴呼叫端已經篩過。 ---
+( eo_classify_stop 119 working '[PHASE 119] seq=1 state=working-ok' ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "eo_classify_stop 拒絕不在 idle／done／blocked 之列的停下狀態"
+else
+  bad "eo_classify_stop 對非法停下狀態結束碼為 $rc，預期 2"
+fi
+
+# --- Medium 13：EO_GENERATOR_DRY_RUN 開關。這是這支腳本唯一會主動
+# 對真實 agent 送下行的動作（_eo_do_auto_push），設定這個環境變數
+# 時完全不呼叫 send-to-phase.sh、不觸及 herdr，改印一行可辨識的觀察
+# 行——這個分支不需要任何 herdr 樁就測得起來，依規定必須有測試。 ---
+out="$(EO_GENERATOR_DRY_RUN=1 _eo_do_auto_push 999 2>&1 1>/dev/null)"
+if [ "$out" = "phase=999 DRY-RUN-AUTO-PUSH" ]; then
+  pass "EO_GENERATOR_DRY_RUN 開啟時不呼叫 send-to-phase.sh，改印觀察行"
+else
+  bad "EO_GENERATOR_DRY_RUN 開啟時得到 '$out'"
+fi
+
+# --- High 7（上）：pidfile 單例守衛。不需要 herdr 樁：只操作 pidfile
+# 與行程存活檢查。三種情況：pidfile 不存在（成功並寫入自己的 pid）、
+# pidfile 裡的 pid 已死（視為可以接手）、pidfile 裡的 pid 還活著
+# （用測試腳本自己的 $$，拒絕啟動第二個，以 9 結束）。 ---
+pidfile_path="$(_eo_pidfile_path)"
+rm -f "$pidfile_path"
+
+_eo_acquire_singleton
+if [ -f "$pidfile_path" ] && [ "$(cat "$pidfile_path")" = "$$" ]; then
+  pass "_eo_acquire_singleton 在 pidfile 不存在時成功並寫入自己的 pid"
+else
+  bad "_eo_acquire_singleton 未正確寫入 pidfile"
+fi
+
+printf '999999999\n' > "$pidfile_path"
+if _eo_acquire_singleton 2>/dev/null; then
+  pass "_eo_acquire_singleton 對已死的舊 pid 視為可以接手"
+else
+  bad "_eo_acquire_singleton 對已死的舊 pid 誤判成仍在跑"
+fi
+
+printf '%s\n' "$$" > "$pidfile_path"
+( _eo_acquire_singleton ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 9 ]; then
+  pass "_eo_acquire_singleton 對仍在跑的舊 pid 以 9 結束"
+else
+  bad "_eo_acquire_singleton 對仍在跑的舊 pid 得到 $rc，預期 9"
+fi
+rm -f "$pidfile_path"
+
+# --- Critical 3／High 7（下）：INT／TERM 必須真的能停掉常駐迴圈，
+# 而且要連同背景子行程自己起的孫行程一起收掉，不留孤兒。不起真正的
+# main()（那需要 herdr 樁跑低頻掃描），只驗證訊號處理與子行程清理本
+# 身：把本檔 source 進一支獨立腳本、裝上跟 main() 相同的 trap 結
+# 構、一個會一直跑的迴圈、以及一個模擬孫行程（herdr 呼叫）的背景
+# sleep，用 setsid 把它整個放進一個跟本測試行程無關的新
+# session／process group 再啟動——這一步是安全上的必要條件，不是隨
+# 意的講究：_eo_cleanup 會對整個 process group 送 TERM，若不隔離，
+# 送出的訊號會波及啟動這份測試套件的行程本身；已在獨立的重現腳本裡
+# 用 `ps` 核對過 setsid 之後的 pgid 確實與外層測試行程不同、送出
+# TERM 後外層行程確實不受影響，才把這個手法帶進正式測試。 ---
+sig_test_dir="$T/sig-test"
+mkdir -p "$sig_test_dir"
+sig_test_script="$sig_test_dir/run.sh"
+cat > "$sig_test_script" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$\$" > "$sig_test_dir/main.pid"
+EO_GENERATOR_NO_MAIN=1 source "$SCRIPTS/event-generator.sh"
+trap '_eo_cleanup' EXIT
+trap '_eo_signal_exit' INT TERM
+( sleep 300 ) &
+printf '%s\n' "\$!" > "$sig_test_dir/grandchild.pid"
+while true; do sleep 1; done
+EOF
+chmod +x "$sig_test_script"
+sig_test_launcher="$sig_test_dir/launch.sh"
+cat > "$sig_test_launcher" <<EOF
+#!/usr/bin/env bash
+setsid bash "$sig_test_script" </dev/null >"$sig_test_dir/out.log" 2>&1 &
+disown
+EOF
+chmod +x "$sig_test_launcher"
+"$sig_test_launcher"
+sleep 0.6
+sig_test_pid="$(cat "$sig_test_dir/main.pid" 2>/dev/null || true)"
+sig_test_grandchild_pid="$(cat "$sig_test_dir/grandchild.pid" 2>/dev/null || true)"
+if [ -n "$sig_test_pid" ]; then
+  kill -TERM "$sig_test_pid"
+  sleep 1.5
+  main_dead=1
+  kill -0 "$sig_test_pid" 2>/dev/null && main_dead=0
+  grandchild_dead=1
+  [ -n "$sig_test_grandchild_pid" ] && kill -0 "$sig_test_grandchild_pid" 2>/dev/null && grandchild_dead=0
+  if [ "$main_dead" -eq 1 ] && [ "$grandchild_dead" -eq 1 ]; then
+    pass "SIGTERM 停掉常駐迴圈，並連同其背景子行程自己起的孫行程一起收掉（Critical 3／High 7 回歸測試）"
+  else
+    bad "SIGTERM 後仍有殘留：main 存活=$([ "$main_dead" -eq 1 ] && echo no || echo yes)，grandchild 存活=$([ "$grandchild_dead" -eq 1 ] && echo no || echo yes)"
+    kill -9 "$sig_test_pid" "$sig_test_grandchild_pid" 2>/dev/null || true
+  fi
+else
+  bad "SIGTERM 回歸測試未能取得受測行程的 pid，測試環境本身有問題"
+fi
+
+# --- 新增：eo_state_remove_phase（狀態記錄的移除能力）。共用
+# eo_state_set 同一把鎖檔，見 common.sh 的實作與註解。 ---
+eo_state_set 112 pane_id '"pane_112"'
+eo_state_remove_phase 112
+if eo_state_phases | rg -qx '112'; then
+  bad "eo_state_remove_phase 之後 112 仍出現在 eo_state_phases 的結果裡"
+else
+  pass "eo_state_remove_phase 移除後該 phase 不再出現在列舉結果中"
+fi
+
+if eo_state_remove_phase 999 2>/dev/null; then
+  pass "eo_state_remove_phase 對不存在的 phase 是無操作，不報錯"
+else
+  bad "eo_state_remove_phase 對不存在的 phase 意外失敗"
+fi
+
+export PATH="$saved_path"
+
+# ===== 新增：close-phase.sh 三道守衛全過、成功關閉 tab 之後呼叫
+# eo_state_remove_phase 移除狀態記錄 =====
+# 先前任務三的測試只涵蓋三道守衛各自擋下的失敗路徑，從未驗證過真正
+# 成功的那條路徑——這裡順便補上這個既有缺口，而不只是驗證新加的移
+# 除呼叫，否則新行為會是全案第一段完全沒有測試觸及的成功路徑。
+eo_state_set 113 tab_id '"tab_113"'
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_113"}]}}'; exit 0 ;;
+  "tab close") printf '{"result":{"ok":true}}'; exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$STUB_BIN:$saved_path"
+assert_herdr_stub_only "$PATH" "$STUB_BIN"
+if HERDR_TAB_ID=tab_orchestrator bash "$SCRIPTS/close-phase.sh" 113; then
+  pass "close-phase 三道守衛全過時成功關閉 tab"
+else
+  bad "close-phase 三道守衛全過時仍然失敗"
+fi
+if eo_state_phases | rg -qx '113'; then
+  bad "close-phase 成功關閉後，phase 113 仍留在狀態檔裡"
+else
+  pass "close-phase 成功關閉後，eo_state_remove_phase 移除了該筆記錄"
+fi
+export PATH="$saved_path"
+
 # 全案性的測試要求：呼叫端用錯（結束碼 2）。event-generator.sh 不接
 # 受任何參數，帶了參數就是呼叫端用錯；這條檢查在 eo_require_herdr_env
 # 之後、main（含它的常駐迴圈）之前就先結束，不需要 herdr 樁、也不會
 # 讓測試卡進常駐迴圈。
+#
+# Medium 11（修正輪次 2）：這條原本在還原後的真實 PATH 上執行，
+# herdr 解析到真實二進位，安全性完全靠「參數檢查排在 main 之前」這
+# 個順序——一旦有人把參數解析改成吃選項、或把檢查移進 main，這條測
+# 試就會在測試套件裡起一支對真實 herdr session 動手的常駐產生器。
+# 這裡改成掛上樁 PATH：樁本身若被呼叫就寫一個可辨識的標記檔並以非
+# 零結束，讓「herdr 真的被呼叫過」這件事本身可以被斷言，不只是依賴
+# 結束碼恰好對；套件開頭也已明確 export HERDR_ENV=1，不再依賴執行
+# 這份測試的終端機本身剛好是 herdr 管理的環境。
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf 'unexpected herdr invocation: %s\n' "\$*" > "$T/event-generator-herdr-invoked"
+exit 9
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$STUB_BIN:$saved_path"
+assert_herdr_stub_only "$PATH" "$STUB_BIN"
+rm -f "$T/event-generator-herdr-invoked"
 ( bash "$SCRIPTS/event-generator.sh" unexpected-arg ) >/dev/null 2>&1 && rc=0 || rc=$?
-if [ "$rc" -eq 2 ]; then
-  pass "event-generator 帶任何參數時以 2 結束"
+if [ "$rc" -eq 2 ] && [ ! -e "$T/event-generator-herdr-invoked" ]; then
+  pass "event-generator 帶任何參數時以 2 結束，且不曾呼叫 herdr"
 else
-  bad "event-generator 帶參數時結束碼為 $rc，預期 2"
+  bad "event-generator 帶參數時結束碼為 $rc，herdr 是否被呼叫過＝$([ -e "$T/event-generator-herdr-invoked" ] && echo yes || echo no)"
 fi
+export PATH="$saved_path"
 
 exit "$fail"
