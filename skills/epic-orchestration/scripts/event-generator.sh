@@ -630,7 +630,17 @@ _eo_agent_wait() {
       return "$_EO_WAIT_NOT_FOUND_RC"
       ;;
     *)
-      eo_die 6 "event-generator.sh: herdr 以結束碼 1 拒絕 agent wait（target=$target），錯誤碼非預期：$output"
+      # 只轉發 error.code 與 error.message 兩個純字串欄位，不轉發
+      # output 整包：理由與 send-to-phase.sh／press-approval.sh 對非
+      # 逾時類錯誤的處理同一條（見該兩檔該處註解）——herdr 的回應可能
+      # 整包帶著 terminal_title 這類模型產出文字的載體，轉發整包會直
+      # 接進入編排端的 context。兩個欄位任一取不到都給明確的替代字
+      # 串，不靜默留空、也不因此退回轉發原文。
+      local message
+      message="$(printf '%s' "$output" | jq -r '.error.message // empty' 2>/dev/null || true)"
+      [ -n "$code" ] || code="(無法取得 error.code)"
+      [ -n "$message" ] || message="(無法取得 error.message)"
+      eo_die 6 "event-generator.sh: herdr 以結束碼 1 拒絕 agent wait（target=$target），錯誤碼非預期：code=$code message=$message"
       ;;
   esac
 }

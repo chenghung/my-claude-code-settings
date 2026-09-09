@@ -324,8 +324,30 @@ eo_assert_workspace() {
 # 呼叫 `herdr <args...>`；stdout 原樣轉發給呼叫端（可用命令替換擷
 # 取）。herdr 結束碼 1（伺服器錯誤，錯誤 JSON 印在 stderr）映射成
 # 6；herdr 結束碼 2（語法錯誤，視為腳本呼叫方式有 bug）原樣拋出，並
-# 在 stderr 額外註明是哪一次呼叫。herdr 自身印出的訊息不受影響、照
-# 常出現在 stderr 上，只有結束碼被攔截改寫。
+# 在 stderr 額外註明是哪一次呼叫。
+#
+# ---- herdr 印在 stderr 上的內容一律接管，不讓它原樣繼承 ----
+# 失敗時（不論結束碼 1 還是 2）都把 herdr 的 stderr 擷取下來，只重組
+# error 底下的 code 與 message 兩個純字串欄位成同樣結構的 JSON
+# （`{"error":{"code":...,"message":...}}`）再印回本函式呼叫端的
+# stderr，不轉發 herdr 原始輸出。理由跟 send-to-phase.sh／
+# press-approval.sh 對非逾時類錯誤的處理同一條：herdr 的原始回應可能
+# 整包帶著 terminal_title 這類模型產出文字的載體（已查證 `agent wait`
+# 的正常回應即是如此），一旦讓它原樣繼承到呼叫端的 stderr，就直接進了
+# 編排端的 context，而編排端的 context 純度正是這裡要保護的東西。重
+# 組後的形狀刻意沿用 herdr 原本 `error.code`／`error.message` 的慣
+# 例，不是另創一套：send-to-phase.sh 與 press-approval.sh 對 herdr 的
+# 直接呼叫（繞過本函式，見它們檔頭說明）都是用這個路徑讀
+# `error.code` 分辨逾時類與其他，重組後的形狀不改變這個讀法會不會成
+# 立。
+#
+# 取不到 error.code（stderr 根本不是合法 JSON，例如 herdr 自己
+# panic、或結束碼 2 時印出的用法說明——後者正是這條路徑最常見的非
+# JSON 內容）時，不把原始內容印出去，改印一則固定的替代訊息，並帶上
+# herdr 的原始結束碼，讓人知道發生過什麼、只是內文被擋下了（見
+# `_eo_relay_herdr_stderr`）。error.message 缺漏但 error.code 存在
+# 時，只有 message 落到明確的替代字串，不影響 code 的可用性、也不
+# 靜默留空。
 #
 # `herdr "$@"` 這一句刻意包在 `if` 的條件裡，不是寫成後面接一行
 # `rc=$?` 的裸陳述句：bash 的 errexit 只在「一個指令的失敗正在被
@@ -336,20 +358,51 @@ eo_assert_workspace() {
 # ——這正是獨立審查用真實樁重現出的問題：外層腳本收到的是 herdr 原始
 # 的 1，而不是約定的 6。把測試點放在 `if` 內部，讓豁免發生在本函式
 # 自己身上，不必依賴呼叫端怎麼寫（是否包在子殼、邏輯運算子裡）。
+
+# _eo_relay_herdr_stderr <stderr_file> <orig_rc>（內部輔助函式，非公
+# 開介面）
+# 把 <stderr_file> 裡 herdr 的原始 stderr 內容，轉成只含 error.code
+# 與 error.message 兩個欄位的重組 JSON 印到本函式呼叫端的 stderr；取
+# 不到 error.code 時改印固定的替代訊息（帶 <orig_rc>）。理由與形狀見
+# 上方 eo_herdr 的「herdr 印在 stderr 上的內容一律接管」說明，不重複。
+_eo_relay_herdr_stderr() {
+  local stderr_file="$1" orig_rc="$2" raw code message
+  raw="$(cat "$stderr_file")"
+  code="$(printf '%s' "$raw" | jq -r '.error.code // empty' 2>/dev/null || true)"
+  if [ -n "$code" ]; then
+    message="$(printf '%s' "$raw" | jq -r '.error.message // empty' 2>/dev/null || true)"
+    [ -n "$message" ] || message="(無法取得 error.message)"
+    jq -n --arg code "$code" --arg message "$message" \
+      '{error: {code: $code, message: $message}}' >&2
+  else
+    printf 'eo_herdr: herdr 以結束碼 %s 拒絕，其 stderr 無法解析出可用的 error.code（可能是非 JSON 輸出，例如 panic 或印出用法說明），原始內容已攔截、不轉發\n' \
+      "$orig_rc" >&2
+  fi
+}
+
 eo_herdr() {
-  local rc=0
+  local rc=0 stderr_file
+  # 擷取 herdr 的 stderr 到暫存檔，不是變數：本函式的 stdout 必須維
+  # 持原樣直接繼承給呼叫端（呼叫端多半用命令替換擷取這個函式的
+  # stdout 當回應 JSON），不能像 send-to-phase.sh／press-approval.sh
+  # 那樣用 `2>&1 >/dev/null` 把 stdout 丟棄、只留 stderr——那種手法
+  # 會讓成功時本來要回傳的 JSON 整個消失。
+  stderr_file="$(mktemp)"
   # 刻意用 if／else 兩個分支各自處理，不是「if 判斷完再看 $?」：
   # `if cmd; then ...; fi`（沒有 else）在條件為假、又沒有 else 時，
   # 整個 if 陳述句本身的結束碼固定是 0，不是 cmd 失敗當下的原始結束
   # 碼——`$?` 要在 else 分支裡、緊接著失敗的那個當下取，才會是 herdr
   # 真正的結束碼。
-  if herdr "$@"; then
+  if herdr "$@" 2>"$stderr_file"; then
+    rm -f "$stderr_file"
     return 0
   else
     rc=$?
   fi
+  _eo_relay_herdr_stderr "$stderr_file" "$rc"
+  rm -f "$stderr_file"
   case "$rc" in
-    1) eo_die 6 "eo_herdr: herdr 以結束碼 1 拒絕（見上方 herdr 錯誤訊息）：herdr $*" ;;
+    1) eo_die 6 "eo_herdr: herdr 以結束碼 1 拒絕（見上方已重組的錯誤資訊）：herdr $*" ;;
     2) eo_die 2 "eo_herdr: herdr 以結束碼 2 拒絕，疑似腳本呼叫語法錯誤：herdr $*" ;;
     *) exit "$rc" ;;
   esac

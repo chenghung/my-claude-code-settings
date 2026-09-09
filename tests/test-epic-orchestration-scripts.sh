@@ -280,6 +280,114 @@ else
   bad "eo_herdr 映射得到 $rc，預期 6"
 fi
 
+# --- eo_herdr：成功時 stdout 原樣繼承，不受 stderr 接管手法影響 ---
+# 這裡改用暫存檔擷取 herdr 的 stderr（見 common.sh 該處註解），必須
+# 確認這個改動沒有連帶動到 stdout 的轉發路徑。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"result":{"hello":"world"}}'
+STUB
+chmod +x "$STUB_BIN/herdr"
+out="$(eo_herdr agent get phase-101)"
+if [ "$out" = '{"result":{"hello":"world"}}' ]; then
+  pass "eo_herdr 成功時 stdout 原樣繼承"
+else
+  bad "eo_herdr 成功時 stdout 得到 '$out'"
+fi
+
+# --- eo_herdr：接管 stderr 這條通道，只轉發 error.code／error.message
+#     兩個欄位，不轉發原始內容 ---
+# canary 字串模擬 herdr 回應整包帶著模型產出文字（terminal_title）的
+# 情境。若有人把程式改回讓 herdr 的 stderr 原樣繼承，這裡的斷言會翻
+# 成失敗。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"agent_blocked","message":"審查用可辨識拒絕訊息"},"agent":{"terminal_title":"審查用可辨識terminal_title洩漏字串"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+err_out="$( ( eo_herdr agent get phase-101 ) 2>&1 >/dev/null )" && rc=0 || rc=$?
+if [ "$rc" -eq 6 ] \
+  && printf '%s' "$err_out" | rg -q '"code": *"agent_blocked"' \
+  && printf '%s' "$err_out" | rg -q '"message": *"審查用可辨識拒絕訊息"'; then
+  pass "eo_herdr 把 herdr 的 stderr 重組成只含 code 與 message 的 JSON"
+else
+  bad "eo_herdr 重組 stderr 得到 rc=$rc err_out='$err_out'，預期含重組後的 code 與 message"
+fi
+if printf '%s' "$err_out" | rg -q '審查用可辨識terminal_title洩漏字串'; then
+  bad "eo_herdr 把 herdr 原始 stderr（含 terminal_title）原樣轉發"
+else
+  pass "eo_herdr 未把 herdr 原始 stderr 原樣轉發"
+fi
+
+# error.message 缺漏時要有明確的替代字串，不靜默留空、也不影響
+# error.code 的可用性。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"agent_blocked"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+err_out="$( ( eo_herdr agent get phase-101 ) 2>&1 >/dev/null )" && rc=0 || rc=$?
+if [ "$rc" -eq 6 ] \
+  && printf '%s' "$err_out" | rg -q '"code": *"agent_blocked"' \
+  && printf '%s' "$err_out" | rg -q '"message": *"\(無法取得 error\.message\)"'; then
+  pass "eo_herdr error.message 缺漏時印出明確的替代字串，不影響 code"
+else
+  bad "eo_herdr error.message 缺漏時得到 rc=$rc err_out='$err_out'，預期含替代字串"
+fi
+
+# stderr 根本不是 JSON（例如 herdr 自己 panic）：取不到 error.code，
+# 改印固定的替代訊息並帶上 herdr 的原始結束碼，不把 panic 內容原樣印
+# 出去。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf 'panic: 審查用可辨識panic字串\nstack trace...\n' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+err_out="$( ( eo_herdr agent get phase-101 ) 2>&1 >/dev/null )" && rc=0 || rc=$?
+if [ "$rc" -eq 6 ] && printf '%s' "$err_out" | rg -q '以結束碼 1 拒絕，其 stderr 無法解析出可用的 error\.code'; then
+  pass "eo_herdr 對非 JSON 的 stderr（panic）印出固定替代訊息並帶原始結束碼"
+else
+  bad "eo_herdr 對非 JSON stderr 得到 rc=$rc err_out='$err_out'，預期含固定替代訊息"
+fi
+if printf '%s' "$err_out" | rg -q '審查用可辨識panic字串'; then
+  bad "eo_herdr 把 panic 內容原樣轉發進 stderr"
+else
+  pass "eo_herdr 未把 panic 內容原樣轉發進 stderr"
+fi
+
+# 結束碼 2（語法錯誤）通常是用法說明，同樣不是 JSON：一併接管，不原
+# 樣轉發。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf 'usage: herdr agent get <target> [flags]\n' >&2
+exit 2
+STUB
+chmod +x "$STUB_BIN/herdr"
+err_out="$( ( eo_herdr agent get phase-101 ) 2>&1 >/dev/null )" && rc=0 || rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$err_out" | rg -q '以結束碼 2 拒絕，其 stderr 無法解析出可用的 error\.code'; then
+  pass "eo_herdr 結束碼 2 的用法說明同樣被接管，印出固定替代訊息"
+else
+  bad "eo_herdr 結束碼 2 得到 rc=$rc err_out='$err_out'，預期含固定替代訊息"
+fi
+if printf '%s' "$err_out" | rg -q 'usage: herdr agent get'; then
+  bad "eo_herdr 把結束碼 2 的用法說明原樣轉發"
+else
+  pass "eo_herdr 未把結束碼 2 的用法說明原樣轉發"
+fi
+
+# 還原成「結束碼 1 映射成 6」那條測試用的樁：下面的裸呼叫測試沿用這
+# 個樁，不自己重設，這裡的一連串 eo_herdr 樁化測試不能把它換成別的
+# 形狀留在後面。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"agent_not_found"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+
 # --- eo_herdr：裸呼叫（未被 if／&&／|| 保護）仍要映射成 6（開放 finding 二）---
 # 上面那條測試把 eo_herdr 包在子殼＋&&/|| 左側，剛好命中 bash 對
 # errexit 的豁免情境，測不到真實會發生的裸呼叫用法。這裡在一支獨立、
@@ -1834,6 +1942,56 @@ if [ -n "$orphan_ppid" ] && [ "$orphan_ppid" != "$$" ]; then
   kill -9 "$orphan_pid" 2>/dev/null || true
 else
   bad "測試前置失敗：無法造出一個 PPid 不是本行程的存活行程（PPid='$orphan_ppid'）"
+fi
+
+# --- _eo_agent_wait 的「錯誤碼非預期」分支只轉發 error.code／
+#     error.message 兩個欄位，不轉發 output 整包：跟 send-to-phase.sh
+#     ／press-approval.sh 同一類風險，同一種收斂。canary 字串模擬
+#     herdr 回應整包帶著模型產出文字（terminal_title）的情境，若有人
+#     把程式改回轉發原文，這裡的斷言會翻成失敗。直接呼叫這個內部函
+#     式（本檔已用 EO_GENERATOR_NO_MAIN=1 source 進來），包進子殼避
+#     免它內部的 eo_die（真正的 exit）打斷整份測試套件。 ---
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "agent" ] && [ "$2" = "wait" ]; then
+  printf '{"error":{"code":"agent_blocked","message":"審查用可辨識拒絕訊息"},"agent":{"terminal_title":"審查用可辨識terminal_title洩漏字串"}}' >&2
+  exit 1
+fi
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+err_out="$( ( _eo_agent_wait phase-999-canary --until working --timeout 10 ) 2>&1 >/dev/null )" \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 6 ] \
+  && printf '%s' "$err_out" | rg -q 'code=agent_blocked' \
+  && printf '%s' "$err_out" | rg -q 'message=審查用可辨識拒絕訊息'; then
+  pass "_eo_agent_wait 非預期錯誤碼轉發 code 與 message"
+else
+  bad "_eo_agent_wait 非預期錯誤碼得到 rc=$rc err_out='$err_out'，預期含 code=agent_blocked 與 message=審查用可辨識拒絕訊息"
+fi
+if printf '%s' "$err_out" | rg -q '審查用可辨識terminal_title洩漏字串'; then
+  bad "_eo_agent_wait 把 output 整包（含 terminal_title）轉發進錯誤訊息"
+else
+  pass "_eo_agent_wait 未把 output 整包轉發進錯誤訊息"
+fi
+
+# error.message 缺漏時要有明確的替代字串，不靜默留空、也不退回轉發
+# 原文。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "agent" ] && [ "$2" = "wait" ]; then
+  printf '{"error":{"code":"agent_blocked"}}' >&2
+  exit 1
+fi
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+err_out="$( ( _eo_agent_wait phase-999-canary --until working --timeout 10 ) 2>&1 >/dev/null )" \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 6 ] && printf '%s' "$err_out" | rg -q 'message=\(無法取得 error\.message\)'; then
+  pass "_eo_agent_wait error.message 缺漏時印出明確的替代字串"
+else
+  bad "_eo_agent_wait error.message 缺漏時得到 rc=$rc err_out='$err_out'，預期含替代字串"
 fi
 
 # --- 邊緣迴圈自己也要能在外層迴圈重新開始前，安靜發現自己的 phase
