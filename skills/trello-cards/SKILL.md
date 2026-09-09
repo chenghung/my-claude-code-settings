@@ -1,26 +1,19 @@
 ---
 name: trello-cards
 description: >
-  Handle all Trello card and notification operations by delegating to the trello-manager subagent. Triggers when the user mentions Trello, pastes a trello.com URL, or requests query, create, update, delete, comment, or move operations on Trello cards, or requests to view notifications or mark notifications as read or unread. Trigger keywords: trello, Trello, trello.com
+  當使用者需要查詢、建立、更新、刪除、留言、搬移 Trello 卡片，或檢視與標示 Trello 通知時觸發。不應觸發：非 Trello 相關操作；Voice Fusion sprint review 報告產生（由專屬流程處理）。觸發關鍵字：trello, Trello, trello.com, 看板通知
 ---
 
 # Trello Cards
 
-## 目標
+## 委派規範
 
-此 skill 負責將所有 Trello 相關操作轉交給 trello-manager subagent 處理。Main agent 只負責觸發判斷與委派，不進行任何邏輯處理。
+將使用者的意圖轉交給 `trello-manager` subagent 執行 CLI 操作。Main agent 只負責委派，prompt 須提供以下上下文。其中幾項寫成條件句，標示的是缺項時 subagent 會停下回報、或改走較慢路徑的情境：
 
-## 執行方式
-
-將使用者的意圖和相關資訊傳給 trello-manager subagent，由 subagent 負責實際的 CLI 操作。
-
-傳給 trello-manager subagent 的 prompt 需包含以下內容：
-
-- **操作類型**：使用者要執行的動作（查詢、建立、更新、刪除、留言、搬移、查看通知、標示通知已讀或未讀等）
-- **Card URL**：若使用者提供了 trello.com URL，將原始 URL 直接傳給 subagent，由 subagent 負責解析
-- **Board 名稱**：若使用者有指定操作目標的 board
-- **操作內容**：使用者希望新增或修改的 card 內容（適用於建立與更新操作）
-- **通知識別資訊**：若使用者指定了某一則特定通知，將該通知的識別資訊一併傳給 subagent
-
-> [!NOTE]
-> subagent prompt 只描述目標與所需資訊，不包含任何 CLI 命令。CLI 命令的選擇與執行由 trello-manager subagent 全權負責。
+- **操作類型**：查詢、建立、更新、刪除、留言、搬移卡片，或通知之查看與狀態變更
+- **Card 識別資訊**：卡片名稱、trello.com URL、card ID 或 shortLink。持有 URL、card ID 或 shortLink 時單獨給即可；只有卡片名稱時同樣可以委派，不必為此回頭問使用者——board 與 list 名稱已知則附上，可直接精確定位並縮小範圍，未知則由 subagent 以 search 定位。命中多筆時的處置依操作類型而異：寫入類操作（建立、更新、留言、搬移、封存、刪除等）會停下回報候選清單交 main agent 決定，唯讀查詢則可能直接呈現全部候選、或擇一呈現並註明取捨依據，不必然回報候選清單
+- **Board / List 名稱**：建立卡片、列出某清單的卡片這兩種情境須提供；搬移卡片時，目的地若只以 list 名稱表達，即使卡片本身已由 ID 定位仍須附上 board 名稱，供 subagent 把目的 list 名稱解析成 ID。以卡片名稱定位某張卡時建議提供，可省去 search 這條較慢的路徑。其餘情境若已知則提供，用於縮小搜尋範圍
+- **刪除的永久性**：要求刪除卡片時，若確定要永久刪除須明示；未明示時 subagent 一律採封存（可還原）並回報已封存，不會執行永久刪除
+- **成員帳號**：查詢指派給他人的卡片時提供該成員的帳號；查詢指派給本人的卡片不需要此項
+- **操作內容**：要新增或修改的內容（標題、描述、留言文字、到期日、指派人員等），若已知則提供
+- **通知識別碼**：針對特定通知操作時提供
