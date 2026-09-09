@@ -27,9 +27,9 @@
 # agent_status 是否為 idle、launch_pending 是否為假、interactive_ready
 # 是否為真三個欄位（「啟動三項」）。這個假設已被查證推翻並修正計畫：對
 # 真實 session 兩個存活的 agent 執行 `herdr agent get <target>` 唯讀查
-# 詢，回應裡的 agent 物件只有既有查證過的十五個欄位（agent、
-# agent_session、agent_status、cwd、focused、foreground_cwd、pane_id、
-# revision、state_change_seq、tab_id、terminal_id、terminal_title、
+# 詢，回應裡的 agent 物件只有這十六個欄位（agent、agent_session、
+# agent_status、cwd、focused、foreground_cwd、name、pane_id、revision、
+# state_change_seq、tab_id、terminal_id、terminal_title、
 # terminal_title_stripped、tokens、workspace_id），沒有 launch_pending，
 # 也沒有 interactive_ready（這兩次查詢對象都是已經穩定運行一段時間的
 # agent，不是剛啟動、卡在核准對話框那個短暫窗口；references/rationale.md
@@ -39,6 +39,11 @@
 # 形，這兩個欄位都不是本腳本要依賴的訊號——即使它們有時真的存在，也
 # 只在啟動過程中一個轉瞬即逝的窗口內有意義，拿來做同步的啟動判準本來
 # 就不可靠，這正是本腳本改成只信任 agent start 自身成功／失敗的原因）。
+# 這份清單本身有一次修正紀錄：先前記成十五個欄位、且漏了 name，是對
+# 真實 herdr 0.8.2 重新探測時發現的（agent get 與 api snapshot 的 agent
+# 條目都回十六個鍵，name 裝的就是被指派的名稱）。這次修正不動搖上面
+# 載重的那個結論——launch_pending 與 interactive_ready 兩者仍然都不在
+# 清單裡，就緒判準改用 agent start 自身結束碼的理由不受影響。
 # 隨二進位附的 `herdr --skill` 文件也明講：
 # 「A successful agent start returns only after Herdr detects the
 # expected agent in the same pane and considers it ready for

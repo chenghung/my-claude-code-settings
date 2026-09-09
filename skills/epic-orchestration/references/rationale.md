@@ -1,68 +1,150 @@
 # 實測依據與設計理由
 
-本檔是 `epic-orchestration` 的理由層。`SKILL.md` 只寫怎麼做，各項判斷背後的實測結果、尚未驗證的假設，以及一項設計取捨，都記在這裡。
+本檔是 `epic-orchestration` 的理由層。`SKILL.md` 與 `references/phase-agent-contract.md` 只寫怎麼做；每一項判斷背後的量測結果、哪些結論其實只是估的、以及幾個看起來多餘的設計為什麼在那裡，都記在這裡。
 
-執行流程時不需要載入本檔，撞到反常症狀時才打開對照。會讓人想打開本檔的症狀，至少涵蓋以下六種：
+本檔的讀者不是照著做的執行者，而是日後想改動這個設計的人。所以每一筆都標明它是怎麼取得的：**已實測**指對真實 herdr 0.8.2 與真實 Claude Code agent 量測到的結果；**已查證**指對真實二進位實跑過的無副作用探測，也就是真的呼叫一次看它回什麼；**有出處**指該工具的說明文字或介面定義明載，但本輪沒有獨立量測——說明寫了不等於行為已查證，所以這一層要跟已查證分開標；**未查證推估**指定案但沒有任何依據的值。標籤只是速記，每一筆的出處都在它自己那一列或那一句裡點出來。改動一項設計之前先看它依附的是哪一種，四層各有各的推翻門檻，不要只記得兩端那兩層：未查證推估，一次真實觀測就推翻得了；有出處，一次與該說明相牴觸的真實觀測即足以推翻——那一層底下本來就沒有任何觀測撐著，說明寫了不等於行為如此；已查證，要另一次無副作用探測、或一次射程更廣的實測；已實測，得拿另一筆實測。門檻要寫齊的理由是載重最重的一筆恰好落在「有出處」那一層（事件產生器必須指定常駐，見「實作期間新補」那一章），而那一筆一錯，整條事件通道會在第一個小時內被收掉。未查證的項目沒有全部集中在「未查證推估與已知風險」那一章，多數就附在它所依附的那筆實測旁邊，因為分開放就會有人只讀到肯定句那一半。
 
-- phase agent 啟動時卡住不動
-- 跨 session 訊息送不到或沒有回應
-- phase agent 讀不到 epic 設計文件
-- 由 issue 查不到對應的 PR
-- 監控迴圈永久阻塞，或漏掉卡住的 phase
-- phase agent 啟動時因權限模式旗標而卡在確認框
+執行流程時不需要載入本檔。`SKILL.md` 只在撞到反常症狀時指向它；另一個該打開它的時機是有人要改動這個設計本身。
 
 ## 依症狀查找
 
 | 症狀 | 對照結論 | 詳見章節 |
 | --- | --- | --- |
-| phase agent 啟動時卡住不動 | 常見成因是工作區信任對話框擋住了啟動，而 `herdr agent start` 在這種情況下回傳的錯誤具有誤導性，容易讓人誤以為 agent 沒建立成功 | 信任對話框會擋住啟動，但 git worktree 不受影響 |
-| 跨 session 訊息送不到或沒有回應 | 上行與下行通道本身都已實測成立，閒置中的 session 也會被喚醒；真的送不到訊息時，該懷疑的是契約有沒有被遵守，不是通道本身 | 上行通道成立、下行通道會喚醒閒置 session、phase agent 會遵守只送四種訊息的契約嗎 |
-| phase agent 讀不到 epic 設計文件 | 已知成因是設計文件放在 `docs` 目錄底下、被 `.gitignore` 忽略，worktree 內看不到；啟動時是否已補上 `add-dir` 旗標是第一個查核點，該旗標能否真正解決此症狀本身尚未實測 | 不帶 add-dir 旗標時的讀取後果未經驗證 |
+| phase agent 啟動未就緒（`start-phase.sh` 結束碼 8） | 兩種成因，處置不同：工作區信任對話框擋住啟動（`agent start` 失敗，但 agent 其實已存在於該 pane 且處於 `blocked`），或啟動那一輪跑太久超過 `agent start` 自己的逾時。後者的 agent 是健康的，但名稱根本沒有註冊上，用名稱查會得到 `agent_not_found` | 就緒憑據取自 `agent start` 自身，不查任何欄位、啟動逾時會留下一個名稱沒註冊上的健康 agent、信任對話框會擋住啟動，但 git worktree 不受影響 |
+| 下行送不到或取不到握手憑據 | 下行通道本身已實測成立，連停在等待輸入的 session 都會被喚醒。對方處於 `blocked` 時 herdr 會明確拒絕（腳本以 6 回報）、文字完全不會送達，不是靜默吞掉；對做事中的對象則本來就沒有任何短握手可用，取不到憑據不代表沒送到。真的送不到時該查的是這次送出的對象處於什麼狀態，不是通道本身 | 兩種下行各自的握手、下行對 `blocked` 的對象會被明確拒絕 |
+| phase agent 讀不到 epic 設計文件 | tab 的 cwd 指向主倉庫，設計文件就在主倉庫底下，所以不需要授權任何額外目錄——舊設計那個 `add-dir` 旗標整條拿掉了，連同它從未被實測的效力。查核點因此換成兩個：這次傳給 phase agent 的是不是主倉庫的絕對路徑；使用者當初有沒有在 `epic-design` 那一端把設計文件指到別的位置 | 設計文件的讀取改用 cwd，不用效力未實測的授權旗標 |
 | 由 issue 查不到對應的 PR | 這是預期行為，不是異常：由 issue 反查 PR 的 GraphQL 欄位依賴 PR 內文的 closing 關鍵字，本倉庫的撰寫慣例用不到它，設計因此本來就不採用反查 | 由 issue 反查 PR 不可靠 |
+| 狀態長期落在 `unknown` | herdr 的狀態是比對畫面規則得出的啟發式判定，`unknown` 表示它認得出有 agent 卻分類不出來。它不在產生器邊緣迴圈那次等待所帶的三個值（`idle`、`done`、`blocked`）裡，而那是實作選擇、不是介面限制——`--until` 本身接受五個值、含 `unknown`，廠商說明還明寫需要時就顯式帶 `--until unknown`。不帶它的理由是 UNCLASSIFIED 的判準是跨輪持續性（連續 5 輪都是 `unknown`，門檻見 `EO_UNCLASSIFIED_ROUNDS`），而一次狀態匹配式的等待只答得出「現在是不是」，跨不了輪——這一句是推論，不是廠商說明或實測所載。SPINNING（要 `working`）與 GONE（要不在 snapshot 裡）也都接不住，所以低頻掃描的 UNCLASSIFIED 是它唯一的通道；判因工具是 `phase-status.sh` 的診斷模式 | 事件、逾時與消失偵測 |
+| 重掛監看之後事件洗版，或停著不動的 phase 每兩分鐘重發同一則事件 | 停下的 phase 會一直停在 `done` 不動，而對一個狀態已經匹配的目標重掛等待會立刻回傳（實測 5 ms）。所以印出事件之後必須先等它離開該狀態才能重掛，而「等它離開」必須寫成會重掛自己的內層迴圈，不能是一次帶逾時的等待 | 事件、逾時與消失偵測 |
+| phase agent 啟動時因權限模式旗標而卡在確認框 | 四個候選逐一實測過：兩個 bypass 類的檔位會在啟動時跳責任確認對話框而擋住啟動，`dontAsk` 是自動拒絕，只有 `auto` 同時通得過啟動與放行 | 權限模式旗標的四個候選只有 auto 通得過 |
 | 依賴關係或 sub-issue 清單查不到，懷疑是 GitHub API 不支援 | 兩個端點都已實測可用，查不到時該查的是呼叫路徑或參數，不是端點本身不存在 | issue dependencies 端點可用、sub-issue 清單端點可用 |
-| 監控迴圈永久阻塞，或漏掉卡住的 phase | `herdr agent wait` 不帶 `--timeout` 就無限等待，不帶 `--until` 的預設集合又含語意未實測的 `done`；這兩點都已從該子命令自己的 `--help` 查證，所以該查的是這次呼叫實際帶了哪些值，不是機制本身有問題 | `herdr agent wait` 的 `--until` 可接受值與逾時語意 |
-| phase agent 啟動時因權限模式旗標而卡在確認框 | 四個權限模式候選逐一實測過：兩個 bypass 類的檔位會在啟動時跳責任確認對話框而擋住啟動，`dontAsk` 是自動拒絕，只有 `auto` 同時通得過啟動與放行 | 權限模式旗標的四個候選只有 auto 通得過 |
 
-## 通訊、啟動與監控的實測依據
+## 事件通道與監看迴圈的實測依據
 
-### 上行通道成立
+事件驅動這件事整個建立在 `agent_status` 與 `state_change_seq` 這兩個欄位上，而它們是 herdr 比對畫面規則得出的啟發式判定，不是 Claude Code 主動回報的協定。本章兩張表的量測決定了迴圈的形狀；表內也含 herdr 自述與說明文字出處的列，不是每一列都是量測，各列自行標明。
 
-在 herdr 開的 tab 中啟動一個 Claude Code session，透過 `herdr agent prompt` 指示它用 SendMessage 送訊息給 orchestrator 這個 session，訊息即時送達，且送達時 orchestrator 正在執行其他工作。訊息以 `cross-session-message` 包裹，wrapper 上帶有 `from-name` 屬性，值是送訊端的 session 名稱。orchestrator 藉此能直接從報到訊息取得 phase agent 的位址，不需要另外猜測或比對。
+### 事件、逾時與消失偵測
 
-### 下行通道會喚醒閒置 session
+| 量測 | 結果 | 支撐的設計決定 |
+| --- | --- | --- |
+| 等待 `working` 的事件延遲 | 75 ms | 事件通道成立，不必輪詢 |
+| 對已經停在 `done` 的 agent 等 `done` | 5 ms 立刻回傳；第二輪複驗連續三次都是 5 ms | 印出事件後必須先等它離開該狀態才能重掛，否則全速空轉打出事件風暴，而事件過多的監看會被自動停掉（後半句出自該監看工具的介面定義所載，不是量測） |
+| `done` 會不會自行轉成 `idle` | 8 秒內不會，另有 120 秒樣本 | 停下的 phase 會一直停在 `done`，「等它離開」非寫成會重掛自己的內層迴圈不可 |
+| 只等 `idle`、不含 `done` | 未觸發，60081／120039 ms；複驗在 25042 ms 逾時（結束碼 1、error code `timeout`），而狀態早已是 `done` | `--until` 必須含 `done`，失效是逾時而不是假成功。至於為什麼會這樣：這三次樣本支持的最合理解釋是 `idle` 與 `done` 為同一個底層休止態的兩個名字、差別只在那個 tab 有沒有在 herdr UI 裡被使用者點進去看過（CLI 讀取不算看過），所以無人值守下 `idle` 不會出現。這一段是解釋、不是量測，也沒有出處——`agent wait` 與其他子命令的說明都只列可用值與預設集合，沒有解釋這五個狀態各自的語意。結論本身照樣採用（等待一律含 `done`），但要據此往前推的人注意射程：「無人值守下 `idle` 不會出現」只有這三次樣本撐著，某個 tab 一旦被使用者點進去看過，把 `idle` 從等待清單裡拿掉的那條路徑就永久等不到 |
+| 等待 `idle done blocked` | 2411 ms 命中 `done` | 回合結束的事件形狀 |
+| 等待 `blocked`，對真實核准框 | 4211 ms | 卡點偵測成立 |
+| 代按 esc 解除阻塞 | 313 ms | 代按路徑可行 |
+| 關閉 tab 後偵測到消失 | 104 秒（逾時 120 秒） | 目標消失時進行中的等待不會提早回傳，消失延遲等於逾時值；外層取 120000 毫秒換來的是消失最多兩分鐘被發現 |
+| 40 分鐘逾時會不會被截斷 | 2400 秒精確到期 | 長逾時不會被 herdr 自己截斷，逾時值可以往上調 |
+| `agent wait` 與 `agent get` 對不存在的目標 | 立刻回 `agent_not_found`，不等逾時 | GONE 路徑成立 |
+| `tab close` 之後 | 該 agent 立刻 `agent_not_found` | 收尾與 GONE 偵測成立 |
+| `tab close` 對不存在的 tab | `tab_not_found` | `close-phase.sh` 的守衛有明確的失敗訊號 |
+| 對已關閉的 pane 讀畫面 | `pane_not_found` | 歸 GONE 處置，不是「讀回空白」那一格 |
+| Monitor 工具的一行 stdout | 即時送達一則通知 | 事件通道的實作載體就是它：產生器的每一行 stdout 就是編排端的一則事件 |
+| Monitor 的串流結束 | 另送一則結束通知 | 通道死掉是可偵測的，不是靜默失效，所以 `SKILL.md`「事件處置」要有串流結束那一列 |
+| 畫面上同時存在幾個回合的標記 | 一屏內看到 seq=1,1,2,2,3,4,4 | 標記行非帶 `seq` 不可，而且不得用出現次數判斷 |
+| herdr 如何判定狀態 | 比對畫面規則清單 | 偵測是啟發式，需要低頻掃描兜住漏判 |
+| `agent explain` 回什麼 | 規則名 `live_prompt_box` 與命中證據 `"❯\n"` | 它是 `unknown` 的判因工具，而唯一會呼叫它的是 `phase-status.sh` 的診斷模式。指代要講死，免得被讀成放寬：被呼叫的是 `agent explain` 這個子命令，不是 `evidence` 那個欄位——`evidence` 帶畫面片段，而該腳本只組 `matched_rule.id` 這一欄、從不讀取 `evidence`，所以診斷模式同樣落在「不轉發回應原文」的規範範圍內，不是它的例外 |
 
-orchestrator 對一個正停在等待輸入狀態的 phase agent 送出 SendMessage，該 agent 的 herdr `agent_status` 由閒置轉為 `working`，並回訊自陳正停在等待輸入、這則訊息喚醒了它。這推翻了依工具說明字面推斷的疑慮，即閒置 session 沒有下一個工具回合、訊息可能卡住。
+### 畫面讀取、欄位與 workspace 半徑
 
-### 下行對 blocked 的對象會被明確拒絕
+| 量測 | 結果 | 支撐的設計決定 |
+| --- | --- | --- |
+| 畫面讀取深度 | 早期樣本 74／148／上限 280 行；複驗時要求 400 行，`pane read` 與 `agent read`、四種 `--source` 一律只回 42 行＝`viewport_rows` | 分級讀取是一道不存在的階梯，升上去拿到的還是同一屏而且沒有錯誤訊息。一屏足以回答「它停在什麼上面」，不足以承載一則五欄位的決策請求，所以請求走檔案 |
+| `viewport_rows` 從哪裡取 | `pane get` 的 scroll 底下 | `pane read` 回的是純文字，要判斷有沒有被一屏截斷得多一次呼叫 |
+| `api snapshot` 涵蓋範圍 | 4 個 workspace | workspace 過濾非做不可 |
+| `tab list --workspace` 的過濾 | 本 workspace 3 個 vs 全部 6 個 | workspace 半徑在腳本層做得到 |
+| `api snapshot` 的回應結構與 agent 條目 | agents 位於 result 底下的 snapshot 底下；條目共十六個鍵。`agent` 欄位裝的是種類（實測值 `claude`）而不是名稱，被指派的名稱在另一個欄位 `name` 裡（重新探測時取到的樣本值是 `orchestrator`）；條目含 `terminal_title` 與 `terminal_title_stripped` 兩個模型產出文字的載體 | `phase-status.sh` 只回自己組出來的最小結果、而不是從原始回應剝掉幾個具名欄位，依據就是這一筆：模型文字的出口不只一種形狀。至於狀態檔為什麼記 pane 識別碼，理由不是「條目裡沒有名稱欄位」（`name` 確實在），而是低頻掃描問的是「這一列還在不在」，而那個問題在名稱沒有註冊上的情形下只有 pane 識別碼問得到：那個 agent 健康、pane 活著，用名稱查卻回 `agent_not_found`（見「啟動逾時會留下一個名稱沒註冊上的健康 agent」那一筆實測）。射程就地講死：一般情形下名稱正常註冊，兩個識別碼都比得出來，所以這裡不寫成「非 pane 識別碼不可」；成立的是較弱但夠用的那一句——名稱失效的那一種情形下只有 pane 識別碼問得到，所以名稱為什麼失效不必窮舉，這個結論不依賴它 |
+| `terminal_title` 的實際內容 | 現場樣本是模型產出的中文標題 | 「`api snapshot` 的回應結構與 agent 條目」那一列不是理論顧慮：這兩欄真的裝著模型文字 |
+| agent 名稱規則（herdr 自述） | `[a-z][a-z0-9_-]{0,31}`，在存活的 agent 之間唯一 | 名稱空間跨 workspace，跨 repo 的同號 sub-issue 會撞名，所以名稱帶主倉庫絕對路徑的雜湊前 4 個字元 |
+| CLI 錯誤約定（herdr 自述） | 伺服器錯誤是 JSON 印在 stderr、結束碼 1；語法錯誤是結束碼 2 | 腳本分得出「herdr 拒絕了這次呼叫」與「腳本自己用錯了介面」，兩者的處置不同 |
 
-對一個 `agent_status` 為 `blocked` 的 agent 送出 `herdr agent prompt`，指令回傳 `agent_blocked` 錯誤並拒絕執行；事後讀那格 pane，送出的字串完全沒有出現在畫面上。所以這個下行機制對處於 `blocked` 的對象確實擋得住，而且會明確報錯，不是靜默吞掉。
+## 下行與握手的實測依據
 
-這一項推翻了設計早期的一句敘述——「對著卡住的畫面送出開場指令，那段文字會被打進核准框而且不會有任何錯誤訊息」——該敘述已從 `SKILL.md` 移除。
+### 兩種下行各自的握手
 
-兩個界線要一併記下。其一，這道保護只涵蓋 `herdr agent prompt`，`herdr agent send-keys` 是直接送按鍵、沒有這道檢查（未實測），代按有可能落在一張已經換掉的畫面上而不報錯。其二，實測對象是狀態確實為 `blocked` 的 agent；卡在工作區信任對話框時的狀態不必另外推測——下一節「信任對話框會擋住啟動，但 git worktree 不受影響」記下的那筆實測，正是該對話框出現時 agent 已存在於該 pane 且 `agent_status` 為 `blocked`、`launch_pending` 為真，所以這道保護涵蓋得到那一格。
+送出與握手的形狀不對稱，而不對稱來自介面本身：`agent prompt` 帶得進等待參數，`agent send-keys` 帶不進。本章也含說明文字出處的列（`--help` 那幾列），不是每一列都是量測，各列自行標明。
+
+| 量測 | 結果 | 支撐的設計決定 |
+| --- | --- | --- |
+| 對 `idle` 的 agent 送出並帶 `--wait --until working --timeout 10000` | 512／612 ms，結束碼 0，回應中的 `agent_status` 為 `working`，該 prompt 確實被執行並取得預期回覆 | 送出與握手併成同一次呼叫是成立的，不必送完再補一次 `agent wait` |
+| 從 `done` 送出下行（最頻繁的那條路徑） | 516 ms 命中 `working`，結束碼 0 | 產生器對 `working-ok` 自動推一把成立 |
+| 對處於 `working` 的對象送出，帶 `--until working` | 10024 ms 逾時、結束碼 1，但那則訊息其實送到了，該回合結束後兩則指令都執行了 | 對做事中的對象不能握手。合併後那一則廣播的收件者全都在做事，照握手做就是每一則各逾時一次、各誤判成握手失敗一次、各白派一個調查者 |
+| 對處於 `working` 的對象送出，改用預設 settled（不帶 `--until`） | 結束碼 0，但等了 12327 ms，也就是整個回合 | 做事中的對象沒有任何短握手可用，只能送出即算，回報「已送出、未取得接手憑據」 |
+| 兩則下行先後送出 | 會被併進同一個回合一起執行（測試中兩則指令都做了），訊息不會掉 | 產生器與 orchestrator 不得同時對同一個 phase 下行，互斥寫進狀態檔的持有旗標；一則「繼續」黏在一則定案後面送達時，phase agent 讀到的是一個混合意圖，而且看起來一切正常 |
+| `agent send-keys --help` | 除了兩個位置參數之外沒有任何選項，`--wait` 與 `--timeout` 都給不進去 | 代按只能送出與確認分兩步，所以 `press-approval.sh` 在代按之後另外等待，而不是比照 `send-to-phase.sh` 併成一次呼叫 |
+| `agent wait --help` 的 `--until` 與逾時語意 | `--until` 接受 `idle`、`working`、`blocked`、`done`、`unknown` 五個值，可重複指定以匹配多個狀態；不帶 `--until` 時預設匹配 `idle`、`done`、`blocked` 三者；`--timeout` 的單位是毫秒，不帶時無限等待 | 邊緣迴圈顯式指定要等的狀態、不吃預設值。可重複給值這一點已對真實二進位實跑確認，不是只看說明；不帶 `--timeout` 會無限等待則是這句話掛在該旗標自己的說明上，不在輸出末段 |
+
+`agent prompt` 那一側的逾時語意出處不同，不要跟「`agent wait --help` 的 `--until` 與逾時語意」那一列合寫成一句：依據是該子命令自己的 `--help` 輸出末段逐字寫的 `Without --timeout, the settled-state wait is indefinite.`，而這句話把射程寫成 settled-state 等待、`working` 卻不在預設 settled 集合裡所留下的缺口，由「`--timeout` 收得住目標狀態不在預設 settled 集合裡的等待」那一節的兩次量測補起來。
+
+### 下行對 `blocked` 的對象會被明確拒絕
+
+對一個 `agent_status` 為 `blocked` 的 agent 送出 `herdr agent prompt`，指令回傳 `agent_blocked` 錯誤並拒絕執行；事後讀那格 pane，送出的字串完全沒有出現在畫面上。所以這個下行機制對處於 `blocked` 的對象確實擋得住，而且會明確報錯，不是靜默吞掉——`send-to-phase.sh` 把它映成結束碼 6，那一則沒有送到，連「已送出」都不成立。
+
+這一項推翻了設計早期的一句敘述——「對著卡住的畫面送出開場指令，那段文字會被打進核准框而且不會有任何錯誤訊息」——該敘述已從行為規範中移除。
+
+兩個界線要一併記下。其一，這道保護只涵蓋 `herdr agent prompt`，`herdr agent send-keys` 是直接送按鍵、沒有這道檢查（未實測），代按有可能落在一張已經換掉的畫面上而不報錯——這正是 `press-approval.sh` 在代按前重查狀態仍為 `blocked`、代按後只確認狀態已離開 `blocked` 的理由。其二，實測對象是狀態確實為 `blocked` 的 agent；卡在工作區信任對話框的那一格也涵蓋得到，依據是「信任對話框會擋住啟動，但 git worktree 不受影響」那一節記下的 `agent_status` 為 `blocked`（那一半另有 `bypassPermissions` 那筆獨立觀測撐著，不是純推論），而不是同一筆記錄裡未在當前版本查證過的另一半（見該節的三層區分）。
+
+### `--timeout` 收得住目標狀態不在預設 settled 集合裡的等待
+
+第一種握手要等的 `working` 不在預設的 settled 集合（`idle`、`done`、`blocked`）裡，於是 `Without --timeout, the settled-state wait is indefinite.` 這句話留下一個疑慮：`--timeout` 若實際上只約束 settled-state 那一段，`--until working` 這次呼叫就永不回傳，orchestrator 會無徵兆永久停擺。兩次量測依序解掉它，順序本身要記下來——第一次證不出東西，第二次才是決定性的。
+
+第一次不具鑑別力。對一個 `agent_status` 為 `idle` 的 `claude` agent 送出 `herdr agent prompt`，帶 `--wait --until blocked --timeout 8000`，也就是要它去等一個那一輪不會到達的狀態（送的是一則單純回話的 prompt，agent 走 `idle` 轉 `working` 再轉回 `idle`，不會進入 `blocked`）。呼叫在 8.03 秒後回傳，與 `--timeout 8000` 相符。但 `blocked` 本身就落在預設 settled 集合內，所以「`--timeout` 只約束 settled-state 等待」這個疑慮與觀測到的逾時完全相容——兩種讀法都預測會逾時，這一次分辨不出來。
+
+第二次才有鑑別力。同樣的條件，目標狀態改取 `unknown`：它在 `--until` 的可接受值裡，但不在預設 settled 集合內，而那一輪同樣永遠到不了它。呼叫在 8.036 秒後回傳，與 `--timeout 8000` 相符，回傳內容逐字為 `{"error":{"code":"timeout","message":"timed out waiting for agent status"},"id":"cli:agent:prompt"}`；第一次那筆的回傳內容與此完全相同。
+
+結論：目標狀態落在預設 settled 集合之外時同樣受 `--timeout` 約束，在期限上回傳，而且錯誤訊息是通用的 `timed out waiting for agent status`，沒有任何欄位把射程限縮成 settled-state 專屬。所以狀態確實變了、卻始終沒走到 `working` 的那一支（例如 `idle` 轉進 `blocked` 就停住）由 `--timeout` 收尾這件事不再是推論，是實測支持的：orchestrator 在那一支不會永久阻塞。
+
+## 啟動的實測依據
+
+本章除了量測，也含 herdr 隨二進位附的文件與 `--help` 說明所載的事實，不是每一句都是量測，各處自行標明；四筆權限模式的量測輪次與重測狀態見「權限模式旗標的四個候選只有 auto 通得過」。
+
+### 就緒憑據取自 `agent start` 自身，不查任何欄位
+
+`agent start` 阻塞到 interactive readiness 才回傳，成功即就緒（herdr 隨二進位附的文件逐字寫的是 `A successful agent start returns only after Herdr detects the expected agent in the same pane and considers it ready for interactive input.`）；它的 timeout 選項預設 30000 毫秒、上限 300000 毫秒，失敗態是 `agent_not_ready`，走 herdr 的伺服器錯誤慣例。因此 `start-phase.sh` 只把這一次呼叫自己的成功或失敗當成就緒憑據，失敗一律映成結束碼 8，不再另外查詢任何欄位。
+
+這一節改寫過一次，被推翻的是舊版寫下的「就緒時 `interactive_ready` 為真、`launch_pending` 未出現在回應中」這一類斷言：`launch_pending` 與 `interactive_ready` 這兩個欄位在已經就緒的 agent 上查不到，不能拿它們當就緒判準。查證範圍限於狀態為 `idle` 的 agent（對兩個獨立個體各查一次），在這些 agent 上 `agent get` 的回應查不到這兩個欄位；狀態為 `blocked`（卡在工作區信任對話框的那個短暫窗口）則未查證，因為製造這種情形有副作用。所以即使那兩個欄位在某些時刻真的存在，它們也只在啟動過程一個轉瞬即逝的窗口內有意義，拿來做同步的啟動判準本來就不可靠。
+
+日後真的需要查 `agent get` 的人要知道兩件事：它的欄位是巢狀的，位於 result 底下的 agent 底下（例如 `.result.agent.agent_status`），不是扁平掛在 result 底下；而它在已就緒的 agent 上回的是十六個鍵，與 `api snapshot` 的條目、以及 `agent wait` 回的那個 agent 物件（見「實作期間新補」那一章）鍵集合相同——三處都是同一組十六個鍵，不必再去調和什麼計數差異。
+
+這個數字有一段修正紀錄，留著免得下一個人以為是自己讀錯：本檔與腳本註解先前都記成十五個欄位，那是原始量測漏記了 `name` 這一欄，重新對真實二進位做無副作用探測時發現的。載重的結論完全不受影響——`launch_pending` 與 `interactive_ready` 仍然都不在這組鍵裡，所以「不拿這兩個欄位當就緒判準、改用 `agent start` 自身的結束碼」的理由一字不變。受影響的是另一件事：那個漏記曾被拿去支撐「條目裡沒有名稱欄位、所以只能靠 `pane_id` 對回 phase」，那個理由不成立了，換掉的版本記在「`api snapshot` 的回應結構與 agent 條目」那一列。
+
+### 啟動逾時會留下一個名稱沒註冊上的健康 agent
+
+給 `claude` 與 `agy` 一個確定超過三十秒的前景回合，指令是 `python3 -c "import time; time.sleep(60); print('done')"`。兩家症狀完全相同：`herdr agent start` 在約三十一秒後回傳失敗，對應預設的 `--timeout 30000`，`agy` 那次的錯誤原文是 `{"error":{"code":"timeout","message":"timed out waiting for agent startup"},"id":"cli:agent:start"}`；隨後對該 pane 下 `herdr agent get`，`agent_status` 為 `working`，也就是它並沒有停在等待輸入的狀態；以啟動時所取的名稱下 `herdr agent get`，回傳 `{"error":{"code":"agent_not_found","message":"agent target <名稱> not found"}}`，`herdr agent list` 中該 pane 的 `name` 欄位為 `null`，也就是名稱根本沒有註冊上。但那個 agent 本身完全正常，`claude` 那一次在一分七秒後正確完成並回覆。
+
+要用前景指令才測得出這個邊界。先前用 `sleep 45` 測不出來，因為 `claude` 把它放到背景執行、約二十秒就回到 `idle`。
+
+這筆實測支撐一個看起來多餘的設計決定：`start-phase.sh` 在呼叫 `agent start` 之前就把四個欄位一次寫齊——`tab_id`、`pane_id`、`agent_name` 三個座標，加上 `held_by_orchestrator` 的初始值。所以即使啟動逾時、名稱沒在 herdr 那邊註冊上，`close-phase.sh` 仍然關得掉那個孤兒 tab，因為它用的是 tab 識別碼而不是名稱。名稱一起提前寫入還解開了另一條路徑：工作區信任對話框正是讓啟動回結束碼 8 的原因，而 `press-approval.sh` 第一件事就是從狀態檔取名稱——名稱若等啟動成功才寫，那條路徑取不到名稱、直接以狀態檔缺漏（結束碼 5）死掉，使用者答完「信任」也回不來，整個 epic 卡在第一次派工。兩個好處出自同一個改動，所以不要因為只想到其中一個就把寫入挪回啟動成功之後。
 
 ### 信任對話框會擋住啟動，但 git worktree 不受影響
 
-在一個新建立的、非 git 倉庫的目錄啟動 Claude Code 時會出現工作區信任對話框，此時 `herdr agent start` 回傳 `agent_not_ready` 錯誤，但 agent 實際已存在於該 pane 且狀態為 `blocked`、`launch_pending` 為真。對一個已經就緒的 agent 下 `herdr agent get`，`agent_status` 為 `idle`、`interactive_ready` 為 `true`，而 `launch_pending` 這個欄位根本不存在於回應中，不是查到它的值為 `false`——這與卡在信任對話框時 `launch_pending` 存在且為真，是同一組事實的兩面。在既有的 git worktree 目錄（其主倉庫路徑已被信任）啟動時直接就緒，未出現信任對話框。
+在一個新建立的、非 git 倉庫的目錄啟動 Claude Code 時會出現工作區信任對話框，此時 `herdr agent start` 回傳 `agent_not_ready` 錯誤，但 agent 實際已存在於該 pane 且狀態為 `blocked`、`launch_pending` 為真（這兩半的查證程度不同，本節接著就把它拆成三層，不要把整句當成同等可靠）。在既有的 git worktree 目錄（其主倉庫路徑已被信任）啟動時直接就緒，未出現信任對話框。
 
-信任記錄的形式是使用者家目錄下 `.claude.json` 的 `projects` 欄位，以絕對路徑為鍵、每筆帶 `hasTrustDialogAccepted` 布林值；已信任的父目錄不會讓子目錄自動通過，但 git worktree 會繼承主倉庫的信任。worktree 繼承這一點只實測過一次，樣本數與涵蓋範圍的限制見下方「git worktree 信任繼承的樣本數有限」。
+這一節的記錄取自事件驅動改版之前那一輪實測，本輪沒有重測——要重現它得讓一個活的 agent 真的撞上信任對話框，那本身就是副作用。所以它分三層記，不要當成一整塊都同等可靠：仍然成立的結論是「信任對話框會擋住啟動」與「已被信任的主倉庫，其 git worktree 不會再跳框」；`agent_status` 為 `blocked` 那一半除了與 herdr 判定核准框的方式一致，另有一筆獨立觀測撐著，不只是一致性論證：「權限模式旗標的四個候選只有 auto 通得過」記的 `bypassPermissions` 那一項，啟動時跳出的是責任確認對話框，`agent start` 同樣回 `agent_not_ready`、agent 同樣存在且處於 `blocked`——那是同一個現象在另一種啟動期對話框上的實測實例（與本節同屬改版前那一輪，見該節的重測狀態）。`send-to-phase.sh` 對 `blocked` 會被拒絕那條路徑建立在這一半上，而它站得比推論穩；`launch_pending` 為真那一半未在當前版本查證過，不要拿它當任何判準——同一個欄位在已就緒的 agent 上已經查不到（見「就緒憑據取自 `agent start` 自身，不查任何欄位」）。
+
+信任記錄的形式是使用者家目錄下 `.claude.json` 的 `projects` 欄位，以絕對路徑為鍵、每筆帶 `hasTrustDialogAccepted` 布林值；已信任的父目錄不會讓子目錄自動通過，但 git worktree 會繼承主倉庫的信任。worktree 繼承這一點只實測過一次，樣本數與涵蓋範圍的限制見「git worktree 信任繼承只有一個樣本」。
 
 ### 權限模式旗標的四個候選只有 auto 通得過
 
-`SKILL.md`「派工階段」只留下結論（帶 `--permission-mode auto`、字串照原文），比較過程記在這裡。四個候選在 herdr 環境下各以一個真實的 Claude Code agent 逐一實測：
+`SKILL.md` 與腳本只留下結論（`agent start` 附帶 `--permission-mode auto`，字串照原文），比較過程記在這裡。四個候選在 herdr 環境下各以一個真實的 Claude Code agent 逐一實測：
 
-1. `--permission-mode bypassPermissions`：啟動失敗。`herdr agent start` 回傳 `agent_not_ready` 錯誤，agent 實際存在但 `agent_status` 為 `blocked`、`launch_pending` 為真。讀畫面確認原因是啟動時跳出一個責任確認對話框，標題為 `WARNING: Claude Code running in Bypass Permissions mode`，選項是 `No, exit` 與 `Yes, I accept`。「啟動成功判準」三項不成立。
-2. `--dangerously-skip-permissions`：啟動失敗，症狀與上一項完全相同，跳出的是同一個責任確認對話框。
-3. `--permission-mode dontAsk`：啟動成功，三項齊備（`agent_status` 為 `idle`、`interactive_ready` 為真、`launch_pending` 未出現在回應中）。但語意實測的結果是自動拒絕而不是自動放行：對它送出一個要求，以 Bash 工具在工作目錄以外的路徑建立檔案，該檔案並未被建立，agent 回報的原文是「失敗（Bash 在 don't ask 模式下被拒絕執行）」，畫面底部的模式標示是 `don't ask on`。因此這個檔位不可採用，它比不帶旗標的現狀更糟。
-4. `--permission-mode auto`：啟動成功、三項齊備，且語意實測為自動放行——送出同一個要求時檔案確實被建立、agent 回報成功、過程中沒有出現任何核准框，畫面底部的模式標示是 `auto mode on`。選定這一個。
+1. `--permission-mode bypassPermissions`：啟動失敗。`herdr agent start` 回傳 `agent_not_ready` 錯誤，agent 實際存在但 `agent_status` 為 `blocked`。讀畫面確認原因是啟動時跳出一個責任確認對話框，標題為 `WARNING: Claude Code running in Bypass Permissions mode`，選項是 `No, exit` 與 `Yes, I accept`。
+2. `--dangerously-skip-permissions`：啟動失敗，症狀與第一項完全相同，跳出的是同一個責任確認對話框。
+3. `--permission-mode dontAsk`：啟動成功。但語意實測的結果是自動拒絕而不是自動放行：對它送出一個要求，以 Bash 工具對工作目錄以外的路徑建立檔案，該檔案並未被建立，agent 回報的原文是「失敗（Bash 在 don't ask 模式下被拒絕執行）」，畫面底部的模式標示是 `don't ask on`。因此這個檔位不可採用，它比不帶旗標的現狀更糟。
+4. `--permission-mode auto`：啟動成功，且語意實測為自動放行——送出同一個要求時檔案確實被建立、agent 回報成功、過程中沒有出現任何核准框，畫面底部的模式標示是 `auto mode on`。選定這一個。
+
+這四項當初是以舊版那組「啟動三項齊備」的欄位判準記錄成功與失敗的，那組判準已被「就緒憑據取自 `agent start` 自身，不查任何欄位」推翻，所以這裡只留成功或失敗本身，憑據一律換成 `agent start` 這次呼叫的結束碼；被推翻的是判準，不是這四項的結論。
+
+這四筆的量測輪次與重測狀態要一起揭露，因為 `start-phase.sh` 把 `--permission-mode auto` 寫死、每一次派工都吃這個結論：四筆都落在事件驅動改版之前那一輪，本輪沒有重測。而權限模式這種檔位的名稱與語意會隨 Claude Code 版本演進，所以升版之後該重跑的是兩件事——`auto` 還在不在、以及它是不是仍然自動放行（拿同一個「以 Bash 工具對工作目錄以外的路徑建立檔案」的要求重測一次即可）。兩個 bypass 檔位與 `dontAsk` 不必重跑，它們是被否決的候選，重跑只會確認一件已經不影響設計的事。
 
 另外兩項查證。`--allow-dangerously-skip-permissions` 依其 `--help` 說明只是讓 bypass 成為可選項、本身不預設啟用也不放寬任何權限，因此不是候選。使用者家目錄下的 `.claude.json` 裡沒有任何記錄 bypass 責任確認框已被接受的頂層欄位，只有 `projects` 欄位底下每個專案各自的 `hasTrustDialogAccepted`，那是工作區信任對話框的記錄、與 bypass 責任框無關——所以人工接受一次並不會被記住，下次啟動仍會再跳。
 
-auto 的射程界線要誠實記下。auto 只實測過「以 Bash 工具對工作目錄以外的路徑建立檔案」這一類操作被自動放行，其他類型的操作在 auto 之下是不是仍會跳出核准框並未實測。另外，作用中的使用者層設定檔含有一個 `autoMode` 環境區塊，裡面記載了若干信任邊界（名稱帶 `prod` 或 `production` 的遠端目標，IAM、RBAC、networking 這類受保護的 IaC 範圍，敏感資料位置等），這代表 auto 是風險感知模式而不是無條件放行；但「這些邊界在 auto 之下是不是真的會跳出核准框」同樣未經實測。還有一點要寫明：那個 `autoMode` 區塊自述的信任倉庫是另一個倉庫（一個 Obsidian vault），不是本 epic 所在的倉庫，因此區塊內列舉的倉庫內敏感路徑對本流程沒有射程。
+auto 的射程界線見「auto 之下核准框的射程窮舉不了」。
 
 ### 啟動與開場指令不併成一步
 
-有一個提案是把啟動與開場指令併成一步：啟動 phase agent 時直接以命令列帶入第一則使用者訊息，省掉之後那一次 `herdr agent prompt`。實測之後不採用，量測結果與否決理由記在這裡。
+有一個提案是把啟動與開場指令併成一步：啟動 phase agent 時直接以命令列帶入第一則使用者訊息，省掉之後那一次 `send-to-phase.sh`。實測之後不採用，量測結果與否決理由記在這裡。
 
 基本可行性沒有問題。四家 CLI 都帶得進初始使用者訊息，也都能透過 `herdr agent start` 在 `--` 之後傳遞，四家也都實測到該訊息確實被執行並取得預期回覆：
 
@@ -71,69 +153,43 @@ auto 的射程界線要誠實記下。auto 只實測過「以 Bash 工具對工�
 - `opencode` 用 `--prompt`，說明是 `prompt to use`；它的位置參數是 `project`、內容是路徑，不能拿來放訊息。
 - `agy` 用 `--prompt-interactive`（短旗標 `-i`），說明是 `Run an initial prompt interactively and continue the session`。要特別註明 `agy --prompt` 是 `--print` 的別名、屬非互動模式，容易誤用。
 
-差異出在 `herdr agent start` 何時回傳，四家分成三種。`claude` 與 `agy` 等到那一輪回合結束才回傳；`codex` 在該訊息送出之前就回傳——實測當下 `agent start` 已回報 `agent_status` 為 `idle`、`interactive_ready` 為真，而畫面仍停在 `Ask Codex to do anything`、`Context 0% used`，之後才轉入 `working`；`opencode` 在該訊息開始執行前就回傳，回傳當下讀畫面是一片空白，之後才轉入 `working`。
+差異出在 `herdr agent start` 何時回傳，四家分成三種。`claude` 與 `agy` 等到那一輪回合結束才回傳；`codex` 在該訊息送出之前就回傳——實測當下 `agent start` 已回報就緒、`agent_status` 為 `idle`，而畫面仍停在 `Ask Codex to do anything`、`Context 0% used`，之後才轉入 `working`；`opencode` 在該訊息開始執行前就回傳，回傳當下讀畫面是一片空白，之後才轉入 `working`。
 
-決定性的一次實測是給 `claude` 與 `agy` 一個確定超過三十秒的前景回合，指令是 `python3 -c "import time; time.sleep(60); print('done')"`。兩家症狀完全相同：`herdr agent start` 在約三十一秒後回傳失敗，對應預設的 `--timeout 30000`，`agy` 那次的錯誤原文是 `{"error":{"code":"timeout","message":"timed out waiting for agent startup"},"id":"cli:agent:start"}`；隨後對該 pane 下 `herdr agent get`，`agent_status` 為 `working`、`interactive_ready` 欄位缺席，也就是「啟動成功判準」三項不成立；以啟動時所取的名稱下 `herdr agent get`，回傳 `{"error":{"code":"agent_not_found","message":"agent target <名稱> not found"}}`，`herdr agent list` 中該 pane 的 `name` 欄位為 `null`，也就是名稱根本沒有註冊上。但那個 agent 本身完全正常，`claude` 那一次在一分七秒後正確完成並回覆。
+決定性的一次實測就是「啟動逾時會留下一個名稱沒註冊上的健康 agent」那一節。不採用的理由有三點：
 
-要用前景指令才測得出這個邊界。先前用 `sleep 45` 測不出來，因為 `claude` 把它放到背景執行、約二十秒就回到 `idle`。
-
-不採用的理由有三點：
-
-1. 名稱沒註冊上，後續一連串動作全部定址不到。`SKILL.md`「派工階段」以 `phase-` 接 sub-issue 編號為 agent 命名，之後的 `herdr agent prompt`、`herdr agent wait`、`herdr agent send-keys` 全靠這個名稱定址，進度表的 herdr 座標欄位也記它。
-2. 「啟動成功判準」三項在這種情況下必然不成立，於是走「失敗行為」第一列：orchestrator 讀 pane 判因後若不是信任對話框，就會自行關掉這個 pane 重啟一次——被關掉的是一個健康、正在跑、已經載入完整 context 的 phase agent，而「失敗行為」第二列正是為了避免這件事才明文規定不重啟。
+1. 名稱沒註冊上，後續一連串動作全部定址不到。`send-to-phase.sh`、`press-approval.sh`、`phase-status.sh` 都以狀態檔裡的 agent 名稱定址；只有 `close-phase.sh` 用 tab 識別碼，所以那個 tab 還關得掉，但這個 phase 只剩「關掉重啟」一條路。
+2. 就緒憑據在這種情況下必然取不到，於是走 `SKILL.md`「失敗行為」第一列：派調查者判因後若不是信任對話框，就自行關掉這個 tab 重啟一次——被關掉的是一個健康、正在跑、已經載入完整 context 的 phase agent，而「失敗行為」第二列正是為了避免這件事才明文規定不重啟。
 3. 這在真實情境是常態不是例外：開場指令那一輪要跑到 phase agent 自己停下來為止，遠超過 `herdr agent start --timeout` 的上限 300000 毫秒。
 
-這批實測還給既有設計補上一個新理由。「啟動成功判準必須排在開場指令送出之前」原本的理由是不要對著一個卡住的畫面送指令；現在多一條更強的：一旦把開場指令併進啟動，那個判準本身就失去了它要量的東西，因為 agent 不會停在等待輸入的狀態。
+這批實測還給既有設計補上一個新理由。「就緒憑據必須取得在開場指令送出之前」原本的理由是不要對著一個卡住的畫面送指令；現在多一條更強的：一旦把開場指令併進啟動，那個憑據本身就失去了它要量的東西，因為 agent 不會停在等待輸入的狀態。
 
-### `herdr agent wait` 的 `--until` 可接受值與逾時語意
+## 實作期間新補：兩筆對真實二進位的無副作用探測，加一筆讀介面定義取得的事實
 
-依該子命令自己的 `--help` 輸出：`--until` 接受 `idle`、`working`、`blocked`、`done`、`unknown` 五個值，可重複指定以匹配多個狀態；不帶 `--until` 時預設匹配 `idle`、`done`、`blocked` 三者；`--timeout` 的單位是毫秒，不帶時無限等待。
+三筆都是實作期間補的，都沒有動到任何正在跑的 agent，但證據等級不同一，標籤照檔首那四層分開下：前兩筆是對真實二進位實跑過的無副作用探測（已查證）；第三筆是讀該工具的介面定義取得的（有出處），本輪沒有實跑它——要看到常駐行為只能真的掛一次，那本來就有副作用，所以這一筆到出處為止，不必也不能升級成已查證。
 
-設計因此顯式指定 `idle` 與 `blocked` 兩個值、不用預設值，理由是預設集合還包含 `done`，而 `done` 對一個 Claude Code session 的確切語意尚未實測。這份輸出的另一句——不帶 `--timeout` 時無限等待——涵蓋的是仍走 `herdr agent wait` 的那一種握手，也就是代按執行中途核准框之後另外等的那一次；這一句掛在 `--timeout` 旗標自己的說明上，不在輸出末段。`herdr agent prompt` 那一種握手已經併進送出的同一次呼叫，它的逾時掛在 `herdr agent prompt` 上，依據是那個子命令自己的 `--help` 輸出末段逐字寫的 `Without --timeout, the settled-state wait is indefinite.`，而這句話把射程寫成 settled-state 等待、`working` 卻不在預設 settled 集合裡所留下的缺口，已由下面「`--timeout` 收得住目標狀態不在預設 settled 集合裡的等待」那一節的兩次量測補起來——兩邊的出處不同，不要合寫成一句。兩種握手不設逾時的後果相同（orchestrator 永久阻塞在這一次呼叫上，整個 epic 跟著停擺），但走得到那裡的情形兩邊不同：`herdr agent prompt` 那一種是狀態確實變了、卻始終沒走到 `working`（例如 `idle` 轉進 `blocked` 就停住），已被受理、送出時對方處於 `idle` 而單純沒被接手的那一種反而會在 5000 毫秒內以 `agent_prompt_stalled` 回來——在本設計所取的 10000 之下，帶不帶 `--timeout` 都一樣（`--timeout` 短於 5000 才會改回逾時，可調範圍見下面「十輪門檻與握手逾時都是估計值」）；`herdr agent wait` 那一種沒有記載對應的門檻，代按沒被接受、狀態一直停在 `blocked` 時就一路等下去。
+| 量測 | 結果 | 支持哪個設計決定 |
+| --- | --- | --- |
+| herdr 失敗時的輸出通道與錯誤酬載形狀（對 `agent get` 傳一個不存在的目標） | stdout 是空的，錯誤 JSON 印在 stderr，行程以 1 結束；那個 JSON 是扁平的，只有 `error` 底下的 `code` 與 `message` 兩個欄位加一個 `id`，不帶任何 agent 物件。射程限於 `agent_not_found` 這一個錯誤碼——`agent_blocked` 那一類的酬載形狀未查證，因為製造一個 blocked 的 agent 本身就是副作用，沒有無副作用的探測手段 | 共用函式庫接管 stderr 這條通道，只重組那兩個欄位再印回去；射程限縮這件事本身也是理由——錯誤碼逐一查證不可能窮盡，所以走結構性做法 |
+| `agent wait` 的回應內容（對一個真實存在的 agent 下 `agent wait`，帶一個立刻逾時的極短逾時值） | 回的不是錯誤形狀而是成功形狀，結束碼 0：`result` 底下有 `type` 與 `agent` 兩個鍵，`type` 為 `agent_info`，而那個 agent 物件共十六個欄位，其中確實包含 `terminal_title` 與 `terminal_title_stripped` 兩個模型產出文字的載體（這個十六與 `agent get`、`api snapshot` 的條目是同一組鍵，見「就緒憑據取自 `agent start` 自身，不查任何欄位」那一節的修正紀錄） | 編排端呼叫得到的腳本不得轉發 herdr 回應原文。例外只有一個，就是 `read-phase-pane.sh` 的預設模式——它的職責本來就是回傳畫面文字，也正因如此編排端不呼叫它。範圍與這個唯一的例外一律以 `SKILL.md`「兩層約束」為準，本表不另立一套，也不要把別的腳本讀成第二個例外：`phase-status.sh` 的診斷模式常被誤讀成例外，但它只組規則名這一欄、從不讀取 `evidence`，見「`agent explain` 回什麼」那一列 |
+| 事件產生器所掛的常駐監看工具的逾時參數（讀該工具的介面定義） | 逾時參數預設 300000 毫秒、上限 3600000 毫秒；指定常駐時忽略逾時、跑滿整個 session | 事件產生器必須指定常駐，否則預設五分鐘、上限一小時就被收掉，而一個 epic 要跑 8–12 小時。這一筆進表還有第二個作用：這句話先前被標為「無法在倉庫內查證」，記下出處，下一個讀到的人不必再質疑一次 |
 
-### 併進送出的那次握手已實測，`herdr agent send-keys` 那一路沒有選項可帶
+第一筆的射程限縮不是免責聲明，它就是設計理由本身：既然錯誤碼無法逐一查證，共用函式庫就不去針對個別錯誤碼寫處理，改成一律接管 stderr、只重組兩個欄位再往上拋，結束碼 2 那種非 JSON 輸出走同一道處理。第三筆那個 300000 毫秒與 `agent start` 的逾時上限同值，是兩個不相干的參數，不要因為數字相同就以為它們連動。
 
-`SKILL.md`「下行送出後的握手」把三種握手分成不對稱的兩路——第一種把送出與等待併成單次呼叫，走 `herdr agent send-keys` 的兩種只能送出與確認分兩步——依據是一正一負兩筆。
-
-正面那筆：對一個 `agent_status` 為 `idle` 的 `claude` agent 實測 `herdr agent prompt <TARGET> <TEXT> --wait --until working --timeout 10000`，指令回傳碼為 0，回應中的 `agent_status` 為 `working`，整次呼叫不到一秒就回傳，且該 prompt 確實被執行並取得預期回覆。所以送出與握手併成同一次呼叫是成立的，不必送完再補一次 `herdr agent wait`。
-
-負面那筆：`herdr agent send-keys --help` 的完整輸出如下，除了兩個位置參數之外沒有任何選項，`--wait` 與 `--timeout` 都給不進去。這就是 `SKILL.md` 說第三種「不能比照第一種」的全部依據：
-
-```text
-Send key presses to an agent
-
-Usage: herdr agent send-keys <TARGET> <KEY>...
-
-Arguments:
-  <TARGET>
-  <KEY>...
-
-Use esc as the canonical Escape key name; escape is also accepted.
-```
-
-### `--timeout` 收得住目標狀態不在預設 settled 集合裡的等待
-
-第一種握手的 `--timeout` 掛在 `herdr agent prompt` 上，依據原本只有該子命令 `--help` 輸出末段那句 `Without --timeout, the settled-state wait is indefinite.`。這句話把射程寫成 settled-state 等待，而第一種握手要等的 `working` 不在預設的 settled 集合（`idle`、`done`、`blocked`）裡，於是留下一個疑慮：`--timeout` 若實際上只約束 settled-state 那一段，`--until working` 這次呼叫就永不回傳，orchestrator 會無徵兆永久停擺。兩次量測依序解掉它，順序本身要記下來——第一次證不出東西，第二次才是決定性的。
-
-第一次不具鑑別力。對一個 `agent_status` 為 `idle` 的 `claude` agent 送出 `herdr agent prompt`，帶 `--wait --until blocked --timeout 8000`，也就是要它去等一個那一輪不會到達的狀態（送的是一則單純回話的 prompt，agent 走 `idle` 轉 `working` 再轉回 `idle`，不會進入 `blocked`）。呼叫在 8.03 秒後回傳，與 `--timeout 8000` 相符。但 `blocked` 本身就落在預設 settled 集合內，所以「`--timeout` 只約束 settled-state 等待」這個疑慮與觀測到的逾時完全相容——兩種讀法都預測會逾時，這一次分辨不出來。
-
-第二次才有鑑別力。同樣的條件，目標狀態改取 `unknown`：它在 `--until` 的可接受值裡，但不在預設 settled 集合內，而那一輪同樣永遠到不了它。呼叫在 8.036 秒後回傳，與 `--timeout 8000` 相符，回傳內容逐字為 `{"error":{"code":"timeout","message":"timed out waiting for agent status"},"id":"cli:agent:prompt"}`；第一次那筆的回傳內容與此完全相同。
-
-結論：目標狀態落在預設 settled 集合之外時同樣受 `--timeout` 約束，在期限上回傳，而且錯誤訊息是通用的 `timed out waiting for agent status`，沒有任何欄位把射程限縮成 settled-state 專屬。所以 `SKILL.md`「下行送出後的握手」那一支——狀態確實變了、卻始終沒走到 `working`（例如 `idle` 轉進 `blocked` 就停住）——由 `--timeout` 收尾這件事不再是推論，是實測支持的：orchestrator 在那一支不會永久阻塞。
+第三筆的等級要記牢，因為它載重最重：`SKILL.md`「事件通道」把「必須指定 `persistent`」寫成硬性要求，而支撐它的只有介面定義所載的預設值與上限。若那份定義與實際行為有落差（例如指定常駐並不真的免除逾時），整條事件通道會在第一個小時內被收掉，而一個 epic 要跑 8–12 小時。那一種推得出來不至於無聲，但推論那一步要標出來：已實測的是「Monitor 的串流結束會另送一則通知」（見「事件、逾時與消失偵測」那一列）；被逾時收掉也是一次串流結束，所以應該同樣會送通知——這一步是推論，被逾時收掉這種死法本身未實測。若它成立，編排端會據那則通知重掛，而重掛之後同一道逾時會再收一次，整個 epic 就變成每隔幾分鐘要編排端自己動手重掛一次，而它本來的設計是進入靜止、只被事件喚醒。所以真的要把這一筆往上升，唯一的路徑是掛一次真實的常駐監看並讓它跑過那個預設值——那件事有副作用，所以它升到的是**已實測**、不是已查證（已查證那一層限於無副作用探測，見檔首四層的定義），而本輪刻意不做。
 
 ## GitHub API 的實測依據
 
 ### issue dependencies 端點可用
 
-REST 端點為 `repos` 底下 `issues` 編號底下的 `dependencies/blocked_by` 與 `dependencies/blocking`，回傳的 issue 物件含對方的 `state` 欄位。GraphQL 側有 `Issue.blockedBy`、`Issue.blocking`，以及彙總欄位 `Issue.issueDependenciesSummary`，其欄位名為 `blockedBy`、`blocking`、`totalBlockedBy`、`totalBlocking`。判斷端點存在的依據是正確路徑回傳 200 與空陣列，猜錯的路徑才回傳 404。
+REST 端點為 `repos` 底下 `issues` 編號底下的 `dependencies/blocked_by` 與 `dependencies/blocking`，回傳的 issue 物件含對方的 `state` 欄位。GraphQL 側有 `Issue.blockedBy`、`Issue.blocking`，以及彙總欄位 `Issue.issueDependenciesSummary`，其欄位名為 `blockedBy`、`blocking`、`totalBlockedBy`、`totalBlocking`——這一組欄位名讀自 GraphQL schema，不是實際發過查詢量到的。REST 側則是實際打過：判斷端點存在的依據是正確路徑回傳 200 與空陣列，猜錯的路徑才回傳 404。
 
 ### sub-issue 清單端點可用
 
-REST 端點為 `repos` 底下 `issues` 編號底下的 `sub_issues`，回傳的 issue 物件含 `state`；另有 `sub_issues_summary`，欄位為 `total`、`completed`、`percent_completed`。GraphQL 側為 `Issue.subIssues` 與 `Issue.subIssuesSummary`。
+REST 端點為 `repos` 底下 `issues` 編號底下的 `sub_issues`，回傳的 issue 物件含 `state`；另有 `sub_issues_summary`，欄位為 `total`、`completed`、`percent_completed`。GraphQL 側為 `Issue.subIssues` 與 `Issue.subIssuesSummary`，同樣是讀 schema 得來的欄位名，不是實際發過查詢。
 
 ### 由 issue 反查 PR 不可靠
 
-GraphQL 的 `closedByPullRequestsReferences` 只有在 PR 內文使用 Closes、Fixes、Resolves 這類 closing 關鍵字時才有值。本倉庫的 PR 撰寫慣例是內文開頭放裸的 issue 編號，因此該查詢回傳零筆，必須改查 `timelineItems` 的 `CrossReferencedEvent` 才抓得到關聯。設計因此不採用反查，改為記住 phase agent 回報的 PR 編號、直接正查那個 PR 的合併狀態。
+GraphQL 的 `closedByPullRequestsReferences` 只有在 PR 內文使用 Closes、Fixes、Resolves 這類 closing 關鍵字時才有值。本倉庫的 PR 撰寫慣例是內文開頭放裸的 issue 編號，因此該查詢回傳零筆，必須改查 `timelineItems` 的 `CrossReferencedEvent` 才抓得到關聯。設計因此不採用反查，改為記住 `pr-ready` 那一則標記帶回來的 PR 編號、直接正查那個 PR 的合併狀態。這一條同時決定了狀態檔那一格的權威來源：編號一旦遺失就永久遺失，中斷恢復只剩「拿含該 sub-issue 編號的分支名反查 PR」這一條退路——那與這裡否定的反查不是同一件事，兩者的機制不同。
 
 ## 倉庫設定的實測依據
 
@@ -141,30 +197,80 @@ GraphQL 的 `closedByPullRequestsReferences` 只有在 PR 內文使用 Closes、
 
 本倉庫的 markdownlint 設定把 MD029 的 `style` 設為 `one`，要求有序清單一律用 `1.` 前綴；本 skill 的定義檔則一貫使用顯式編號。兩者相牴觸時取顯式編號，理由是檔內的自我檢測句以序數回指清單項目（「指得出第幾項嗎」），而模型讀到的是原始 markdown 而不是算繪結果，全部寫成 `1.` 就得自己數，數錯一位就整條走錯處置。
 
-因此這幾份檔案的 lint 違規全部落在 MD029 這一條，而且會隨新增的顯式編號清單而增加，這是預期內的結果而非缺陷。設定與慣例互相牴觸是先前就存在的問題，修改設定會影響全倉庫所有檔案，因此不處理。
+因此這幾份檔案的 lint 違規全部落在 MD029 這一條，而且會隨新增的顯式編號清單而增減，這是預期內的結果而非缺陷；驗收看的是「有沒有出現 MD029 以外的違規」以及「數量的變動指不指得出是哪幾份清單造成的」，不是總數。設定與慣例互相牴觸是先前就存在的問題，修改設定會影響全倉庫所有檔案，因此不處理。
 
-## 待驗證的假設
+## 設計取捨
 
-### git worktree 信任繼承的樣本數有限
+### 為什麼機制層收進腳本
 
-git worktree 的信任繼承只實測過一次，且未涵蓋建立在倉庫目錄之外的 worktree。設計把 worktree 放在倉庫內的 `.worktrees` 底下，並在真的撞到信任對話框時停下問使用者，因此這項假設不成立時的失敗形態是多一次詢問，不是靜默出錯。
+所有 herdr 呼叫都收進 `scripts/` 底下的八支腳本（六支 herdr 腳本、狀態檔寫入腳本、事件產生器）與一份共用函式庫，prompt 只留「什麼時候呼叫、拿到結果之後怎麼判斷」。三個理由，第一個最直接：怎麼呼叫留在 prompt 裡，等於每一次呼叫都重新依賴模型記得帶上該帶的東西——workspace 過濾、回傳欄位白名單、讀取行數上限、代按前的必填參數——而漏掉任何一項都不會有錯誤訊息，只會安靜地把其他 workspace 的資料或模型產出文字整包帶進 context。收進腳本之後，這些守衛有一個唯一的實作位置：每一道都只寫在對應腳本的入口，呼叫端不重複做，prompt 裡也沒有等價的約束可以替代（哪一道落在哪幾支，`SKILL.md`「兩層約束」逐支點名，本檔不複寫那份清單）。
 
-### 不帶 add-dir 旗標時的讀取後果未經驗證
+第二個理由是事件驅動之後出現了一個非整段自動化不可的區塊：常駐的事件產生器。它的邊緣迴圈要在印出事件後重掛內層等待、低頻掃描要維護計數與靜音旗標、自動推進要記次數——這些是每個 phase 一條、跑滿整個 epic 的控制流，在 prompt 裡根本無法表達，而它們正是把最頻繁的那條路徑（一個 phase 停下幾百次）擋在 orchestrator 的回合預算之外的東西。
 
-未實測不帶 `add-dir` 旗標時，phase agent 是否真的讀不到工作目錄之外的設計文件。沒有實測的理由是該探測需要另外啟動一個 session，而結論不會改變設計取捨：帶了這個旗標無害，不帶則可能靜默失效，所以設計採取帶旗標的保險做法。
+第三個理由是狀態檔的併發。狀態檔同時有兩個寫入端（編排端與常駐產生器），檔案鎖與欄位白名單都只能寫在程式裡；手改那個 JSON 繞過的是鎖，而覆寫不會有任何錯誤訊息。
 
-### phase agent 會遵守只送四種訊息的契約嗎
+代價要一起記下，不要讀成一道機制保證。「一律經腳本」這件事本身沒有任何 hook 或 permission 在背後執行，它靠的是結構——把呼叫都寫在腳本裡，讓編排端手上沒有別的出口可用；真要繞過去，繞得過去而且沒有東西會擋。CLI 介面上留給呼叫端傳入的可調參數只有一項，射程要收在那一支上：`send-to-phase.sh` 的握手逾時毫秒有 `--handshake-timeout` 可覆寫，調它仍然是改文字而不是改程式；`press-approval.sh` 代按後那次等待的 10000 毫秒是腳本內定的具名常數，介面上沒有對應的旗標。
 
-phase agent 主動送出的訊息應只有報到、決策請求、PR ready、收尾完成這四種，但沒有任何機制強制它遵守，只靠契約文字撐著。假設不成立時的失敗形態是 orchestrator 的 context 被逐步填滿，不是流程中斷。
+「只有一項」的射程僅止於 CLI 介面，別讀成「外面只有一個握手逾時可調」——外部可調的通道還有環境變數這一條，而它動得到的東西比那個旗標重得多。要點名的有四組：`event-generator.sh` 的生產路徑以 `EO_SEND_TO_PHASE_SCRIPT`、`EO_PHASE_STATUS_SCRIPT`、`EO_READ_PHASE_PANE_SCRIPT` 三個變數決定要執行哪一支腳本，預設值才是真正的路徑，沒有任何開關保護這三條替換，而後兩支正好承載四道入口守衛裡的兩道（`read-phase-pane.sh` 的讀取行數上限、`phase-status.sh` 的回傳欄位白名單），換掉腳本就等於換掉那兩道守衛；共用函式庫以 `EO_MAIN_REPO` 決定主倉庫路徑，狀態檔位置與 agent 名稱的雜湊都由它推導（見 `eo_main_repo`、`eo_state_file`、`eo_agent_name`），設錯就整組座標對到另一個倉庫去；另有一個乾跑旗標 `EO_GENERATOR_DRY_RUN`，一設就完全不呼叫 `send-to-phase.sh`，改在 stderr 印一行觀察行，而產生器仍把這次自動推進當成成功；還有一個測試用的旗標 `EO_GENERATOR_NO_MAIN`，一設，`event-generator.sh` 就只把函式定義完便返回、不進 `main`（測試靠它把整支 source 進自己的行程，單獨呼叫決策函式）。乾跑那一個的失敗形態最安靜：環境裡殘留一個匯出值，phase 每次停下都不會收到「繼續」、也不會有事件行送出去，`SKILL.md` 自己寫的那三條通道（事件通道、內層等待、低頻掃描）同時盲掉，整個 phase 無聲停擺。`EO_GENERATOR_NO_MAIN` 那一個的失敗形態不安靜，但它結束得乾淨到不像故障：殘留一個匯出值時，掛起產生器那一次只定義完函式就以 0 結束、什麼都不印（**已查證**，對真實腳本實跑過的無副作用探測：帶旗標那次以 0 結束且完全沒有輸出。做法是先清掉 `HERDR_ENV` 再執行——在 herdr 環境裡直接跑並不安全，旗標若沒生效，環境守衛會通過而 `main` 真的起常駐監看並寫狀態檔；清掉之後兩種結果都有訊息也都不動任何東西）。它連 `HERDR_ENV` 那道環境前提都不查，因為腳本把那道檢查排在這個閘門之後，所以連結束碼 3 這個現成的診斷都拿不到——這一句由同一次探測的對照組撐著：不帶旗標、同樣清掉 `HERDR_ENV`，那一次以 3 拒絕並印出守衛訊息，可見守衛確實在閘門裡面、帶旗標時被一起跳過，帶旗標那次的 0 因此不能用「守衛通過了、只是沒進 `main`」來解釋。編排端看到的是 Monitor 串流立刻結束，照「事件處置」那一列重掛一次、同樣立刻結束，於是升級——訊號會浮上來，但它指向的是「產生器掛不起來」，第一個該查的地方是環境裡有沒有這個殘留值。
 
-### 第二條禁令在 orchestrator 可讀 pane 之後只剩自律
+讀取深度不屬於這一類，它與「一律經腳本」同一層，是刻意內定在腳本裡的權限半徑守衛——它擋的是介面上的可調空間與由此而來的假階梯往返，不是回傳量本身：讀取行數上限寫死在 `read-phase-pane.sh`，那支腳本的介面完全沒有讓呼叫端指定行數的選項，而 `SKILL.md`「兩層約束」把它列為四道入口守衛之一。回傳量另由 herdr 的一屏決定（實測一律只回 42 行＝`viewport_rows`，見「畫面讀取深度」那一列），所以那個上限今天並不是綁定的那一道；它取一個明顯大於實測屏高的值正是為了這件事，而終端一屏超過它的那天綁定關係就反過來（確切值與取值理由以那支腳本的檔頭為準）。要給它補一個行數旗標的人先讀那份檔頭：那不只拆掉一道守衛而且不會有任何錯誤訊息，還同時走上檔頭花整段警告的「分級讀取」那條假階梯——升上去拿到的還是同一屏。
 
-讀 pane 這個例外開出來之後，第二條禁令（不主動去取 phase 的開發內容）就沒有任何機制兜底：畫面讀進 context 就是讀進去了，沒有東西把「它停在什麼上面」以外的內容濾掉，也沒有東西阻止那些內容影響後續判斷，這條完全靠定義檔文字對模型的約束力撐著。假設不成立時的失敗形態是 orchestrator 的主 context 被 pane 上的開發內容逐步污染，epic 越大、讀 pane 的次數越多，就越早出現。設計端能做的只有把例外收在四個具名觸發條件上，讓讀 pane 的次數本身有上界。
+這一節取代的是舊版一節叫「為什麼不寫 shell script」的相反主張，那一節的論據是「契約用檔案路徑傳遞，不必嵌進 prompt；每個關卡都要模型判斷，沒有可以整段自動化的區塊」。前半仍然成立（契約全文至今仍以絕對路徑傳遞、不嵌進 prompt），後半被事件產生器推翻。留著它的後果不是文件不整齊，是下一個讀到它的人會把已經寫好的八支腳本當成違例。
 
-### 十輪門檻與握手逾時都是估計值
+### 上行通道曾實測成立，仍然刻意不用
 
-「監控節奏」的十輪空轉門檻與「下行送出後的握手」的 10000 毫秒逾時，兩個數字本身都沒有實測依據。十輪是依整輪 60 秒的牆鐘上限推算的，但 60 秒是上限不是下限——其他 phase 早退時整輪遠短於 60 秒，所以十輪可能只有兩三分鐘。握手那一邊只有「不帶 `--timeout` 會無限等待」是查證過的——走 `herdr agent wait` 的那一種見上面 `--until` 那一節，併進 `herdr agent prompt` 的那一種出自該子命令自己的 `--help` 輸出末段，且該旗標收得住目標狀態不在預設 settled 集合裡的等待這一點已另有實測（見上面同名那一節）——10000 這個值同樣是估的。假設不成立時的失敗形態不是流程中斷，是誤報或漏報：門檻太緊會對正在做事的 phase 一再讀 pane，太鬆則讓真的卡住的 phase 拖很久才被發現。實際使用時若發現誤報或漏報過多，這兩個數字是第一個該調的參數——但第一種握手的那個數字只調得動它兩支走法中的一支。第三種握手掛在 `herdr agent wait` 上，10000 往上往下都直接改變它等多久；第一種併在 `herdr agent prompt` 上，`--wait` 是兩段式的（見 `SKILL.md`「下行送出後的握手」）：已被受理、送出時對方處於 `idle` 的那則下行，5000 毫秒內一次狀態變化都沒有觀測到時回 `agent_prompt_stalled`，這一支釘在那道固定的 5000 毫秒門檻上，把 10000 往上調完全不改變行為，唯一調得動的方向是調到 5000 以下——而那只是把回傳從 `agent_prompt_stalled` 換成逾時，兩者在 `SKILL.md` 裡走同一條處置，等於沒調；狀態變化發生過、卻始終沒走到 `working` 的那一支（例如 `idle` 轉進 `blocked` 就停在那裡）則相反，門檻已經過了、攔不到它，收尾的正是 `--timeout`，10000 直接決定 orchestrator 在這次呼叫上阻塞多久，往上調就是延長阻塞——這一支也正是第一種握手不能省略 `--timeout` 的理由（見上面 `--until` 那一節）。
+上行通道實測是成立的（量測落在事件驅動改版之前那一輪，本輪沒有重測；射程見本節談「要加回來的人該重測什麼」那一段）：在 herdr 開的 tab 中啟動一個 Claude Code session，指示它用 SendMessage 送訊息給 orchestrator 那個 session，訊息即時送達，且送達時 orchestrator 正在執行其他工作；訊息以 `cross-session-message` 包裹，wrapper 上帶有 `from-name` 屬性，值是送訊端的 session 名稱。
 
-## 設計取捨：為什麼不寫 shell script
+它被移除的理由不是技術可行性，而是收件端擋不擋得掉：推送過來的訊息 orchestrator 收到就是收到了，而編排端的判斷力來自它的 context 保持精簡。所以現在 phase agent 一則主動訊息都送不出來，改成每回合在畫面最後一行印一個狀態標記、完整內容寫進決策請求檔——寫在檔案裡的東西除非有人去讀它，否則進不了任何人的 context，而唯一會去讀的是調查者。`from-name` 原本帶來的好處（orchestrator 直接從報到訊息取得對方位址）由 `start-phase.sh` 把三個座標寫進狀態檔取代。
 
-本 skill 不寫 shell script。理由是 `pr-review-by-multi-agents` 需要腳本，是因為它要把契約全文原文嵌進多個 prompt、還要跑一個無頭監督行程；這裡兩者都不存在。契約用檔案路徑傳遞，不必嵌進 prompt；而清單以外的關卡雖然已改由 orchestrator 自決、不再每一個都要使用者介入，每一個關卡仍然要拿設計文件、依賴圖與讀 pane 得到的那一句判定結論做判斷，自決換掉的是誰做決定，不是這件事還要不要判斷，所以照樣沒有可以整段自動化的區塊。
+這一節是給日後想把上行加回來的人看的，而它的射程要說清楚：有依據的是「那一輪它會動」，不是「現在它還會動」。`cross-session-message` 這個包裹形狀與 `from-name` 這個屬性名都屬版本相依的細節，所以要加回來的人該重測的是通道與屬性名還在不在，不是重新評估該不該開這個入口——後者已經評估過，結論就是收件端擋不掉這一條，那一輪取捨不必重跑。順序反過來做就是白做：先把包裹形狀與屬性名寫進設計，寫完才發現它們已經變了。開場指令因此也不再帶 orchestrator 自己的 session 名稱——留著它只會誘使 phase agent 送出一則沒人接的訊息。
+
+### 設計文件的讀取改用 cwd，不用效力未實測的授權旗標
+
+舊設計把 phase agent 的 cwd 指向 worktree，再靠一個 `add-dir` 旗標授權它讀 worktree 之外的 epic 設計文件（那份文件位於主倉庫被 `.gitignore` 忽略的 `docs` 目錄下，不會隨任何 worktree 出現）。那個旗標的效力從未實測——要測得另外啟動一個 session——所以整條路徑靠的是一個未查證的假設。
+
+現在的做法是把 tab 的 cwd 直接指向主倉庫，設計文件就在其下，phase agent 自己開 worktree 並立刻切進去。換掉未查證假設的代價是所有 phase agent 共用同一個工作區，少掉「各自關在自己 worktree 裡」那道圍籬，補法見「共用 cwd 少掉的那道圍籬只靠契約文字補」。這個取捨的方向是刻意的：一個沒有機制、只靠契約文字撐著的邊界，至少它的強度是知道的；一個效力未實測的旗標，不成立時是靜默失效。
+
+## 未查證推估與已知風險
+
+本章的每一項都沒有實測依據，或有依據但射程不足。它們不成立時的失敗形態一併記下，而落點有三種，不是兩種：形態是誤報或多一次詢問的，可以先上線再校準（三個門檻值、worktree 信任繼承）；形態是靜默出錯而有更安全的替代方案的，不能上線；形態是靜默出錯、但每一個替代方案同樣靜默失效，因此取捨被接受下來的（auto 射程、共用 cwd），照樣上線，代價是這一類每一節都必須寫出兩件事——接受它的理由，以及縮小風險該往哪個方向動。少了第三種落點，本章有兩節會讀起來像「這個設計不該上線」。
+
+### 三個門檻值是推估，第一次真實跑 epic 就是校準回合
+
+三個值定案如下，逐字照抄自規格附錄 B，都是未查證推估：自動推進上限 **40 次**；`state_change_seq` 連續 **25 分鐘**沒有變化才印 SPINNING；狀態連續 **5 輪** 60 秒掃描都是 `unknown` 才印 UNCLASSIFIED。三者都以具名常數定義在 `scripts/lib/common.sh`（`EO_AUTO_PUSH_LIMIT`、`EO_SPINNING_SECONDS`、`EO_UNCLASSIFIED_ROUNDS`，掃描間隔另有 `EO_UNCLASSIFIED_SCAN_INTERVAL_SECONDS`），改值只改那一處。第一次真實跑 epic 就是它們的校準回合：跑完要回頭處理這三個值，而「處理」的意思是各自拿本次跑出來的觀測值重新定一次，包含判定原值可用而維持原值——維持原值也是一次校準結果，不是跳過。
+
+自動推進上限那一個有一個具體的觀察點，第一次真實跑時要把它記下來：CI 等待期間 phase agent 每一個回合都會印一次 `working-ok`，而每一次 `working-ok` 都消耗一次自動推進計數——那個計數只在「產生事件行交回編排端」那條**最終**分類路徑上歸零。提早返回的那幾條同樣產生事件行卻不歸零，射程限於 `eo_classify_stop` 內的分類路徑：標記缺席（含標記值不合白名單、以及 `seq` 沒有變大兩種）、`AGENT-RESTARTED`、以及 `AUTO-PUSH-LIMIT` 自己那一行都在歸零之前就返回了，腳本註解也逐字記著這件事。那個函式之外還有第五個發射點，同樣讓事件行與歸零對不上：自動推進那一支先把計數加一再返回空字串，邊緣迴圈接著呼叫回退函式，`send-to-phase.sh` 失敗時它印一行 `stopped=<狀態> marker=working-ok` 交回編排端——事件行送出去了，而計數是剛加一、不是歸零。所以一個下行連續送不出去的 phase（例如反覆撞 `agent_blocked`）每次失敗都同時消耗一次計數又送一則事件給編排端，40 在它身上會提早觸發；只照上面那份清單推算，算不到這一條。
+
+這個計數因此量的不是「連續」而是累計：中途夾一則 `marker=none` 不會中斷它，它記的是「自上次那條最終路徑事件以來累計推了幾次」。「最終」這兩個字不是修飾語：把歸零補到每一條產生事件行的路徑上看起來像在修文件與程式碼不符，實際上會讓中途夾雜的一則 `marker=none` 就打斷累計，`AUTO-PUSH-LIMIT` 那一列從此永遠推不到門檻、變成死碼。因此要記錄的數字是「兩次交回編排端的最終路徑事件之間，累計了幾次自動推進」，不是「一次 CI 等待跨了幾個回合」——後者會低估：一次 CI 等待若中間漏印兩次標記、走了兩則 `marker=none`，那三段回合會累在同一個計數上，記到的回合數卻只有其中一段。那個數字直接決定 40 這個值合不合用：小於它就會對一個正常等 CI 的 phase 印出 `AUTO-PUSH-LIMIT`、白派一次調查者，遠大於它則讓一個真的原地打轉的 phase 被推很久都沒人發現。
+
+另兩個門檻各自也要記下一個觀測量，否則校準回合跑完只有一個門檻真的被校準過。SPINNING 那一個記「真實 phase 在做事時，`state_change_seq` 最長多久沒有變化」——那是 25 分鐘的下界，門檻必須大於它。UNCLASSIFIED 那一個記「實際觀察到的連續 `unknown` 輪數上限」，一輪 60 秒（見 `EO_UNCLASSIFIED_SCAN_INTERVAL_SECONDS`），5 輪必須大於那些會自行離開 `unknown` 的短暫情形。兩者的失敗形態同形，都是誤報或漏報而不是流程中斷：太緊會對正在做事的 phase 一再派調查者，太鬆則讓真的卡住的 phase 拖很久才被發現。
+
+校準回合的完成判準因此是可核的，不是「跑過就算」：三個值各指得出一個本次跑出來的觀測值（兩次交回編排端的最終路徑事件之間累計了幾次自動推進、做事時狀態序號最長多久不變、連續 `unknown` 輪數上限），而且各自記下這一次是採用新值還是維持原值。任一項指不出觀測值，這個回合就還沒跑完，那個門檻也不得從未查證推估的名單上劃掉——三個值裡有兩個沒被校準過卻被當成已校準，是這一節最可能出現的失敗。
+
+### 握手逾時的 10000 毫秒同樣是估的
+
+握手逾時取 10000 毫秒，這個值本身沒有實測依據。有依據的是它為什麼不能省，以及它的下界落在哪裡——下界是 herdr 自己那道 5000 毫秒門檻，見本節談 `agent_prompt_stalled` 的那兩段。不能省的依據是不帶 `--timeout` 會無限等待（見「兩種下行各自的握手」與「`--timeout` 收得住目標狀態不在預設 settled 集合裡的等待」），而那一支走到永久阻塞時整個 epic 跟著停擺。它等的是「對方接手了這則訊息」而不是「工作做完」，所以不隨 phase 的工作長度調整。
+
+要調它的人得先知道它只調得動兩支走法中的一支。狀態變化發生過、卻始終沒走到 `working` 的那一支（例如 `idle` 轉進 `blocked` 就停在那裡），收尾的正是 `--timeout`，10000 直接決定 orchestrator 在這次呼叫上阻塞多久；從非 `working` 狀態送出而被接受的那一支，前面另有一道 herdr 自己的固定門檻——`herdr agent prompt --help` 的說明文字明載 `--wait` 要求在 5000 毫秒內觀察到狀態變化，否則回 `agent_prompt_stalled`，而比這更短的 `--timeout` 會把回傳改回 `timeout`。這一筆的標籤是有出處而不是已實測：出處就是該子命令自己的說明文字，它明載了這個值與它相鄰的那半句行為，但本輪沒有對真實二進位獨立量測。
+
+這道門檻同時是 10000 只調得動一支的機制原因，也是它不隨手可換的原因：往上調完全不改變那一支的行為，5000 毫秒的門檻在前面就先回來了；往下調到 5000 以下則把回傳從 `agent_prompt_stalled` 換成 `timeout`，而兩者都映成腳本的結束碼 7、走同一條處置，等於沒調。所以 10000 這個值雖然本身沒有實測依據，它的落點不是任意的——它必須大於那道固定門檻，兩支才各由該負責的機制收尾。
+
+### auto 之下核准框的射程窮舉不了
+
+`--permission-mode auto` 只實測過「以 Bash 工具對工作目錄以外的路徑建立檔案」這一類操作被自動放行，其他類型的操作在 auto 之下是不是仍會跳出核准框並未實測，而且窮舉不了：要看到真實的框只能讓一個活的 agent 撞上它，沒有無副作用的探測手段。作用中的使用者層設定檔含有一個 `autoMode` 環境區塊，裡面記載了若干信任邊界（名稱帶 `prod` 或 `production` 的遠端目標，IAM、RBAC、networking 這類受保護的 IaC 範圍，敏感資料位置等），這代表 auto 是風險感知模式而不是無條件放行；但「這些邊界在 auto 之下是不是真的會跳出核准框」同樣未經實測。還有一點要寫明：那個 `autoMode` 區塊自述的信任倉庫是另一個倉庫（一個 Obsidian vault），不是本 epic 所在的倉庫，因此區塊內列舉的倉庫內敏感路徑對本流程沒有射程。
+
+這一項的後果不是罕見路徑而已：升級清單第四項（不可逆或波及該 phase 以外的後果）攔得到的只有經由核准框或編排端回覆回來的動作。已實測的那一種——以 Bash 工具對工作目錄以外的路徑建立檔案——會直接放行、不跳框，所以那一種 phase agent 自己做掉之後不會**經由核准框**回到編排端手上。通道限定詞不能省：它不是說那一種永遠不會回來，`phase-agent-contract.md`「動手前守衛」末段那個事後醒悟出口正是要求 phase agent 把已經做掉的這一種以 `need-decision` 報回來，那是它唯一會浮上來的通道，`SKILL.md` 升級清單第四項也就近寫著同一個限定與同一個指向。少了這個限定詞，讀者會把那個出口判成不可達而刪掉它。其餘類型未實測，缺口在這裡不能收攏成「自決動作永遠不會回到編排端」：其中若有會跳框的（那個模式明列的受保護範圍就是最可能的一批），那一種會讓該 phase 停在 `blocked`、以停下事件回到編排端，`SKILL.md`「事件處置」在 `marker=working-ok` 那段底下的「停下狀態是 `blocked`」那一支，與「代按守衛」的「執行中途的核准框」，都是為這一種留的，不是不可達路徑（那一支不在事件處置表裡——該表各列的鍵是標記與關鍵字，沒有一列以停下狀態為鍵，所以別去表格裡找它）。
+
+不可逆動作的防線因此實質上只剩 `phase-agent-contract.md` 的動手前守衛那一道，而它不能指望任何機制兜底，三層逐一點名：權限層不攔（作用中的設定檔 deny 清單是空的，預設模式就是 auto）；hook 層有掛點，但接不接得住未經查證，不能當成防線——使用者層那個 matcher 為 `Bash` 的 PreToolUse hook 就是這一種（`phase-agent-contract.md` 同一件事也是這個標籤），專案層那個 matcher 為 `Edit|Write` 的指向 `hooks/prompt-file-guard.sh`，它的職責是提醒（那支腳本兩條阻擋入口目前各自為何是關的，見「共用 cwd 少掉的那道圍籬只靠契約文字補」）；腳本層沒有一支經手 phase agent 自己的動作，因此也沒有任何結束碼會擋下它——結束碼是腳本的回傳通道，路徑上沒有腳本就沒有結束碼可言，`SKILL.md`「失敗行為」表裡「PR 已合併但對應的 sub-issue 仍然開著」那一列用的也是「沒有腳本、沒有結束碼」這個成對說法，不是在數兩層機制。`press-approval.sh` 沒有因此變成死碼（工作區信任對話框仍然會跳），但「執行中途的核准框」要當成罕見路徑，而 `SKILL.md`「代按守衛」那一節的長度反映的是單次做錯的代價，不是發生率。
+
+本章章首要求第三種落點的每一節寫出兩件事，這一節的兩件如下。接受它的理由：把射程窮舉起來的唯一手段是讓一個活的 agent 逐一撞上每一種操作，那本身就是副作用，而每一個替代檔位都已實測更糟——兩個 bypass 檔位在啟動時就跳責任確認框、擋住啟動，`dontAsk` 是自動拒絕（見「權限模式旗標的四個候選只有 auto 通得過」），所以沒有一個「換掉 auto 就把這個缺口補起來」的選項存在。縮小風險該往哪個方向動：第一次真實跑 epic 時把實際跳出來的每一種框逐一記下（框的標題、觸發它的那個操作、代按時按了哪一顆），把「窮舉不了」逐步收成「已觀測到哪幾種」。這個方向不必額外製造副作用——那些框在正常跑的過程中自己會出現，而每一次代按本來就會經過編排端的「自決事項的即時回報」，材料是現成的。
+
+### 共用 cwd 少掉的那道圍籬只靠契約文字補
+
+所有 phase agent 的起點 cwd 都是主倉庫，於是「每個 phase 只寫得到自己那塊」不再有任何結構保證。補法只有契約文字兩條：建好 worktree 後立刻切進去，以及動手前守衛明文宣告主倉庫工作樹無條件不得寫入。兩條都沒有機制兜底——已實測的那一類（以 Bash 工具對工作目錄以外的路徑建立檔案）在 auto 之下直接放行、不跳核准框，也就是說一次違反不會有任何錯誤訊息，而落點就在其他 phase 腳下；其餘類型未實測，其中若有會跳框的，那一種會讓該 phase 停在 `blocked`、以停下事件回到編排端，射程的完整寫法見「auto 之下核准框的射程窮舉不了」。這個代價是接受下來的，理由見「設計文件的讀取改用 cwd，不用效力未實測的授權旗標」：換掉的是一個效力未實測、不成立時同樣靜默失效的旗標。
+
+要縮小這個風險的人，該動的方向是給那條邊界找一個機制，不是把契約文字寫得更嚴——文字已經寫到明文宣告無條件不得寫入了，強度不在措辭上。現成的掛點有三個，各自的難處不同：權限層的 deny 清單（目前是空的，把主倉庫工作樹的寫入攔在這裡是最直接的一條）；使用者層那個 matcher 為 `Bash` 的 PreToolUse hook（它會不會攔阻本來就未經查證，要先把這件事查清楚）；專案層那個 matcher 為 `Edit|Write` 的 PreToolUse hook，它指向 `hooks/prompt-file-guard.sh`，而那支腳本目前兩條阻擋入口都是關的，關法各不相同：以非 0 結束這一條不是自我約束而是結構保證，`main || true` 之後接一句無條件的 `exit 0`，沒有任何路徑到得了非 0，所以不要以為改一行判斷就能翻掉它；另一條入口就在它已經在輸出的那份 hook 專屬 JSON 裡，它自己的註解點名刻意省略的正是權限決定欄位，也就是要攔阻並不需要新增輸出通道，缺的是那一個欄位。這兩條入口各自的實際效果——非 0 結束碼會不會擋下工具呼叫、權限決定欄位帶什麼值才擋——本輪沒有工具可以實測，屬未查證推斷，要動這條路的人得先把它查清楚。不論從哪一條入口動手，難處都不在多加幾行判斷：那支腳本的職責是提醒，改成攔阻等於換掉它的契約（它的檔頭與 `main || true` 那一行都是照「絕不擋下工具呼叫」寫的，而且它判定的對象是受管的 prompt 定義檔路徑，不是主倉庫工作樹）。所以得換一種做法或另掛一支。
+
+### git worktree 信任繼承只有一個樣本
+
+git worktree 繼承主倉庫信任這一點只實測過一次，且未涵蓋建立在倉庫目錄之外的 worktree。它現在的射程是「phase agent 切進主倉庫底下 `.worktrees/` 那個自己的 worktree 之後不會再撞信任對話框」。設計把 worktree 放在倉庫內的 `.worktrees` 底下，而真的撞到信任對話框時走升級清單第五項停下問使用者，因此這項假設不成立時的失敗形態是多一次詢問，不是靜默出錯。

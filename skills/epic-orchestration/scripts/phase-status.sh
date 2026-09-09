@@ -32,12 +32,15 @@
 # 處，用排除法列舉才不會漏：
 #   1. `api snapshot` 每個 agent 條目的 terminal_title：原始視窗標題，
 #      內容通常是使用者或模型自己下的（例：任務描述、issue 標題）。已對
-#      真實 herdr 0.8.2 查證：一個 agent 條目實際共有 15 個欄位，
+#      真實 herdr 0.8.2 查證：一個 agent 條目實際共有 16 個欄位，
 #      terminal_title 與下面第 2 項的 terminal_title_stripped 就是其中
-#      兩個模型文字載體（另外 13 個是 agent、agent_session、
-#      agent_status、cwd、focused、foreground_cwd、pane_id、revision、
-#      state_change_seq、tab_id、terminal_id、tokens、workspace_id，
-#      都不帶模型產出文字）。
+#      兩個模型文字載體（另外 14 個是 agent、agent_session、
+#      agent_status、cwd、focused、foreground_cwd、name、pane_id、
+#      revision、state_change_seq、tab_id、terminal_id、tokens、
+#      workspace_id，都不帶模型產出文字；name 裝的是啟動腳本以
+#      eo_agent_name 算出來的固定名稱，不是模型寫的字）。這個計數與清單
+#      先前記成 15 個、漏了 name，是原始量測漏記，不是版本差異；下面
+#      「回應形狀」那一段有同一筆修正的完整紀錄。
 #   2. 同一條目的 terminal_title_stripped：同一份文字，只是去掉前綴符
 #      號，一樣是使用者／模型產出，不是本腳本能安全轉發的欄位。
 #   3. `herdr agent explain` 回應中 evaluated_rules[].evidence 底下的
@@ -58,10 +61,28 @@
 # 清單則是直接在 `.result.agents`，沒有那一層。兩者都用 `agents` 這個鍵
 # 名，很容易誤用另一個指令的形狀去解析，取錯層一律安靜地得到 null 而不
 # 是報錯。本腳本只用到 `api snapshot`，jq 路徑一律走
-# `.result.snapshot.agents[]`。另外，agent 條目裡沒有任何欄位裝著
-# phase 被指派的 agent 名稱：叫做 `agent` 的欄位裝的是種類（實測值為
-# `claude`），不是名稱，所以只能靠狀態檔記的 pane_id 把一列對回某個
-# phase（見下面的 process_phase）。
+# `.result.snapshot.agents[]`。條目裡叫做 `agent` 的欄位裝的是種類（實
+# 測值為 `claude`），不是名稱；被指派的名稱在另一個叫 `name` 的欄位裡
+# （對真實 herdr 0.8.2 探測，條目共十六個鍵，name 有值）。本腳本仍然
+# 靠狀態檔記的 pane_id 把一列對回某個 phase（見下面的 process_phase），
+# 而理由不是「沒有別的選項」——改用 name 比對在正常情況下做得到。真正
+# 的理由是名稱與 pane 的失效時機不同：啟動回合一旦超過 agent start 的
+# 預設逾時，該子命令失敗、名稱根本沒有註冊上，之後用名稱查會得到
+# agent_not_found、agent list 中該 pane 的名稱欄位為空，而那個 pane 本身
+# 還活著（已實測，見 references/rationale.md「啟動逾時會留下一個名稱沒
+# 註冊上的健康 agent」）。低頻掃描問的是「這一列還在不在」，而那個問題
+# 在名稱失效的那一種情形下只有 pane 識別碼問得到——射程就是這樣，不是
+# 「非 pane 識別碼不可」：一般情形下名稱正常註冊，兩個識別碼都比得出
+# 來。成立的是較弱但夠用的那一句，因為低頻掃描要用同一個識別碼跑正常
+# 與異常兩種情形，而只有 pane 識別碼在兩種都指得到東西。改用 name 比
+# 對正是在名稱沒註冊上那條路徑上靜默失效，而接住這類非正常情形就是低
+# 頻掃描存在的目的。
+#
+# 這一段有一次修正紀錄：先前寫的是「條目裡沒有任何欄位裝著被指派的名
+# 稱，所以只能靠 pane_id」，那個前提是錯的，重新探測才發現 name 一直
+# 都在。留這筆紀錄有兩個原因：錯的那句話會讓下一個人以為沒有別的選項；
+# 而它一度被換成「pane_id 反正本來就要記」這種便利理由，那讀起來是對
+# 的，卻會讓人放心改用 name 比對——換上去的必須是上面那筆實測。
 
 set -euo pipefail
 IFS=$'\n\t'

@@ -516,9 +516,16 @@ eo_classify_stop() {
   fi
 
   # 交回 orchestrator 的路徑：不論是 held_by_orchestrator 互斥擋下、
-  # 對方是 blocked、還是標記根本不是 working-ok，都算「這一輪連續自
-  # 動推進的紀錄中斷了」，歸零讓下一次 working-ok 重新從頭數，這樣
-  # 「連續」兩個字才有意義。
+  # 對方是 blocked、還是標記是某個合法但不是 working-ok 的值，都算
+  # 「這一段自動推進的紀錄到此為止」，歸零讓下一次 working-ok 從頭數。
+  #
+  # 措辭要精確，因為這個計數不是「連續」：只有走到這一行才歸零，而上
+  # 面四條提早返回的路徑（抓不到標記行、標記值不合白名單、seq 沒有變
+  # 大、以及 AGENT-RESTARTED 與 AUTO-PUSH-LIMIT 自己那兩行）都產生了
+  # 事件行卻不碰這個欄位。所以中途夾一則標記缺席不會把它打回零，它量
+  # 的是「自上次走到這一行以來累計了幾次」。EO_AUTO_PUSH_LIMIT 的註解
+  # 與 references/rationale.md 都照這個語意寫，三處不要再分歧——校準
+  # 那個門檻時該記的數字取決於這個區別。
   eo_state_set "$phase" auto_push_count 0
   printf 'phase=%s stopped=%s marker=%s\n' "$phase" "$stopped" "$state_str"
 }

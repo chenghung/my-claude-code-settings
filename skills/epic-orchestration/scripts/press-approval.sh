@@ -5,10 +5,33 @@
 # 用法：press-approval.sh <sub-issue 編號> <按鍵> --allows <這次放行的具體動作> [--startup]
 #
 # ---- 這支腳本獨立成支的唯一理由 ----
-# `herdr agent send-keys` 沒有 `agent_blocked` 這類檢查，這條路徑沒有
-# 任何內建保護：herdr 不會替呼叫端判斷「現在畫面上是不是真的有一個核
-# 准框」，也不會判斷「按下去放行的是不是呼叫端以為的那個動作」。放行
-# 什麼完全由畫面上那個框決定，herdr 只負責忠實地把按鍵送過去。這正是
+# `herdr agent send-keys` 這條路徑沒有任何內建保護：herdr 不會替呼叫端
+# 判斷「現在畫面上是不是真的有一個核准框」，也不會判斷「按下去放行的
+# 是不是呼叫端以為的那個動作」。放行什麼完全由畫面上那個框決定，herdr
+# 只負責忠實地把按鍵送過去。
+#
+# 這一段有一個未實測的成分要標明（references/rationale.md 那一側標的
+# 就是未實測，本檔先前寫成事實陳述，是兩邊不一致）：`send-keys` 到底
+# 有沒有像 `agent prompt` 那樣的 `agent_blocked` 檢查，本輪沒有量測，
+# 因為要看到它只能真的對一個 blocked 的目標送一次按鍵，那是有副作用
+# 的動作。
+#
+# 它若其實有那道檢查，垮掉的是流程本身，不是這一段的措辭——這一點要
+# 寫死，因為相反的說法曾經寫在這裡：`agent prompt` 那道檢查的行為是
+# 拒絕執行並回錯誤，而 lib/common.sh 的 eo_herdr 把 herdr 的結束碼 1
+# 一律映成 eo_die 6。本腳本只在重查狀態仍為 blocked 時才代按，所以那
+# 個假設一旦成立，每一次代按都會以 6 結束、一顆鍵也按不下去；而 6 的
+# 既有退路是改用 send-to-phase.sh 送文字，那一條對 blocked 的對象同樣
+# 被 agent_blocked 拒絕成 6（已實測，見 rationale.md「下行對 blocked
+# 的對象會被明確拒絕」），於是卡在 blocked 的 phase 完全沒有出路。真
+# 的落在這一種，要換的是送鍵的手段，不是改這裡的字。
+#
+# 不受這個假設影響的，是那兩道狀態守衛「各自為什麼要存在」這件事：
+# 代按前重查仍為 blocked、代按後只確認狀態已離開 blocked，兩者各自的
+# 設計理由與 send-keys 攔不攔都無關。這一句只能讀到這裡，不要讀成
+# 「那個假設成立時這兩道仍然發揮作用」——那是假的：第一道正是把假設
+# 變成必死的那一步（重查仍為 blocked 才代按，於是每次都送進那個會被
+# 拒絕的呼叫），而第二道永遠到不了，因為送鍵那一行就已經 eo_die 6。這正是
 # `--allows` 被設計成必填參數（不是選項、不能有預設值、不能從別處推
 # 導）的原因：把「按之前要指得出放行什麼」從一句只能靠人自律遵守的散
 # 文約束，變成缺了就連呼叫都跑不動的參數檢查。
@@ -193,7 +216,8 @@ if [ "$current_status" != "blocked" ]; then
   eo_die 6 "press-approval.sh: 目標 $target 的狀態已不是 blocked（目前是 $current_status），畫面可能已換掉，拒絕代按這次放行的動作：$allows"
 fi
 
-# herdr agent send-keys 沒有 agent_blocked 這種內建保護，見檔頭說明。
+# send-keys 有沒有 agent_blocked 這種內建保護未實測，見檔頭說明；這一
+# 行的設計不依賴它有或沒有。
 eo_herdr agent send-keys "$target" "$key" >/dev/null
 
 # 依 --startup 決定接受哪些落點，見檔頭「兩種模式等的都是『狀態已離開
