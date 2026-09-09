@@ -240,11 +240,11 @@ _eo_require_int() {
 # 對非零結束碼的反應，攔不住一個明講要結束行程的 exit。舊版把
 # eo_state_get 寫成裸呼叫（`if ! eo_state_get ... >/dev/null 2>&1;
 # then`），沒有開新行程，於是那個 exit 5 直接終止了呼叫端整個行程；
-# 獨立審查用「只含三個座標欄位的狀態檔」（也就是 start-phase.sh 真
-# 正會寫的那三個：tab_id／pane_id／agent_name）重現過：呼叫
-# _eo_ensure_phase_defaults 後行程以 5 結束、七個欄位一個都沒補到，
-# 而這正是每個由 start-phase.sh 建立的 phase 的預設狀態——事件產生
-# 器因此在真實流程下對每個 phase 都會這樣悄悄死掉。改成
+# 獨立審查用「只含座標欄位的狀態檔」（tab_id／pane_id／agent_name，
+# 都由 start-phase.sh 建立記錄時寫入）重現過：呼叫
+# _eo_ensure_phase_defaults 後行程以 5 結束、該補的欄位一個都沒補
+# 到，而這正是每個由 start-phase.sh 建立的 phase 的預設狀態——事件
+# 產生器因此在真實流程下對每個 phase 都會這樣悄悄死掉。改成
 # `existing="$(eo_state_get ...)"` 之後，eo_state_get 的 exit 是在
 # 命令替換開的子殼裡發生，只終止那個子殼；父行程（也就是
 # _eo_ensure_field 自己）拿到的是子殼的非零結束碼，這時 if 的條件豁
@@ -255,15 +255,21 @@ _eo_require_int() {
 # ---- 這是消費端的職責，不是產生端漏了該補（編排端裁定，任務七審
 #      查階段，2026-09-08）----
 # 容忍欄位缺漏必須留在讀取這些欄位的一方（本檔案），不能改成依賴
-# start-phase.sh 在 phase 啟動時把七個欄位一次寫齊。理由是狀態記錄
-# 至少有兩條會繞過 start-phase.sh 的路徑：中斷恢復會依 GitHub 與
-# herdr 的現況重建狀態記錄，狀態檔本身也可能被人手動編輯過——這兩
-# 條路徑都不經過 start-phase.sh，若把「欄位一定齊全」的假設寄託在它
-# 身上，遇到這兩條路徑一樣會缺漏。反過來，讓消費端自己容忍缺漏、缺
-# 了就補上預設值，不論欄位是被誰用哪一種方式建立的都成立。也因此不
-# 要把這段邏輯搬去 start-phase.sh、或看到這裡就以為是遺漏而想拿掉：
-# 在產生端也做一次初始化只是多一層冗餘，換不到消費端仍然要有的這層
-# 容忍。
+# start-phase.sh 在 phase 啟動時把欄位一次寫齊。理由是狀態記錄至少
+# 有兩條會繞過 start-phase.sh 的路徑：中斷恢復會依 GitHub 與 herdr
+# 的現況重建狀態記錄，狀態檔本身也可能被人手動編輯過——這兩條路徑
+# 都不經過 start-phase.sh，若把「欄位一定齊全」的假設寄託在它身上，
+# 遇到這兩條路徑一樣會缺漏。反過來，讓消費端自己容忍缺漏、缺了就補
+# 上預設值，不論欄位是被誰用哪一種方式建立的都成立。也因此不要把這
+# 段邏輯搬去 start-phase.sh、或看到這裡就以為是遺漏而想拿掉：在產生
+# 端也做一次初始化只是多一層冗餘，換不到消費端仍然要有的這層容忍。
+#
+# 這段講的是「本檔案自己擁有的那六個欄位」。編排端擁有的
+# held_by_orchestrator 不在其列，而且它的容忍不能用本函式實作——本函
+# 式會寫入，而寫入正是那個欄位不能容許的動作（理由見
+# _eo_ensure_phase_defaults 上方）。它的容忍改在讀取的當下做：讀不到
+# 就當作 false 繼續，一個字都不寫回去（見 eo_classify_stop）。容忍留
+# 在消費端這個原則沒有變，變的只是它的實作形式。
 _eo_ensure_field() {
   local phase="$1" field="$2" default="$3"
   local existing
@@ -280,25 +286,36 @@ _eo_ensure_field() {
 # 叫一次，成本是最多幾次 `jq -e` 查詢，換來不必假設有任何人已經初始
 # 化過這些欄位。
 #
-# 前七個預設值已核對過與 constraints.md 狀態檔 schema 一致：三個靜
-# 音欄位（spinning_muted／gone_muted／unclassified_muted）schema 裡
-# 就是 false，直接採用；unknown_rounds schema 範例本來就是 0，直接
-# 採用；last_marker_seq／auto_push_count 兩個計數欄位 schema 範例分
-# 別是 17／3，但那是一個「已經跑過一陣子」的 phase 的示範值，不是初
-# 始值——一個剛起步、還沒看過任何標記、還沒自動推過的 phase，這兩個
-# 計數本來就該是 0，跟 schema 描述的欄位語意（累計次數）並不衝突；
-# held_by_orchestrator schema 範例是 false，直接採用。
+# 六個預設值已核對過與 constraints.md 狀態檔 schema 一致：三個靜音
+# 欄位（spinning_muted／gone_muted／unclassified_muted）schema 裡就
+# 是 false，直接採用；unknown_rounds schema 範例本來就是 0，直接採
+# 用；last_marker_seq／auto_push_count 兩個計數欄位 schema 範例分別
+# 是 17／3，但那是一個「已經跑過一陣子」的 phase 的示範值，不是初始
+# 值——一個剛起步、還沒看過任何標記、還沒自動推過的 phase，這兩個計
+# 數本來就該是 0，跟 schema 描述的欄位語意（累計次數）並不衝突。
 #
-# 這七個就是全部——constraints.md schema 列的就是這七個，本檔不再自
-# 己多加第八個欄位。早先版本加過一個 agent_gone 當「這條迴圈該不該
-# 被重起」的閘門，那是為了配合已經拿掉的監督重起層而存在的；現在
-# 「不重起」由 main 的行程內記憶處理（見檔頭的存活契約），不需要落
-# 地到狀態檔。
+# ---- 為什麼 held_by_orchestrator 不在這六個裡 ----
+# 它是編排端擁有的欄位，本檔一個字都不寫，連「補預設值」也不行。理
+# 由是那個欄位的正確性建立在「編排端與產生器寫的欄位集合不重疊」這
+# 個前提上，而那個不重疊正是「不必為每個欄位單獨加鎖」這個決定的依
+# 據（見 set-phase-field.sh 檔頭「白名單不是防呆」一節）。
+# _eo_ensure_field 是「先探測、不存在才寫入」的兩次獨立呼叫，各自對
+# 鎖檔開關一次，中間有一段完全不持鎖的空窗：編排端剛把旗標設成 true
+# 而探測發生在那之前時，寫入會把它靜默覆蓋回 false，產生器接著自動
+# 推一把，落回這條互斥當初要防的混合意圖。這個欄位改由
+# start-phase.sh 在建立記錄時寫成 false，成為它唯一的初始寫入方；本
+# 檔讀不到它時當作 false 繼續（見 eo_classify_stop），不寫入、也不以
+# 錯誤結束——目的是拿掉那次跨界寫入，不是把它換成另一種失敗。
+#
+# 這六個就是全部，本檔不再自己多加第七個欄位。早先版本加過一個
+# agent_gone 當「這條迴圈該不該被重起」的閘門，那是為了配合已經拿掉
+# 的監督重起層而存在的；現在「不重起」由 main 的行程內記憶處理（見
+# 檔頭的存活契約），不需要落地到狀態檔。
 #
 # ---- 呼叫端必須先確認記錄存在 ----
 # 本函式只補欄位，不判斷這筆記錄該不該存在：eo_state_set 對不存在的
 # phase 會以 `.phases[$p] //= {}` 建出新記錄，因此對一個已經被收尾移
-# 除的 phase 呼叫本函式，會生出一筆「八個非座標欄位、零個座標欄位」
+# 除的 phase 呼叫本函式，會生出一筆「六個非座標欄位、零個座標欄位」
 # 的殘骸記錄，而且它會出現在 eo_state_phases 的結果裡，讓 main 下一
 # 輪又把它當成待監看的 phase。獨立審查對真實 jq 重現過。所以每個呼
 # 叫點都必須先過 _eo_phase_record_exists（見 _eo_phase_edge_loop 與
@@ -306,7 +323,6 @@ _eo_ensure_field() {
 _eo_ensure_phase_defaults() {
   local phase="$1"
   _eo_ensure_field "$phase" last_marker_seq 0
-  _eo_ensure_field "$phase" held_by_orchestrator false
   _eo_ensure_field "$phase" auto_push_count 0
   _eo_ensure_field "$phase" unknown_rounds 0
   _eo_ensure_field "$phase" spinning_muted false
@@ -340,7 +356,45 @@ _eo_phase_record_exists() {
 # 若因為某個時序巧合被判成 working 或 unknown 送進來，不能沒有防
 # 備）；<標記行> 是 read-phase-pane.sh --marker-only 的輸出：要嘛是
 # `[PHASE <n>] seq=<N> state=<STATE...>`，要嘛是抓不到標記行時的哨
-# 兵字串 `marker=none`。
+# 兵字串 `marker=none`。標記行裡的 state 值一樣不直接信任，見
+# _eo_valid_marker_state。
+
+# _eo_valid_marker_state <state 值>（內部輔助函式）
+# 標記行 state 欄位的白名單：合法就回 0，否則回 1。合法值是
+# working-ok／need-decision／pr-ready／wrapped-up 四種，其中 pr-ready
+# 後面可以再帶一個純數字的 PR 編號欄位（`pr-ready pr=<編號>`）。
+#
+# ---- 為什麼這一欄非得有白名單不可 ----
+# 這一欄是畫面文字進入編排端 context 的一條窄通道，而且是唯一一條沒
+# 有被約束過的：同一個標記行樣式裡，seq 有數字約束、停下狀態有自己的
+# 白名單，只有 state 值原本是 `(.*)` 原樣捕捉、再由下面的最終路徑原
+# 樣印進事件行——而產生器的 stdout 就是編排端的事件流。phase agent 只
+# 要印出 `state=need-decision` 後面接一段解釋文字，那整段畫面原文就進
+# 了編排端的 context；而且因為它不等於 working-ok，分類函式會把它當成
+# 一則要交回編排端的事件原樣送上去，全程沒有任何錯誤訊息。這正是整個
+# 設計要防的事。
+#
+# 不合法時的處置刻意選「視同標記缺席」（走既有的 marker=none 路徑），
+# 不是印錯誤或以非 0 結束：標記缺席本來就會讓編排端派一次調查者去看
+# 畫面，那是這個機制既有的、安全的失敗方向——真正需要人看的情況會被
+# 帶到人面前，而不是把未經約束的畫面文字先送進 context 再說。
+_eo_valid_marker_state() {
+  case "$1" in
+    working-ok|need-decision|pr-ready|wrapped-up)
+      return 0
+      ;;
+    'pr-ready pr='*)
+      # PR 編號只接受純數字，與 set-phase-field.sh 對 pr 欄位的檢查同
+      # 一條規則（那個編號最終就是被寫進狀態檔的 pr 欄位）。
+      case "${1#pr-ready pr=}" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
 eo_classify_stop() {
   local phase="$1" stopped="$2" marker_line="$3"
   local pattern seq state_str last_seq held auto_count
@@ -364,12 +418,22 @@ eo_classify_stop() {
   # 比對——沒有 seq 可比，比較本身沒有意義。這個正規表示式同時涵蓋
   # 字面上的哨兵字串 `marker=none`：那個字串本來就不會匹配
   # `^\[PHASE ...`。
+  #
+  # 樣式匹配成功還不夠，state 值必須再過一次白名單（見
+  # _eo_valid_marker_state）。不合法時把 seq 一併清空，讓它落回下面同
+  # 一條 marker=none 路徑：這樣「值不合法」與「根本沒有標記行」在後續
+  # 處置上完全一致，而且清掉 seq 也順帶保證了不合法的標記不會推進
+  # last_marker_seq——基準只該被真正看懂的標記推進。
   pattern="^\\[PHASE ${phase}\\] seq=([0-9]+) state=(.*)\$"
   seq=""
   state_str=""
   if [[ "$marker_line" =~ $pattern ]]; then
     seq="${BASH_REMATCH[1]}"
     state_str="${BASH_REMATCH[2]}"
+    if ! _eo_valid_marker_state "$state_str"; then
+      seq=""
+      state_str=""
+    fi
   fi
 
   if [ -z "$seq" ]; then
@@ -421,7 +485,18 @@ eo_classify_stop() {
   # seq，下一輪才不會把它再判成舊的。
   eo_state_set "$phase" last_marker_seq "$seq"
 
-  held="$(eo_state_get "$phase" held_by_orchestrator)"
+  # held_by_orchestrator 是編排端擁有的欄位，本檔只讀不寫（理由見
+  # _eo_ensure_phase_defaults 上方「為什麼 held_by_orchestrator 不在這
+  # 六個裡」）。讀不到就當作 false 繼續：這是它的缺漏容忍，取代原本由
+  # _eo_ensure_phase_defaults 補預設值的做法。不寫回去，也不以錯誤結
+  # 束——拿掉那次跨界寫入的目的不是把它換成另一種失敗。
+  #
+  # eo_state_get 對缺漏欄位呼叫的是 eo_die，也就是真正的 exit，所以這
+  # 裡必須靠命令替換開的子殼把它隔離（理由與 _eo_ensure_field 上方那
+  # 一大段完全相同）；`|| held=false` 同時也讓 errexit 豁免這次失敗。
+  # `2>/dev/null` 丟掉 stderr：在這條路徑上，欄位不存在是預期中的正常
+  # 情形，不是要回報的錯誤。
+  held="$(eo_state_get "$phase" held_by_orchestrator 2>/dev/null)" || held=false
   # 已 blocked 的目標不做自動推進：approval 對話框需要
   # press-approval.sh 代按，不是文字下行。send-to-phase.sh 對 blocked
   # 目標本來就會被 herdr 以 agent_blocked 拒絕（見 constraints.md 已

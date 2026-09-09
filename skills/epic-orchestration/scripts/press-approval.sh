@@ -35,10 +35,27 @@
 # ---- 兩種取憑據的方式不能共用同一套等待邏輯 ----
 # 一般的核准框代按成功後，對方會進入 `working`（開始做被放行的那件
 # 事），因此等 `--until working`。但 `--startup`（啟動階段的工作區信
-# 任對話框）代按成功後，對方進入的是「啟動就緒」而不是 `working`——
-# 它回到的是 `idle`，因為信任對話框本身不是一個任務，通過它只是讓
-# agent 可以開始接受輸入。因此 `--startup` 改為等 `--until idle`。兩者
-# 都是各自獨立的一次 `herdr agent wait <TARGET> --until <STATUS>
+# 任對話框）代按成功後，對方進入的不是 `working`——信任對話框本身不是
+# 一個任務，通過它只是讓 agent 可以開始接受輸入，所以要等的是「狀態已
+# 離開 `blocked`」。
+#
+# 「已離開 `blocked`」有兩個值，兩個都要接受：`idle` 與 `done`。依這
+# 個系統已知的行為，一個沒有被使用者在 herdr 介面裡點進去看過的 tab，
+# 停下時回報的是 `done` 而不是 `idle`；而這條路徑的情境正是使用者只在
+# 對話裡回答「信任」、由編排端代按，未必點進過那個 tab。只等 `idle`
+# 的話，每一次啟動階段代按都會等到逾時、拿到 7——不是偶發，是這條路
+# 徑的常態。因此 `--startup` 等的是 `--until idle --until done`。
+#
+# `--until` 可以重複給值這件事已對真實 herdr 0.8.2 查證：`herdr agent
+# wait --help` 寫的是「State to match; repeat for more than one state」
+# （可用值 idle／working／blocked／done／unknown），而且不只讀說明——
+# 對一個不存在的 agent 實際下過 `herdr agent wait <不存在的名稱>
+# --until idle --until done --timeout 1000`（唯讀、無副作用），回應是
+# `{"error":{"code":"agent_not_found",...}}`、結束碼 1，也就是重複的
+# `--until` 已經通過引數解析、真的送到伺服器端了，不是被當成語法錯誤
+# 擋在解析階段（那會是結束碼 2）。
+#
+# 兩者都是各自獨立的一次 `herdr agent wait <TARGET> --until <STATUS>
 # --timeout <MS>` 呼叫，不能像 send-to-phase.sh 對 `agent prompt` 那樣
 # 把等待併進送出那一次呼叫——已對真實 herdr 0.8.2 執行 `--help` 查證：
 # `agent send-keys` 的介面是 `<TARGET> <KEY>...`，全部是位置引數，完全
@@ -153,10 +170,14 @@ fi
 eo_herdr agent send-keys "$target" "$key" >/dev/null
 
 # 依 --startup 決定要等待哪一種憑據，見檔頭「兩種取憑據的方式」說明。
+# 啟動階段等的是「已離開 blocked」，而那有 idle 與 done 兩個值，兩個
+# 都要接受——只等 idle 會每一次都逾時。"done" 這個字面值必須加引號：
+# 不加的話 shellcheck 的解析器會把它誤判成 do/done 迴圈語法的收尾字
+# （SC1010），跟這裡單純是 --until 的一個字面值參數無關。
 if [ "$startup" -eq 1 ]; then
-  wait_until=idle
+  wait_until_args=(--until idle --until "done")
 else
-  wait_until=working
+  wait_until_args=(--until working)
 fi
 
 # 不透過 eo_herdr：eo_herdr 會把 herdr 結束碼 1 一律映射成 6，但這裡
@@ -168,7 +189,7 @@ fi
 # /dev/null，結果只有 stderr（herdr 的錯誤 JSON 印在這裡）被擷取進
 # err_output，stdout（成功時的 agent 物件，本腳本不需要）直接丟棄。
 rc=0
-if err_output="$(herdr agent wait "$target" --until "$wait_until" \
+if err_output="$(herdr agent wait "$target" "${wait_until_args[@]}" \
     --timeout "$EO_PRESS_APPROVAL_TIMEOUT_MS" 2>&1 >/dev/null)"; then
   printf 'handshake=ok\n'
   exit 0

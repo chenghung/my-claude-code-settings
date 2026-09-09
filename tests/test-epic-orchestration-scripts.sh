@@ -1079,14 +1079,17 @@ else
   bad "press-approval 在狀態已非 blocked 時結束碼為 $rc，預期 6"
 fi
 
-# --startup：不等 working，改為確認狀態已離開 blocked 回到 idle。用獨
-# 立的 phase 302，樁直接檢查 herdr agent wait 收到的是 --until idle 而
-# 不是 --until working，正面驗證兩種取憑據方式真的走了不同分支，而不
-# 只是靠回應內容湊巧對得上。跟上面 phase 301 那組（正面要求
-# --until working、同時禁止 idle）合在一起看：兩邊都各自正面斷言自己
-# 該送出的值、也各自禁止對方那個值，證明的是「兩條分支真的各自送出
-# 不同的 --until」，不是「其中一條分支預設就會通過、另一條才有事後檢
-# 查」這種不對稱、可能放過假分支的驗證。
+# --startup：不等 working，改為確認狀態已離開 blocked——而「已離開」
+# 有 idle 與 done 兩種，兩種都要接受（沒被使用者在 herdr 介面裡點進去
+# 看過的 tab，停下時回報的是 done；這條路徑的情境正是使用者只在對話裡
+# 回答「信任」、未必點進過那個 tab）。用獨立的 phase 302，樁直接檢查
+# herdr agent wait 收到的 --until 同時涵蓋 idle 與 done、而且不含
+# working，正面驗證兩種取憑據方式真的走了不同分支，而不只是靠回應內容
+# 湊巧對得上。跟上面 phase 301 那組（正面要求 --until working、同時禁
+# 止 idle）合在一起看：兩邊都各自正面斷言自己該送出的值、也各自禁止對
+# 方那個值，證明的是「兩條分支真的各自送出不同的 --until」，不是「其
+# 中一條分支預設就會通過、另一條才有事後檢查」這種不對稱、可能放過假
+# 分支的驗證。
 eo_state_set 302 agent_name '"phase-302-abcd"'
 eo_state_set 302 tab_id '"tab_302"'
 cat > "$STUB_BIN/herdr" <<'STUB'
@@ -1099,12 +1102,14 @@ case "$1 $2" in
   "agent send-keys") printf '{"result":{}}'; exit 0 ;;
   "agent wait")
     saw_idle=0
+    saw_done=0
     for a in "$@"; do
       [ "$a" = "working" ] && { printf 'unexpected --until working in --startup mode\n' >&2; exit 9; }
       [ "$a" = "idle" ] && saw_idle=1
+      [ "$a" = "done" ] && saw_done=1
     done
-    if [ "$saw_idle" -ne 1 ]; then
-      printf '未見 --until idle\n' >&2
+    if [ "$saw_idle" -ne 1 ] || [ "$saw_done" -ne 1 ]; then
+      printf '未同時見到 --until idle 與 --until done\n' >&2
       exit 9
     fi
     printf '%s' '{"result":{"agent":{"agent_status":"idle"}}}'
@@ -1116,13 +1121,14 @@ chmod +x "$STUB_BIN/herdr"
 out="$(bash "$SCRIPTS/press-approval.sh" 302 enter --allows '啟動階段信任對話框' --startup)" \
   && rc=0 || rc=$?
 if [ "$rc" -eq 0 ] && [ "$out" = "handshake=ok" ]; then
-  pass "press-approval --startup 等的是 idle 而不是 working"
+  pass "press-approval --startup 等的是 idle 與 done 兩種，不是 working"
 else
   bad "press-approval --startup 得到 rc=$rc out='$out'"
 fi
 
-# --startup 逾時（未離開 blocked 回到 idle）：未取得憑據，以 7 結束，
-# 不當成失敗——跟一般核准框逾時同一類，交給呼叫端判斷。
+# --startup 逾時（idle 與 done 都沒等到，也就是根本沒離開 blocked）：
+# 未取得憑據，以 7 結束，不當成失敗——跟一般核准框逾時同一類，交給呼
+# 叫端判斷。
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
 case "$1 $2" in
@@ -1589,26 +1595,27 @@ fi
 
 # ===== 修正輪次 2：獨立審查發現的 Critical／High／Medium／Low findings =====
 
-# --- Critical 1：_eo_ensure_phase_defaults 面對「只有三個座標欄位」
-# 的狀態檔（也就是 start-phase.sh 真正會寫的那三個：tab_id／
-# pane_id／agent_name）時，必須真的把七個邊緣觸發欄位補齊，而不是讓
-# 行程被 eo_state_get 的 exit 5（沒有包進命令替換就裸呼叫會直接終止
-# 呼叫端）悄悄帶走。這是每個由 start-phase.sh 建立的 phase 的預設狀
-# 態，修不好會讓事件產生器在真實流程下對每個 phase 都悄悄死掉。 ---
+# --- Critical 1：_eo_ensure_phase_defaults 面對「只有座標欄位」的狀
+# 態檔（tab_id／pane_id／agent_name，都由 start-phase.sh 建立記錄時
+# 寫入）時，必須真的把產生器自己的六個邊緣觸發欄位補齊，而不是讓行程
+# 被 eo_state_get 的 exit 5（沒有包進命令替換就裸呼叫會直接終止呼叫
+# 端）悄悄帶走。這是每個由 start-phase.sh 建立的 phase 的預設狀態，修
+# 不好會讓事件產生器在真實流程下對每個 phase 都悄悄死掉。
+# held_by_orchestrator 不在這六個裡：它歸編排端那一側所有，產生器連補
+# 預設值都不碰（見修正輪次 4 缺陷二那一段）。 ---
 eo_state_set 111 tab_id '"tab_111"'
 eo_state_set 111 pane_id '"pane_111"'
 eo_state_set 111 agent_name '"phase-111-abcd"'
 _eo_ensure_phase_defaults 111
 if [ "$(eo_state_get 111 last_marker_seq)" = "0" ] \
-   && [ "$(eo_state_get 111 held_by_orchestrator)" = "false" ] \
    && [ "$(eo_state_get 111 auto_push_count)" = "0" ] \
    && [ "$(eo_state_get 111 unknown_rounds)" = "0" ] \
    && [ "$(eo_state_get 111 spinning_muted)" = "false" ] \
    && [ "$(eo_state_get 111 gone_muted)" = "false" ] \
    && [ "$(eo_state_get 111 unclassified_muted)" = "false" ]; then
-  pass "_eo_ensure_phase_defaults 補齊只有三個座標欄位的 phase（Critical 1 回歸測試）"
+  pass "_eo_ensure_phase_defaults 補齊只有座標欄位的 phase（Critical 1 回歸測試）"
 else
-  bad "_eo_ensure_phase_defaults 未補齊全部七個欄位"
+  bad "_eo_ensure_phase_defaults 未補齊產生器自己的全部六個欄位"
 fi
 
 # --- Critical 2：seq 追蹤本身（_eo_track_spin_seq）要能通過「同一個
@@ -2711,5 +2718,239 @@ else
     bad "set-phase-field.sh 只帶兩個參數時結束碼是 $rc，預期 2"
   fi
 fi
+
+# ===== 修正輪次 4：獨立審查找出的四個機制缺陷 =====
+# 這四項的共通形狀是「錯了不會有任何錯誤訊息」——沒有任何結束碼會因此
+# 變成非 0，只有斷言分得出來。所以每一組都附「舊行為會怎麼紅」的說明。
+
+# --- 缺陷一：標記行的 state 欄位白名單 ---
+# 舊行為：`state=(.*)` 把 state= 之後的一切原樣捕捉，再原樣印進事件
+# 行，而產生器的 stdout 就是編排端的事件流。phase agent 只要在標記後
+# 面接一段解釋文字，那段畫面原文就直接進了編排端的 context，而且因為
+# 它不等於 working-ok，分類函式會把它當成要交回編排端的事件送上去，全
+# 程沒有任何錯誤訊息。新行為：state 值不在白名單內就視同標記缺席，走
+# 既有的 marker=none 路徑——標記缺席本來就會派調查者，是安全的失敗方
+# 向。
+#
+# 這一組刻意先跑對照組，理由是「得到 marker=none」本身分不出成因：既
+# 有的標記缺席還有另外兩種來源（標記行的 phase 編號對不上、seq 沒有變
+# 大）。對照組用同一個 phase、同一組遞增的 seq、只換成合法的 state
+# 值，證明這個組合在白名單以外的每一個條件上都成立；下面那組拿同樣的
+# 組合換上異常 state 值仍然得到 marker=none，成因就只剩白名單。
+eo_state_set 190 last_marker_seq 5
+eo_state_set 190 held_by_orchestrator false
+eo_state_set 190 auto_push_count 0
+out="$(eo_classify_stop 190 "done" '[PHASE 190] seq=6 state=need-decision')"
+if [ "$out" = "phase=190 stopped=done marker=need-decision" ] \
+   && [ "$(eo_state_get 190 last_marker_seq)" = "6" ]; then
+  pass "白名單對照組：phase 對得上、seq 變大、state 合法時真的產生事件行並推進基準"
+else
+  bad "白名單對照組得到 out='$out'、基準='$(eo_state_get 190 last_marker_seq)'，預期事件行與基準 6"
+fi
+
+# 同一個 phase、seq 再變大一次（7 > 6），唯一改變的是 state 值後面帶
+# 了畫面原文。仍然得到 marker=none，成因就只可能是白名單。基準必須停
+# 在 6，證明它走的是標記缺席那條提早返回的路徑，不是照常分類完才碰巧
+# 沒印。斷言用完全相等而不是「不含某段文字」：完全相等同時就證明了畫
+# 面原文一個字都沒有進到事件行。
+out="$(eo_classify_stop 190 "done" '[PHASE 190] seq=7 state=need-decision 我卡在 X，細節如下：畫面原文')"
+if [ "$out" = "phase=190 stopped=done marker=none" ] \
+   && [ "$(eo_state_get 190 last_marker_seq)" = "6" ]; then
+  pass "白名單擋下帶畫面原文的 state 值：走標記缺席、不推進基準、原文沒有進事件行"
+else
+  bad "帶畫面原文的 state 值得到 out='$out'、基準='$(eo_state_get 190 last_marker_seq)'，預期 marker=none 且基準維持 6"
+fi
+
+# 其餘非法形狀。每一輪都用比基準大的 seq，讓「seq 沒變大」不可能是成
+# 因；基準固定驗它沒有前進。working-ok 那一列是最危險的一種：舊行為下
+# 它不等於字面上的 working-ok，會被當成一則要交回編排端的事件，把後面
+# 那段畫面原文原樣送進編排端的 context。
+eo_state_set 191 last_marker_seq 100
+eo_state_set 191 held_by_orchestrator false
+eo_state_set 191 auto_push_count 0
+eo_bad_state_seq=101
+for eo_bad_state in \
+  'working-ok 順帶一提：這段畫面原文不該進編排端' \
+  'pr-ready pr=abc' \
+  'pr-ready pr=456 尾巴' \
+  'wrapped-up 已收尾' \
+  'unknown-state' \
+  ''; do
+  out="$(eo_classify_stop 191 "done" "[PHASE 191] seq=$eo_bad_state_seq state=$eo_bad_state")"
+  if [ "$out" = "phase=191 stopped=done marker=none" ] \
+     && [ "$(eo_state_get 191 last_marker_seq)" = "100" ]; then
+    pass "白名單擋下 state='$eo_bad_state'：走標記缺席且不推進基準"
+  else
+    bad "state='$eo_bad_state' 得到 out='$out'、基準='$(eo_state_get 191 last_marker_seq)'，預期 marker=none 且基準維持 100"
+  fi
+  eo_bad_state_seq=$((eo_bad_state_seq + 1))
+done
+
+# 四個合法值（含 pr-ready 帶純數字 PR 編號）不得被白名單誤擋。少了這
+# 一組，把白名單寫成「什麼都擋」也會全綠。
+eo_state_set 192 last_marker_seq 0
+eo_state_set 192 held_by_orchestrator false
+eo_state_set 192 auto_push_count 0
+eo_ok_state_seq=1
+for eo_ok_state in 'need-decision' 'pr-ready' 'wrapped-up' 'pr-ready pr=456'; do
+  out="$(eo_classify_stop 192 "done" "[PHASE 192] seq=$eo_ok_state_seq state=$eo_ok_state")"
+  if [ "$out" = "phase=192 stopped=done marker=$eo_ok_state" ] \
+     && [ "$(eo_state_get 192 last_marker_seq)" = "$eo_ok_state_seq" ]; then
+    pass "白名單放行合法值 state='$eo_ok_state'"
+  else
+    bad "合法值 state='$eo_ok_state' 得到 out='$out'、基準='$(eo_state_get 192 last_marker_seq)'，預期事件行與基準 $eo_ok_state_seq"
+  fi
+  eo_ok_state_seq=$((eo_ok_state_seq + 1))
+done
+
+# working-ok 的合法結果形狀跟其餘三個不同（自動推進、不印任何一行），
+# 所以單獨驗，不併進上面那個迴圈。
+out="$(eo_classify_stop 192 "done" '[PHASE 192] seq=9 state=working-ok')"
+if [ -z "$out" ] && [ "$(eo_state_get 192 auto_push_count)" = "1" ]; then
+  pass "白名單放行 working-ok：仍然走自動推進、不印事件行"
+else
+  bad "合法的 working-ok 得到 out='$out'、auto_push_count='$(eo_state_get 192 auto_push_count)'，預期空輸出與計數 1"
+fi
+
+# --- 缺陷二：held_by_orchestrator 只有編排端那一側寫，產生器不再碰 ---
+# 舊行為：_eo_ensure_phase_defaults 也把這個欄位初始化成 false，而
+# _eo_ensure_field 是「先探測、不存在才寫入」的兩次獨立呼叫，各自對鎖
+# 檔開關一次，中間有一段不持鎖的空窗——互斥旗標可能在編排端剛設成
+# true 之後被靜默覆蓋回 false，產生器接著自動推一把，落回這條互斥當初
+# 要防的混合意圖。而「兩邊的欄位集合不重疊」正是「不必為每個欄位單獨
+# 加鎖」這個決定的依據，跨界寫入一存在，那個依據就不成立。
+#
+# 「補齊的那六個真的有補到」由上面 Critical 1 那條（phase 111）守，這
+# 裡不重複，只守新的那條邊界。eo_state_get 讀不到欄位時呼叫的是
+# eo_die，那是真正的 exit，裸呼叫會直接終止整個套件行程，所以包進子
+# 殼。
+eo_state_set 193 tab_id '"tab_193"'
+eo_state_set 193 pane_id '"pane_193"'
+eo_state_set 193 agent_name '"phase-193-abcd"'
+_eo_ensure_phase_defaults 193
+if ( eo_state_get 193 held_by_orchestrator ) >/dev/null 2>&1; then
+  bad "產生器仍然寫了 held_by_orchestrator：跨界寫入沒有拿掉，欄位集合不重疊的前提不成立"
+else
+  pass "_eo_ensure_phase_defaults 不再寫 held_by_orchestrator（欄位集合恢復不重疊）"
+fi
+
+# 拿掉那次跨界寫入之後，產生器讀不到這個欄位時必須「當作 false 繼續」
+# ——不是改成寫入、也不是以錯誤結束。
+#
+# 這一條的斷言選擇是實際做過對照實驗才定下來的，過程值得寫下來，否則
+# 下一個人會以為少驗了結束碼：把腳本暫時還原成裸寫法
+# （`held="$(eo_state_get "$phase" held_by_orchestrator)"`）重跑，結束
+# 碼與 stdout 都跟修好的版本一模一樣，這條測試整條靜靜通過。原因是
+# eo_state_get 的 exit 5 發生在命令替換自己開的子殼裡，只終止那個子
+# 殼，函式本體照常往下跑，而 held 拿到的空字串剛好也不等於 true，於是
+# 連分支都走一樣的。想靠 errexit 把那次失敗變成非 0 結束碼也不成立：
+# 已對真實 bash 量測，一個子殼只要是 && 的左運算元，errexit 的「條件
+# 豁免」就會一路蓋住它內部，即使在子殼裡重下 set -e 也叫不回來（產生
+# 器真正的呼叫點註解也記過同一件事）。
+#
+# 分得開兩者的是 stderr：裸寫法每一輪都會印一行「phase 193 或欄位
+# held_by_orchestrator 不存在於狀態檔」。這不只是雜訊——它在真實流程
+# 下對每個 phase 的每一次停下都會印，而那是一行看起來像 bug 的內部錯
+# 誤訊息，實際上欄位缺漏在這條路徑上是預期中的正常情形。所以斷言
+# stderr 必須全空。auto_push_count 從 0 變成 1 則證明真的走進了自動推
+# 進那條分支（等同判定 held 為假），不只是「沒有印東西」。
+eo_state_set 193 last_marker_seq 0
+eo_state_set 193 auto_push_count 0
+out="$(eo_classify_stop 193 "done" '[PHASE 193] seq=1 state=working-ok' \
+  2> "$T/held_absent_stderr")" && rc=0 || rc=$?
+eo_held_err="$(cat "$T/held_absent_stderr")"
+if [ "$rc" -eq 0 ] && [ -z "$out" ] && [ -z "$eo_held_err" ] \
+   && [ "$(eo_state_get 193 auto_push_count)" = "1" ]; then
+  pass "held_by_orchestrator 欄位不存在時，分類函式安靜地當作 false 繼續（stderr 全空）"
+else
+  bad "held_by_orchestrator 缺漏時得到 rc=$rc out='$out' stderr='$eo_held_err' auto_push_count='$(eo_state_get 193 auto_push_count)'，預期 rc=0、stdout 與 stderr 皆空、計數 1"
+fi
+
+# --- 缺陷三與缺陷四：工作區信任對話框的復原路徑 ---
+# 這一組是端對端的：兩個缺陷各自都足以讓這條路徑走不通，所以同一條斷
+# 言守住兩個，任一個回退都會讓它紅。
+#   缺陷三：start-phase.sh 把 agent 名稱留到 agent start 成功之後才
+#           寫，而工作區信任對話框正是讓 agent start 等不到就緒、以 8
+#           結束的那個原因。於是使用者答完「信任」之後，代按腳本第一
+#           件事就讀不到這個欄位、以 5 結束（既有語意是「檔案不存在或
+#           該 phase 不在檔內」，指不到真正的成因），整支腳本死在任何
+#           守衛與代按之前。
+#   缺陷四：啟動階段模式代按後只等 idle，但沒被使用者在 herdr 介面裡
+#           點進去看過的 tab，停下時回報的是 done——而這條路徑的情境
+#           正是使用者只在對話裡回答「信任」、未必點進過那個 tab。舊
+#           行為因此每一次都等到逾時、拿到 7。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab create")
+    printf '%s' '{"result":{"tab":{"tab_id":"tab_194"},
+                  "root_pane":{"pane_id":"pane_194"}}}'; exit 0 ;;
+  # 模擬工作區信任對話框：agent start 等不到就緒。
+  "agent start") exit 1 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$EO_TEST_PATH"
+assert_herdr_stubbed "$STUB_BIN"
+
+( bash "$SCRIPTS/start-phase.sh" 194 ) >/dev/null 2>&1 && rc=0 || rc=$?
+eo_expected_agent="$(eo_agent_name 194)"
+eo_got_agent="$( ( eo_state_get 194 agent_name ) 2>/dev/null || true )"
+if [ "$rc" -eq 8 ] && [ "$eo_got_agent" = "$eo_expected_agent" ]; then
+  pass "start-phase 啟動未就緒（8）時，agent 名稱已經在狀態檔裡（信任對話框的復原路徑才有得走）"
+else
+  bad "start-phase 啟動未就緒後 rc=$rc、狀態檔的 agent_name='$eo_got_agent'，預期 rc=8 且等於 '$eo_expected_agent'"
+fi
+
+# 缺陷二的產生端：這個欄位改由 start-phase.sh 在建立記錄時寫，而且跟
+# 座標欄位同一批寫在 agent start 之前——啟動失敗的記錄一樣要有它，否
+# 則產生器與編排端對這筆記錄的認知又會分歧。
+eo_got_held="$( ( eo_state_get 194 held_by_orchestrator ) 2>/dev/null || true )"
+if [ "$eo_got_held" = "false" ]; then
+  pass "start-phase 在建立記錄時就把 held_by_orchestrator 寫成 false（連啟動失敗的記錄也有）"
+else
+  bad "start-phase 建立的記錄裡 held_by_orchestrator='$eo_got_held'，預期 false"
+fi
+
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_194"}]}}'; exit 0 ;;
+  "agent get")
+    printf '%s' '{"result":{"agent":{"agent_status":"blocked"}}}'
+    exit 0 ;;
+  "agent send-keys") printf '{"result":{}}'; exit 0 ;;
+  "agent wait")
+    # 啟動階段模式必須同時把 idle 與 done 帶進 --until，而且不得帶
+    # working。--until 沒有同時涵蓋兩者時這裡回傳逾時錯誤，忠實重現
+    # 舊行為在真實環境下的表現：等一個永遠不會來的 idle，最後拿到 7。
+    saw_idle=0
+    saw_done=0
+    for a in "$@"; do
+      [ "$a" = "working" ] && { printf 'unexpected --until working in --startup mode\n' >&2; exit 9; }
+      [ "$a" = "idle" ] && saw_idle=1
+      [ "$a" = "done" ] && saw_done=1
+    done
+    if [ "$saw_idle" -ne 1 ] || [ "$saw_done" -ne 1 ]; then
+      printf '{"error":{"code":"timeout","message":"stub: --until 未同時涵蓋 idle 與 done"}}\n' >&2
+      exit 1
+    fi
+    # 沒被使用者點進去看過的 tab，停下時回報的是 done 而不是 idle。
+    printf '%s' '{"result":{"agent":{"agent_status":"done"}}}'
+    exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+assert_herdr_stubbed "$STUB_BIN"
+out="$(bash "$SCRIPTS/press-approval.sh" 194 enter \
+     --allows '工作區信任對話框' --startup)" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "handshake=ok" ]; then
+  pass "工作區信任對話框的復原路徑走得通：啟動未就緒後代按得了，且等待同時接受 idle 與 done"
+else
+  bad "信任對話框復原路徑得到 rc=$rc out='$out'，預期 rc=0 handshake=ok（5＝讀不到 agent 名稱、7＝只等 idle 等到逾時）"
+fi
+export PATH="$EO_TEST_PATH"
 
 exit "$fail"

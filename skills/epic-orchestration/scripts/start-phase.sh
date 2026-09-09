@@ -7,17 +7,17 @@
 # 動作順序：
 #   1. herdr tab create（workspace 取自 HERDR_WORKSPACE_ID、cwd 指向主
 #      倉庫、label 帶 sub-issue 編號、--no-focus 不搶焦點）。
-#   2. 從回應取 result.tab.tab_id 與 result.root_pane.pane_id，立刻寫
-#      進狀態檔（理由見下方「先寫 tab_id／pane_id 再啟動」）。
+#   2. 從回應取 result.tab.tab_id 與 result.root_pane.pane_id，連同
+#      agent_name 與 held_by_orchestrator 一起立刻寫進狀態檔（理由見
+#      下方「這筆記錄在啟動之前就要寫齊」）。
 #   3. herdr agent start（kind 為 claude、名稱由 eo_agent_name 產生、
 #      帶 --timeout 等待就緒，原生引數 --permission-mode auto 附在
 #      -- 之後）。agent start 本身阻塞到就緒才回傳成功，成功即就緒憑
 #      據，不再另外查詢任何欄位。
 #
-# 成功時輸出一行 `tab_id=<值> pane_id=<值> agent=<名稱>`，並把
-# agent_name 補寫進狀態檔。啟動未就緒時以 8 結束，不送出任何開場指令
-# ——本腳本的職責到 agent start 就緒為止，不含後續的 prompt 遞送，那
-# 是 send-to-phase.sh 的責任。
+# 成功時輸出一行 `tab_id=<值> pane_id=<值> agent=<名稱>`。啟動未就緒
+# 時以 8 結束，不送出任何開場指令——本腳本的職責到 agent start 就緒為
+# 止，不含後續的 prompt 遞送，那是 send-to-phase.sh 的責任。
 #
 # ---- 對真實 herdr 0.8.2 查證過的事實：agent start 阻塞到就緒，沒有
 #      「啟動三項」這種事後輪詢欄位 ----
@@ -46,16 +46,35 @@
 # agent get，切記它的欄位是巢狀的：在 result 底下的 agent 底下（例如
 # `.result.agent.agent_status`），不是扁平掛在 result 底下。
 #
-# ---- 先寫 tab_id／pane_id 再啟動 agent ----
-# tab create 一成功，tab_id／pane_id 立刻寫進狀態檔，早於呼叫
-# agent start。理由：這支腳本與 close-phase.sh 合成一個任務，正是因為
-# 啟動未就緒（結束碼 8）時，呼叫端要能靠 close-phase.sh 把這個已經真
-# 實建立、但沒能就緒的 tab 關掉才能重啟——close-phase.sh 完全依賴狀態
-# 檔找 tab_id，若等到 agent start 成功才寫入，啟動失敗時狀態檔要嘛沒
-# 有這個 phase 的記錄、要嘛還留著上一輪的舊 tab_id，close-phase.sh 都
-# 關不到這次真正建立的那個 tab，失敗路徑會漏一個孤兒 tab。agent_name
-# 則留到 agent start 成功之後才寫，因為在那之前這個名稱還沒有對應到
-# 任何真的啟動成功的 agent。
+# ---- 這筆記錄在啟動之前就要寫齊 ----
+# tab create 一成功，這筆記錄的四個欄位就立刻寫進狀態檔，早於呼叫
+# agent start。原本的理由只涵蓋 tab_id／pane_id：這支腳本與
+# close-phase.sh 合成一個任務，正是因為啟動未就緒（結束碼 8）時，呼叫
+# 端要能靠 close-phase.sh 把這個已經真實建立、但沒能就緒的 tab 關掉才
+# 能重啟——close-phase.sh 完全依賴狀態檔找 tab_id，若等到 agent start
+# 成功才寫入，啟動失敗時狀態檔要嘛沒有這個 phase 的記錄、要嘛還留著上
+# 一輪的舊 tab_id，close-phase.sh 都關不到這次真正建立的那個 tab，失敗
+# 路徑會漏一個孤兒 tab。
+#
+# agent_name 適用完全相同的理由，所以跟它們同一批寫，不再留到 agent
+# start 成功之後。這個名稱是由 phase 編號與主倉庫路徑推導出來的確定值
+# （見 common.sh 的 eo_agent_name），不需要 agent start 成功才知道；而
+# 啟動未就緒最主要的成因正是工作區信任對話框，它的復原路徑是由編排端
+# 呼叫 press-approval.sh --startup 代按——那支腳本第一件事就是從狀態
+# 檔取 agent 名稱，欄位不存在時以 5 結束，整支腳本會死在任何守衛與代按
+# 之前，而 5 的既有語意是「檔案不存在或該 phase 不在檔內」，指不到真正
+# 的成因。名稱留到成功之後才寫，等於這條復原路徑永遠執行不到，第一次
+# 跑 epic 就會卡死在第一次派工。
+#
+# held_by_orchestrator 一起寫成 false：它是編排端擁有的欄位，
+# event-generator.sh 連補預設值都不碰（那個不重疊正是「不必為每個欄位
+# 單獨加鎖」這個決定的依據，見 set-phase-field.sh 檔頭「白名單不是防
+# 呆」一節），所以它的初始值必須由建立記錄的這一方寫下，本腳本是它唯
+# 一的初始寫入方。跟座標欄位同一批寫，啟動失敗的記錄因此一樣有它。
+#
+# 「欄位一定齊全」這件事仍然不能被下游當成假設：中斷恢復重建記錄與人
+# 手動編輯狀態檔這兩條路徑都不經過本腳本，讀取端該有的缺漏容忍照樣要
+# 有（見 event-generator.sh 的 _eo_ensure_field 與 eo_classify_stop）。
 #
 # ---- 不建立 git worktree ----
 # 本腳本只開 tab、啟動 agent，cwd 指向主倉庫，不建立任何 git worktree。
@@ -103,6 +122,8 @@ pane_id="$(printf '%s' "$tab_json" | jq -r '.result.root_pane.pane_id')"
 
 eo_state_set "$phase" tab_id "\"$tab_id\""
 eo_state_set "$phase" pane_id "\"$pane_id\""
+eo_state_set "$phase" agent_name "\"$agent\""
+eo_state_set "$phase" held_by_orchestrator false
 
 # agent start 不透過 eo_herdr：失敗時要映射成本腳本專屬的「啟動未就
 # 緒」8，不是 eo_herdr 通用的「herdr 拒絕」6。刻意用 if 包住呼叫本身
@@ -122,7 +143,5 @@ else
   fi
   eo_die 8 "start-phase.sh: agent start 在逾時（${EO_AGENT_START_TIMEOUT_MS}ms）內未回報就緒（phase $phase, tab $tab_id, pane $pane_id），結束碼 $rc"
 fi
-
-eo_state_set "$phase" agent_name "\"$agent\""
 
 printf 'tab_id=%s pane_id=%s agent=%s\n' "$tab_id" "$pane_id" "$agent"
