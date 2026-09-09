@@ -54,7 +54,9 @@
 # 支的處理方式一致）。失敗分支才需要讀 `error.code`：已對真實 herdr
 # 唯讀查證，逾時的錯誤碼是 `timeout`，視為「未取得憑據」，以 7 結束並
 # 印 `handshake=none`，交由呼叫端判斷要不要派調查者；其餘錯誤碼（例如
-# 目標在等待期間消失的 `agent_not_found`）視為 herdr 拒絕，以 6 結束。
+# 目標在等待期間消失的 `agent_not_found`）視為 herdr 拒絕，以 6 結
+# 束，訊息只含 error.code 與 error.message 兩個純字串欄位，不轉發回
+# 應原文（理由見下方對應程式碼旁的註解）。
 #
 # ---- 開發期查證發現的落差：任務簡報原始測試樁把 agent get 寫成扁平
 #      結構，與已查證事實衝突 ----
@@ -188,6 +190,23 @@ case "$error_code" in
     exit 7
     ;;
   *)
-    eo_die 6 "press-approval.sh: herdr 以結束碼 1 拒絕 agent wait（target=$target），錯誤碼非逾時類：$err_output"
+    # 只轉發 error.code 與 error.message 兩個純字串欄位，不轉發
+    # err_output 整包：herdr 的回應可能整包帶著 terminal_title 這類模
+    # 型產出文字的載體，一旦轉發到這裡，就會直接進入呼叫端（編排端）
+    # 的 context，而編排端的 context 純度正是這裡要保護的東西。已對真
+    # 實 herdr 0.8.2 唯讀查證：`agent get` 對不存在目標的錯誤酬載是扁
+    # 平的，只有 error.code／error.message／id 三個欄位，不帶 agent 物
+    # 件；`agent wait` 的正常回應則整包帶著 agent 物件（因此也帶著
+    # terminal_title／terminal_title_stripped，見上方檔頭）。但
+    # `agent_blocked` 這一類錯誤酬載會不會也帶 agent 物件未查證——要
+    # 製造一個 blocked 的 agent 本身就是副作用，沒有無副作用的探測手
+    # 段可用。因此不逐一查證每種錯誤碼的酬載形狀，改採結構性做法：只
+    # 白名單擷取 code 與 message，其餘欄位一律不觸碰。兩個欄位任一取
+    # 不到都給明確的替代字串，不靜默留空、也不因此退回轉發原文——退
+    # 回原文等於這裡的收斂沒有意義。
+    error_message="$(printf '%s' "$err_output" | jq -r '.error.message // empty' 2>/dev/null || true)"
+    [ -n "$error_code" ] || error_code="(無法取得 error.code)"
+    [ -n "$error_message" ] || error_message="(無法取得 error.message)"
+    eo_die 6 "press-approval.sh: herdr 以結束碼 1 拒絕 agent wait（target=$target），錯誤碼非逾時類：code=$error_code message=$error_message"
     ;;
 esac

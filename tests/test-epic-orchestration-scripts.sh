@@ -646,6 +646,57 @@ else
   bad "send-to-phase 對 blocked 對象結束碼為 $rc，預期 6"
 fi
 
+# 非逾時類錯誤只轉發 error.code／error.message 兩個欄位，不轉發整包
+# err_output：樁的錯誤酬載額外帶一個模擬 terminal_title 的可辨識字
+# 串，模擬「herdr 回應整包帶著模型產出文字」的情境。若有人把程式改
+# 回轉發原文，這個可辨識字串會出現在錯誤訊息裡，下面的斷言就會翻成
+# 失敗。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "tab" ] && [ "$2" = "list" ]; then
+  printf '{"result":{"tabs":[{"tab_id":"tab_201"}]}}'
+  exit 0
+fi
+printf '{"error":{"code":"agent_blocked","message":"審查用可辨識拒絕訊息"},"agent":{"terminal_title":"審查用可辨識terminal_title洩漏字串"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+err_out="$( ( bash "$SCRIPTS/send-to-phase.sh" 201 '定案內容' ) 2>&1 >/dev/null )" \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 6 ] \
+  && printf '%s' "$err_out" | rg -q 'code=agent_blocked' \
+  && printf '%s' "$err_out" | rg -q 'message=審查用可辨識拒絕訊息'; then
+  pass "send-to-phase 非逾時類錯誤轉發 code 與 message"
+else
+  bad "send-to-phase 非逾時類錯誤得到 rc=$rc err_out='$err_out'，預期含 code=agent_blocked 與 message=審查用可辨識拒絕訊息"
+fi
+if printf '%s' "$err_out" | rg -q '審查用可辨識terminal_title洩漏字串'; then
+  bad "send-to-phase 把 err_output 整包（含 terminal_title）轉發進錯誤訊息"
+else
+  pass "send-to-phase 未把 err_output 整包轉發進錯誤訊息"
+fi
+
+# error.message 欄位缺漏時要有明確的替代字串，不靜默留空、也不退回
+# 轉發原文（err_output 這裡故意只有 code，沒有 message，也沒有其他
+# 欄位可退回轉發）。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "tab" ] && [ "$2" = "list" ]; then
+  printf '{"result":{"tabs":[{"tab_id":"tab_201"}]}}'
+  exit 0
+fi
+printf '{"error":{"code":"agent_blocked"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+err_out="$( ( bash "$SCRIPTS/send-to-phase.sh" 201 '定案內容' ) 2>&1 >/dev/null )" \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 6 ] && printf '%s' "$err_out" | rg -q 'message=\(無法取得 error\.message\)'; then
+  pass "send-to-phase error.message 缺漏時印出明確的替代字串"
+else
+  bad "send-to-phase error.message 缺漏時得到 rc=$rc err_out='$err_out'，預期含替代字串"
+fi
+
 # 握手逾時不是失敗，是「未取得憑據」——出口是 7，交給呼叫端派調查者。
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
@@ -983,6 +1034,66 @@ if [ "$rc" -eq 7 ] && [ "$out" = "handshake=none" ]; then
   pass "press-approval 對逾時（未取得憑據）回 handshake=none 並以 7 結束"
 else
   bad "press-approval 逾時得到 rc=$rc out='$out'，預期 rc=7 out=handshake=none"
+fi
+
+# 非逾時類錯誤只轉發 error.code／error.message 兩個欄位，不轉發整包
+# err_output：樁的錯誤酬載額外帶一個模擬 terminal_title 的可辨識字
+# 串，模擬「herdr 回應整包帶著模型產出文字」的情境。若有人把程式改
+# 回轉發原文，這個可辨識字串會出現在錯誤訊息裡，下面的斷言就會翻成
+# 失敗。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_301"},{"tab_id":"tab_302"}]}}'; exit 0 ;;
+  "agent get")
+    printf '%s' '{"result":{"agent":{"agent_status":"blocked"}}}'
+    exit 0 ;;
+  "agent send-keys") printf '{"result":{}}'; exit 0 ;;
+  "agent wait")
+    printf '{"error":{"code":"agent_not_found","message":"審查用可辨識拒絕訊息"},"agent":{"terminal_title":"審查用可辨識terminal_title洩漏字串"}}' >&2
+    exit 1 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+err_out="$( ( bash "$SCRIPTS/press-approval.sh" 302 enter --allows '啟動階段信任對話框' --startup ) 2>&1 >/dev/null )" \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 6 ] \
+  && printf '%s' "$err_out" | rg -q 'code=agent_not_found' \
+  && printf '%s' "$err_out" | rg -q 'message=審查用可辨識拒絕訊息'; then
+  pass "press-approval 非逾時類錯誤轉發 code 與 message"
+else
+  bad "press-approval 非逾時類錯誤得到 rc=$rc err_out='$err_out'，預期含 code=agent_not_found 與 message=審查用可辨識拒絕訊息"
+fi
+if printf '%s' "$err_out" | rg -q '審查用可辨識terminal_title洩漏字串'; then
+  bad "press-approval 把 err_output 整包（含 terminal_title）轉發進錯誤訊息"
+else
+  pass "press-approval 未把 err_output 整包轉發進錯誤訊息"
+fi
+
+# error.message 欄位缺漏時要有明確的替代字串，不靜默留空、也不退回
+# 轉發原文。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_301"},{"tab_id":"tab_302"}]}}'; exit 0 ;;
+  "agent get")
+    printf '%s' '{"result":{"agent":{"agent_status":"blocked"}}}'
+    exit 0 ;;
+  "agent send-keys") printf '{"result":{}}'; exit 0 ;;
+  "agent wait")
+    printf '{"error":{"code":"agent_not_found"}}' >&2
+    exit 1 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+err_out="$( ( bash "$SCRIPTS/press-approval.sh" 302 enter --allows '啟動階段信任對話框' --startup ) 2>&1 >/dev/null )" \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 6 ] && printf '%s' "$err_out" | rg -q 'message=\(無法取得 error\.message\)'; then
+  pass "press-approval error.message 缺漏時印出明確的替代字串"
+else
+  bad "press-approval error.message 缺漏時得到 rc=$rc err_out='$err_out'，預期含替代字串"
 fi
 
 # --- workspace 守衛：目標所屬 tab 不屬於本 workspace 時擋下，且確認
