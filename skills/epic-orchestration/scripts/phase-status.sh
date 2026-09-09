@@ -95,6 +95,9 @@ eo_require_herdr_env
 
 explain=0
 phase=""
+# 「有沒有給編號」必須跟「$phase 是不是空字串」分開記，理由見下面那道
+# 驗證上方的說明。
+phase_given=0
 for arg in "$@"; do
   case "$arg" in
     --explain)
@@ -104,13 +107,31 @@ for arg in "$@"; do
       eo_die 2 "phase-status.sh: 未知選項：$arg"
       ;;
     *)
-      if [ -n "$phase" ]; then
+      if [ "$phase_given" -eq 1 ]; then
         eo_die 2 "phase-status.sh: 只能指定一個 sub-issue 編號"
       fi
+      phase_given=1
       phase="$arg"
       ;;
   esac
 done
+
+# 有給編號就一律驗成純數字，與消費端契約對齊；完整理由見 start-phase.sh
+# 同一道檢查上方的說明，不在這裡重複。
+#
+# 這支腳本另外有一個只有它會踩到的洞：編號是選填的，而空字串也會落到
+# 上面那個位置引數分支（`case "" in *)` 成立），於是
+# `phase-status.sh ""` 原本會安靜地變成「查全部」，跟真的省略編號完全
+# 分不出來——呼叫端明明指定了一個目標，卻拿到全部 phase 的狀態。所以
+# 判準取「有沒有給」而不是「$phase 是不是空的」，空字串因此落進下面這
+# 道驗證被明確拒絕。
+if [ "$phase_given" -eq 1 ]; then
+  case "$phase" in
+    ''|*[!0-9]*)
+      eo_die 2 "phase-status.sh: <sub-issue 編號> 必須是純數字，收到：$phase"
+      ;;
+  esac
+fi
 
 # `api snapshot` 沒有伺服器端的 workspace 過濾參數（已對真實二進位查
 # 證：`herdr api snapshot --help` 不接受任何選項），只能整包拿回來，
@@ -163,7 +184,7 @@ process_phase() {
   fi
 }
 
-if [ -n "$phase" ]; then
+if [ "$phase_given" -eq 1 ]; then
   # 查單一 phase：失敗即結束，直接呼叫，讓 process_phase 內部的
   # eo_die／exit 原樣終止本腳本，結束碼就是那次失敗對應的碼。
   process_phase "$phase"

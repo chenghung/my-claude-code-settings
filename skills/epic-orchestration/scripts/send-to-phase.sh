@@ -62,6 +62,14 @@ phase="$1"
 text="$2"
 shift 2
 
+# phase 一律驗成純數字，與消費端契約對齊；完整理由見 start-phase.sh
+# 同一道檢查上方的說明，不在這裡重複。
+case "$phase" in
+  ''|*[!0-9]*)
+    eo_die 2 "send-to-phase.sh: <sub-issue 編號> 必須是純數字，收到：$phase"
+    ;;
+esac
+
 # 握手逾時預設 10000 毫秒（見上方註解），可用 --handshake-timeout 覆寫。
 handshake_timeout_ms=10000
 no_handshake=0

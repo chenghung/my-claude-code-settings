@@ -71,6 +71,14 @@
 # 低頻掃描那條子行程套同一規則，只是它不該有自願結束，任何結束都算
 # 異常。
 #
+# main 自己還有第三個結束理由，而且它不是子行程失敗的轉發：狀態檔在
+# 已經追蹤到至少一個 phase 之後讀不到了。那時 main 印一行
+# `STATE-FILE-GONE tracked=<n> phases=<編號清單>` 事件並以 5 結束（見
+# main 裡那段長註解）——把它跟「產生器比第一個派工先起、狀態檔還不存
+# 在」那個合法情形混成同一條容忍，會讓整條事件流永久靜默。這一則是產
+# 生器層級的事件，刻意不帶 `phase=` 前綴，處置由 SKILL.md 對
+# STATE-FILE-GONE 那一列決定，不在本檔指定。
+#
 # 唯一的恢復入口：已自願結束（印過 GONE）的 phase，若之後讀到的
 # pane 識別碼與當時不同，代表它換了新 pane 復活，重新起一條迴圈。沒
 # 有這一步，一個印過 GONE 的 phase 就再也不會被重新監看。這個判斷只
@@ -141,58 +149,86 @@ if ! declare -F eo_die >/dev/null; then
   source "$SCRIPT_DIR/lib/common.sh"
 fi
 
-# ---- 本檔專屬的逾時／節奏值 ----
-# 120000 毫秒不是未查證推估，是刻意的工程取捨：逾時不決定 phase 能跑
-# 多久（迴圈永不放棄，重掛就是了），它決定的是「phase 消失」多久被
-# 發現。代價只是每兩分鐘一次本機呼叫，換來消失最多兩分鐘被發現。這
-# 個值跟 send-to-phase.sh 那個 10000 毫秒握手逾時是兩件不同的事——
-# 握手逾時等的是「對方接手了」，這個逾時等的是「對方還在不在」，不
-# 要因為兩者單位都是毫秒就以為可以一起調。
-readonly EO_WAIT_TIMEOUT_MS=120000
-
-# _eo_agent_wait 用內部信號跟呼叫端溝通「逾時」與「agent_not_found」，
-# 只在本檔案內部使用，不是本專案結束碼表（0–8）的一部分；借用 GNU
-# timeout 慣用的 124 代表逾時，125 沿用同一序列代表 agent_not_found，
-# 純粹避免跟 0–8 或 herdr 自己的 1／2 混在一起。
-readonly _EO_WAIT_TIMEOUT_RC=124
-readonly _EO_WAIT_NOT_FOUND_RC=125
-
-# 這個值只決定「新派工或剛收尾的 phase 多快被本迴圈接住監看」，不影
-# 響任何事件是否正確，只影響延遲，因此不算三個未查證門檻之一，不必
-# 逐字照抄或加校準註記。也正因為它不是門檻，這裡刻意讓它可以被環境
-# 變數覆寫：端對端測試要跑真實的 main（不是另外寫一支結構相同的腳
-# 本——見檔頭「測試方式」），把輪詢調快才能在幾秒內驗證「移除的
-# phase 會被收掉」這類跨輪行為。這個覆寫只適用於本值；
-# EO_WAIT_TIMEOUT_MS 與 common.sh 那三個待校準門檻一律不得為了測試
-# 而壓縮。
-readonly EO_PHASE_POLL_SECONDS="${EO_PHASE_POLL_SECONDS:-5}"
-# 這個值直接進 sleep，而它的來源是環境變數，跟狀態檔的數值欄位一樣不
-# 可信：外界殘留的匯出值會靜靜改掉生產節奏，而 0 會讓主輪詢變成不睡
-# 的忙迴圈。所以比照 _eo_require_int 對狀態檔欄位的處理先驗證是純數
-# 字，再要求至少 1 秒。這裡不能呼叫 _eo_require_int——它定義在下面，
-# 而這段在載入期就要跑。
-case "$EO_PHASE_POLL_SECONDS" in
-  ''|*[!0-9]*)
-    eo_die 2 "event-generator.sh: EO_PHASE_POLL_SECONDS 必須是純數字秒數，收到：$EO_PHASE_POLL_SECONDS"
-    ;;
-esac
-if [ "$EO_PHASE_POLL_SECONDS" -lt 1 ]; then
-  eo_die 2 "event-generator.sh: EO_PHASE_POLL_SECONDS 至少要 1 秒（0 會讓主輪詢變成忙迴圈），收到：$EO_PHASE_POLL_SECONDS"
-fi
-
-# ---- 自動推進送出的文字：權威在 phase-agent-contract.md，這裡只是
-#      跟著同一份定案 ----
-# 已由編排端定案（任務七審查裁定，2026-09-08）：這段文字的權威來源
-# 是 phase-agent-contract.md，不是這支腳本——契約改寫任務會把同一段
-# 文字帶進契約檔，讓兩邊一致。這裡逐字抄一份，是因為腳本要能獨立執
-# 行，不能在執行期讀契約檔的內文來組這個下行。往後任何一邊改了這段
-# 文字，另一邊要一起改，不能各自表述兩套「繼續」的說法。
+# ---- 本檔自己的 readonly 常數也要防重複 source ----
+# 上面那段花了整段解釋為什麼重複 source 共用函式庫會在 errexit 下把測
+# 試行程帶走，然後只用 `declare -F eo_die` 守住了 common.sh；本檔自己
+# 的五個 readonly 常數當時沒有同樣的保護，第二次 source 會在
+# `readonly EO_WAIT_TIMEOUT_MS=...` 這一行對已經是 readonly 的變數再賦
+# 值一次，同樣讓當下的 shell 直接終止。今天套件只 source 一次所以踩不
+# 到，但踩到的形狀正是「套件中途死掉、卻回報 0 FAIL」那一類。
 #
-# 措辭本身的理由：自動推進這條路徑的語意只有一件事——對方剛結束一
-# 個回合、沒有待決事項，推它繼續，不需要引入任何新詞彙；提醒維持標
-# 記行的約定，是因為標記行是整條事件通道的判讀依據，漏印一次就會被
-# eo_classify_stop 判成標記缺席（marker=none），白派一次調查者。
-readonly EO_AUTO_PUSH_TEXT='繼續進行你的 phase 任務。回合結束時依契約在畫面最後一行印出狀態標記。'
+# 判準沿用上面同一個慣例——直接問「已經載入過了嗎」，不另立旗標：這
+# 裡問的是本檔第一個常數是否已經定義。整段（含
+# EO_PHASE_POLL_SECONDS 的驗證）都包在這個 if 裡面，日後新增第六個常
+# 數只要寫在裡面就自動有保護，不必記得補一行守衛。重複 source 時跳過
+# 驗證是正確的：那個值第一次載入時就驗過，而且它已經是 readonly，第二
+# 次也改不動。
+if ! declare -p EO_WAIT_TIMEOUT_MS >/dev/null 2>&1; then
+  # ---- 本檔專屬的逾時／節奏值 ----
+  # 120000 毫秒不是未查證推估，是刻意的工程取捨：逾時不決定 phase 能跑
+  # 多久（迴圈永不放棄，重掛就是了），它決定的是「phase 消失」多久被
+  # 發現。代價只是每兩分鐘一次本機呼叫，換來消失最多兩分鐘被發現。這
+  # 個值跟 send-to-phase.sh 那個 10000 毫秒握手逾時是兩件不同的事——
+  # 握手逾時等的是「對方接手了」，這個逾時等的是「對方還在不在」，不
+  # 要因為兩者單位都是毫秒就以為可以一起調。
+  readonly EO_WAIT_TIMEOUT_MS=120000
+
+  # _eo_agent_wait 用內部信號跟呼叫端溝通「逾時」與「agent_not_found」，
+  # 只在本檔案內部使用，不是本專案結束碼表（0–8）的一部分；借用 GNU
+  # timeout 慣用的 124 代表逾時，125 沿用同一序列代表 agent_not_found，
+  # 純粹避免跟 0–8 或 herdr 自己的 1／2 混在一起。
+  readonly _EO_WAIT_TIMEOUT_RC=124
+  readonly _EO_WAIT_NOT_FOUND_RC=125
+
+  # 這個值只決定「新派工或剛收尾的 phase 多快被本迴圈接住監看」，不影
+  # 響任何事件是否正確，只影響延遲，因此不算三個未查證門檻之一，不必
+  # 逐字照抄或加校準註記。也正因為它不是門檻，這裡刻意讓它可以被環境
+  # 變數覆寫：端對端測試要跑真實的 main（不是另外寫一支結構相同的腳
+  # 本——見檔頭「測試方式」），把輪詢調快才能在幾秒內驗證「移除的
+  # phase 會被收掉」這類跨輪行為。這個覆寫只適用於本值；
+  # EO_WAIT_TIMEOUT_MS 與 common.sh 那三個待校準門檻一律不得為了測試
+  # 而壓縮。
+  readonly EO_PHASE_POLL_SECONDS="${EO_PHASE_POLL_SECONDS:-5}"
+  # 這個值直接進 sleep，而它的來源是環境變數，跟狀態檔的數值欄位一樣不
+  # 可信：外界殘留的匯出值會靜靜改掉生產節奏，而 0 會讓主輪詢變成不睡
+  # 的忙迴圈。所以比照 _eo_require_int 對狀態檔欄位的處理先驗證是純數
+  # 字，再要求至少 1 秒。這裡不能呼叫 _eo_require_int——它定義在下面，
+  # 而這段在載入期就要跑。
+  #
+  # ---- 這一條是「先查環境前提、再驗參數」的一個例外，刻意保留 ----
+  # 檔尾那段先呼叫 eo_require_herdr_env（HERDR_ENV 不是 1 就以 3 結
+  # 束）再驗參數，跟其餘七支腳本一致；但本條驗證排在它之前，所以
+  # HERDR_ENV 不是 1 而 EO_PHASE_POLL_SECONDS 又是 0 時，拿到的是 2 而
+  # 不是 3。這個順序是必要的，不是漏了對齊：上一行的 readonly 賦值在載
+  # 入期就發生，驗證必須緊跟著它——排到 eo_require_herdr_env 之後，就
+  # 只剩檔尾那個 `if [ -z "$EO_GENERATOR_NO_MAIN" ]` 區塊裡有位置可
+  # 放，而 EO_GENERATOR_NO_MAIN 那條路徑（測試把本檔 source 進自己行
+  # 程）會整段跳過驗證，等於這道防護只在生產路徑上存在。既然要在兩條
+  # 路徑上都成立，它就只能留在載入期，也因此不可能排到環境前提檢查之
+  # 後。
+  case "$EO_PHASE_POLL_SECONDS" in
+    ''|*[!0-9]*)
+      eo_die 2 "event-generator.sh: EO_PHASE_POLL_SECONDS 必須是純數字秒數，收到：$EO_PHASE_POLL_SECONDS"
+      ;;
+  esac
+  if [ "$EO_PHASE_POLL_SECONDS" -lt 1 ]; then
+    eo_die 2 "event-generator.sh: EO_PHASE_POLL_SECONDS 至少要 1 秒（0 會讓主輪詢變成忙迴圈），收到：$EO_PHASE_POLL_SECONDS"
+  fi
+
+  # ---- 自動推進送出的文字：權威在 phase-agent-contract.md，這裡只是
+  #      跟著同一份定案 ----
+  # 已由編排端定案（任務七審查裁定，2026-09-08）：這段文字的權威來源
+  # 是 phase-agent-contract.md，不是這支腳本——契約改寫任務會把同一段
+  # 文字帶進契約檔，讓兩邊一致。這裡逐字抄一份，是因為腳本要能獨立執
+  # 行，不能在執行期讀契約檔的內文來組這個下行。往後任何一邊改了這段
+  # 文字，另一邊要一起改，不能各自表述兩套「繼續」的說法。
+  #
+  # 措辭本身的理由：自動推進這條路徑的語意只有一件事——對方剛結束一
+  # 個回合、沒有待決事項，推它繼續，不需要引入任何新詞彙；提醒維持標
+  # 記行的約定，是因為標記行是整條事件通道的判讀依據，漏印一次就會被
+  # eo_classify_stop 判成標記缺席（marker=none），白派一次調查者。
+  readonly EO_AUTO_PUSH_TEXT='繼續進行你的 phase 任務。回合結束時依契約在畫面最後一行印出狀態標記。'
+fi
 
 # ---- 常駐迴圈用的行程內狀態（不落地狀態檔，隨本行程結束而消失）----
 declare -A _EO_PHASE_PIDS    # phase -> 該 phase 邊緣迴圈子行程的 PID
@@ -671,10 +707,23 @@ _eo_track_spin_seq() {
 # 這裡三者的處置完全不同（成功要印事件、逾時要重掛、agent_not_found
 # 要印 GONE 並結束整條迴圈）。
 #
-# 用 `2>&1` 把 stdout／stderr 合併成同一次擷取：herdr 成功時只在
-# stdout 印 JSON、失敗時只在 stderr 印 JSON（已對真實 herdr 0.8.2 查
-# 證），兩種情形合併擷取後 output 裡永遠是那份 JSON，不需要為了同時
-# 保留「成功時的內容」與「失敗時的錯誤碼」而分別開兩支管線或暫存檔。
+# ---- stderr 擷取到暫存檔，不與 stdout 合併 ----
+# 早先這裡用 `2>&1` 合併成同一次擷取，理由是「herdr 成功時只在 stdout
+# 印 JSON、失敗時只在 stderr 印 JSON（已對真實 herdr 0.8.2 查證）」。
+# 那個查證本身沒錯，但它把整支產生器的安全性掛在一個第三方二進位的
+# stderr 紀律上，而失效時的後果是全面失明、不是降級：獨立審查以樁實測
+# 過——結束碼 0、stdout 回傳正確的 agent JSON，只是額外在 stderr 印一
+# 行棄用警告，合併後擷取到的內容就不再是合法 JSON，下面外層迴圈的
+# `jq -r '.result.agent.agent_status'` 失敗 → 邊緣迴圈以 5 結束 → 產
+# 生器整支以 5 結束，所有 phase 的監看一起停；編排端重掛之後同樣的事
+# 再發生一次，形成重掛迴圈。
+#
+# 改成 common.sh 的 eo_herdr 已經示範的形狀：stderr 導到暫存檔，stdout
+# 保持乾淨。成本是一個 mktemp，換掉的是一條版本相依的全域單點。mktemp
+# 本身不另外檢查（與 eo_herdr 一致）：它失敗時 stderr_file 是空字串，
+# `2>""` 這個重導向會失敗、herdr 根本不會被執行，於是 rc 非 0、下面解
+# 析不出 error.code、落到 eo_die 6 那一支——會停下、會留訊息，不是靜
+# 默的失敗方向。
 #
 # 回傳（透過函式自身的結束碼）：
 #   0                       成功，agent 物件的完整 JSON 印在 stdout
@@ -687,23 +736,29 @@ _eo_track_spin_seq() {
 _eo_agent_wait() {
   local target="$1"
   shift
-  local output rc code
+  local output rc code stderr_file err_output
 
-  if output="$(herdr agent wait "$target" "$@" 2>&1)"; then
+  stderr_file="$(mktemp)"
+  if output="$(herdr agent wait "$target" "$@" 2>"$stderr_file")"; then
+    rm -f "$stderr_file"
     printf '%s' "$output"
     return 0
   else
     rc=$?
   fi
+  err_output="$(cat "$stderr_file")"
+  rm -f "$stderr_file"
 
   if [ "$rc" -eq 2 ]; then
-    eo_die 2 "event-generator.sh: herdr 以結束碼 2 拒絕 agent wait，疑似腳本呼叫語法錯誤：herdr agent wait $target $*"
+    # 引數用 eo_join_args 串接，不用 `$*`：本檔的 IFS 是換行加 tab，
+    # `$*` 會讓這一行診斷裂成好幾行（見 common.sh 的 eo_join_args）。
+    eo_die 2 "event-generator.sh: herdr 以結束碼 2 拒絕 agent wait，疑似腳本呼叫語法錯誤：herdr agent wait $target $(eo_join_args "$@")"
   fi
   if [ "$rc" -ne 1 ]; then
     return "$rc"
   fi
 
-  code="$(printf '%s' "$output" | jq -r '.error.code // empty' 2>/dev/null || true)"
+  code="$(printf '%s' "$err_output" | jq -r '.error.code // empty' 2>/dev/null || true)"
   case "$code" in
     timeout)
       return "$_EO_WAIT_TIMEOUT_RC"
@@ -713,13 +768,13 @@ _eo_agent_wait() {
       ;;
     *)
       # 只轉發 error.code 與 error.message 兩個純字串欄位，不轉發
-      # output 整包：理由與 send-to-phase.sh／press-approval.sh 對非
-      # 逾時類錯誤的處理同一條（見該兩檔該處註解）——herdr 的回應可能
-      # 整包帶著 terminal_title 這類模型產出文字的載體，轉發整包會直
-      # 接進入編排端的 context。兩個欄位任一取不到都給明確的替代字
+      # herdr 的 stderr 整包：理由與 send-to-phase.sh／press-approval.sh
+      # 對非逾時類錯誤的處理同一條（見該兩檔該處註解）——herdr 的回應
+      # 可能整包帶著 terminal_title 這類模型產出文字的載體，轉發整包會
+      # 直接進入編排端的 context。兩個欄位任一取不到都給明確的替代字
       # 串，不靜默留空、也不因此退回轉發原文。
       local message
-      message="$(printf '%s' "$output" | jq -r '.error.message // empty' 2>/dev/null || true)"
+      message="$(printf '%s' "$err_output" | jq -r '.error.message // empty' 2>/dev/null || true)"
       [ -n "$code" ] || code="(無法取得 error.code)"
       [ -n "$message" ] || message="(無法取得 error.message)"
       eo_die 6 "event-generator.sh: herdr 以結束碼 1 拒絕 agent wait（target=$target），錯誤碼非預期：code=$code message=$message"
@@ -898,12 +953,35 @@ _eo_phase_edge_loop() {
         # 敗時 stdout 也是空的，兩者只差在結束碼。舊版寫成裸賦值
         # `event="$(...)"` 再判 `[ -z "$event" ]`，等於把這兩件事混成
         # 同一個分支，而且完全依賴 errexit 去攔下失敗——那個依賴不成
-        # 立。已對真實 bash 量測：函式被包在命令替換裡呼叫時，它內部
-        # 「賦值＋命令替換」的失敗不會中止它（同一個函式裸呼叫時會，
-        # 命令替換內的單純指令失敗也會），所以 eo_classify_stop 會一
-        # 路跑到真正 exit 的那一行才停。因此這裡改成顯式檢查結束碼，
-        # 不假設 errexit 會替我們攔下任何東西。本檔每一個決策函式的呼
-        # 叫點都套用同一個寫法。
+        # 立。
+        #
+        # ---- 規則本身：命令替換裡沒有 errexit ----
+        # 已在 bash 4.3.48（容器）與 5.3.15（本機）上各量一次，五種形
+        # 狀結果相同：
+        #   賦值＋命令替換，失敗在中間      → 不中止、呼叫端 rc 0
+        #   命令替換直接當引數，失敗在中間  → 不中止、呼叫端 rc 0
+        #   命令替換內再包一層子殼，同上    → 不中止、呼叫端 rc 0
+        #   失敗落在命令替換的最後一個指令  → 呼叫端 rc 1
+        #   純子殼（不是命令替換），中間失敗 → 中止、rc 1
+        # 也就是：**命令替換內只有最後一個指令的結束碼會傳出去；非最後
+        # 一個指令失敗既不中止替換、呼叫端也看不到**——與是不是函式無
+        # 關、與呼叫點是不是 if 條件無關。機制上量得到的是命令替換子殼
+        # 裡 `$-` 根本不含 e（同兩個版本，賦值／引數／if 條件／函式內
+        # 的 local 賦值四種位置都量過），而純子殼含 e。
+        #
+        # 這條規則就是「哪裡需要顯式檢查結束碼」的判準，所以措辭要精
+        # 確：早先這裡寫的是「命令替換內的單純指令失敗也會中止」，那句
+        # 話反了，照它走會得出「eo_state_set 裡的裸 jq 有 errexit 罩
+        # 著」這種結論——而那正是 common.sh 那四個寫入函式一度無聲吞掉
+        # 寫入失敗的直接原因（見 common.sh「狀態檔寫入的失敗必須由寫入
+        # 端自己接住」一節）。
+        #
+        # 唯一穿得出命令替換的是 exit：eo_die 用的是 exit，它終止那個
+        # 替換子殼，讓替換的結束碼變成非 0（同兩個版本量測，在下面這個
+        # `if event="$(...)"` 形狀下拿到的正好是 eo_die 帶的那個碼）。
+        # 因此決策函式內部一路 eo_die 的失敗，會被這裡的顯式檢查接住。
+        # 本檔每一個決策函式的呼叫點都套用同一個寫法：不假設 errexit 會
+        # 替我們攔下任何東西，一律自己取結束碼再判。
         if event="$(eo_classify_stop "$phase" "$stopped_status" "$marker")"; then
           classify_rc=0
         else
@@ -1179,20 +1257,62 @@ _eo_low_freq_scan_loop() {
 # 對過）。只收「子行程加它的直接子行程」會留下更深的那幾層，實測每個
 # phase 會殘留兩個仍在跑的行程；「送一次 TERM 之後整棵樹在數秒內結
 # 束」是這支腳本的驗收條件之一，所以這裡要走完整棵子樹。
+# ---- 那道確認要對每個受害者各跑一次，不是只對最上層那個 pid ----
+# 受害者清單是先遞迴收集、再逐一送 TERM 的，而收集與送訊號之間仍有時
+# 間差：清單上任何一個 pid 在這段時間內結束、號碼被回收再指派給不相干
+# 的行程，訊號就打到它。深度優先送訊號縮小了這個窗口（先收最深的，上
+# 層還在，子孫不會提早被 reparent），但沒有關掉它。只確認最上層那個
+# pid 的親代，跟本函式上面那段推理（「記錄下來的 pid 可能早就結束、號
+# 碼被回收」）本來就不一致——同一個理由適用於清單上每一個 pid。
+# _eo_victim_still_ours 就是把同一道確認搬到每次送訊號之前。
 _eo_kill_own_child() {
-  local pid="$1" ppid victims v
+  local pid="$1" victims v
   [ -n "$pid" ] || return 0
 
-  ppid="$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null || true)"
-  [ "$ppid" = "$_EO_MAIN_PID" ] || return 0
+  _eo_victim_still_ours "$pid" "$pid" || return 0
 
   # 先把整棵子樹列出來，才開始送訊號：一旦上層先死，底下的行程就被
   # reparent，pgrep -P 再也問不出它們屬於誰。
   victims="$(_eo_descendants_deepest_first "$pid")"
   while IFS= read -r v; do
     [ -n "$v" ] || continue
+    # 送訊號前重跑一次確認：這個 pid 現在仍然在 $pid 這棵子樹裡嗎，而
+    # $pid 自己仍然是 main 的子行程嗎。確認不了就跳過——少收一個行程
+    # 的方向是安全的，打到不相干的行程不是。
+    _eo_victim_still_ours "$v" "$pid" || continue
     kill -TERM "$v" 2>/dev/null || true
   done <<<"$victims"
+}
+
+# _eo_victim_still_ours <pid> <root>（內部輔助函式）
+# <pid> 現在仍然是 <root> 自己或它的子孫，而且 <root> 仍然是本產生器
+# （main）的子行程嗎？是就回 0。
+#
+# 判斷一律讀 /proc/<pid>/status 的 PPid，不用 ps、也不用 kill -0，理由
+# 與 _eo_kill_own_child 上方那兩段完全相同（ps 失敗時的空輸出會讓字串
+# 比較誤判、kill -0 答不出「是不是我的」）。/proc 目錄不存在就代表那個
+# pid 已經不在，回非 0 讓呼叫端跳過它是正確的失敗方向。
+#
+# 往上走的迴圈一定會停：PPid 鏈必然收斂到 1（init）或 0，兩者都不會是
+# 本產生器的子行程，所以走到那裡就回非 0。這一點要跟早先版本那個「掛
+# 在 ps 上的遞迴」分清楚：那個寫法的終止條件在工具失效時恆為不成立，
+# 這裡工具失效（讀不到 PPid）時直接回非 0。
+_eo_victim_still_ours() {
+  local cur="$1" root="$2" ppid
+  while [ -n "$cur" ] && [ "$cur" != "0" ] && [ "$cur" != "1" ]; do
+    if [ "$cur" = "$root" ]; then
+      # 走到 root 了：確認 root 自己仍然是 main 的子行程。<pid> 就是
+      # root 的那一次呼叫也走這一支，所以最上層那個 pid 拿到的是與其
+      # 餘受害者相同的確認。
+      ppid="$(awk '/^PPid:/{print $2}' "/proc/$root/status" 2>/dev/null || true)"
+      [ -n "$ppid" ] && [ "$ppid" = "${_EO_MAIN_PID:-}" ]
+      return
+    fi
+    ppid="$(awk '/^PPid:/{print $2}' "/proc/$cur/status" 2>/dev/null || true)"
+    [ -n "$ppid" ] || return 1
+    cur="$ppid"
+  done
+  return 1
 }
 
 # _eo_descendants_deepest_first <pid>（內部輔助函式）
@@ -1379,6 +1499,9 @@ _eo_forget_phase() {
 #     （重）啟動」的判斷交給它（見該函式與檔頭的存活契約）。它回傳
 #     非 0 代表某條邊緣迴圈異常結束，main 跟著結束整支腳本，讓串流
 #     結束、由編排端重掛一次。
+#   - 讀不到狀態檔時分兩種：當下沒有任何追蹤中的 phase 就容忍（產生
+#     器可能比第一個派工先起）；已經在追蹤至少一個 phase 就印一行
+#     STATE-FILE-GONE 事件並以 5 結束（見迴圈內那段長註解）。
 #   - 讀完這一輪的清單後，把已經不在清單內、但行程內還記錄著的
 #     phase 交給 _eo_forget_phase 收掉。
 #   - 低頻掃描那條子行程若不在了，一律當異常：它是常駐迴圈，不該有
@@ -1386,7 +1509,7 @@ _eo_forget_phase() {
 #     本自己重起，結果是 SIGTERM 只殺得掉低頻掃描、main 又把 phase
 #     迴圈起回來，變成停不下來的半盲活屍。
 main() {
-  local phases p low_freq_rc watch_rc
+  local phases p low_freq_rc watch_rc gone_phases tracked_count
 
   # 這個集合必須每輪重新歸零，所以宣告刻意留在 while 迴圈外、每輪開
   # 頭用 `=()` 清空：bash 對一個已經存在的關聯陣列再跑一次
@@ -1425,13 +1548,74 @@ main() {
       return 1
     fi
 
-    # 狀態檔還不存在（generator 比第一個 start-phase 先起）時
-    # eo_state_phases 會以 5 結束；這裡接住，視同「目前沒有任何
-    # phase」，不是本迴圈的錯誤。
+    # ---- 讀不到狀態檔：分成「還沒有人派工」與「跑到中途被移除」兩種
+    #      處理，不能合成一條容忍 ----
+    # 容忍的那一種是真的：產生器可能比第一個 start-phase 先起，狀態檔
+    # 還不存在，eo_state_phases 會以 5 結束，這時候把它當成「目前沒有
+    # 任何 phase」是對的。
+    #
+    # 但把「還沒建立」與「跑到中途被移除」當成同一件事處理，後果是整
+    # 條事件流永久靜默，而且完全無聲。逐環驗過的鏈：phase 清單變空 →
+    # 下面的收尾迴圈對每個仍在追蹤的 phase 呼叫 _eo_forget_phase，而它
+    # 只 kill 子樹加 unset 三個陣列、一個字都不印 → 邊緣迴圈那一側
+    # `_eo_phase_record_exists ... || return 0` 回的是 0，也就是存活契
+    # 約裡的「自願結束」，main 據此記住不再重起 → 低頻掃描那一側 rc 大
+    # 於 1 只往 stderr 印一行就繼續，所以「低頻掃描子行程死亡」檢查不
+    # 觸發。合起來：產生器活著、串流不結束、沒有結束通知、所有邊緣迴圈
+    # 被靜靜收掉、stdout 永遠不再出現任何事件行。編排端在靜止狀態只被
+    # 事件行與使用者訊息喚醒，於是這個 epic 從此完全沒有人在看，而它連
+    # 一則錯誤都收不到——正是本檔要修掉的原始症狀形狀。
+    #
+    # 觸發條件不是理論的：狀態檔在 .tmp 底下，而暫存檔規則要求任務結束
+    # 主動清除暫存檔，phase agent 契約又明文允許 phase agent 在 .tmp
+    # 底下建暫存檔。
+    #
+    # 判準取「當下還有沒有追蹤中的 phase」（_EO_PHASE_PIDS 的元素
+    # 數），不是「有沒有曾經看到過」：整個 epic 正常收尾之後這個陣列會
+    # 被上面的收尾迴圈清空，之後狀態檔被清掉屬於善後，不該讓產生器以
+    # 非 0 結束。
+    #
+    # 元素數不能直接寫 `${#_EO_PHASE_PIDS[@]}`：對一個「宣告過但從未寫
+    # 進任何 key」的關聯陣列，那個展開在 set -u 下會以「未綁定的變數」
+    # 當場中止整支腳本（已對 bash 4.3.48 與 5.3.15 各量一次，兩個版本
+    # 都是；寫進一次 key 之後就不會了，即使之後把 key 全部 unset 也不
+    # 會）。而主迴圈的第一輪必然落在「從未寫進任何 key」那個狀態——也
+    # 就是產生器比第一個 start-phase 先起、狀態檔還不存在的那個合法情
+    # 形，正是這段程式要容忍的那一支。所以先用 `+x` 測它有沒有被賦值
+    # 過，那個測試本身對未賦值的陣列是安全的（同兩個版本量測）。
+    tracked_count=0
+    if [ -n "${_EO_PHASE_PIDS[*]+x}" ]; then
+      tracked_count="${#_EO_PHASE_PIDS[@]}"
+    fi
+
     if phases="$(eo_state_phases 2>/dev/null)"; then
       :
-    else
+    elif [ "$tracked_count" -eq 0 ]; then
       phases=""
+    else
+      # ---- 這一則是產生器層級的事件，形狀刻意跟 phase 層級的分開 ----
+      # 同檔其餘事件行（stopped／AUTO-PUSH-LIMIT／AGENT-RESTARTED／
+      # GONE／SPINNING／UNCLASSIFIED）都以 `phase=<編號>` 起頭，因為它
+      # 們講的是某一個 phase。這一則講的是整個產生器賴以運作的狀態檔沒
+      # 了，不屬於任何單一 phase，所以不帶 `phase=` 前綴、改以關鍵字起
+      # 頭，讓它在事件流裡單獨認得出來（編排端要以這個關鍵字掛處置，
+      # 見 SKILL.md）。其餘照同檔慣例：一則事件一行、關鍵字之後接
+      # `key=value` 欄位。
+      #
+      # 同一行要帶足以定位的資訊：狀態檔已經不存在，所以行程內記著的
+      # 「追蹤中有幾個 phase、是哪幾個」是編排端唯一還拿得到的線索。編
+      # 號排序過再輸出：關聯陣列的鍵順序未定義，排序讓這一行在同樣情境
+      # 下逐字穩定。
+      gone_phases="$(printf '%s\n' "${!_EO_PHASE_PIDS[@]}" | sort -n | tr '\n' ',')"
+      printf 'STATE-FILE-GONE tracked=%s phases=%s\n' \
+        "$tracked_count" "${gone_phases%,}"
+      printf 'event-generator.sh: 狀態檔在已經追蹤 %s 個 phase（%s）的情況下讀不到了（被移除或內容不合法），本產生器即將以 5 結束\n' \
+        "$tracked_count" "${gone_phases%,}" >&2
+      # 5＝狀態檔缺漏，沿用共用結束碼表既有的語意，不新開一個碼。以非
+      # 0 結束讓串流結束、把編排端帶回來；帶回來之後怎麼處置由
+      # SKILL.md 對 STATE-FILE-GONE 那一列決定，這裡不指定——寫在腳本
+      # 註解裡會變成兩份檔各說一套。
+      return 5
     fi
 
     current_phase_set=()
@@ -1456,6 +1640,8 @@ main() {
       #   fork 在 if 條件裡 ＋ 子行程重下 set -e → 失敗仍被吞，結束碼 0
       #   fork 在 set +e 下  ＋ 子行程不重下      → 失敗被吞，結束碼 0
       #   fork 在 set +e 下  ＋ 子行程重下 set -e → 失敗攔下，結束碼 7
+      # 這張真值表已於 bash 4.3.48（容器）與 5.3.15（本機）各自量測、
+      # 結果字元級相同，不必重量。
       # 所以要兩處一起做：這裡用 set +e／裸呼叫／取結束碼／set -e（讓
       # 子行程繼承的是「選項關著」而不是那個清不掉的豁免旗標），並且
       # 由 _eo_phase_edge_loop 在進入時重下 set -euo pipefail。看到這
@@ -1488,7 +1674,8 @@ main() {
 if [ -z "${EO_GENERATOR_NO_MAIN:-}" ]; then
   eo_require_herdr_env
   if [ "$#" -gt 0 ]; then
-    eo_die 2 "event-generator.sh: 不接受任何參數，收到：$*"
+    # 引數用 eo_join_args 串接，不用 `$*`（見 common.sh 的 eo_join_args）。
+    eo_die 2 "event-generator.sh: 不接受任何參數，收到：$(eo_join_args "$@")"
   fi
   main
 fi

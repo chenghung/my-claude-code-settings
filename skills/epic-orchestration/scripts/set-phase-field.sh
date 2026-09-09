@@ -5,7 +5,9 @@
 # 用法：set-phase-field.sh <sub-issue 編號> <欄位名> <值>
 #
 # ---- 補的是哪個缺口 ----
-# 狀態檔 phases.<phase> 底下九個欄位裡，stage、pr、held_by_orchestrator
+# 狀態檔 phases.<phase> 底下那九個非座標欄位裡（整筆記錄共十二個欄
+# 位：tab_id／pane_id／agent_name 三個座標，加這九個），stage、pr、
+# held_by_orchestrator
 # 三個只有讀取端（event-generator.sh 的分類與低頻掃描）在讀，從來沒有
 # 任何腳本寫。編排端（orchestrator）原本沒有寫入路徑：它不能自己
 # jq 改那個 JSON 檔——lib/common.sh 的 eo_state_set 用 flock 把「讀-
@@ -44,8 +46,8 @@
 # 的判斷，而且那個人不是這支腳本、除錯時對不到源頭。因此三個欄位各自
 # 有專屬的合法值檢查，不合格一律以呼叫端用錯（結束碼 2）拒絕：
 #   stage                 只接受 running／awaiting-decision／pr-ready／
-#                          merged／wrapped-up 五個值。全域約束檔「狀
-#                          態檔結構」一節列的英文值原本有六個，其中
+#                          merged／wrapped-up 五個值。實作計畫「狀態
+#                          檔結構」一節列的英文值原本有六個，其中
 #                          `pending`（等待啟動）刻意不在這裡收：它描
 #                          述的是「還在依賴圖裡、但尚未派工」的
 #                          phase，而那個時候狀態檔裡根本還沒有它的記

@@ -127,6 +127,26 @@ if [ "$#" -lt 1 ]; then
 fi
 phase="$1"
 
+# ---- phase 必須是純數字，而這支腳本是最不能少這道檢查的一支 ----
+# 消費端早就要求純數字了：read-phase-pane.sh --marker-only（要接進
+# grep 樣式）與 event-generator.sh 的 eo_classify_stop 都明確驗證過。
+# 本檔原本完全不驗，而它正好是唯一會建立記錄的那一支——最寬的那道口
+# 開在最上游。實測拿一個含空白的字串當 phase 跑本腳本：rc 0、印出成功
+# 行，狀態檔多一筆鍵含空白的記錄，agent 名稱也含空白（違反檔頭引用的
+# herdr 命名規則）。之後 eo_state_phases 列得出這個鍵，事件產生器的
+# main 因此把它當監看對象，而 eo_classify_stop 對它一律 eo_die 2、
+# read-phase-pane.sh --marker-only 對它一律 rc 2，於是邊緣迴圈固定得到
+# 標記缺席，每一輪白派一次調查者。
+#
+# 語意跟消費端契約對齊：本專案命名慣例裡 sub-issue 編號恆為數字。
+# close-phase.sh／send-to-phase.sh／press-approval.sh／phase-status.sh
+# 都套同一道檢查，理由不在那四支重複，指回這裡。
+case "$phase" in
+  ''|*[!0-9]*)
+    eo_die 2 "start-phase.sh: <sub-issue 編號> 必須是純數字，收到：$phase"
+    ;;
+esac
+
 # herdr agent start --help 查證到的預設逾時（default: 30000; max:
 # 300000），這裡明確帶入而不是依賴隱含預設：外顯優於內隱，且日後 herdr
 # 改了預設值也不會讓本腳本的行為跟著意外改變。
@@ -148,6 +168,26 @@ tab_json="$(eo_herdr tab create --workspace "$workspace_id" \
   --cwd "$main_repo" --label "phase-$phase" --no-focus)"
 tab_id="$(printf '%s' "$tab_json" | jq -r '.result.tab.tab_id')"
 pane_id="$(printf '%s' "$tab_json" | jq -r '.result.root_pane.pane_id')"
+
+# ---- 兩個識別碼必須真的取到，否則字串 `null` 會被寫成座標 ----
+# jq 取不到路徑時安靜地印出字串 `null`，不是報錯——本檔上方「回應形
+# 狀」與 phase-status.sh 都明文警告過取錯巢狀層的這個行為。實測（樁讓
+# `tab tab create` 以 0 成功但 result 底下是空物件，也就是回應形狀漂移
+# 或取錯層）：tab 與 pane 兩個識別碼都以字串 `null` 寫進狀態檔，接著
+# `agent start` 帶著那個 pane 以 8 結束。
+#
+# 這筆記錄從此帶著指不到任何東西的座標，而且再也關不掉：close-phase.sh
+# 第一道守衛拿 `null` 去做 workspace 斷言必然以 4 失敗，守衛二重讀到的
+# 還是 `null`——正是上方「這筆記錄在啟動之前就要寫齊」要避免的那種孤
+# 兒 tab，只是換一個入口。所以在寫狀態檔之前就擋下來。
+#
+# 此時 tab 已經真的建立了，所以訊息要帶上足以人工收拾的資訊：
+# workspace 與 label 是唯一還指得到那個 tab 的線索（識別碼本身就是這
+# 次沒取到的東西）。結束碼取 6（herdr 拒絕／回應不可用），不是 2：呼
+# 叫端沒有用錯任何東西。
+if [ -z "$tab_id" ] || [ "$tab_id" = "null" ] || [ -z "$pane_id" ] || [ "$pane_id" = "null" ]; then
+  eo_die 6 "start-phase.sh: tab create 回報成功，但回應裡取不到可用的識別碼（tab_id='$tab_id' pane_id='$pane_id'），狀態檔未寫入。tab 可能已經真的建立，請以 workspace $workspace_id、label phase-$phase 人工確認並關閉"
+fi
 
 eo_state_set "$phase" tab_id "\"$tab_id\""
 eo_state_set "$phase" pane_id "\"$pane_id\""

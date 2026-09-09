@@ -43,6 +43,14 @@ if [ "$#" -lt 1 ]; then
 fi
 phase="$1"
 
+# phase 一律驗成純數字，與消費端契約對齊；完整理由見 start-phase.sh
+# 同一道檢查上方的說明，不在這裡重複。
+case "$phase" in
+  ''|*[!0-9]*)
+    eo_die 2 "close-phase.sh: <sub-issue 編號> 必須是純數字，收到：$phase"
+    ;;
+esac
+
 tab_id="$(eo_state_get "$phase" tab_id)"
 
 # 守衛一：該 tab 屬於本 workspace。

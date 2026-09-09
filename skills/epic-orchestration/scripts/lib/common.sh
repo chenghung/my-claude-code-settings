@@ -20,6 +20,11 @@
 #
 # ---- 結束碼對照表（所有腳本共用）----
 #   0  成功
+#   1  由個別腳本自行產生的部分失敗或迴圈異常，本檔不產生：
+#      phase-status.sh 查全部模式下掃描已完成但至少一個 phase 失敗；
+#      event-generator.sh 的主迴圈在低頻掃描子行程死亡時以 1 結束並在
+#      stderr 請編排端重掛。這一列先前漏在本表之外，而 SKILL.md 的結
+#      束碼表一直有它——兩份表的列數要對得上，補在這裡
 #   2  呼叫端用錯：缺必填參數、參數格式不對
 #   3  環境前提不成立：HERDR_ENV 不等於 1
 #   4  workspace 守衛不通過
@@ -69,6 +74,26 @@ eo_die() {
   local message="${2:-}"
   printf '%s\n' "$message" >&2
   exit "$exit_code"
+}
+
+# eo_join_args <args...>
+# 把引數以單一空白串接成一行印出，供診斷訊息引用。
+#
+# 診斷訊息裡不能直接寫 `$*`：八支腳本的檔頭都把 IFS 設成換行加 tab，
+# 而 `$*` 用 IFS 的第一個字元串接，於是「herdr $*」這種一行診斷會在真
+# 實呼叫下裂成好幾行（獨立審查實測一次失敗的 herdr 呼叫變成四行）。這
+# 不只是排版：整套設計的核心約束就是編排端 context 的純度與「一則事件
+# 一行」，多出來的行全部直接進編排端的 context。
+#
+# 也不能改成在 eo_die 內部把 IFS 設成單一空白——`$*` 是在呼叫端組訊息
+# 的當下就展開完了，等進到 eo_die 只剩一個已經串好的字串，那裡改 IFS
+# 影響不到它。所以串接必須發生在呼叫端，這個函式就是那個落點。
+eo_join_args() {
+  local out="" a
+  for a in "$@"; do
+    out="${out:+$out }$a"
+  done
+  printf '%s' "$out"
 }
 
 # eo_require_herdr_env
@@ -124,6 +149,37 @@ eo_state_file() {
   printf '%s/.tmp/epic-orchestration/state.json\n' "$(eo_main_repo)"
 }
 
+# ---- 狀態檔寫入的失敗必須由寫入端自己接住：errexit 不在，而回傳碼還
+#      被遮住 ----
+# 下面四個會寫狀態檔的函式（eo_state_init／eo_state_set／
+# eo_state_update／eo_state_remove_phase）都是「mktemp → 產生新內容 →
+# mv 置換」三步。這三步的失敗（磁碟滿、目錄變唯讀、配額用盡、jq 對一
+# 份被截斷的狀態檔解析失敗）原本兩層保護同時不存在：
+#
+#   一、errexit 不在。這些函式的呼叫鏈上一定有一層命令替換（例如
+#       event-generator.sh 的 `event="$(eo_classify_stop ...)"`），而
+#       命令替換的子殼裡 errexit 根本不生效：已對 bash 4.3.48 與
+#       5.3.15 各量一次，結果相同——命令替換內 `$-` 不含 e，非最後一
+#       個指令失敗既不中止替換、呼叫端也看不到（完整規則見
+#       event-generator.sh 對 eo_classify_stop 呼叫點的註解）。
+#   二、回傳碼被遮住。這些函式的最後一句是關閉鎖用的檔案描述符，所以
+#       函式的結束碼是「關檔案描述符成功」，不是「寫入成功」。
+#
+# 獨立審查把 mktemp 樁成失敗實測過後果：eo_classify_stop 對一則
+# working-ok 標記照樣回 0、照樣判定自動推進，但 last_marker_seq 與
+# auto_push_count 兩個欄位一個都沒動——也就是自動推進的累計上限永不
+# 觸發、同一則標記每輪都被判成新的，全程沒有訊息也沒有非 0 結束碼。同
+# 一形狀的第二個後果是 `mv` 原本無條件執行：餵一份被截斷的狀態檔，jq
+# 解析失敗而 mv 照跑，狀態檔變成 0 bytes，函式仍然回 0。
+#
+# 修法是把三步串起來、失敗就 eo_die 5（狀態檔缺漏／內容不合法，沿用既
+# 有語意，不新開結束碼），不新增任何呼叫端契約：eo_die 用的是 exit，
+# 而 exit 不受上面那條命令替換豁免影響——它終止那個替換子殼，讓替換
+# 的結束碼變成非 0（已對 4.3.48 與 5.3.15 各量一次：在
+# `if ev="$(...)"` 這個既有的顯式檢查形狀下，兩個版本拿到的都正好是
+# eo_die 帶的那個碼）。因此呼叫端既有的顯式結束碼檢查會直接接住它。
+# 失敗時先 `rm -f` 那個暫存檔：mv 沒跑成功時它會留在狀態檔目錄裡。
+
 # eo_state_init
 # 確保狀態檔存在：目錄不在就建，檔案不在就寫進最小的合法內容
 # `{"phases":{}}`。檔案已存在時完全不動內容，重複呼叫是幂等的。
@@ -138,10 +194,17 @@ eo_state_file() {
 # 為什麼是獨立一個函式、而不是讓 eo_state_set 自己順手建檔：「檔案不
 # 存在」是一個有語意的訊號（結束碼 5；SKILL.md 的中斷恢復把整份狀態
 # 檔遺失當成走 PR 編號反查退路的條件）。每一個寫入端都順手把檔案建回
-# 來，等於把這個訊號從所有路徑上抹掉——常駐的 event-generator.sh 在
-# 跑的中途若狀態檔被移除，會靜靜地得到一份空檔繼續跑，而不是失敗。建
-# 立記錄本來就只有 start-phase.sh 一個職責方（SKILL.md「進度表與狀態
-# 檔」明文），因此建檔也只由它明確呼叫一次，其餘路徑維持既有的 5。
+# 來，等於把這個訊號從所有路徑上抹掉。建立記錄本來就只有
+# start-phase.sh 一個職責方（SKILL.md「進度表與狀態檔」明文），因此建
+# 檔也只由它明確呼叫一次，其餘路徑維持既有的 5。
+#
+# 而這個訊號現在真的有兩種意義，順手建檔會把兩種一起抹平：常駐的
+# event-generator.sh 讀不到狀態檔時，主迴圈分開處理「還沒有人派工」與
+# 「跑到中途被誰刪掉了」——當下沒有任何追蹤中的 phase 時照舊容忍（產
+# 生器可以比第一個派工先起），已經追蹤到至少一個 phase 之後才讀不到，
+# 就印一行 STATE-FILE-GONE 事件並以 5 結束，讓編排端察覺並依 SKILL.md
+# 對 STATE-FILE-GONE 的處置走（見 event-generator.sh 的 main）。這比原
+# 本的理由強，因為它現在有機制撐著，不是只有語意上的期望。
 #
 # 初始內容只有 phases 一個鍵，不補其他最上層鍵：已對整個 skills/ 目錄
 # 搜過 main_repo 與 parent_issue，沒有任何生產程式碼讀或寫這兩個鍵
@@ -169,9 +232,13 @@ eo_state_init() {
   flock -x "$lock_fd"
 
   if [ ! -f "$file" ]; then
-    tmp="$(mktemp "${file}.XXXXXX")"
-    printf '%s\n' '{"phases":{}}' > "$tmp"
-    mv "$tmp" "$file"
+    # 寫入失敗一律 eo_die 5，見上方「狀態檔寫入的失敗必須由寫入端自己
+    # 接住」一節。
+    tmp="$(mktemp "${file}.XXXXXX")" || eo_die 5 "eo_state_init: 無法在 $dir 底下建立暫存檔，狀態檔未建立"
+    if ! { printf '%s\n' '{"phases":{}}' > "$tmp" && mv "$tmp" "$file"; }; then
+      rm -f "$tmp"
+      eo_die 5 "eo_state_init: 建立狀態檔失敗（寫入暫存檔或置換未成功）：$file"
+    fi
   fi
 
   exec {lock_fd}>&-
@@ -248,10 +315,16 @@ eo_state_set() {
   exec {lock_fd}>"$lock_file"
   flock -x "$lock_fd"
 
-  tmp="$(mktemp "${file}.XXXXXX")"
-  jq --arg p "$phase" --arg f "$field" --argjson v "$json_value" \
-    '.phases[$p] //= {} | .phases[$p][$f] = $v' "$file" > "$tmp"
-  mv "$tmp" "$file"
+  # 寫入失敗一律 eo_die 5，見上方「狀態檔寫入的失敗必須由寫入端自己接
+  # 住」一節：這裡的裸 jq 沒有 errexit 罩著，而函式尾端關閉檔案描述符
+  # 那一句又會把回傳碼遮掉。
+  tmp="$(mktemp "${file}.XXXXXX")" || eo_die 5 "eo_state_set: 無法建立暫存檔，phase $phase 的 $field 未寫入：$file"
+  if ! { jq --arg p "$phase" --arg f "$field" --argjson v "$json_value" \
+      '.phases[$p] //= {} | .phases[$p][$f] = $v' "$file" > "$tmp" \
+      && mv "$tmp" "$file"; }; then
+    rm -f "$tmp"
+    eo_die 5 "eo_state_set: 寫入狀態檔失敗，phase $phase 的 $field 未寫入（jq 解析或置換未成功）：$file"
+  fi
 
   exec {lock_fd}>&-
 }
@@ -304,10 +377,16 @@ eo_state_update() {
     eo_die 5 "phase $phase 不存在於狀態檔，eo_state_update 拒絕建立新記錄"
   fi
 
-  tmp="$(mktemp "${file}.XXXXXX")"
-  jq --arg p "$phase" --arg f "$field" --argjson v "$json_value" \
-    '.phases[$p][$f] = $v' "$file" > "$tmp"
-  mv "$tmp" "$file"
+  # 寫入失敗一律 eo_die 5，理由與形狀見上方「狀態檔寫入的失敗必須由寫
+  # 入端自己接住」一節。這條路徑走到這裡表示記錄確實存在，所以失敗訊
+  # 息不會跟「phase 不存在」那一種混淆。
+  tmp="$(mktemp "${file}.XXXXXX")" || eo_die 5 "eo_state_update: 無法建立暫存檔，phase $phase 的 $field 未寫入：$file"
+  if ! { jq --arg p "$phase" --arg f "$field" --argjson v "$json_value" \
+      '.phases[$p][$f] = $v' "$file" > "$tmp" \
+      && mv "$tmp" "$file"; }; then
+    rm -f "$tmp"
+    eo_die 5 "eo_state_update: 寫入狀態檔失敗，phase $phase 的 $field 未寫入（jq 解析或置換未成功）：$file"
+  fi
 
   exec {lock_fd}>&-
 }
@@ -343,9 +422,16 @@ eo_state_remove_phase() {
   exec {lock_fd}>"$lock_file"
   flock -x "$lock_fd"
 
-  tmp="$(mktemp "${file}.XXXXXX")"
-  jq --arg p "$phase" 'del(.phases[$p])' "$file" > "$tmp"
-  mv "$tmp" "$file"
+  # 寫入失敗一律 eo_die 5，理由與形狀見上方「狀態檔寫入的失敗必須由寫
+  # 入端自己接住」一節。移除失敗要讓呼叫端知道：close-phase.sh 走到這
+  # 一步時 tab 已經真的關掉了，記錄卻沒移除，事件產生器會繼續監看一個
+  # 已經收尾的 phase。
+  tmp="$(mktemp "${file}.XXXXXX")" || eo_die 5 "eo_state_remove_phase: 無法建立暫存檔，phase $phase 的記錄未移除：$file"
+  if ! { jq --arg p "$phase" 'del(.phases[$p])' "$file" > "$tmp" \
+      && mv "$tmp" "$file"; }; then
+    rm -f "$tmp"
+    eo_die 5 "eo_state_remove_phase: 移除 phase $phase 的記錄失敗（jq 解析或置換未成功）：$file"
+  fi
 
   exec {lock_fd}>&-
 }
@@ -430,7 +516,10 @@ _eo_relay_herdr_stderr() {
   if [ -n "$code" ]; then
     message="$(printf '%s' "$raw" | jq -r '.error.message // empty' 2>/dev/null || true)"
     [ -n "$message" ] || message="(無法取得 error.message)"
-    jq -n --arg code "$code" --arg message "$message" \
+    # `-c` 是必要的，不是風格偏好：jq 預設會把輸出美化成多行，這則重組
+    # 後的錯誤 JSON 因此從一行變成六行，全部進編排端的 context（見
+    # eo_join_args 上方那段：同一個約束的另一個出口）。
+    jq -nc --arg code "$code" --arg message "$message" \
       '{error: {code: $code, message: $message}}' >&2
   else
     printf 'eo_herdr: herdr 以結束碼 %s 拒絕，其 stderr 無法解析出可用的 error.code（可能是非 JSON 輸出，例如 panic 或印出用法說明），原始內容已攔截、不轉發\n' \
@@ -459,9 +548,11 @@ eo_herdr() {
   fi
   _eo_relay_herdr_stderr "$stderr_file" "$rc"
   rm -f "$stderr_file"
+  # 引數用 eo_join_args 串接，不用 `$*`：IFS 是換行加 tab，`$*` 會讓這
+  # 一行診斷裂成好幾行（見 eo_join_args 上方說明）。
   case "$rc" in
-    1) eo_die 6 "eo_herdr: herdr 以結束碼 1 拒絕（見上方已重組的錯誤資訊）：herdr $*" ;;
-    2) eo_die 2 "eo_herdr: herdr 以結束碼 2 拒絕，疑似腳本呼叫語法錯誤：herdr $*" ;;
+    1) eo_die 6 "eo_herdr: herdr 以結束碼 1 拒絕（見上方已重組的錯誤資訊）：herdr $(eo_join_args "$@")" ;;
+    2) eo_die 2 "eo_herdr: herdr 以結束碼 2 拒絕，疑似腳本呼叫語法錯誤：herdr $(eo_join_args "$@")" ;;
     *) exit "$rc" ;;
   esac
 }
