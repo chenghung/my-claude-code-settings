@@ -24,7 +24,7 @@ rg -n '必須|一定要|絕對|禁止|不得|永遠|任何情況|一律' <target
 | 二、順序敏感的副作用檢查點 | 建立 PR 前必須先完成 push | 違反是否真會造成不可逆後果 | 是則保留硬性措辭 |
 | 三、行為指引或風格偏好 | 必須使用繁體中文、一律使用條列 | 反例測試：刪掉這條後模型最可能怎麼做錯 | 說不出具體失敗場景者，建議改寫為原則或刪除 |
 
-第一類的驗證著力點：本倉庫的權限與 hook 設定位於 `~/.claude/settings.json`（實際指向 `platforms/claude/settings.json`）與專案層 `.claude/settings.json`、以及本機專屬、未納入版本控制的 `.claude/settings.local.json`（若存在）。審查者應對照這些檔案的 `permissions.deny` 與 `hooks` 區塊確認宣稱的邊界是否真有執行機制，而不是僅憑 prompt 的文字敘述判斷。
+第一類的驗證著力點有兩處，兩處都算有效的機制存放位置。其一是本倉庫的權限與 hook 設定，位於 `~/.claude/settings.json`（實際指向 `platforms/claude/settings.json`）與專案層 `.claude/settings.json`、以及本機專屬、未納入版本控制的 `.claude/settings.local.json`（若存在）。其二是 subagent 定義檔自身 frontmatter 的 `hooks` 欄位，其結構與 settings 的 `hooks` 區塊同構（hook 事件名對應到 matcher 群組陣列），差別在於註冊的 hook 只在該 agent 執行期間生效，因此刻意放在這裡的機制不會出現在任何 settings 檔中；`agents/trello-manager.md` 的 Boundary 首條即由該檔 frontmatter 註冊的 PreToolUse hook 支撐。審查者應對照這兩處的 `permissions.deny` 與 `hooks` 內容確認宣稱的邊界是否真有執行機制，而不是僅憑 prompt 的文字敘述判斷；被審查的對象本身就是 agent 定義檔時，該檔的 frontmatter `hooks` 必須一併查——只查三個 settings 檔會查不到隨定義檔走的機制，把真有執行機制的宣稱誤判為假的保證。
 
 ## Acceptance Ambiguity
 
