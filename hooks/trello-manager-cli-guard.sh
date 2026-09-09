@@ -11,9 +11,21 @@
 # Target shell: bash 4.3+ (persistent script, repo compatibility floor).
 set -euo pipefail
 
-# Shown to the model when a call is denied, so it knows why and what to do
-# instead (retry via the trello CLI) rather than just seeing a bare refusal.
-DENY_REASON='trello-manager 只能透過 trello CLI 操作 Trello，不得繞過 CLI 直接呼叫外部 API（如 curl、wget）、以其他直譯器（python3、node、sh -c 等）達成同樣效果，或讀取 ~/.trello-cli/default/config.json 等憑證檔。請改用對應的 trello 子指令完成這項操作。'
+# Shown to the model whenever a call is denied for lack of a more specific
+# reason (subcommand_deny_reason below covers the nameable cases): every
+# such denial shares one root cause — the call didn't match either of the
+# two allowed shapes — so this text leads with that mechanism rather than
+# guessing at what the caller was attempting. Confirmed necessary by a real
+# end-to-end run: trello-manager sent `command -v trello` (a harmless
+# diagnostic, not an API bypass or a credential read), got denied here, and
+# an earlier version of this text — which described only the bypass/
+# credential-read examples now folded in below — led the model to wrongly
+# conclude that `command`/`which` were blacklisted by name. The mechanism
+# statement and the explicit `command -v`/`which` example exist specifically
+# to close off that wrong inference; the bypass/credential-read examples are
+# kept as illustrative context (they are still denied here too), not as a
+# claim about what this particular call did.
+SHAPE_MISMATCH_REASON='trello-manager 的 Bash 呼叫只有兩種形狀會被放行：(a) 單一、未串接其他指令的 trello CLI 呼叫（trello <子指令> ...），或 (b) 定義檔 Setup 段落規定的 cache-check 慣用寫法（test -f ~/.trello-cli/default/trello.db && echo "..." || trello sync）。這次呼叫不符合這兩種形狀中的任何一種，因此被擋下；判斷依據是整條指令的形狀，與指令名稱本身無關——即使是 command -v trello、which trello 這類單純查詢，只要不是以 trello 開頭的單一呼叫，一樣會被擋下，並不是這些指令名稱被列入黑名單。繞過 CLI 直接呼叫外部 API（如 curl、wget）、改用其他直譯器（python3、node、sh -c 等）達成同樣效果，或讀取 ~/.trello-cli/default/config.json 等憑證檔，同樣屬於這個規則會擋下的範圍。請改用對應的 trello 子指令完成這項操作。'
 
 # Emits the PreToolUse deny decision as JSON on stdout. $1 is the reason
 # shown to the model.
@@ -26,8 +38,8 @@ deny() {
 # Set by is_allowed_command when it denies a call for a specific, nameable
 # reason (a recognized-but-forbidden trello subcommand) rather than a bare
 # shape mismatch, so main() can surface that instead of the generic
-# DENY_REASON. Reset at the top of every is_allowed_command call; empty
-# means "no override, caller should use the generic reason".
+# SHAPE_MISMATCH_REASON. Reset at the top of every is_allowed_command call;
+# empty means "no override, caller should use the generic reason".
 subcommand_deny_reason=""
 
 # Strips one layer of fully-wrapping matching quotes (both single or both
@@ -179,11 +191,11 @@ main() {
   # is_allowed_command, so a false deny only costs it one stop-and-report,
   # far cheaper than a false allow of a credential or API bypass.
   if ! command=$(jq -r '.tool_input.command // empty' <<< "$raw" 2>/dev/null); then
-    deny "$DENY_REASON"
+    deny "$SHAPE_MISMATCH_REASON"
     return
   fi
   if [[ -z "$command" ]]; then
-    deny "$DENY_REASON"
+    deny "$SHAPE_MISMATCH_REASON"
     return
   fi
 
@@ -195,7 +207,7 @@ main() {
   if [[ -n "$subcommand_deny_reason" ]]; then
     deny "$subcommand_deny_reason"
   else
-    deny "$DENY_REASON"
+    deny "$SHAPE_MISMATCH_REASON"
   fi
 }
 

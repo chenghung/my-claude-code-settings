@@ -255,3 +255,22 @@ assert_silent() {
   PATH="$saved_path"
   assert_silent
 }
+
+@test "32: a harmless non-trello diagnostic (command -v trello) gets a mechanism-accurate reason, not the API-bypass wording" {
+  # Regression guard for a real end-to-end finding: trello-manager ran
+  # `command -v trello` (a diagnostic that touches neither the API-bypass
+  # nor the credential-read boundary), was correctly denied, but the reason
+  # text used to describe only those two scenarios — leading the model to
+  # wrongly conclude that `command`/`which` were blacklisted by name. The
+  # fix folded the API-bypass/credential-read wording and the shape-mismatch
+  # mechanism into one reason (SHAPE_MISMATCH_REASON), so this asserts the
+  # mechanism statement and the concrete command -v example are present;
+  # it goes red if that statement is ever dropped back to the old
+  # examples-only wording.
+  run run_hook_raw "$(build_payload "command -v trello" "a1" "trello-manager")"
+  assert_deny
+  local reason
+  reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")"
+  [[ "$reason" == *"與指令名稱本身無關"* ]]
+  [[ "$reason" == *"command -v trello"* ]]
+}
