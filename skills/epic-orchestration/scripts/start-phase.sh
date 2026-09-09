@@ -33,7 +33,9 @@
 # terminal_title_stripped、tokens、workspace_id），沒有 launch_pending，
 # 也沒有 interactive_ready（這兩次查詢對象都是已經穩定運行一段時間的
 # agent，不是剛啟動、卡在核准對話框那個短暫窗口；references/rationale.md
-# 另外記錄過那個窗口下 launch_pending 會短暫出現且為真。不論哪一種情
+# 記錄過那個窗口下曾觀察到 launch_pending 為真，但已把它標為未在當前
+# 版本查證過、不得用作任何判準——那筆觀察來自事件驅動改版之前那一輪，
+# 本輪沒有重測，因為製造那個窗口本身有副作用。不論哪一種情
 # 形，這兩個欄位都不是本腳本要依賴的訊號——即使它們有時真的存在，也
 # 只在啟動過程中一個轉瞬即逝的窗口內有意義，拿來做同步的啟動判準本來
 # 就不可靠，這正是本腳本改成只信任 agent start 自身成功／失敗的原因）。

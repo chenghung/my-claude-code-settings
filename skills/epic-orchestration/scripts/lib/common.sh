@@ -39,8 +39,10 @@
 # 自行調整；供後續腳本（尤其 event-generator.sh）直接引用，避免各處
 # 各自硬寫數字。
 
-# 未查證推估，首次真實跑 epic 為校準回合：自動推進（自動按核准框）
-# 上限，單位：次。
+# 未查證推估，首次真實跑 epic 為校準回合：同一個 phase 被事件產生器
+# 連續自動推進的上限，單位：次。自動推進是產生器對 working-ok 標記送
+# 出一則「繼續」下行，與代按核准框無關——那是 press-approval.sh 的另
+# 一條路徑，不吃這個上限。
 # shellcheck disable=SC2034 # 本檔不使用，供後續腳本（event-generator.sh 等）source 後引用
 readonly EO_AUTO_PUSH_LIMIT=40
 
