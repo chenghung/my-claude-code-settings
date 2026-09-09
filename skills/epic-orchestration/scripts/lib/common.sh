@@ -5,8 +5,8 @@
 # 職責：epic-orchestration 事件驅動機制層的共用函式庫。七支操作腳本與
 # event-generator.sh 常駐迴圈都會 `source` 本檔，取得：
 #   - 環境前提檢查（HERDR_ENV）與 workspace 歸屬守衛
-#   - 狀態檔（state.json）的讀寫，一律經 jq，寫入用「暫存檔＋mv」做到
-#     原子性
+#   - 狀態檔（state.json）的建立與讀寫，一律經 jq，寫入用「暫存檔＋
+#     mv」做到原子性
 #   - agent 名稱推導、統一的結束碼與最小化錯誤輸出
 #   - 對 herdr 呼叫的結束碼映射（1→6，2 原樣拋出並註明來源）
 #
@@ -117,6 +117,59 @@ eo_agent_name() {
 # 印出狀態檔絕對路徑：<主倉庫>/.tmp/epic-orchestration/state.json。
 eo_state_file() {
   printf '%s/.tmp/epic-orchestration/state.json\n' "$(eo_main_repo)"
+}
+
+# eo_state_init
+# 確保狀態檔存在：目錄不在就建，檔案不在就寫進最小的合法內容
+# `{"phases":{}}`。檔案已存在時完全不動內容，重複呼叫是幂等的。
+#
+# 這個函式存在的理由是一個必然發生的失敗：整套腳本原本沒有任何一處會
+# 建立這個檔案，而所有讀寫都經 _eo_state_file_or_die，它對不存在的檔
+# 案一律以 5 結束。於是全新 epic 的第一次派工必然是「tab create 成
+# 功、tab 真的開出來了，接著第一次寫狀態檔以 5 死掉」；而 close-phase
+# .sh 第一件事就是從狀態檔取 tab_id，同樣以 5 死掉，於是那個已經真實
+# 存在的 tab 沒有任何腳本關得掉，每個新 epic 都留下一個孤兒 tab。
+#
+# 為什麼是獨立一個函式、而不是讓 eo_state_set 自己順手建檔：「檔案不
+# 存在」是一個有語意的訊號（結束碼 5；SKILL.md 的中斷恢復把整份狀態
+# 檔遺失當成走 PR 編號反查退路的條件）。每一個寫入端都順手把檔案建回
+# 來，等於把這個訊號從所有路徑上抹掉——常駐的 event-generator.sh 在
+# 跑的中途若狀態檔被移除，會靜靜地得到一份空檔繼續跑，而不是失敗。建
+# 立記錄本來就只有 start-phase.sh 一個職責方（SKILL.md「進度表與狀態
+# 檔」明文），因此建檔也只由它明確呼叫一次，其餘路徑維持既有的 5。
+#
+# 初始內容只有 phases 一個鍵，不補其他最上層鍵：已對整個 skills/ 目錄
+# 搜過 main_repo 與 parent_issue，沒有任何生產程式碼讀或寫這兩個鍵
+# （只有測試檔的樣本資料帶著它們），這裡不憑空寫進沒有人用的欄位。
+# main_repo 尤其不能寫成「給讀者用的權威值」：狀態檔路徑本身就是由
+# eo_main_repo 推出來的，反過來讀它會構成循環依賴（見 eo_main_repo 上
+# 方註解）。
+#
+# 競態：多個 phase 可能在很短時間內接連啟動，於是有多個行程同時發現檔
+# 案不存在。「檢查是否存在」與「寫入」兩步都放在與 eo_state_set 同一
+# 把鎖（`<狀態檔>.lock`）的臨界區內，理由與 eo_state_update 把存在性
+# 判斷搬進臨界區完全相同：檢查若落在鎖外，一個行程可能在檢查通過之後
+# 才等到鎖，而這段等待期間另一個行程已經建好檔案、甚至寫進了真實記
+# 錄，它拿到鎖後照樣寫下空的 `{"phases":{}}`，把那些記錄整個蓋掉。
+eo_state_init() {
+  local file dir lock_file lock_fd tmp
+  file="$(eo_state_file)"
+  dir="$(dirname "$file")"
+  # mkdir -p 對「已存在」與「兩個行程同時建」都是安全的，而且它必須排
+  # 在臨界區之前：鎖檔就開在這個目錄底下，目錄不存在就連鎖都開不起來。
+  mkdir -p "$dir"
+
+  lock_file="${file}.lock"
+  exec {lock_fd}>"$lock_file"
+  flock -x "$lock_fd"
+
+  if [ ! -f "$file" ]; then
+    tmp="$(mktemp "${file}.XXXXXX")"
+    printf '%s\n' '{"phases":{}}' > "$tmp"
+    mv "$tmp" "$file"
+  fi
+
+  exec {lock_fd}>&-
 }
 
 # _eo_state_file_or_die（內部輔助函式，非公開介面）

@@ -5,6 +5,8 @@
 # 用法：start-phase.sh <sub-issue 編號>
 #
 # 動作順序：
+#   0. eo_state_init 確保狀態檔存在（理由見下方「狀態檔由這支腳本建
+#      立，而且排在 tab create 之前」）。
 #   1. herdr tab create（workspace 取自 HERDR_WORKSPACE_ID、cwd 指向主
 #      倉庫、label 帶 sub-issue 編號、--no-focus 不搶焦點）。
 #   2. 從回應取 result.tab.tab_id 與 result.root_pane.pane_id，連同
@@ -45,6 +47,22 @@
 # 結束碼 8（見下方呼叫處），不呼叫 agent get。若日後真的需要另外查
 # agent get，切記它的欄位是巢狀的：在 result 底下的 agent 底下（例如
 # `.result.agent.agent_status`），不是扁平掛在 result 底下。
+#
+# ---- 狀態檔由這支腳本建立，而且排在 tab create 之前 ----
+# 建立記錄是本腳本的職責（SKILL.md「進度表與狀態檔」明文），而「建立
+# 這個檔案」是它的前一步：沒有這一步，全新 epic 的第一次派工必然是
+# tab create 成功、tab 真的開出來了，接著第一次 eo_state_set 撞上檔案
+# 不存在、以 5 結束，而 close-phase.sh 第一件事也是從狀態檔取 tab_id，
+# 同樣以 5 死掉——編排端拿不到識別碼，沒有任何腳本關得掉那個 tab。
+#
+# 呼叫的是 eo_state_init（見 common.sh），它是幂等的：檔案已存在時完
+# 全不動內容，所以第二個 phase 的派工不會把第一個 phase 的記錄清掉；
+# 多個 phase 在很短時間內接連啟動時，「檢查是否存在」與「寫入」兩步都
+# 在同一把鎖的臨界區內，不會有一邊的寫入被另一邊蓋掉。
+#
+# 排在 tab create 之前是實質的，不是順手：狀態檔的目錄或檔案若因為權
+# 限、磁碟等原因建不起來，這時候失敗只是一次沒開成的派工；排在 tab
+# create 之後失敗，留下的就是這支腳本最要避免的那種孤兒 tab。
 #
 # ---- 這筆記錄在啟動之前就要寫齊 ----
 # tab create 一成功，這筆記錄的四個欄位就立刻寫進狀態檔，早於呼叫
@@ -115,6 +133,10 @@ fi
 main_repo="$(eo_main_repo)"
 agent="$(eo_agent_name "$phase")"
 
+# 狀態檔不存在就建（幂等、與其他寫入端共用同一把鎖），排在 tab create
+# 之前，見檔頭「狀態檔由這支腳本建立，而且排在 tab create 之前」。
+eo_state_init
+
 tab_json="$(eo_herdr tab create --workspace "$workspace_id" \
   --cwd "$main_repo" --label "phase-$phase" --no-focus)"
 tab_id="$(printf '%s' "$tab_json" | jq -r '.result.tab.tab_id')"
@@ -129,19 +151,48 @@ eo_state_set "$phase" held_by_orchestrator false
 # 緒」8，不是 eo_herdr 通用的「herdr 拒絕」6。刻意用 if 包住呼叫本身
 # （而不是裸陳述句接著讀 $?），理由與 common.sh 的 eo_herdr 完全一
 # 樣：本腳本開頭已 set -e，裸陳述句一旦失敗會在讀到 $? 之前就先終止
-# 整個腳本，走不到下面的錯誤碼判斷。標準輸出導向 /dev/null 丟棄，不
-# 轉發任何 herdr 原始回應；標準錯誤保持原樣，讓 herdr 自己印的錯誤訊
-# 息還在，方便除錯。
-if herdr agent start "$agent" --kind claude --pane "$pane_id" \
+# 整個腳本，走不到下面的錯誤碼判斷。
+#
+# ---- herdr 印在 stderr 上的內容一律擷取後重組，不讓它原樣繼承 ----
+# `2>&1 >/dev/null`：先把 fd2 導向目前的 fd1（也就是被命令替換擷取的
+# 管線），再把 fd1 導向 /dev/null，結果只有 stderr 被擷取進
+# err_output，成功時的回應直接丟棄（agent start 成功本身就是就緒憑
+# 據，沒有任何欄位要讀）。手法與 send-to-phase.sh／press-approval.sh
+# 對非逾時類錯誤完全一致，八支腳本裡不再留這一條例外。
+#
+# 為什麼不能讓它原樣繼承：本腳本的 stderr 直接就是編排端的 context。
+# 這條失敗路徑最主要的成因正是工作區信任對話框，而那正是該 pane 的終
+# 端標題最可能載著使用者或模型文字的時刻。`agent start` 這一類錯誤酬
+# 載會不會整包帶著 agent 物件（因而帶著 terminal_title／
+# terminal_title_stripped）至今未查證，而要製造一個卡在信任對話框的
+# agent 本身就是副作用，沒有無副作用的探測手段可用。因此不逐一查證酬
+# 載形狀，改採與另外兩支相同的結構性做法：只白名單擷取 error.code 與
+# error.message 兩個純字串欄位，其餘欄位一律不觸碰；兩個欄位任一取不
+# 到都給明確的替代字串，不靜默留空、也不因此退回轉發原文。
+#
+# 結束碼 1（伺服器錯誤，錯誤 JSON 印在 stderr）與結束碼 2（語法錯誤，
+# herdr 印的是非 JSON 的用法說明）走同一道擷取，不是只處理 1：用法說
+# 明一樣是未經接管的原始輸出，一樣不得原樣進入編排端的 context。它解
+# 析不出 error.code，兩個欄位因此都落到替代字串，與 common.sh 的
+# _eo_relay_herdr_stderr 對非 JSON 輸出的處置是同一個形狀。
+rc=0
+if err_output="$(herdr agent start "$agent" --kind claude --pane "$pane_id" \
     --timeout "$EO_AGENT_START_TIMEOUT_MS" \
-    -- --permission-mode auto >/dev/null; then
+    -- --permission-mode auto 2>&1 >/dev/null)"; then
   :
 else
   rc=$?
+fi
+
+if [ "$rc" -ne 0 ]; then
+  error_code="$(printf '%s' "$err_output" | jq -r '.error.code // empty' 2>/dev/null || true)"
+  error_message="$(printf '%s' "$err_output" | jq -r '.error.message // empty' 2>/dev/null || true)"
+  [ -n "$error_code" ] || error_code="(無法取得 error.code)"
+  [ -n "$error_message" ] || error_message="(無法取得 error.message)"
   if [ "$rc" -eq 2 ]; then
-    eo_die 2 "start-phase.sh: herdr 以結束碼 2 拒絕 agent start，疑似腳本呼叫語法錯誤（agent=$agent, pane=$pane_id）"
+    eo_die 2 "start-phase.sh: herdr 以結束碼 2 拒絕 agent start，疑似腳本呼叫語法錯誤（agent=$agent, pane=$pane_id）：code=$error_code message=$error_message"
   fi
-  eo_die 8 "start-phase.sh: agent start 在逾時（${EO_AGENT_START_TIMEOUT_MS}ms）內未回報就緒（phase $phase, tab $tab_id, pane $pane_id），結束碼 $rc"
+  eo_die 8 "start-phase.sh: agent start 在逾時（${EO_AGENT_START_TIMEOUT_MS}ms）內未回報就緒（phase $phase, tab $tab_id, pane $pane_id），結束碼 $rc：code=$error_code message=$error_message"
 fi
 
 printf 'tab_id=%s pane_id=%s agent=%s\n' "$tab_id" "$pane_id" "$agent"

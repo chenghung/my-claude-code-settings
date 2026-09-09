@@ -1010,19 +1010,24 @@ case "$1 $2" in
     exit 0 ;;
   "agent send-keys") printf '{"result":{}}'; exit 0 ;;
   "agent wait")
-    # 一般核准框必須正面帶到 --until working，且絕不能帶 --until
-    # idle。只擋 idle（負面單向）測不出「兩條分支其實共用同一段邏
-    # 輯、只是換個訊息」這種假分支：若實作永遠等某個第三個值（例如
-    # done），這裡的舊寫法會誤判通過。改成正面要求看到 working、同
-    # 時仍然禁止 idle，才與下面 --startup 那組的 saw_idle 正面判斷對
-    # 稱，合起來才真的證明兩條分支各自送出不同的 --until 值。
+    # 非啟動階段等的是「已離開 blocked」，落點三個都收：必須正面帶到
+    # --until idle、--until done、--until working 三個值，缺一不可。
+    # 三個都正面要求，才測得出「其中一個被拿掉」——拒絕鍵那一類代按
+    # 之後對方落回停下態，少了 idle／done 就會每次逾時拿到 7；少了
+    # working 則是把這條分支縮成跟 --startup 一樣。兩條分支的區別現
+    # 在由 working 承擔：這裡要求它在，下面 --startup 那組要求它不
+    # 在，合起來仍然證明兩條分支真的送出不同的 --until 組合，不是共
+    # 用同一段邏輯只換訊息。
+    saw_idle=0
+    saw_done=0
     saw_working=0
     for a in "$@"; do
-      [ "$a" = "idle" ] && { printf 'unexpected --until idle\n' >&2; exit 9; }
+      [ "$a" = "idle" ] && saw_idle=1
+      [ "$a" = "done" ] && saw_done=1
       [ "$a" = "working" ] && saw_working=1
     done
-    if [ "$saw_working" -ne 1 ]; then
-      printf '未見 --until working\n' >&2
+    if [ "$saw_idle" -ne 1 ] || [ "$saw_done" -ne 1 ] || [ "$saw_working" -ne 1 ]; then
+      printf '未同時見到 --until idle／done／working\n' >&2
       exit 9
     fi
     printf '%s' '{"result":{"agent":{"agent_status":"working"}}}'
@@ -1079,17 +1084,17 @@ else
   bad "press-approval 在狀態已非 blocked 時結束碼為 $rc，預期 6"
 fi
 
-# --startup：不等 working，改為確認狀態已離開 blocked——而「已離開」
-# 有 idle 與 done 兩種，兩種都要接受（沒被使用者在 herdr 介面裡點進去
-# 看過的 tab，停下時回報的是 done；這條路徑的情境正是使用者只在對話裡
-# 回答「信任」、未必點進過那個 tab）。用獨立的 phase 302，樁直接檢查
-# herdr agent wait 收到的 --until 同時涵蓋 idle 與 done、而且不含
-# working，正面驗證兩種取憑據方式真的走了不同分支，而不只是靠回應內容
-# 湊巧對得上。跟上面 phase 301 那組（正面要求 --until working、同時禁
-# 止 idle）合在一起看：兩邊都各自正面斷言自己該送出的值、也各自禁止對
-# 方那個值，證明的是「兩條分支真的各自送出不同的 --until」，不是「其
-# 中一條分支預設就會通過、另一條才有事後檢查」這種不對稱、可能放過假
-# 分支的驗證。
+# --startup：一樣是確認狀態已離開 blocked，但落點不含 working——那個
+# 時點沒有任何 prompt 排著等做，通過信任對話框只是讓 agent 可以開始接
+# 受輸入。而「已離開」有 idle 與 done 兩種，兩種都要接受（沒被使用者
+# 在 herdr 介面裡點進去看過的 tab，停下時回報的是 done；這條路徑的情
+# 境正是使用者只在對話裡回答「信任」、未必點進過那個 tab）。用獨立的
+# phase 302，樁直接檢查 herdr agent wait 收到的 --until 同時涵蓋 idle
+# 與 done、而且不含 working。跟上面 phase 301 那組（正面要求 idle／
+# done／working 三個都在）合在一起看：兩條分支現在共用「已離開
+# blocked」這個性質，差別只剩 working 在不在，於是這兩組斷言一組要求
+# 它在、一組要求它不在，仍然證明得了「兩條分支真的各自送出不同的
+# --until 組合」，而不是共用同一段邏輯只換訊息。
 eo_state_set 302 agent_name '"phase-302-abcd"'
 eo_state_set 302 tab_id '"tab_302"'
 cat > "$STUB_BIN/herdr" <<'STUB'
@@ -2951,6 +2956,226 @@ if [ "$rc" -eq 0 ] && [ "$out" = "handshake=ok" ]; then
 else
   bad "信任對話框復原路徑得到 rc=$rc out='$out'，預期 rc=0 handshake=ok（5＝讀不到 agent 名稱、7＝只等 idle 等到逾時）"
 fi
+export PATH="$EO_TEST_PATH"
+
+# ===== 修正輪次 5：獨立審查找出的三個缺陷 =====
+
+# --- 缺陷一：沒有任何地方建立狀態檔，全新 epic 的第一次派工必然失敗 ---
+# 舊行為：整套腳本沒有一處會建出 state.json，而所有讀寫都經
+# _eo_state_file_or_die，它對不存在的檔案一律以 5 結束。於是全新 epic
+# 的第一次派工必然是「tab create 成功、tab 真的開出來了，接著第一次
+# eo_state_set 撞上檔案不存在、以 5 死掉」；而 close-phase.sh 第一件事
+# 也是從狀態檔取 tab_id、同樣以 5 死掉，那個已經真實存在的 tab 沒有任
+# 何腳本關得掉。這一組刻意用一個全新的、連 .tmp 目錄都還不存在的假倉
+# 庫，重現「全新 epic 的第一次派工」這個情境。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab create")
+    printf '%s' '{"result":{"tab":{"tab_id":"tab_401"},
+                  "root_pane":{"pane_id":"pane_401"}}}'; exit 0 ;;
+  "agent start") printf '{"result":{"ok":true}}'; exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$EO_TEST_PATH"
+assert_herdr_stubbed "$STUB_BIN"
+
+# 刻意什麼都不預先建立：目錄與檔案都必須由 start-phase.sh 自己生出來。
+eo_fresh_repo="$T/fresh-epic"
+eo_fresh_state="$eo_fresh_repo/.tmp/epic-orchestration/state.json"
+out="$(env EO_MAIN_REPO="$eo_fresh_repo" bash "$SCRIPTS/start-phase.sh" 401)" \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] \
+   && printf '%s' "$out" | rg -q '^tab_id=tab_401 pane_id=pane_401 agent=phase-401-' \
+   && [ -f "$eo_fresh_state" ] \
+   && [ "$(jq -r '.phases["401"].tab_id' "$eo_fresh_state")" = "tab_401" ] \
+   && [ "$(jq -r '.phases["401"].held_by_orchestrator' "$eo_fresh_state")" = "false" ]; then
+  pass "狀態檔不存在時，全新 epic 的第一次派工能成功走完（腳本自己建目錄與檔案）"
+else
+  bad "全新 epic 第一次派工得到 rc=$rc out='$out'，狀態檔內容='$( ( cat "$eo_fresh_state" ) 2>/dev/null )'，預期 rc=0 且座標已寫入"
+fi
+
+# 初始內容只有 phases 一個最上層鍵。這一條把「建立時要不要一併寫
+# main_repo／parent_issue」的查證結果釘住：已對整個 skills/ 目錄搜過這
+# 兩個鍵，沒有任何生產程式碼讀或寫它們（只有這份測試檔的樣本資料帶
+# 著），所以建立時不憑空補寫沒有人用的欄位。日後真的有讀者出現時，這
+# 條會紅，逼那次改動連同這裡的理由一起重新決定。
+if [ "$(jq -c 'keys' "$eo_fresh_state")" = '["phases"]' ]; then
+  pass "新建的狀態檔最上層只有 phases 一個鍵"
+else
+  bad "新建的狀態檔最上層鍵為 $(jq -c 'keys' "$eo_fresh_state")，預期 [\"phases\"]"
+fi
+
+# 重複建立不覆蓋既有內容：同一個倉庫的第二次派工，第一個 phase 的記錄
+# 必須原封不動。這一條抓的是「每次派工都無條件寫一份空的
+# {\"phases\":{}} 蓋掉」。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab create")
+    printf '%s' '{"result":{"tab":{"tab_id":"tab_402"},
+                  "root_pane":{"pane_id":"pane_402"}}}'; exit 0 ;;
+  "agent start") printf '{"result":{"ok":true}}'; exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+assert_herdr_stubbed "$STUB_BIN"
+out="$(env EO_MAIN_REPO="$eo_fresh_repo" bash "$SCRIPTS/start-phase.sh" 402)" \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] \
+   && [ "$(jq -r '.phases["401"].tab_id' "$eo_fresh_state")" = "tab_401" ] \
+   && [ "$(jq -r '.phases["402"].tab_id' "$eo_fresh_state")" = "tab_402" ]; then
+  pass "第二次派工不覆蓋既有狀態檔內容（建立是幂等的）"
+else
+  bad "第二次派工後 rc=$rc，401 的 tab_id='$(jq -r '.phases["401"].tab_id' "$eo_fresh_state")'、402 的 tab_id='$(jq -r '.phases["402"].tab_id' "$eo_fresh_state")'，預期兩筆都在"
+fi
+
+# 競態：多個 phase 在很短時間內接連啟動時，「檢查檔案存不存在」必須跟
+# 「寫入」落在同一個臨界區內。手法：外部先搶下同一把鎖，握著它的期間
+# 才把「別人的記錄」寫進狀態檔，然後才放鎖。
+#   - 存在性檢查若落在鎖外：它在搶鎖之前就判定檔案不存在，等到拿到鎖
+#     時照樣寫下空的 {"phases":{}}，把 777 那筆記錄整個蓋掉 → 內容斷
+#     言翻紅。
+#   - 若整段根本沒進鎖：它會在外部寫入之前就跑完，等待時間趨近 0 →
+#     時間斷言翻紅。兩個斷言合起來才擋得住這兩種退化。
+eo_race_repo="$T/init-race"
+eo_race_state="$eo_race_repo/.tmp/epic-orchestration/state.json"
+mkdir -p "$eo_race_repo/.tmp/epic-orchestration"
+(
+  exec 8>"$eo_race_state.lock"
+  flock -x 8
+  sleep 1
+  printf '%s\n' '{"phases":{"777":{"tab_id":"tab_777"}}}' > "$eo_race_state"
+) &
+eo_race_holder=$!
+sleep 0.3
+eo_race_start_ms=$(date +%s%3N)
+( export EO_MAIN_REPO="$eo_race_repo"; eo_state_init )
+eo_race_end_ms=$(date +%s%3N)
+wait "$eo_race_holder"
+eo_race_elapsed_ms=$((eo_race_end_ms - eo_race_start_ms))
+if [ "$(jq -r '.phases["777"].tab_id' "$eo_race_state")" = "tab_777" ] \
+   && [ "$eo_race_elapsed_ms" -ge 400 ]; then
+  pass "eo_state_init 的存在性檢查與寫入在同一把鎖內，不覆蓋等鎖期間別人建好的內容"
+else
+  bad "eo_state_init 競態測試失敗：等待 ${eo_race_elapsed_ms}ms、777 的 tab_id='$(jq -r '.phases["777"].tab_id' "$eo_race_state")'，預期等待 ≥400ms 且記錄仍在"
+fi
+
+# --- 缺陷二：start-phase.sh 的 agent start 失敗時把 herdr 原始 stderr
+#     原樣送到呼叫端 ---
+# 舊行為只導掉 stdout，stderr 原樣繼承，而本腳本的 stderr 直接就是編排
+# 端的 context。這條失敗路徑最主要的成因是工作區信任對話框，那正是該
+# pane 的終端標題最可能載著使用者或模型文字的時刻。樁的錯誤酬載額外帶
+# 一個模擬 terminal_title 的可辨識字串：改回原樣轉發，這個字串就會出現
+# 在錯誤訊息裡，下面的斷言翻紅。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab create")
+    printf '%s' '{"result":{"tab":{"tab_id":"tab_403"},
+                  "root_pane":{"pane_id":"pane_403"}}}'; exit 0 ;;
+  "agent start")
+    printf '{"error":{"code":"agent_not_ready","message":"審查用可辨識啟動拒絕訊息"},"agent":{"terminal_title":"審查用可辨識啟動terminal_title洩漏字串"}}' >&2
+    exit 1 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+assert_herdr_stubbed "$STUB_BIN"
+err_out="$( ( bash "$SCRIPTS/start-phase.sh" 403 ) 2>&1 >/dev/null )" && rc=0 || rc=$?
+if [ "$rc" -eq 8 ] \
+   && printf '%s' "$err_out" | rg -q 'code=agent_not_ready' \
+   && printf '%s' "$err_out" | rg -q 'message=審查用可辨識啟動拒絕訊息'; then
+  pass "start-phase agent start 失敗（結束碼 1）時只轉發 code 與 message"
+else
+  bad "start-phase agent start 失敗得到 rc=$rc err_out='$err_out'，預期 rc=8 且含 code=agent_not_ready 與 message=審查用可辨識啟動拒絕訊息"
+fi
+if printf '%s' "$err_out" | rg -q '審查用可辨識啟動terminal_title洩漏字串'; then
+  bad "start-phase 把 herdr 原始 stderr（含 terminal_title）原樣送到呼叫端"
+else
+  pass "start-phase 未把 herdr 原始 stderr 整包送到呼叫端"
+fi
+
+# 結束碼 2 的非 JSON 輸出（herdr 印用法說明）要落在同一道處理裡，不能
+# 只處理結束碼 1：用法說明一樣是未經接管的原始輸出。它解析不出
+# error.code，兩個欄位都該落到明確的替代字串。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab create")
+    printf '%s' '{"result":{"tab":{"tab_id":"tab_404"},
+                  "root_pane":{"pane_id":"pane_404"}}}'; exit 0 ;;
+  "agent start")
+    printf 'Usage: herdr agent start <NAME> --kind <KIND> [OPTIONS]\n審查用可辨識用法說明洩漏字串\n' >&2
+    exit 2 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+assert_herdr_stubbed "$STUB_BIN"
+err_out="$( ( bash "$SCRIPTS/start-phase.sh" 404 ) 2>&1 >/dev/null )" && rc=0 || rc=$?
+if [ "$rc" -eq 2 ] \
+   && printf '%s' "$err_out" | rg -q 'code=\(無法取得 error\.code\)' \
+   && printf '%s' "$err_out" | rg -q 'message=\(無法取得 error\.message\)'; then
+  pass "start-phase agent start 以結束碼 2 拒絕時，非 JSON 輸出走同一道處理並印替代字串"
+else
+  bad "start-phase agent start 結束碼 2 得到 rc=$rc err_out='$err_out'，預期 rc=2 且含兩個替代字串"
+fi
+if printf '%s' "$err_out" | rg -q '審查用可辨識用法說明洩漏字串'; then
+  bad "start-phase 把 herdr 的用法說明原樣送到呼叫端"
+else
+  pass "start-phase 未把 herdr 的用法說明原樣送到呼叫端"
+fi
+
+# --- 缺陷三：拒絕鍵那一類代按之後，等的狀態值可能永遠等不到 ---
+# 舊行為：非啟動階段一律等 --until working。但拒絕鍵（esc、否、取消這
+# 一類）依定義不放行任何動作，被否決的 agent 若落回停下態，這條路徑就
+# 每次都在逾時後拿到 7，而 7 的處置是「按鍵已送出、不得重按、派調查
+# 者」——每一次拒絕代按固定燒掉一次調查。樁在 --until 沒有同時涵蓋
+# idle／done／working 時回傳逾時錯誤，忠實重現舊行為在真實環境下的表
+# 現；涵蓋了才回報 done，也就是被否決的 agent 停下來的那個落點。
+eo_state_set 501 agent_name '"phase-501-abcd"'
+eo_state_set 501 tab_id '"tab_501"'
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_501"}]}}'; exit 0 ;;
+  "agent get")
+    printf '%s' '{"result":{"agent":{"agent_status":"blocked"}}}'
+    exit 0 ;;
+  "agent send-keys") printf '{"result":{}}'; exit 0 ;;
+  "agent wait")
+    saw_idle=0
+    saw_done=0
+    saw_working=0
+    for a in "$@"; do
+      [ "$a" = "idle" ] && saw_idle=1
+      [ "$a" = "done" ] && saw_done=1
+      [ "$a" = "working" ] && saw_working=1
+    done
+    if [ "$saw_idle" -ne 1 ] || [ "$saw_done" -ne 1 ] || [ "$saw_working" -ne 1 ]; then
+      printf '{"error":{"code":"timeout","message":"stub: --until 未同時涵蓋 idle／done／working"}}\n' >&2
+      exit 1
+    fi
+    # 被否決的 agent 就此停下，落點是 done，不是 working。
+    printf '%s' '{"result":{"agent":{"agent_status":"done"}}}'
+    exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+assert_herdr_stubbed "$STUB_BIN"
+out="$(bash "$SCRIPTS/press-approval.sh" 501 esc --allows '否決這次的工具呼叫')" \
+  && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "handshake=ok" ]; then
+  pass "非啟動階段代按：對方落回停下態（done）也算取得憑據，不再固定逾時拿 7"
+else
+  bad "非啟動階段拒絕鍵代按得到 rc=$rc out='$out'，預期 rc=0 handshake=ok（7＝只等 working、等到逾時）"
+fi
+
 export PATH="$EO_TEST_PATH"
 
 exit "$fail"
