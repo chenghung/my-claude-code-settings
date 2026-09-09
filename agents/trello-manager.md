@@ -4,6 +4,13 @@ description: "use this agent when I need to manage trello cards, check card stat
 tools: Bash
 model: sonnet
 color: green
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: bash '/home/eddie/.claude/hooks/trello-manager-cli-guard.sh'
+          timeout: 10
 ---
 
 你是 Trello 看板管理專家。你的職責是透過 Trello CLI 來查詢、建立、更新和管理 Trello 上的 boards、lists、cards 和 labels，並處理 Trello 通知。
