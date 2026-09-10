@@ -459,19 +459,33 @@ eo_classify_stop() {
   # 式自己的責任。抓不到或編號對不上就直接視同 marker=none，不進 seq
   # 比對——沒有 seq 可比，比較本身沒有意義。這個正規表示式同時涵蓋
   # 字面上的哨兵字串 `marker=none`：那個字串本來就不會匹配
-  # `^\[PHASE ...`。
+  # `^[[:space:]]*\[PHASE ...`。
+  #
+  # 行首容忍前導空白：已對 Antigravity CLI 實測，它會把 agent 回覆的
+  # 每一行整段做兩格縮排，標記行的行首因此是空白字元而非 `[`。
+  # `^[[:space:]]*` 只放寬容忍行首的空白字元，不放寬成「行內任何位置
+  # 出現這個樣式都算」：比對之後那一段仍然錨死在同一行，畫面上單純引
+  # 用或討論這個格式的文字（前面帶其他非空白字元）不會被誤判成真正的
+  # 標記行。read-phase-pane.sh --marker-only 抓出來的那一行原樣保留前
+  # 導空白（它只負責挑對行，不負責正規化），所以這裡的解析樣式要獨立
+  # 能吃下前導空白，不能只靠上游先 trim 過。
   #
   # 樣式匹配成功還不夠，state 值必須再過一次白名單（見
   # _eo_valid_marker_state）。不合法時把 seq 一併清空，讓它落回下面同
   # 一條 marker=none 路徑：這樣「值不合法」與「根本沒有標記行」在後續
   # 處置上完全一致，而且清掉 seq 也順帶保證了不合法的標記不會推進
   # last_marker_seq——基準只該被真正看懂的標記推進。
-  pattern="^\\[PHASE ${phase}\\] seq=([0-9]+) state=(.*)\$"
+  pattern="^[[:space:]]*\\[PHASE ${phase}\\] seq=([0-9]+) state=(.*)\$"
   seq=""
   state_str=""
   if [[ "$marker_line" =~ $pattern ]]; then
     seq="${BASH_REMATCH[1]}"
     state_str="${BASH_REMATCH[2]}"
+    # `(.*)` 會把行尾的尾隨空白也一併吃進 state_str（`.` 不排除空白
+    # 字元），這裡只切掉尾端連續的空白，不動內部空白——`pr-ready
+    # pr=456` 這類本來就帶空白的合法值不受影響，白名單比對前先讓尾隨
+    # 空白不算數。
+    state_str="${state_str%"${state_str##*[![:space:]]}"}"
     if ! _eo_valid_marker_state "$state_str"; then
       seq=""
       state_str=""
