@@ -282,17 +282,20 @@ _HAT_INBOX_JSON_FIELDS=(
 )
 
 # hat_registry_init
-# 幂等建立 registry 根與六個子目錄（workers／inbox／details／replies／
-# peer-log／handoff），以及空的 team.json。team.json 只在不存在時建
-# 立，重跑不得清空已經寫入的狀態；六個子目錄用 mkdir -p，對「已存在」
-# 與「兩個行程同時建」都是安全的。
+# 幂等建立 registry 根與七個子目錄（workers／inbox／details／replies／
+# briefings／peer-log／handoff），以及空的 team.json。team.json 只在不
+# 存在時建立，重跑不得清空已經寫入的狀態；七個子目錄用 mkdir -p，對
+# 「已存在」與「兩個行程同時建」都是安全的。briefings/ 由 launch-
+# worker.sh 在寫 registry 的同一步把啟動包內容複製進去（規格 §13：中
+# 斷恢復之後，那是唯一能重建「當初到底派了什麼」的東西——呼叫端傳入的
+# --briefing-file 路徑可能是暫存檔，也可能已經被改掉）。
 hat_registry_init() {
   local root
   root="$(hat_registry_root)"
 
   mkdir -p \
-    "$root/workers" "$root/inbox" "$root/details" \
-    "$root/replies" "$root/peer-log" "$root/handoff"
+    "$root/workers" "$root/inbox" "$root/details" "$root/replies" \
+    "$root/briefings" "$root/peer-log" "$root/handoff"
 
   if [ ! -e "$root/team.json" ]; then
     printf '{}' > "$root/team.json"

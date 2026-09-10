@@ -171,14 +171,14 @@ mkdir -p "$AGENT_TEAM_HOME"
 hat_registry_init
 REG="$(hat_registry_root)"
 
-# ---- hat_registry_init：六個子目錄與空 team.json（本任務自行補的覆
+# ---- hat_registry_init：七個子目錄與空 team.json（本任務自行補的覆
 #      蓋率缺口，見任務報告）----
 # 任務簡報 Produces 有列 hat_registry_init，但 Step 1-6 沒有安排任何測
 # 試步驟驗證它本身；hat_json_get／hat_worker_list 也是同樣情形。已用
 # 關鍵字搜過全部 15 份 task brief，這三者從頭到尾沒有被排定由任何地方
 # 驗證。比照 Task 1 對 hat_project_tmp／hat_assert_workspace 同類缺口
 # 的處理方式：不是排定由後續任務驗證的，就在本任務自行補最小斷言。
-for d in workers inbox details replies peer-log handoff; do
+for d in workers inbox details replies briefings peer-log handoff; do
   if [ -d "$REG/$d" ]; then
     pass "registry：hat_registry_init 建立子目錄 $d"
   else
@@ -193,7 +193,7 @@ else
   bad "registry：team.json 初始內容不是 {}：$content"
 fi
 
-# 幂等：team.json 已存在時重跑不得清空既有內容。用跟六個子目錄／欄位
+# 幂等：team.json 已存在時重跑不得清空既有內容。用跟七個子目錄／欄位
 # 白名單都無關的自訂標記內容，確認這條檢查測的是「保留既有檔案」本
 # 身，不是碰巧跟其他斷言用同一份資料。
 printf '{"marker":"kept"}' > "$REG/team.json"
@@ -309,7 +309,7 @@ esac
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=29
+HAT_EXPECTED_ASSERTIONS=30
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
