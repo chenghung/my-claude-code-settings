@@ -3,6 +3,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 LIB="$REPO/skills/herdr-agent-team/scripts/lib/common.sh"
+SCRIPTS="$REPO/skills/herdr-agent-team/scripts"
 fail=0
 # 跑過的斷言數，供檔尾的下限檢查用（見那裡的說明）。
 assert_count=0
@@ -343,12 +344,146 @@ case "$out" in
   *) bad "registry：hat_worker_list 輸出不如預期：$out" ;;
 esac
 
+# ===== team-init.sh：.tmp 建立規則（本任務同時是 hat_project_tmp／
+#       hat_registry_root 的行為驗證，Task 1 只實作、未測）=====
+# 沿用上面「registry 讀寫」小節已匯出的 AGENT_TEAM_HOME=$T/teamhome、
+# HOME=$T/fakehome。team-init.sh 的自我命名步驟需要 HERDR_PANE_ID／能
+# 回應的 herdr 樁，這裡先用一個通用成功樁與固定 pane id 頂著，讓這兩條
+# 只關心 .tmp 行為的斷言不被自我命名這一步連累；記錄 rename 引數的專用
+# 樁留到下面「自我命名」小節才需要。
+TEAM_HOME="$T/teamhome"
+export AGENT_TEAM_HOME="$TEAM_HOME" HOME="$T/fakehome" HERDR_PANE_ID=w3N:p1
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" team-init-tmp
+
+rc=0; bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "team-init：首次執行以 0 結束"; else bad "team-init：得到 rc=$rc"; fi
+
+if [ -L "$TEAM_HOME/.tmp" ]; then
+  pass ".tmp 是 symlink"
+else
+  bad ".tmp 不是 symlink（規則禁止實體目錄）"
+fi
+tgt="$(readlink "$TEAM_HOME/.tmp")"
+case "$tgt" in
+  /*) pass ".tmp symlink 目標是絕對路徑" ;;
+  *)  bad ".tmp symlink 目標不是絕對路徑：$tgt" ;;
+esac
+hash8="$(printf '%s' "$TEAM_HOME" | sha256sum | cut -c1-8)"
+case "$tgt" in
+  *"teamhome-$hash8") pass ".tmp 目標命名符合 basename-hash8 規則" ;;
+  *) bad ".tmp 目標命名不符：$tgt（期望結尾 teamhome-$hash8）" ;;
+esac
+
+# ---- Step 8（任務簡報）：連跑兩次都必須以 0 結束 ----
+# 這裡緊接著、不動任何狀態地再跑一次，直接驗證「已經命名過／registry
+# 已經存在」時的幂等性；跟下面「dangling symlink 重建」那一次刻意先破
+# 壞狀態再重跑是兩件不同的事，分開測。
+rc=0; bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "team-init：緊接著重跑（幂等）仍以 0 結束"; else bad "team-init：得到 rc=$rc"; fi
+
+# ---- dangling symlink 的重建 ----
+# 刪的是 $HOME/.tmp（team home 底下 .tmp symlink 指向的目標所在的家目
+# 錄），不是 $TEAM_HOME/.tmp 本身：這樣才會讓既有 symlink 變成目標不存
+# 在的 dangling symlink，而不是直接把 symlink 本身砍掉重練。
+rm -rf "$T/fakehome/.tmp"
+rc=0; bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "team-init：dangling symlink 重建後仍以 0 結束"; else bad "team-init：得到 rc=$rc"; fi
+if [ -d "$TEAM_HOME/.tmp/" ]; then
+  pass "dangling symlink 被重建"
+else
+  bad "dangling symlink 沒有被重建"
+fi
+
+# ===== team-init.sh：自我命名 =====
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = "agent" ] && [ "\$2" = "rename" ]; then
+  printf '%s %s\n' "\$3" "\$4" > "$T/rename-args"
+  printf '{"result":{}}'; exit 0
+fi
+printf '{"result":{}}'; exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" team-init-naming
+export HERDR_PANE_ID=w3N:p1 HERDR_WORKSPACE_ID=w3N
+
+rc=0; bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "team-init：自我命名執行以 0 結束"; else bad "team-init：得到 rc=$rc"; fi
+
+read -r tgt nm < "$T/rename-args"
+if [ "$tgt" = "w3N:p1" ]; then pass "rename 目標用 pane id"; else bad "rename 目標是 '$tgt'"; fi
+if [ "$nm" = "w3n-orchestrator" ]; then pass "orchestrator 名稱已正規化"; else bad "名稱是 '$nm'"; fi
+
+# ===== team-init.sh --recover：收回殘留持有旗標＋回報待補送清單 =====
+mkdir -p "$REG/workers"
+printf '{"held":true,"pending_resend":[{"text":"x"}]}' > "$REG/workers/w3n-backend.json"
+printf '{"held":true,"pending_resend":[]}'             > "$REG/workers/w3n-ux.json"
+
+HERDR_CALL_LOG="$T/herdr-call-log"
+: > "$HERDR_CALL_LOG"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" team-init-recover
+
+rc=0; out="$(bash "$SCRIPTS/team-init.sh" --recover 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 0 ]; then pass "team-init --recover：執行以 0 結束"; else bad "team-init --recover：得到 rc=$rc"; fi
+
+if [ "$(jq -r '.held' "$REG/workers/w3n-backend.json")" = "false" ]; then
+  pass "recover：收回殘留持有旗標"
+else
+  bad "recover：旗標仍卡在 true（watchdog 會永久跳過它）"
+fi
+if [ "$(jq -r '.held' "$REG/workers/w3n-ux.json")" = "false" ]; then
+  pass "recover：所有 worker 的旗標都收回"
+else
+  bad "recover：只收回了一部分"
+fi
+case "$out" in
+  *"pending-resend worker=w3n-backend count=1"*) pass "recover：印出待補送清單" ;;
+  *) bad "recover：沒有印出待補送清單：$out" ;;
+esac
+case "$out" in
+  *"pending-resend worker=w3n-ux"*) bad "recover：把沒有待補送的 worker 也列出來了" ;;
+  *) pass "recover：只列出真的有待補送的 worker" ;;
+esac
+
+# ===== team-init.sh --recover：絕對不自行補送 =====
+# 補送必須由 orchestrator 依清單逐一呼叫 instruct.sh，順序才控制得
+# 住；順序顛倒（--recover 自己先補送）會讓補送設下的新旗標被 watchdog
+# 補發事件的處理流程當成「上一輪沒收回的殘留」而收掉。
+: > "$HERDR_CALL_LOG"
+printf '{"held":true,"pending_resend":[{"text":"goal 更新"}]}' > "$REG/workers/w3n-backend.json"
+rc=0; bash "$SCRIPTS/team-init.sh" --recover >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "team-init --recover（第二輪）：執行以 0 結束"; else bad "team-init --recover：得到 rc=$rc"; fi
+
+if grep -q 'agent prompt' "$HERDR_CALL_LOG"; then
+  bad "recover：自行補送了（順序會失控，補送設下的旗標會被 watchdog 當殘留收掉）"
+else
+  pass "recover：不自行補送，只回報清單"
+fi
+if [ "$(jq -r '.pending_resend | length' "$REG/workers/w3n-backend.json")" = "1" ]; then
+  pass "recover：待補送清單保持原樣"
+else
+  bad "recover：清單被清掉了"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=33
+HAT_EXPECTED_ASSERTIONS=51
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
