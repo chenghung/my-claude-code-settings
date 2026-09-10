@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # tools/epic-smoke/check.sh - Directory statistics script for epic-smoke
+#
+# 用法：check.sh [--json]。加上 --json 時，另外把統計結果以 JSON 印到標準輸出。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,9 +23,14 @@ count_files() {
 }
 
 main() {
+  local json_mode=0
   local agents_count
   local skills_count
   local rules_count
+
+  if [[ "${1:-}" == "--json" ]]; then
+    json_mode=1
+  fi
 
   agents_count=$(count_files "agents")
   skills_count=$(count_files "skills")
@@ -32,6 +39,11 @@ main() {
   log_msg "agents: $agents_count"
   log_msg "skills: $skills_count"
   log_msg "rules: $rules_count"
+
+  if (( json_mode )); then
+    printf '{"agents":%d,"skills":%d,"rules":%d}\n' \
+      "$agents_count" "$skills_count" "$rules_count"
+  fi
 }
 
 main "$@"
