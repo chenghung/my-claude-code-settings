@@ -621,12 +621,295 @@ else
   bad "允許清單：未知規則名被放行（這會按下沒見過的鍵）"
 fi
 
+# ===== launch-worker.sh：八步啟動序列 =====
+# 沿用既有已匯出的 AGENT_TEAM_HOME=$T/teamhome、HOME=$T/fakehome、
+# HERDR_WORKSPACE_ID=w3N；$REG 沿用「registry 讀寫」小節算出的值，路
+# 徑推導不變。
+BRIEF="$T/briefing.md"
+printf '啟動包初始內容（測試用，實際內容在下面「啟動包複製」測試會被換掉）\n' > "$BRIEF"
+
+# 清掉可能殘留自「registry 讀寫」小節的 inbox/1-w3n-backend.json（那筆
+# 記錄只有 .token 沒有 .worker）。就算不清也不會被誤判成這個 worker
+# 的 ack（下面 ACK 輪詢比對 .worker 時，缺席的 .worker 恆不等於任何真
+# 實名稱），這裡純粹是讓本節的前置狀態一開始就乾淨、不必靠這層推理。
+rm -f "$REG"/inbox/*-w3n-backend.json
+
+# ---- 八步序列第 1 步：開工閘門（任務簡報 Step 1 逐字）----
+jq '.goal_confirmed = false' "$REG/team.json" > "$T/t" && mv "$T/t" "$REG/team.json"
+rc=0; bash "$SCRIPTS/launch-worker.sh" --role backend --kind claude --cwd . --briefing-file "$BRIEF" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "launch：goal 未確認時擋住"
+else
+  bad "launch：未確認卻放行（rc=$rc）"
+fi
+# 還原：後面每一步都假設 goal 已確認，否則全部會卡在這一關。
+hat_json_set "$REG/team.json" '.goal_confirmed' 'true'
+
+# ---- 本任務自行補上：team.json 沒有 orchestrator_name 時以 5 結束
+#      （任務簡報第 1 步文字明訂「沒有以 5 結束」，但 Step 1-7 沒有排
+#      定測試步驟覆蓋這一半）----
+saved_team_json="$(cat "$REG/team.json")"
+jq 'del(.orchestrator_name)' "$REG/team.json" > "$T/t" && mv "$T/t" "$REG/team.json"
+rc=0; bash "$SCRIPTS/launch-worker.sh" --role backend --kind claude --cwd . --briefing-file "$BRIEF" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "launch：team.json 沒有 orchestrator_name 時以 5 結束"
+else
+  bad "launch：得到 rc=$rc"
+fi
+printf '%s' "$saved_team_json" > "$REG/team.json"
+
+# ---- 本任務自行補上：呼叫端用錯的三個防呆（Produces 有列出完整介
+#      面，Step 1-7 沒有排定測試步驟覆蓋）----
+rc=0; bash "$SCRIPTS/launch-worker.sh" --kind claude --cwd . --briefing-file "$BRIEF" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "launch：缺 --role 以 2 結束"
+else
+  bad "launch：得到 rc=$rc"
+fi
+
+rc=0; bash "$SCRIPTS/launch-worker.sh" --role argtest --kind gemini --cwd . --briefing-file "$BRIEF" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "launch：不支援的 kind 以 4 結束"
+else
+  bad "launch：得到 rc=$rc"
+fi
+
+rc=0; bash "$SCRIPTS/launch-worker.sh" --role argtest --kind claude --cwd . --briefing-file "$T/no-such-briefing.md" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "launch：--briefing-file 指向不存在的檔案以 2 結束"
+else
+  bad "launch：得到 rc=$rc"
+fi
+
+# ---- Step 2（任務簡報逐字）：tab create 取不到識別碼就不寫 registry ----
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+[ "$1 $2" = "tab create" ] && { printf '{"result":{}}'; exit 0; }
+printf '{"result":{}}'; exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" launch-bad-identifiers
+
+before="$(find "$REG/workers" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l)"
+rc=0; bash "$SCRIPTS/launch-worker.sh" --role backend --kind claude --cwd . --briefing-file "$BRIEF" >/dev/null 2>&1 || rc=$?
+after="$(find "$REG/workers" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l)"
+if [ "$rc" -eq 6 ]; then
+  pass "launch：識別碼取不到以 6 結束"
+else
+  bad "launch：得到 rc=$rc"
+fi
+if [ "$before" = "$after" ]; then
+  pass "launch：識別碼取不到時沒有寫 registry"
+else
+  bad "launch：寫出了孤兒記錄"
+fi
+
+# ---- 本任務自行補上：入口守衛 hat_assert_workspace 真的接上（Task 15
+#      要求接受 target 的八支腳本都必須呼叫它，這裡驗證的是「真的被
+#      跑到且真的能擋下」，不是只有函式名出現在檔案裡）----
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab create") printf '{"result":{"tab":{"tab_id":"other:t9"},"root_pane":{"pane_id":"other:p9"}}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" launch-workspace-guard
+
+before="$(find "$REG/workers" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l)"
+rc=0; bash "$SCRIPTS/launch-worker.sh" --role wsguard --kind claude --cwd . --briefing-file "$BRIEF" >/dev/null 2>&1 || rc=$?
+after="$(find "$REG/workers" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l)"
+if [ "$rc" -eq 4 ]; then
+  pass "launch：新建座標不屬於本 workspace 時以 4 結束（入口守衛真的接上）"
+else
+  bad "launch：得到 rc=$rc"
+fi
+if [ "$before" = "$after" ]; then
+  pass "launch：workspace 守衛擋下時沒有寫 registry"
+else
+  bad "launch：workspace 守衛擋下卻仍寫了 registry"
+fi
+
+# ---- Step 3（任務簡報逐字，測的是規格 §2.3 那個致命發現）：agent
+#      start 成功但 ACK 沒到＝啟動失敗 ----
+# 樁把每次呼叫的子指令追加到 $T/herdr-calls（任務簡報 Step 4 就是讀這
+#個檔案），這一行是任務簡報 Step 3 給的樁沒有的，是接上 Step 4 斷言
+# 的必要補丁。
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$1 \$2" >> "$T/herdr-calls"
+case "\$1 \$2" in
+  "tab create")  printf '{"result":{"tab":{"tab_id":"w3N:t9"},"root_pane":{"pane_id":"w3N:p9"}}}' ;;
+  "agent start") printf '{"result":{}}' ;;
+  "agent get")   printf '{"result":{"agent":{"agent_status":"idle"}}}' ;;
+  "agent prompt") printf '{"result":{}}' ;;
+  "tab close")   printf '{"result":{}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" launch-ack-timeout
+
+: > "$T/herdr-calls"
+rc=0; bash "$SCRIPTS/launch-worker.sh" --role backend --kind claude --cwd . --briefing-file "$BRIEF" --ack-timeout 2 >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 8 ]; then
+  pass "launch：agent start 成功但無 ACK 仍判失敗"
+else
+  bad "launch：把假就緒當成功（rc=$rc）"
+fi
+
+# ---- Step 4（任務簡報逐字）：啟動失敗會關掉 tab 並重試一次 ----
+# 讀的是上面 Step 3 那次呼叫留下的 $T/herdr-calls：一次呼叫內部重試兩
+# 次，`tab close` 理應出現兩次。`grep -c` 在零命中時結束碼是 1，套件
+# 開頭有 `set -euo pipefail`，裸賦值會觸發 errexit；用 `|| true` 讓賦
+# 值本身不受命令本身結束碼影響（`-c` 不論命中與否都會印出數字），沿用
+# 檔頭「安全寫法」的既有慣例。
+n="$(grep -c 'tab close' "$T/herdr-calls")" || true
+if [ "$n" -ge 2 ]; then
+  pass "launch：失敗後關 tab 並重試一次"
+else
+  bad "launch：tab close 只出現 $n 次（應為 2，重試前後各一）"
+fi
+
+# ---- Step 5（任務簡報逐字）：blocked 檢查存在 ----
+# 樁額外把完整引數追加到 $HERDR_FULL_ARGS（下面 Step 7 要讀），任務簡
+# 報 Step 5 的樁沒有這一行，是接上 Step 7 斷言的必要補丁。
+HERDR_FULL_ARGS="$T/herdr-full-args"
+: > "$HERDR_FULL_ARGS"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$1 \$2" >> "$HERDR_CALL_LOG"
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+case "\$1 \$2" in
+  "tab create")  printf '{"result":{"tab":{"tab_id":"w3N:t9"},"root_pane":{"pane_id":"w3N:p9"}}}' ;;
+  "agent get")   printf '{"result":{"agent":{"agent_status":"blocked"}}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" launch-blocked
+
+: > "$HERDR_CALL_LOG"
+# 任務簡報這裡給的原始寫法是裸陳述句（沒有 `|| true`）：這次呼叫必然
+# 以非 0 結束（blocked 重試一次仍 blocked，最終 8），套件開頭的
+# `set -euo pipefail` 會讓裸陳述句觸發 errexit、整份套件行程被帶走。
+# 補上 `|| true`，跟本檔「命令替換/指令之後不得裸讀結束碼」同一條強制
+# 寫法背後的理由一致：不guard 過的非 0 結束碼底下藏著 errexit。
+bash "$SCRIPTS/launch-worker.sh" --role backend --kind claude --cwd . --briefing-file "$BRIEF" --ack-timeout 2 >/dev/null 2>&1 || true
+if grep -q 'agent get' "$HERDR_CALL_LOG"; then
+  pass "launch：送啟動包前有查狀態"
+else
+  bad "launch：跳過了 blocked 檢查"
+fi
+if grep -q 'agent prompt' "$HERDR_CALL_LOG"; then
+  bad "launch：blocked 狀態下仍送出啟動包（第一則會被框吃掉）"
+else
+  pass "launch：blocked 狀態下不送啟動包"
+fi
+
+# ---- Step 6（任務簡報逐字）：啟動包被複製進 registry ----
+# 沿用上面 Step 5 裝好的 blocked 樁：這個情境下第 3 步（寫 registry＋
+# 複製啟動包）本來就排在第 5 步（blocked 檢查）之前，所以同一個會走到
+# blocked 失敗的樁，仍然足以驗證複製有沒有發生。
+printf '這是啟動包全文_BRIEFING_MARKER\n' > "$BRIEF"
+bash "$SCRIPTS/launch-worker.sh" --role backend --kind claude --cwd . --briefing-file "$BRIEF" --ack-timeout 2 >/dev/null 2>&1 || true
+if [ -f "$REG/briefings/w3n-backend.md" ]; then
+  pass "launch：啟動包複製進 registry"
+else
+  bad "launch：啟動包沒有落進 registry（中斷後無法重建派工脈絡）"
+fi
+if grep -q 'BRIEFING_MARKER' "$REG/briefings/w3n-backend.md" 2>/dev/null; then
+  pass "launch：複製的是內容不是路徑"
+else
+  bad "launch：briefings 檔內容不是啟動包全文"
+fi
+
+# ---- Step 7（任務簡報逐字）：--env 五個變數都注入 ----
+args="$(grep -m1 'tab create' "$HERDR_FULL_ARGS")" || true
+for v in AGENT_TEAM_STATE_DIR AGENT_TEAM_ORCHESTRATOR AGENT_TEAM_SELF AGENT_TEAM_ROLE AGENT_TEAM_SCRIPTS; do
+  case "$args" in
+    *"$v="*) pass "launch：注入 $v" ;;
+    *) bad "launch：沒有注入 $v" ;;
+  esac
+done
+
+# ---- 本任務自行補上：完整成功路徑（八步全部走完，Step 1-7 完全沒有
+#      測到這條唯一會走到 rc=0 的路徑）與 ack_reconciliation 對帳欄位
+#      的內容，含 --arg 原生引數直通 ----
+# ack 的摘要格式（`worker_id=<id> cwd=<路徑> model=<名稱>`）是本次實作
+# 定義的介面，見 launch-worker.sh 檔頭「ACK 摘要格式」一節——規格只說
+# ack 要帶這三項，沒有規定怎麼從 report.sh 唯一保證送達的 --summary
+# 欄位搭載過來，回報這個落差、由編排端決定要不要回填進 Task 7／
+# Task 13 的任務簡報，見任務報告。這裡驗證的是「照這個格式送，對帳邏
+# 輯真的解析得出來」，不是驗證 report.sh 本身（那是 Task 7 的職責）。
+HERDR_FULL_ARGS="$T/herdr-full-args-success"
+: > "$HERDR_FULL_ARGS"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+case "\$1 \$2" in
+  "tab create")  printf '{"result":{"tab":{"tab_id":"w3N:t7"},"root_pane":{"pane_id":"w3N:p7"}}}' ;;
+  "agent start") printf '{"result":{}}' ;;
+  "agent get")   printf '{"result":{"agent":{"agent_status":"idle"}}}' ;;
+  "agent prompt")
+    printf '{"token":"ack","worker":"w3n-success","summary":"worker_id=w3n-success cwd=$REG model=claude-3-test"}' > "$REG/inbox/9-w3n-success.json"
+    printf '{"result":{}}'
+    ;;
+  "tab close")   printf '{"result":{}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" launch-success
+
+rc=0
+out="$(bash "$SCRIPTS/launch-worker.sh" --role success --kind claude --cwd "$REG" --briefing-file "$BRIEF" --ack-timeout 5 --arg --model --arg test-model 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "launch：八步全部走完以 0 結束"
+else
+  bad "launch：得到 rc=$rc"
+fi
+
+expected_out="worker=w3n-success pane=w3N:p7 tab=w3N:t7 ack=ok"
+if [ "$out" = "$expected_out" ]; then
+  pass "launch：成功輸出格式正確"
+else
+  bad "launch：輸出格式不如預期：$out（預期：$expected_out）"
+fi
+
+held_after="$(jq -r '.held' "$REG/workers/w3n-success.json")"
+if [ "$held_after" = "false" ]; then
+  pass "launch：成功啟動後持有旗標初值為 false"
+else
+  bad "launch：held='$held_after'"
+fi
+
+wid_match="$(jq -r '.ack_reconciliation.worker_id_match' "$REG/workers/w3n-success.json")"
+cwd_match="$(jq -r '.ack_reconciliation.cwd_match' "$REG/workers/w3n-success.json")"
+model_reported="$(jq -r '.ack_reconciliation.model_reported' "$REG/workers/w3n-success.json")"
+if [ "$wid_match" = "true" ] && [ "$cwd_match" = "true" ] && [ "$model_reported" = "claude-3-test" ]; then
+  pass "launch：ack_reconciliation 正確對帳 worker-id／cwd／model"
+else
+  bad "launch：ack_reconciliation 內容不如預期（worker_id_match=$wid_match cwd_match=$cwd_match model_reported=$model_reported）"
+fi
+
+line="$(grep -m1 'agent start' "$HERDR_FULL_ARGS")" || true
+case "$line" in
+  *"-- --model test-model"*) pass "launch：--arg 原生引數直通到 agent start" ;;
+  *) bad "launch：--arg 沒有正確直通：$line" ;;
+esac
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=75
+HAT_EXPECTED_ASSERTIONS=100
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
