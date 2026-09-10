@@ -336,11 +336,38 @@ hat_json_get() {
 # hat_json_set <file> <jq_path> <json_value>
 # 加鎖的讀-改-寫：mktemp → jq 算新內容 → mv 置換，三步串起來，任一步失
 # 敗都以 5 結束；mv 不得無條件執行，否則 jq 解析失敗時 mv 照跑，會把原
-# 檔換成暫存檔裡的半成品內容。鎖是 registry 根底下一個固定的鎖檔
-# （`<registry root>/.lock`），把單次呼叫內的讀-改-寫序列化；不是逐檔
-# 各自的鎖，理由是同一次呼叫本來就只碰一個檔案，用單一固定鎖檔換來的
-# 是實作簡單，代價是不同檔案之間的寫入也會互相排隊，但這些寫入本來就
-# 稀疏，可接受。
+# 檔換成暫存檔裡的半成品內容。
+#
+# ---- 鎖檔路徑改版：從呼叫端傳入的 <file> 自己的路徑推導，不再呼叫
+#      hat_registry_root ----
+# 修正迴圈第二輪：原本鎖檔是 registry 根底下一個固定路徑
+# （`<registry root>/.lock`），而 `hat_registry_root` 內部依賴
+# `AGENT_TEAM_HOME`（未設時退回 `$PWD`）與 `HERDR_WORKSPACE_ID` 重算根
+# 目錄。這在 orchestrator 端（cwd 穩定、且通常就是 team home）沒問題，
+# 但 worker 端呼叫 `hat_json_set`（例如 report.sh）時踩了兩個洞：一、
+# worker 環境只由 `launch-worker.sh` 注入五個 `AGENT_TEAM_*` 變數
+# （`STATE_DIR`／`ORCHESTRATOR`／`SELF`／`ROLE`／`SCRIPTS`），`HOME` 從
+# 來不在其中，於是 `$PWD` 變成唯一依據；二、worker 的 cwd 本來就是它
+# 自己的工作起點，跟 orchestrator 當初建立 registry 時的 cwd不同是多
+# worker 團隊的常態，不是邊界情境。兩者疊加，`hat_registry_root` 在
+# worker 端算出的是一個跟真正 registry 無關的路徑，鎖檔的父目錄不存
+# 在，`exec {fd}>"$lock_file"` 直接以「沒有此一檔案或目錄」失敗，整支
+# 呼叫端腳本以不受控的方式中止——已實測重現：只設定 launch-worker.sh
+# 真的會注入的那五個變數、cwd 換成跟 registry 根不同的目錄，`hat_
+# json_set` 寫 inbox 記錄時在第一次呼叫就以結束碼 1 中止，留下一個裸
+# 的空物件，六個欄位一個都沒寫進去。
+#
+# 修法：鎖檔改成 `<file>.lock`——跟目標檔案同一層、同名加副檔名，不呼
+# 叫 `hat_registry_root`，也不需要任何 `AGENT_TEAM_*`／`HERDR_*` 環境
+# 變數，純粹由參數決定。這同時修正了一個本來就存在、只是還沒被撞到的
+# 過度序列化：鎖的粒度從「整個 registry 共用一把鎖」收斂成「同一個檔
+# 案的讀-改-寫互相排隊，不同檔案的寫入不會互相等待」——單一檔案的讀改
+# 寫本來就只需要那一個檔案的鎖，全域鎖比需要的更嚴，只是原本用來換實
+# 作簡單；現在兩者都要，不需要取捨。呼叫端若自己還需要「同一個欄位跨
+# 呼叫端取號並遞增」這類全域序列化語意（例如 report.sh 的
+# `hat_allocate_seq`），必須自己對同一個目標檔案走同一個 `<file>.lock`
+# 路徑，不能另外發明一把鎖，否則兩把鎖各自序列化、彼此不排隊，等於沒
+# 鎖（report.sh 已對齊此約定，見該檔 `hat_allocate_seq` 的說明）。
 #
 # <jq_path> 只接受三份白名單裡列舉的欄位，白名單外一律以 2 結束（呼叫
 # 端用錯，不是 registry 壞了，見上方欄位白名單一節）；<json_value> 是
@@ -374,7 +401,7 @@ hat_json_set() {
     hat_die 2 "hat_json_set: 欄位 '$path' 不在白名單內，拒絕寫入：$file"
   fi
 
-  lock_file="$(hat_registry_root)/.lock"
+  lock_file="${file}.lock"
   exec {lock_fd}>"$lock_file"
   flock -x "$lock_fd"
 

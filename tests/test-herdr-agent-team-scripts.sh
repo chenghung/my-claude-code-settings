@@ -1198,6 +1198,39 @@ else
   bad "report：得到 rc=$rc"
 fi
 
+# ---- 本任務自行補上，審查回合二 Critical 1 回歸測試：只給
+#      launch-worker.sh 實際會注入的那五個變數（AGENT_TEAM_STATE_DIR／
+#      AGENT_TEAM_ORCHESTRATOR／AGENT_TEAM_SELF／AGENT_TEAM_ROLE／
+#      AGENT_TEAM_SCRIPTS），完全不設 AGENT_TEAM_HOME，且 cwd 換到跟
+#      registry 根無關的目錄，完整跑一次回報流程 ----
+# 這條斷言存在的理由，就是防止測試再度靠全域 export 意外對齊：本節開
+# 頭到現在，AGENT_TEAM_HOME 一直是「registry 讀寫」小節匯出的
+# $T/teamhome，而 $REG 本身也是拿同一個 AGENT_TEAM_HOME 算出來的，兩
+# 邊自然對齊——這個對齊只在測試裡成立，真實 worker 環境從來不會有
+# AGENT_TEAM_HOME。子殼裡刻意 unset 它、把 cwd 換成 $T 底下一個新目
+# 錄，模擬真實 worker 執行時的環境形狀。
+diff_cwd="$T/report-diff-cwd"
+mkdir -p "$diff_cwd"
+rc=0
+(
+  unset AGENT_TEAM_HOME
+  export AGENT_TEAM_ROLE="backend" AGENT_TEAM_SCRIPTS="$SCRIPTS"
+  cd "$diff_cwd" || exit 1
+  bash "$SCRIPTS/report.sh" --token fyi --summary '只有五個變數也要能完整回報'
+) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "report：只有五個注入變數、cwd 與 registry 根不同時仍成功回報"
+else
+  bad "report：得到 rc=$rc（Critical 1 回歸：共用寫入函式又重算了 registry 根）"
+fi
+five_var_seq="$(hat_last_seq_for_worker w3n-reporter)"
+five_var_worker="$(jq -r '.worker' "$REG/inbox/${five_var_seq}-w3n-reporter.json" 2>/dev/null)" || five_var_worker=""
+if [ "$five_var_worker" = "w3n-reporter" ]; then
+  pass "report：五變數情境下，inbox 記錄六個欄位真的寫進去了（不是裸空物件）"
+else
+  bad "report：inbox 記錄沒有正確寫入（worker='$five_var_worker'），可能又是裸的 {}"
+fi
+
 # ===== Step 2（任務簡報逐字；&&/|| 鏈改寫成 if/then/else/fi）：working
 #      只落檔不投遞 =====
 : > "$HERDR_CALL_LOG"
@@ -1262,15 +1295,30 @@ else
   bad "report：拒絕了卻還是落了檔"
 fi
 
-# ---- 本任務自行補上：ack 固定格式的摘要不會被長度上限擋下（Global
-#      Constraints 明訂上限不得把它截斷或拒絕，Step 1-5 沒有排測試涵蓋
-#      這一半）----
-ack_summary="worker_id=w3n-reporter cwd=$REG model=claude-3-test"
+# ---- 本任務自行補上，審查回合二 Critical 2 要求加強：ack 一律豁免摘
+#      要長度上限，用一個真的超過 500 字元的合法格式字串驗證，不是只
+#      測一個本來就在上限內、就算沒有豁免也會通過的短字串（審查者用
+#      575 字元的真實案例撞到這個洞：worktree 慣例下的深路徑就會把固
+#      定格式推過 500，被拒絕時完全不落檔，比截斷更嚴重）----
+long_cwd="/$(printf 'x%.0s' {1..520})"
+ack_summary="worker_id=w3n-reporter cwd=$long_cwd model=claude-3-test"
+if [ "${#ack_summary}" -le 500 ]; then
+  bad "report：測試前提不成立，ack_summary 只有 ${#ack_summary} 字元，沒有真的超過 500"
+else
+  pass "report：測試前提成立，ack_summary 有 ${#ack_summary} 字元，確實超過 500"
+fi
 rc=0; bash "$SCRIPTS/report.sh" --token ack --summary "$ack_summary" >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 0 ]; then
-  pass "report：符合 ack 固定格式的摘要不會被長度上限擋下"
+  pass "report：超過 500 字元的 ack 摘要仍被接受（一律豁免，不是提高上限）"
 else
   bad "report：ack 摘要被擋下（rc=$rc），對帳會靜默失效"
+fi
+ack_seq="$(hat_last_seq_for_worker w3n-reporter)"
+recorded_ack_summary="$(jq -r '.summary' "$REG/inbox/${ack_seq}-w3n-reporter.json")"
+if [ "$recorded_ack_summary" = "$ack_summary" ]; then
+  pass "report：超長 ack 摘要正常落檔，內容完整未被截斷"
+else
+  bad "report：落檔的摘要與原文不符，可能被截斷或寫壞"
 fi
 
 # ===== Step 5（修正迴圈第一輪重新產生的簡報逐字；&&/|| 鏈改寫成
@@ -1380,7 +1428,7 @@ esac
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=137
+HAT_EXPECTED_ASSERTIONS=141
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

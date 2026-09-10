@@ -48,13 +48,22 @@
 # 等看門狗補投——結束碼的沉默和這裡要擋的其中一種「完全靜默的錯誤」是
 # 同一種類，只是換了個位置。
 #
-# ---- ACK 的固定摘要格式：本腳本不產生，但長度上限不得把它擋下 ----
+# ---- ACK 的固定摘要格式：本腳本不產生，但 ack 這個 token 一律豁免長
+#      度上限 ----
 # `worker_id=<id> cwd=<絕對路徑> model=<名稱>`（Global Constraints、
 # launch-worker.sh 檔頭「ACK 摘要格式」一節）是 worker 依啟動包自己組
-# 出來的，本腳本只是把它當成一般摘要處理。這件事不需要特殊分支：預設
-# 500 字元的上限對這個格式（32 字元封頂的 worker id、常見長度的路
-# 徑、簡短的 model 名稱）綽綽有餘，只要不誤把上限訂得比這個格式還小即
-# 可。
+# 出來的，本腳本只是把它當成一般摘要處理。
+#
+# 修正迴圈第二輪：這裡原本以為「500 字元的上限對這個格式綽綽有餘，不
+# 需要特殊分支」，但那個估計只算了 32 字元封頂的 worker id 與簡短的
+# model 名稱，沒有把 cwd 這個變數算進去——已實測一個合法的 575 字元
+# ack 格式字串（worktree 慣例下的深路徑就會產生這種長度）被原本無豁免
+# 的版本直接以結束碼 2 拒絕、完全不落檔，比截斷更嚴重：launch-worker.sh
+# 第 8 步的對帳會找不到任何一行可解析的內容。裁決是 `ack` 這個 token
+# 一律豁免摘要長度上限，不是把上限調高——它是機器產生的固定三欄格
+# 式，長度由 cwd 路徑決定，不是 worker 自由發揮的散文，上限存在的理由
+# （擋住 worker 把無界內容塞進摘要）在它身上根本不成立，調高上限只是
+# 換一個更大的、遲早還是會被更深路徑撞到的數字。
 #
 # ---- 摘要長度上限：拒絕，不截斷 ----
 # 上限預設 500 字元，可用 AGENT_TEAM_SUMMARY_MAX 覆寫；**這個數字沒有
@@ -104,22 +113,29 @@
 # 間鎖會被放掉，兩個 worker 同時取號可能讀到同一個舊值、算出同一個新
 # 號碼，序號就不再是「跨 worker 全域唯一」。
 #
-# 也不能讓這個取號動作自己內部呼叫 hat_json_set：兩者會用同一個鎖檔
-# （`<registry root>/.lock`）。已用這台機器上的真實 bash 5.3.15 實
-# 測：同一個行程對同一個鎖檔，用兩個不同的檔案描述符各自呼叫
-# `flock -x`，第二次呼叫會卡住等不到（不是失敗、是永遠等——flock 的鎖
-# 是綁在「開檔的檔案描述符」上，不是綁在「行程」上，同一個行程用不同
-# 描述符開兩次，彼此仍視為互斥的鎖持有者）。若在已經握著外層鎖的情況
-# 下呼叫 hat_json_set（它自己又會對同一個鎖檔開一次新描述符並
-# `flock -x`），就會踩上這個自我鎖死。因此 hat_allocate_seq 自己重做一
-# 次 hat_json_set 內部同樣在用的 mktemp／jq／mv 三步，全程只鎖一次，不
-# 假手 hat_json_set。
+# 也不能讓這個取號動作自己內部呼叫 hat_json_set：兩者若各自對同一個目
+# 標檔案開一次新的檔案描述符再 `flock -x`，同一個行程對同一個鎖檔用兩
+# 個不同描述符會卡住等不到（不是失敗、是永遠等——已用這台機器上的真實
+# bash 5.3.15 實測：flock 的鎖是綁在「開檔的檔案描述符」上，不是綁在
+# 「行程」上，同一個行程用不同描述符開兩次，彼此仍視為互斥的鎖持有
+# 者）。因此 hat_allocate_seq 自己重做一次 hat_json_set 內部同樣在用的
+# mktemp／jq／mv 三步，全程只鎖一次，不假手 hat_json_set。
 #
-# 同一個理由也是為什麼這個函式不透過 `hat_registry_root` 推導路徑：本
-# 腳本收到的 `AGENT_TEAM_STATE_DIR` 已經是完全展開好的 registry 根絕對
-# 路徑（由 `launch-worker.sh` 在建立這個 worker 的 tab 時直接注入），
-# 不需要、也不應該再依賴 `AGENT_TEAM_HOME`／`HERDR_WORKSPACE_ID` 這兩個
-# worker 環境裡本來就不保證存在的變數去重新推導同一個目錄。
+# 鎖檔路徑必須跟 hat_json_set 用的是同一條：`<team_json>.lock`（見
+# common.sh 的 hat_json_set 說明，修正迴圈第二輪已把它從呼叫
+# `hat_registry_root` 重算根目錄改成純粹從目標檔案自己的路徑推導）。
+# 兩者若用不同的鎖檔，會各自序列化、彼此不排隊，等於沒鎖：hat_
+# allocate_seq 握著自己的鎖改 `.next_seq` 的同時，其他呼叫端（例如
+# set-goal.sh）若透過 hat_json_set 寫 team.json 的其他欄位，兩者不會
+# 互相等待，team.json 就可能在讀-改-寫的空檔被另一邊置換掉。
+#
+# 這個函式不透過 `hat_registry_root` 推導路徑，理由與 hat_json_set 這
+# 次改版相同：本腳本收到的 `AGENT_TEAM_STATE_DIR` 已經是完全展開好的
+# registry 根絕對路徑（由 `launch-worker.sh` 在建立這個 worker 的 tab
+# 時直接注入），worker 環境裡沒有 `AGENT_TEAM_HOME`，`hat_registry_
+# root` 退回去用的 `$PWD` 又是 worker 自己的工作起點，跟 orchestrator
+# 建立 registry 時的 cwd 不同是多 worker 團隊的常態；透過它重算只會算
+# 出一個跟真正 registry 無關的路徑。
 #
 # ---- 環境變數缺席時的備援 ----
 # 本腳本靠 AGENT_TEAM_STATE_DIR／AGENT_TEAM_SELF／AGENT_TEAM_ORCHESTRATOR
@@ -161,14 +177,15 @@ hat_json_string() {
 }
 
 # hat_allocate_seq <registry_root>
-# 在 <registry_root>/.lock 的鎖保護下，從 <registry_root>/team.json 的
-# next_seq 取號並遞增，印出取到的號碼（十進位整數）。缺席視為 1（第一
-# 個號碼）。設計理由見檔頭「序號配發」一節。
+# 在 <registry_root>/team.json.lock 的鎖保護下，從 <registry_root>/
+# team.json 的 next_seq 取號並遞增，印出取到的號碼（十進位整數）。缺
+# 席視為 1（第一個號碼）。鎖檔路徑必須與 hat_json_set 對同一個檔案用
+# 的路徑一致（`<file>.lock`），理由見檔頭「序號配發」一節。
 hat_allocate_seq() {
   local registry_root="$1" team_json lock_file lock_fd tmp seq new_seq
 
   team_json="$registry_root/team.json"
-  lock_file="$registry_root/.lock"
+  lock_file="${team_json}.lock"
 
   lock_fd=""
   exec {lock_fd}>"$lock_file"
@@ -253,9 +270,13 @@ case "$token" in
 esac
 
 # ---- 摘要長度上限：拒絕，不截斷（規格 §15、本任務行為要求 4）----
-summary_max="${AGENT_TEAM_SUMMARY_MAX:-$HAT_SUMMARY_MAX_DEFAULT}"
-if [ "${#summary}" -gt "$summary_max" ]; then
-  hat_die 2 "report.sh: --summary 超過長度上限 $summary_max 字元（收到 ${#summary} 字元；這個上限沒有實測依據，可用 AGENT_TEAM_SUMMARY_MAX 覆寫）。請把完整內容改放進 --detail-file，--summary 只留一行摘要"
+# ack 一律豁免，見檔頭「ACK 的固定摘要格式」一節：不是調高上限，是這
+# 個 token 完全不套用長度檢查。
+if [ "$token" != "ack" ]; then
+  summary_max="${AGENT_TEAM_SUMMARY_MAX:-$HAT_SUMMARY_MAX_DEFAULT}"
+  if [ "${#summary}" -gt "$summary_max" ]; then
+    hat_die 2 "report.sh: --summary 超過長度上限 $summary_max 字元（收到 ${#summary} 字元；這個上限沒有實測依據，可用 AGENT_TEAM_SUMMARY_MAX 覆寫）。請把完整內容改放進 --detail-file，--summary 只留一行摘要"
+  fi
 fi
 
 if [ -n "$detail_file" ] && [ ! -f "$detail_file" ]; then
