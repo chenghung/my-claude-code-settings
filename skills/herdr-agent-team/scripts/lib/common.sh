@@ -531,3 +531,24 @@ hat_approval_allowlist() {
   printf '%s\n' ''
   return 1
 }
+
+# ---- 名稱格式驗證（全域約束，press-approval.sh 任務追加）----
+# 任何要拿去組 registry 路徑的名稱都必須先驗過格式：含斜線或上層目錄記
+# 號（`/`、`..`）的值可以組出跳脫 registry 根目錄的路徑（例如
+# `workers/../../etc/passwd.json`）。從環境變數讀來的名稱（例如
+# report.sh 的 AGENT_TEAM_SELF）跟從參數讀來的名稱一樣是外部輸入，必須
+# 一視同仁地驗證；本函式不分辨來源，只認格式。
+
+# hat_assert_agent_name <name>
+# <name> 不符合 herdr agent 名稱正規表示式 `^[a-z][a-z0-9_-]{0,31}$` 時
+# 以 2 結束：這是呼叫端用錯（給了一個從未被 hat_normalize_name 正規化
+# 過、或被竄改過的名稱），不是守衛不通過，沿用本檔對「已知集合外的輸
+# 入」一貫採用的 2（hat_json_set 對無法辨識的 registry 檔案、
+# hat_kind_fidelity 對未知 kind 皆是同一碼）。
+hat_assert_agent_name() {
+  local name="$1"
+
+  if ! printf '%s' "$name" | grep -Eq '^[a-z][a-z0-9_-]{0,31}$'; then
+    hat_die 2 "hat_assert_agent_name: 名稱不符合 agent 名稱格式（需以小寫字母開頭，其後只能是小寫字母、數字、底線或連字號，長度上限 32 字元）：'$name'"
+  fi
+}

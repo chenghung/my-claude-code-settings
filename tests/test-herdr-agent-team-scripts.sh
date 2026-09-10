@@ -1750,12 +1750,248 @@ else
   bad "instruct：pending_resend 最終長度是 $final_length，預期 $HAT_CONCURRENCY_K"
 fi
 
+# ===== 名稱格式驗證：hat_assert_agent_name（全域約束，press-approval.sh
+#      任務新增）=====
+# 任何要拿去組 registry 路徑的名稱都必須先驗過格式，判準是 herdr agent
+# 名稱正規表示式 `^[a-z][a-z0-9_-]{0,31}$`。用子殼呼叫的理由同「workspace
+# 守衛」小節：hat_die 是真正的 exit，不包在子殼裡會把整個套件行程帶走。
+( hat_assert_agent_name "w3n-backend" ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "名稱格式：合法名稱放行"
+else
+  bad "名稱格式：得到 rc=$rc"
+fi
+
+( hat_assert_agent_name "W3n-backend" ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "名稱格式：開頭大寫字母被拒絕"
+else
+  bad "名稱格式：得到 rc=$rc"
+fi
+
+( hat_assert_agent_name "3w-backend" ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "名稱格式：開頭數字被拒絕"
+else
+  bad "名稱格式：得到 rc=$rc"
+fi
+
+( hat_assert_agent_name "../evil" ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "名稱格式：含斜線與上層目錄記號被拒絕（組得出跳脫 registry 的路徑）"
+else
+  bad "名稱格式：得到 rc=$rc"
+fi
+
+n32="$(printf 'a%.0s' {1..32})"
+( hat_assert_agent_name "$n32" ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "名稱格式：剛好 32 字元的合法名稱放行"
+else
+  bad "名稱格式：得到 rc=$rc"
+fi
+
+n33="$(printf 'a%.0s' {1..33})"
+( hat_assert_agent_name "$n33" ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "名稱格式：超過 32 字元被拒絕"
+else
+  bad "名稱格式：得到 rc=$rc"
+fi
+
+# ===== press-approval.sh：四類核准框 =====
+# 四類框逐條處置見 press-approval.sh 檔頭「四類框」一節：Task 5 的
+# hat_approval_allowlist 允許清單命中時自決代按（第一類）；啟動框不在
+# 清單上升級給人（第二類）；工作區信任框（第三類）與執行中途按鍵值取
+# 自調查者指名、按鍵語意由呼叫端負責（第四類）都不在本腳本產生任何額
+# 外程式碼路徑，見腳本檔頭說明，這裡不重複。
+#
+# 下面 Step 1-3 是任務簡報逐字給的測試，&&/|| 鏈改寫成 if/then/else/fi
+# 的理由同「命名正規化」小節開頭的既有說明，不重複；穿插的「本任務自
+# 行補上」段落是簡報 Step 1-3 沒有涵蓋、但 Produces／背景說明要求的行
+# 為。
+HERDR_CALL_LOG="$T/herdr-call-log-press-approval"
+HERDR_FULL_ARGS="$T/herdr-full-args-press-approval"
+
+# ---- Step 1（任務簡報逐字）：--allows 必填 ----
+rc=0; bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 2 >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "代按：--allows 必填"
+else
+  bad "代按：沒有 --allows 卻放行（rc=$rc）"
+fi
+
+# ---- 本任務自行補上：--to／--key 同樣必填（Produces 介面三者皆非選
+#      填，簡報 Step 1 只涵蓋 --allows 一項）----
+rc=0; bash "$SCRIPTS/press-approval.sh" --key 2 --allows x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "代按：--to 必填"
+else
+  bad "代按：沒有 --to 卻放行（rc=$rc）"
+fi
+
+rc=0; bash "$SCRIPTS/press-approval.sh" --to w3n-backend --allows x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "代按：--key 必填"
+else
+  bad "代按：沒有 --key 卻放行（rc=$rc）"
+fi
+
+# ---- 本任務自行補上：--to 名稱格式驗證真的接上（不是只有 hat_assert_
+#      agent_name 這個函式存在，見上方「名稱格式驗證」小節）----
+rc=0; bash "$SCRIPTS/press-approval.sh" --to '../evil' --key 2 --allows x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "代按：--to 名稱格式不符時以 2 拒絕"
+else
+  bad "代按：格式不符的名稱被接受（rc=$rc）"
+fi
+
+# ---- Step 2（任務簡報逐字；樁改寫成本檔既有的「非引號 heredoc、\$ 跳
+#      脫執行期變數」寫法，不是逐字照抄任務簡報原文的 <<'STUB'——已實
+#      測：簡報原文整段加引號會讓 $HERDR_CALL_LOG 在樁真正執行的子行
+#      程裡維持字面上的 "$HERDR_CALL_LOG"（該變數從未 export，子行程
+#      看不到殼層變數），對一個空字串檔名做 >> 重導向會靜默失敗，
+#      $HERDR_CALL_LOG 這個檔案永遠讀不到任何內容；後果是下面「狀態已
+#      變時沒有按下去」那條斷言不論實作有沒有真的呼叫 send-keys 都恆
+#      為 PASS——這是一條测不出任何東西的斷言。這是計畫缺陷，不是實作
+#      缺陷，回報見任務報告；改寫後的寫法與本檔其餘所有樁一致（例如
+#      launch-worker.sh／instruct.sh 兩節既有的 $HERDR_CALL_LOG 用
+#      法）----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$1 \$2" >> "$HERDR_CALL_LOG"
+case "\$1 \$2" in
+  "agent get") printf '{"result":{"agent":{"agent_status":"working"}}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" press-approval-not-blocked
+
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 2 --allows '略過更新' >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "代按：狀態非 blocked 時拒絕"
+else
+  bad "代按：得到 rc=$rc"
+fi
+if grep -q 'send-keys' "$HERDR_CALL_LOG"; then
+  bad "代按：狀態已變仍按了下去"
+else
+  pass "代按：狀態已變時沒有按下去"
+fi
+
+# ---- 本任務自行補上：入口守衛 hat_assert_workspace 真的接上（沿用
+#      instruct.sh 節既有的 w3n-otherws 記錄，pane_id 指向別的
+#      workspace，驗證的是「真的被跑到且真的能擋下」，不是只有函式名
+#      出現在檔案裡）----
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/press-approval.sh" --to w3n-otherws --key 2 --allows x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "代按：workspace 守衛擋下不屬於本 workspace 的 worker"
+else
+  bad "代按：得到 rc=$rc"
+fi
+if [ -s "$HERDR_CALL_LOG" ]; then
+  bad "代按：workspace 守衛擋下時仍呼叫了 herdr"
+else
+  pass "代按：workspace 守衛擋下時沒有呼叫 herdr（含 send-keys）"
+fi
+
+# ---- Step 3（任務簡報逐字）：允許清單兩個方向 ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$1 \$2" >> "$HERDR_CALL_LOG"
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+case "\$1 \$2" in
+  "agent get") printf '{"result":{"agent":{"agent_status":"blocked"}}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" press-approval-blocked
+
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 2 --allows '略過更新' --startup --rule startup_update >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "代按：允許清單上的啟動框自決代按"
+else
+  bad "代按：清單上的規則被擋（rc=$rc）"
+fi
+
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 1 --allows '未知' --startup --rule some_new_box >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "代按：清單外的啟動框升級給人"
+else
+  bad "代按：清單外的框被按了（rc=$rc）"
+fi
+if grep -q 'send-keys' "$HERDR_CALL_LOG"; then
+  bad "代按：清單外的框仍送出按鍵——這正是允許清單要防的事"
+else
+  pass "代按：清單外的框沒有送出按鍵"
+fi
+
+# ---- 本任務自行補上：--startup 但沒給 --rule，同樣是「無法判斷」，
+#      升級給人（四類框第二類三種情形之一：空字串一樣不會命中允許清
+#      單的 case，走同一條逃逸路徑）----
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 2 --allows x --startup >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "代按：--startup 缺 --rule 時同樣升級給人"
+else
+  bad "代按：得到 rc=$rc"
+fi
+
+# ---- 本任務自行補上：允許清單命中時，實際送出的按鍵取自清單本身，
+#      不是呼叫端給的 --key（見腳本檔頭「為什麼自決代按時按鍵取自清單
+#      而非 --key」一節；--key 刻意給成 9，與清單載明的值 2 不同，藉此
+#      區分「覆蓋成清單值」與「原樣轉送呼叫端的 --key」兩種讀法——兩者
+#      在 --key 剛好等於清單值時看起來一樣，唯有故意給不同值才測得出
+#      差異）----
+: > "$HERDR_FULL_ARGS"
+bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 9 --allows '略過更新' --startup --rule startup_update >/dev/null 2>&1
+send_keys_line="$(grep -m1 'send-keys' "$HERDR_FULL_ARGS")" || true
+case "$send_keys_line" in
+  *' 2')
+    pass "代按：允許清單命中時，實際送出的按鍵是清單載明的值，不是呼叫端給的 --key"
+    ;;
+  *)
+    bad "代按：實際送出的是 '$send_keys_line'，不是清單載明的鍵"
+    ;;
+esac
+
+# ---- 本任務自行補上：非啟動框（執行中途的核准框，不帶 --startup）在
+#      狀態仍為 blocked 時代按成功，且送出的按鍵與呼叫端給的 --key 完
+#      全相同（第四類：按鍵值一律取自調查者的指名，腳本原樣轉送不解
+#      讀）。任務簡報 Step 1-3 只涵蓋 --allows 必填、狀態已變、允許清
+#      單兩個方向，沒有一條走到「非啟動框、狀態真的是 blocked」這個最
+#      常見的成功路徑 ----
+: > "$HERDR_FULL_ARGS"
+rc=0; bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 'y' --allows '不放行任何動作，僅解除阻塞' >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "代按：非啟動框在狀態仍為 blocked 時代按成功"
+else
+  bad "代按：得到 rc=$rc"
+fi
+send_keys_line="$(grep -m1 'send-keys' "$HERDR_FULL_ARGS")" || true
+case "$send_keys_line" in
+  *' y')
+    pass "代按：非啟動框送出的按鍵與呼叫端給的 --key 完全相同（原樣轉送、腳本不解讀）"
+    ;;
+  *)
+    bad "代按：送出的是 '$send_keys_line'，不是呼叫端給的 --key"
+    ;;
+esac
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=167
+HAT_EXPECTED_ASSERTIONS=188
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
