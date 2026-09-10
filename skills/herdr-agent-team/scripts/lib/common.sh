@@ -8,6 +8,7 @@
 #   - agent 名稱正規化
 #   - 對 herdr 呼叫的結束碼映射與 stderr 淨化
 #   - registry 暫存目錄的推導
+#   - registry 的建立、加鎖讀寫與欄位白名單
 #
 # 命名慣例：函式一律 `hat_` 前綴，本檔自己匯出／使用的環境變數一律
 # `AGENT_TEAM_` 前綴。刻意不用 `HERDR_` 前綴：herdr 本身已經注入
@@ -34,7 +35,8 @@
 #   4  守衛不通過，涵蓋六類：workspace 邊界、provider 白名單、開工閘
 #      門、關閉閘門、代按前的狀態重查、grant——本檔的 hat_assert_workspace
 #      只負責 workspace 邊界這一類，其餘五類由後續任務的函式各自產生
-#   5  registry 缺漏或內容不合法，本檔不產生
+#   5  registry 缺漏或內容不合法：本檔的 hat_json_get（欄位缺漏）與
+#      hat_json_set（mktemp／jq／mv 三步任一步失敗）會產生此碼
 #   6  herdr 拒絕（herdr 自身結束碼 1 一律映射成本碼）
 #   7  握手未取得憑據，含逾時與 agent_prompt_stalled，本檔不產生
 #   8  啟動未就緒，本檔不產生
@@ -227,4 +229,164 @@ hat_whitelist_agents() {
       (.tab_id // empty)
     ] | @tsv
   '
+}
+
+# ---- registry 寫入的失敗必須由寫入端自己接住：errexit 不在，而回傳碼
+#      還可能被關檔案描述符的動作遮住 ----
+# `hat_json_set` 是「mktemp → jq 產生新內容 → mv 置換」三步。這三步的
+# 失敗（磁碟滿、目錄變唯讀、配額用盡、jq 對一份被截斷的檔案解析失敗）
+# 原本兩層保護同時不存在：
+#
+#   一、errexit 不在。這個函式的呼叫鏈上一定有一層命令替換或子殼（呼
+#       叫端多半用 `( hat_json_set ... ) || rc=$?` 這種寫法安全擷取結
+#       束碼），而命令替換的子殼裡 errexit 根本不生效：非最後一個指令
+#       失敗既不中止替換、呼叫端也看不到（已對 bash 5.3.15 實測：mktemp
+#       樁成失敗、jq 樁成失敗兩種情形下，若函式內部沒有自己檢查結束
+#       碼，呼叫端只會看到 rc=0）。此結論沿用
+#       skills/epic-orchestration/scripts/lib/common.sh 已有的先例。
+#   二、回傳碼可能被遮住。若函式最後一句是關閉鎖用的檔案描述符，函式
+#       的結束碼就會是「關檔案描述符成功」，不是「寫入成功」。
+#
+# 姊妹 skill 已經實測過這個形狀的真實後果：`mktemp` 被樁成失敗之後，函
+# 式照樣回 0、呼叫端照樣判定要自動推進，但計數與標記兩個欄位一個都沒
+# 動——累計上限永不觸發、同一則標記每輪都被判成新的，全程沒有訊息也沒
+# 有非 0 結束碼。修法是把三步串起來、失敗就 `hat_die 5`，且 `mv` 不得
+# 無條件執行；失敗時先 `rm` 暫存檔，因為它沒置換成功會留在原地。
+
+# ---- 欄位白名單（規格 §13）----
+# 檔案鎖擋得住同一次呼叫內的讀-改-寫競態，擋不住「兩個都以為自己是某
+# 欄位唯一寫入者的行程互相覆蓋」——擋住後者的是「寫入端欄位集合不重
+# 疊」這個約定，白名單把約定變成程式碼保證。三份清單在本任務就全部釘
+# 死，涵蓋後續每個任務要寫的欄位，避免每個任務都要回頭改這裡。不要因
+# 為「寫入都有鎖」就推論放行更多欄位也安全：
+#
+# 寫入端分邊，欄位集合刻意不重疊——座標類欄位由 launch-worker.sh 寫；
+# 整筆記錄由 shutdown-worker.sh 移除；計數類欄位（.auto_push_count、
+# .last_seq_stamp、.last_seq_changed_at）由 watchdog.sh 維護；.stage 與
+# .held 由 orchestrator 端腳本寫。
+_HAT_TEAM_JSON_FIELDS=(
+  '.orchestrator_name' '.orchestrator_pane' '.team_home'
+  '.thin_command_source' '.next_seq' '.goal_version' '.goal_confirmed'
+  '.goal.achieve' '.goal.success' '.goal.not_doing' '.goal.assumptions'
+  '.goal_history'
+)
+_HAT_WORKER_JSON_FIELDS=(
+  '.role' '.kind' '.args' '.tab_id' '.pane_id' '.agent_name' '.cwd'
+  '.completion_criteria' '.delivery_point' '.end_point' '.stage' '.held'
+  '.auto_push_count' '.last_seq_stamp' '.last_seq_changed_at'
+  '.ack_reconciliation' '.grants' '.pending_resend'
+)
+_HAT_INBOX_JSON_FIELDS=(
+  '.token' '.worker' '.summary' '.detail_path' '.locator' '.created_at'
+  '.delivery' '.processed_at'
+)
+
+# hat_registry_init
+# 幂等建立 registry 根與六個子目錄（workers／inbox／details／replies／
+# peer-log／handoff），以及空的 team.json。team.json 只在不存在時建
+# 立，重跑不得清空已經寫入的狀態；六個子目錄用 mkdir -p，對「已存在」
+# 與「兩個行程同時建」都是安全的。
+hat_registry_init() {
+  local root
+  root="$(hat_registry_root)"
+
+  mkdir -p \
+    "$root/workers" "$root/inbox" "$root/details" \
+    "$root/replies" "$root/peer-log" "$root/handoff"
+
+  if [ ! -e "$root/team.json" ]; then
+    printf '{}' > "$root/team.json"
+  fi
+}
+
+# hat_json_get <file> <jq_path>
+# 印出 <file> 裡 <jq_path> 指向的值。欄位缺漏（含檔案不存在、值是 JSON
+# null、jq 求值本身失敗）一律以 5 結束：對呼叫端而言「這個欄位還沒被
+# 任何人寫過」與「registry 本身有問題」是同一件事，後續邏輯都沒有可用
+# 的資料可以往下走。
+hat_json_get() {
+  local file="$1" jq_path="$2" value
+
+  if ! value="$(jq -r "${jq_path} // empty" "$file" 2>/dev/null)"; then
+    hat_die 5 "hat_json_get: 讀取失敗：'$file' 的 '$jq_path'"
+  fi
+
+  if [ -z "$value" ]; then
+    hat_die 5 "hat_json_get: 欄位缺漏：'$file' 的 '$jq_path'"
+  fi
+
+  printf '%s\n' "$value"
+}
+
+# hat_json_set <file> <jq_path> <json_value>
+# 加鎖的讀-改-寫：mktemp → jq 算新內容 → mv 置換，三步串起來，任一步失
+# 敗都以 5 結束；mv 不得無條件執行，否則 jq 解析失敗時 mv 照跑，會把原
+# 檔換成暫存檔裡的半成品內容。鎖是 registry 根底下一個固定的鎖檔
+# （`<registry root>/.lock`），把單次呼叫內的讀-改-寫序列化；不是逐檔
+# 各自的鎖，理由是同一次呼叫本來就只碰一個檔案，用單一固定鎖檔換來的
+# 是實作簡單，代價是不同檔案之間的寫入也會互相排隊，但這些寫入本來就
+# 稀疏，可接受。
+#
+# <jq_path> 只接受三份白名單裡列舉的欄位，白名單外一律以 2 結束（呼叫
+# 端用錯，不是 registry 壞了，見上方欄位白名單一節）；<json_value> 是
+# JSON 值而非字串，字串由呼叫端自帶引號（例如 '"x"'），這樣數字、布林
+# 與物件都不必另開函式。
+#
+# 函式最後一句刻意不是關閉鎖用的檔案描述符：關閉動作之後再接一句
+# `return 0`，讓函式的結束碼由這句明確給出，不依賴「關 fd 這個動作恰
+# 好也回 0」這件事本身——已對 bash 5.3.15 實測 mktemp／jq 各自失敗與
+# 正常成功三種路徑，結束碼與訊息均如預期（記錄見任務報告）。
+hat_json_set() {
+  local file="$1" path="$2" json_value="$3"
+  local -a fields
+  local lock_file lock_fd tmp allowed candidate
+
+  case "$file" in
+    */team.json)      fields=("${_HAT_TEAM_JSON_FIELDS[@]}") ;;
+    */workers/*.json) fields=("${_HAT_WORKER_JSON_FIELDS[@]}") ;;
+    */inbox/*.json)   fields=("${_HAT_INBOX_JSON_FIELDS[@]}") ;;
+    *) hat_die 2 "hat_json_set: 無法辨識的 registry 檔案：$file" ;;
+  esac
+
+  allowed=0
+  for candidate in "${fields[@]}"; do
+    if [ "$candidate" = "$path" ]; then
+      allowed=1
+      break
+    fi
+  done
+  if [ "$allowed" -ne 1 ]; then
+    hat_die 2 "hat_json_set: 欄位 '$path' 不在白名單內，拒絕寫入：$file"
+  fi
+
+  lock_file="$(hat_registry_root)/.lock"
+  exec {lock_fd}>"$lock_file"
+  flock -x "$lock_fd"
+
+  tmp="$(mktemp "${file}.XXXXXX")" || hat_die 5 "hat_json_set: 無法建立暫存檔，'$path' 未寫入：$file"
+
+  if ! { jq --argjson v "$json_value" "${path} = \$v" "$file" > "$tmp" && mv "$tmp" "$file"; }; then
+    rm -f "$tmp"
+    hat_die 5 "hat_json_set: 寫入失敗（jq 解析或置換未成功），'$path' 未寫入：$file"
+  fi
+
+  exec {lock_fd}>&-
+  return 0
+}
+
+# hat_worker_list
+# 印出 workers/ 底下所有 worker 名稱（去掉 .json 副檔名），一行一個。
+# 還沒有任何 worker（新建的 team）不算錯誤，什麼都不印。用 find
+# -print0 搭配 while read -d '' 走訪，不靠萬用字元展開：目錄是空的時
+# 候，沒展開的萬用字元會被當成字面上的檔名去 basename。
+hat_worker_list() {
+  local dir file
+
+  dir="$(hat_registry_root)/workers"
+
+  while IFS= read -r -d '' file; do
+    basename "$file" .json
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null)
+
+  return 0
 }
