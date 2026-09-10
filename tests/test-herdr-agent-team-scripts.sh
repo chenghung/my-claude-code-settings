@@ -1423,12 +1423,254 @@ case "$out" in
   *) bad "report：投遞延後卻沒有印出提示，worker 會誤以為已送達：'$out'" ;;
 esac
 
+# ===== instruct.sh：下行、持有旗標、待補送 =====
+# 沿用既有已匯出的 AGENT_TEAM_HOME=$T/teamhome、HOME=$T/fakehome、
+# HERDR_WORKSPACE_ID=w3N；$REG 沿用「registry 讀寫」小節算出的值，路徑
+# 推導不變。report.sh 小節匯出的 AGENT_TEAM_STATE_DIR／AGENT_TEAM_SELF／
+# AGENT_TEAM_ORCHESTRATOR 三個環境變數留著不影響本節：instruct.sh 是
+# orchestrator 端腳本，只靠 AGENT_TEAM_HOME／HERDR_WORKSPACE_ID 推導路
+# 徑，不讀那三個 worker 端專屬的變數。
+#
+# ---- 本任務自行補上的前置設定 ----
+# $REG/workers/w3n-backend.json 在「launch-worker.sh：八步啟動序列」小
+# 節最後一次呼叫（role=backend，兩次嘗試皆 blocked）已被該腳本自己移除
+# （見 launch-worker.sh「兩次都失敗，終局升級給人：不留下這筆狀態記
+# 錄」一節）。這裡重新建一份最小可用的 worker 記錄：pane_id 給一個屬於
+# 本 workspace 的座標（w3N:p2，格式沿用「workspace 守衛」小節已驗證過
+# 的真實格式），held 給初值 false，模擬 launch-worker.sh 正常啟動完成
+# 後的狀態。
+printf '{"pane_id":"w3N:p2","held":false}' > "$REG/workers/w3n-backend.json"
+
+HERDR_FULL_ARGS="$T/herdr-full-args-instruct"
+: > "$HERDR_FULL_ARGS"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+printf '{"result":{}}'; exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-hold-flag
+
+# ---- Step 1（任務簡報逐字；&&/|| 鏈改寫成 if/then/else/fi，理由同前
+#      面各節「命名正規化」小節開頭的說明）：送完放掉持有旗標 ----
+bash "$SCRIPTS/instruct.sh" --to w3n-backend --text '繼續' >/dev/null 2>&1
+if [ "$(jq -r '.held' "$REG/workers/w3n-backend.json")" = "false" ]; then
+  pass "instruct：送完放掉持有旗標"
+else
+  bad "instruct：持有旗標沒放掉"
+fi
+
+# ---- Step 2（任務簡報逐字；grep -m1 補上 `|| true`，理由同 report.sh
+#      「投遞不帶握手選項」一節同型寫法）：不帶握手選項 ----
+line="$(grep -m1 'agent prompt' "$HERDR_FULL_ARGS")" || true
+case "$line" in
+  *--wait* | *--until*) bad "instruct：帶了握手選項（對做事中的對象必然逾時誤判）" ;;
+  *) pass "instruct：不帶握手選項" ;;
+esac
+
+# ---- 本任務自行補上：正面驗證真的投遞成功且內容正確（上面那條斷言只
+#      驗證「沒有出現壞的選項」，若樁根本沒被叫到，$line 會是空字串，
+#      一樣落進「沒有壞選項」那個分支而誤判成功——report.sh「投遞不帶握
+#      手選項」旁已經記錄過這個弱點，這裡補同一種正面確認）----
+case "$line" in
+  *"w3n-backend"*"繼續"*) pass "instruct：投遞目標與文字內容正確" ;;
+  *) bad "instruct：投遞內容不如預期：$line" ;;
+esac
+
+# ---- Step 3（任務簡報逐字；&&/|| 鏈改寫成 if/then/else/fi）：blocked
+#      時進待補送清單 ----
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"agent_blocked","message":"blocked"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-blocked
+
+rc=0; bash "$SCRIPTS/instruct.sh" --to w3n-backend --text 'goal 更新' --kind goal-update >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 7 ]; then
+  pass "instruct：blocked 以 7 結束（待補送，非失敗）"
+else
+  bad "instruct：得到 rc=$rc"
+fi
+n="$(jq -r '.pending_resend | length' "$REG/workers/w3n-backend.json")"
+if [ "$n" -ge 1 ]; then
+  pass "instruct：blocked 的訊息進了待補送清單"
+else
+  bad "instruct：待補送清單是空的（這則會永遠消失）"
+fi
+if [ "$(jq -r '.held' "$REG/workers/w3n-backend.json")" = "false" ]; then
+  pass "instruct：blocked 時也放掉持有旗標"
+else
+  bad "instruct：持有旗標卡在 true"
+fi
+
+# ---- 本任務自行補上：待補送清單的內容真的可用（上面只驗證了筆數，
+#      Task 12 的看門狗要靠這筆記錄的 .text／.kind 兩個欄位補投，筆數
+#      對但內容是空物件一樣沒用）----
+entry="$(jq -c '.pending_resend[-1]' "$REG/workers/w3n-backend.json")"
+entry_text="$(printf '%s' "$entry" | jq -r '.text')"
+entry_kind="$(printf '%s' "$entry" | jq -r '.kind')"
+if [ "$entry_text" = "goal 更新" ] && [ "$entry_kind" = "goal-update" ]; then
+  pass "instruct：待補送清單記錄 text 與 kind，供 Task 12 補投使用"
+else
+  bad "instruct：待補送記錄內容不對，text='$entry_text' kind='$entry_kind'"
+fi
+
+# ---- 本任務自行補上：--to／--text／--text-file／--kind 的基本用錯與白
+#      名單（Produces 有列這幾個參數，Step 1-4 只涵蓋成功與 blocked 兩
+#      條路徑，缺 --to、text/text-file 擇一、kind 白名單三類用錯完全沒
+#      有測試涵蓋）----
+rc=0; bash "$SCRIPTS/instruct.sh" --text x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "instruct：缺 --to 以 2 結束"
+else
+  bad "instruct：得到 rc=$rc"
+fi
+
+rc=0; bash "$SCRIPTS/instruct.sh" --to w3n-backend >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "instruct：--text／--text-file 都沒給以 2 結束"
+else
+  bad "instruct：得到 rc=$rc"
+fi
+
+text_file_src="$T/instruct-text-file.txt"
+printf '照 B 案' > "$text_file_src"
+rc=0; bash "$SCRIPTS/instruct.sh" --to w3n-backend --text x --text-file "$text_file_src" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "instruct：--text／--text-file 同時給以 2 結束"
+else
+  bad "instruct：得到 rc=$rc"
+fi
+
+rc=0; bash "$SCRIPTS/instruct.sh" --to w3n-backend --text x --kind no-such-kind >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "instruct：--kind 白名單外以 2 拒絕"
+else
+  bad "instruct：接受了不存在的 kind（rc=$rc）"
+fi
+
+# ---- 本任務自行補上：--text-file 真的讀取檔案內容送出（成功路徑，
+#      Step 1-4 只用過 --text，沒有排過 --text-file）----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+printf '{"result":{}}'; exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-text-file
+
+: > "$HERDR_FULL_ARGS"
+bash "$SCRIPTS/instruct.sh" --to w3n-backend --text-file "$text_file_src" >/dev/null 2>&1
+line="$(grep -m1 'agent prompt' "$HERDR_FULL_ARGS")" || true
+case "$line" in
+  *"照 B 案"*) pass "instruct：--text-file 讀取檔案內容送出" ;;
+  *) bad "instruct：--text-file 內容沒有送出：$line" ;;
+esac
+
+# ---- 本任務自行補上：--kind 不給時有預設值，仍可正常運作（Produces
+#      把 --kind 列成選填，預設值本身沒有任何步驟涵蓋）----
+rc=0; bash "$SCRIPTS/instruct.sh" --to w3n-backend --text '不給 kind 也要能送' >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "instruct：--kind 不給時仍以預設值成功送出"
+else
+  bad "instruct：得到 rc=$rc"
+fi
+
+# ---- 本任務自行補上：入口守衛 hat_assert_workspace 真的接上（Task 15
+#      要求本腳本是需要這道守衛的八支之一；比照 launch-worker.sh 該節
+#      同型斷言的既有做法，驗證「真的被跑到且真的能擋下」，不是只有函
+#      式名出現在檔案裡）----
+printf '{"pane_id":"other:p9","held":false}' > "$REG/workers/w3n-otherws.json"
+: > "$HERDR_FULL_ARGS"
+rc=0; bash "$SCRIPTS/instruct.sh" --to w3n-otherws --text x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "instruct：workspace 守衛擋下不屬於本 workspace 的 worker"
+else
+  bad "instruct：得到 rc=$rc"
+fi
+if [ -s "$HERDR_FULL_ARGS" ]; then
+  bad "instruct：workspace 守衛擋下時仍送出了訊息"
+else
+  pass "instruct：workspace 守衛擋下時確認沒有送出任何訊息"
+fi
+
+# ---- Step 4（任務簡報逐字）：--reply-to 同時寫回覆與標記已處理 ----
+# 本任務自行補上的前置設定：--reply-to 指名的 inbox 記錄必須已存在（模
+# 擬 w3n-backend 稍早用 report.sh --token need-you 送出過 seq=7 那一
+# 則，處於尚未處理狀態），否則沒有東西可標記——任務簡報這一步沒有安排
+# 建立這筆記錄，見任務報告。
+mkdir -p "$REG/inbox"
+printf '{"token":"need-you","worker":"w3n-backend","summary":"要不要照 A 案","processed_at":null}' \
+  > "$REG/inbox/7-w3n-backend.json"
+
+bash "$SCRIPTS/instruct.sh" --to w3n-backend --text '照 A 案' --reply-to 7 >/dev/null 2>&1
+if [ -f "$REG/replies/w3n-backend/7.json" ]; then
+  pass "instruct：寫出定案回覆"
+else
+  bad "instruct：沒有寫回覆檔"
+fi
+p="$(jq -r '.processed_at' "$REG"/inbox/7-*.json)"
+if [ "$p" != "null" ]; then
+  pass "instruct：順手標記該則已處理"
+else
+  bad "instruct：inbox 那則沒被標記（中斷恢復會重複處理）"
+fi
+
+# ---- 本任務自行補上：回覆檔的內容真的是這次送出的文字，以及
+#      --reply-to 指名不存在的 inbox 記錄時以 5 結束（registry 缺漏）----
+recorded_decision="$(jq -r '.decision' "$REG/replies/w3n-backend/7.json")"
+if [ "$recorded_decision" = "照 A 案" ]; then
+  pass "instruct：回覆檔內容是這次送出的文字"
+else
+  bad "instruct：回覆檔內容是 '$recorded_decision'"
+fi
+
+rc=0; bash "$SCRIPTS/instruct.sh" --to w3n-backend --text x --reply-to 999 >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "instruct：--reply-to 指名不存在的 inbox 記錄以 5 結束"
+else
+  bad "instruct：得到 rc=$rc"
+fi
+
+# ---- 本任務自行補上：agent_blocked 以外的其他 herdr 拒絕，也要放掉持
+#      有旗標，但不得進待補送清單（見 instruct.sh 檔頭「blocked 是待補
+#      送」一節：只有 agent_blocked 才是待補送，其餘拒絕是真正的失敗，
+#      進待補送清單只會讓看門狗永遠補投一個根本送不到的目標）----
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"agent_not_found","message":"no such agent"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-other-rejection
+
+prev_pending="$(jq -r '.pending_resend | length' "$REG/workers/w3n-backend.json")"
+rc=0; bash "$SCRIPTS/instruct.sh" --to w3n-backend --text x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 6 ]; then
+  pass "instruct：agent_blocked 以外的 herdr 拒絕以 6 結束"
+else
+  bad "instruct：得到 rc=$rc"
+fi
+if [ "$(jq -r '.held' "$REG/workers/w3n-backend.json")" = "false" ]; then
+  pass "instruct：非 blocked 拒絕時也放掉持有旗標"
+else
+  bad "instruct：持有旗標卡在 true"
+fi
+new_pending="$(jq -r '.pending_resend | length' "$REG/workers/w3n-backend.json")"
+if [ "$new_pending" = "$prev_pending" ]; then
+  pass "instruct：非 blocked 拒絕不進待補送清單（那個目標可能根本不存在，補投永遠不會成功）"
+else
+  bad "instruct：待補送清單被非 blocked 的拒絕污染了（$prev_pending → $new_pending）"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=141
+HAT_EXPECTED_ASSERTIONS=163
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
