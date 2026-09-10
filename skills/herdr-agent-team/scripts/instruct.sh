@@ -43,6 +43,31 @@
 # launch-worker.sh 對同一類問題的既有手法，自己擷取 stderr 解析
 # error.code，不假手 hat_herdr。
 #
+# ---- .pending_resend 有兩個寫入端，每一次變動都必須是單一加鎖 jq 轉
+#      換，不得在 shell 端讀出陣列、改完再寫回去 ----
+# 這一則加入清單由本腳本做，補投成功後移除那一則由看門狗（Task 12）
+# 做，兩者是同一個欄位的兩個獨立寫入端。common.sh「寫入端分邊，欄位集
+# 合刻意不重疊」那份分配表原本沒有把 .pending_resend 分配給任何一邊
+# （這是計畫的疏漏，已在修正迴圈第一輪的裁決記錄），所以不重疊的約定
+# 在它身上不成立，必須換一個保證：對它的每一次變動都表達成「一次
+# flock 加鎖區間內完成的單一 jq 轉換」——讀現有內容與算新內容都在同一
+# 次 jq 呼叫裡對來源檔案求值，不能先用一次 jq 呼叫把陣列讀出到 shell
+# 變數、算完新陣列、再用 hat_json_set 另開一次加鎖呼叫寫回去。後者是兩
+# 次獨立的加鎖呼叫，中間那個沒有鎖保護的空窗，剛好就是另一個寫入端
+#（看門狗的移除）會插進來的地方：若它在這個空窗裡先讀到舊陣列、算出移
+# 除後的新陣列、再寫回，本腳本這邊晚一步寫回的「舊陣列＋新加的一則」
+# 就會整個蓋掉看門狗剛剛的移除結果，等於用一次遲到的寫入讓被移除的那
+# 筆記錄復活；反過來，若本腳本先寫、看門狗的空窗接在後面，則是本腳本
+# 剛加進去的那一則被覆蓋掉、憑空消失——兩個方向的結果都是靜默的資料遺
+# 失，而且都正好是規格 §13 講的「該送而還沒送到的下行，外部世界沒有任
+# 何地方查得到」那件事。因此 hat_append_pending_resend（見下方定義）不
+# 透過 hat_json_set（它的介面是「設成呼叫端已經算好的字面值」，不是
+# 「對現有內容做轉換」），改成沿用 report.sh 的 hat_allocate_seq 對
+# .next_seq 取號同一類問題的既有手法：自己重做一次 flock／mktemp／
+# jq／mv 四步，鎖檔路徑跟 hat_json_set 用的同一條（`<file>.lock`），理
+# 由同 hat_allocate_seq 檔頭：兩者若用不同鎖檔會各自序列化、彼此不排
+# 隊，等於沒鎖。
+#
 # ---- --reply-to：回覆定案，順手標記已處理 ----
 # 上層重啟之後 context 全沒了，它收到過的訊息也一起沒了，所以「哪些上
 # 行還沒處理」必須落在磁碟上。設計刻意不要求上層多呼叫一支標記腳
@@ -106,6 +131,32 @@ hat_require_herdr_env
 # 獨立定義，不共用（理由見 set-goal.sh 檔頭）。
 hat_json_string() {
   jq -Rn --arg v "$1" '$v'
+}
+
+# hat_append_pending_resend <file> <text> <kind>
+# 在 <file>.lock 的鎖保護下，把 {text, kind} 追加進 <file> 的
+# .pending_resend 陣列，全程只用一次 jq 呼叫對來源檔案求值（讀現有內
+# 容與算新內容是同一次求值，不是分成兩次獨立加鎖呼叫）。理由見檔頭
+# 「.pending_resend 有兩個寫入端」一節；手法沿用 report.sh 的
+# hat_allocate_seq，不透過 hat_json_set（見同一節）。
+hat_append_pending_resend() {
+  local file="$1" text="$2" kind="$3"
+  local lock_fd tmp
+
+  lock_fd=""
+  exec {lock_fd}>"${file}.lock"
+  flock -x "$lock_fd"
+
+  tmp="$(mktemp "${file}.XXXXXX")" || hat_die 5 "instruct.sh: 無法建立暫存檔，pending_resend 未寫入：$file"
+  if ! { jq --arg text "$text" --arg kind "$kind" \
+      '.pending_resend = ((.pending_resend // []) + [{text: $text, kind: $kind}])' \
+      "$file" > "$tmp" && mv "$tmp" "$file"; }; then
+    rm -f "$tmp"
+    hat_die 5 "instruct.sh: 寫入失敗（jq 解析或置換未成功），pending_resend 未寫入：$file"
+  fi
+
+  exec {lock_fd}>&-
+  return 0
 }
 
 to="" text="" text_file="" reply_to="" kind="instruct"
@@ -219,11 +270,8 @@ fi
 
 if [ "$error_code" = "agent_blocked" ]; then
   # ---- agent_blocked：進待補送清單，不是失敗（見檔頭「blocked 是待補
-  #      送」一節）----
-  current_pending="$(jq -c '.pending_resend // []' "$worker_file")"
-  entry_json="$(jq -cn --arg text "$text" --arg kind "$kind" '{text: $text, kind: $kind}')"
-  new_pending="$(printf '%s' "$current_pending" | jq -c --argjson e "$entry_json" '. + [$e]')"
-  hat_json_set "$worker_file" '.pending_resend' "$new_pending"
+  #      送」與「.pending_resend 有兩個寫入端」兩節）----
+  hat_append_pending_resend "$worker_file" "$text" "$kind"
   hat_json_set "$worker_file" '.held' 'false'
   printf '已記錄、待補送：worker %s 目前卡在核准框，看門狗會在解除後補投\n' "$to"
   exit 7

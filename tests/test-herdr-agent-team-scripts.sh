@@ -1665,12 +1665,97 @@ else
   bad "instruct：待補送清單被非 blocked 的拒絕污染了（$prev_pending → $new_pending）"
 fi
 
+# ---- 修正迴圈第一輪：.pending_resend 併發改動不得掉資料 ----
+# .pending_resend 有兩個寫入端（本腳本在收件方 blocked 時加入、看門狗
+# Task 12 補投成功後移除），若用「shell 端把陣列讀出來、改完再寫回」
+# 實作，兩次獨立加鎖呼叫中間的空窗就是另一個寫入端插進來、悄悄掉一筆
+# 待補送的地方（見 instruct.sh 檔頭「.pending_resend 有兩個寫入端」一
+# 節與 progress.md Ruling T8-a）。Task 12 尚未實作，這裡用一個同樣走
+# 「單一加鎖 jq 轉換」寫法的最小移除函式站台，模擬看門狗未來的移除
+# 端，跟本腳本的加入端對同一個 worker 檔案相反方向併發改動，驗證併發
+# 下不掉資料。
+#
+# 手法：先在陣列裡塞 K 筆「victim-<i>」種子記錄，K 個併發背景行程各自
+# 移除一筆指定的 victim；同時 K 個併發背景行程各自呼叫 instruct.sh 加
+# 入一筆「add-<i>」記錄（樁固定回 agent_blocked，保證進清單）。全部跑
+# 完後斷言：(a) .pending_resend 仍是合法 JSON 陣列，(b) K 筆 victim 全
+# 部被移除、一筆都不剩，(c) K 筆 add-<i> 全部都在、一筆都不少，(d) 陣
+# 列總長度剛好等於 K。任一項不成立就是「shell 端讀出陣列改完寫回」那
+# 種空窗漏洞重現：加入端用讀到的舊快照寫回，會蓋掉移除端剛做的移除
+#（victim 復活）；反過來則是剛加入的那一則被移除端的舊快照寫回蓋掉
+#（add 憑空消失）。K=20 是小規模但足以在跑輸的實作上顯出差異；固定寫
+# 法（本腳本已改用 hat_append_pending_resend）理論上讓這裡沒有空窗，
+# 所以這條斷言對修好之後的實作應該是確定性通過，不是機率性通過。
+hat_test_remove_pending_resend_victim() {
+  local file="$1" victim="$2"
+  local lock_fd tmp
+  lock_fd=""
+  exec {lock_fd}>"${file}.lock"
+  flock -x "$lock_fd"
+  tmp="$(mktemp "${file}.XXXXXX")"
+  jq --arg v "$victim" \
+    '.pending_resend = ((.pending_resend // []) | map(select(.text != $v)))' \
+    "$file" > "$tmp" && mv "$tmp" "$file"
+  exec {lock_fd}>&-
+}
+
+HAT_CONCURRENCY_K=20
+conc_worker="$REG/workers/w3n-concurrency.json"
+seed_json='[]'
+for i in $(seq 1 "$HAT_CONCURRENCY_K"); do
+  seed_json="$(printf '%s' "$seed_json" | jq -c --arg v "victim-$i" '. + [{text: $v, kind: "instruct"}]')"
+done
+jq -cn --argjson seed "$seed_json" '{pane_id: "w3N:p2", held: false, pending_resend: $seed}' > "$conc_worker"
+
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"agent_blocked","message":"blocked"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-concurrency
+
+for i in $(seq 1 "$HAT_CONCURRENCY_K"); do
+  ( hat_test_remove_pending_resend_victim "$conc_worker" "victim-$i" ) &
+done
+for i in $(seq 1 "$HAT_CONCURRENCY_K"); do
+  ( bash "$SCRIPTS/instruct.sh" --to w3n-concurrency --text "add-$i" >/dev/null 2>&1 ) &
+done
+wait
+
+if jq -e '(.pending_resend | type) == "array"' "$conc_worker" >/dev/null 2>&1; then
+  pass "instruct：併發改動後 pending_resend 仍是合法 JSON 陣列"
+else
+  bad "instruct：併發改動後 pending_resend 不是合法陣列（可能被寫壞）"
+fi
+
+remaining_victims="$(jq '[.pending_resend[] | select(.text | startswith("victim-"))] | length' "$conc_worker")"
+if [ "$remaining_victims" -eq 0 ]; then
+  pass "instruct：併發移除的種子記錄全部移除，沒有被加入端覆寫復活"
+else
+  bad "instruct：還剩 $remaining_victims 筆 victim 沒被移除掉（加入端用舊快照寫回，蓋掉了移除結果）"
+fi
+
+added_count="$(jq '[.pending_resend[] | select(.text | startswith("add-"))] | length' "$conc_worker")"
+if [ "$added_count" -eq "$HAT_CONCURRENCY_K" ]; then
+  pass "instruct：併發加入的 $HAT_CONCURRENCY_K 筆全部都在，沒有被移除端覆寫掉"
+else
+  bad "instruct：只剩 $added_count 筆 add-*（預期 $HAT_CONCURRENCY_K），有加入被覆寫遺失"
+fi
+
+final_length="$(jq '.pending_resend | length' "$conc_worker")"
+if [ "$final_length" -eq "$HAT_CONCURRENCY_K" ]; then
+  pass "instruct：pending_resend 最終長度剛好等於 $HAT_CONCURRENCY_K，併發下沒有掉資料"
+else
+  bad "instruct：pending_resend 最終長度是 $final_length，預期 $HAT_CONCURRENCY_K"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=163
+HAT_EXPECTED_ASSERTIONS=167
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
