@@ -1107,23 +1107,22 @@ fi
 # AGENT_TEAM_ORCHESTRATOR 是收件人名稱（樁不檢查這個值，任意取一個）。
 export AGENT_TEAM_STATE_DIR="$REG" AGENT_TEAM_SELF="w3n-reporter" AGENT_TEAM_ORCHESTRATOR="w3n-orchestrator"
 
-# 清空 inbox／details／replies 三個目錄：下面 Step 5 用「ls "$REG/inbox"
-# | tail -1」取得目前最後一筆的 seq（任務簡報逐字），前面幾個小節
-# （registry 讀寫、launch-worker 等）留下的檔案若還在，會讓這個 lexical
-# 排序取到的不是本節自己寫入的那一筆，測試會變得不可靠。
+# 清空 inbox／details／replies 三個目錄：讓本節從乾淨、可預期的狀態開
+# 始，與其他小節（registry 讀寫、launch-worker 等）各自在自己開頭清場
+# 的既有慣例一致，避免前面小節留下的檔案干擾本節的斷言。
 rm -rf "$REG/inbox" "$REG/details" "$REG/replies"
 mkdir -p "$REG/inbox" "$REG/details" "$REG/replies"
 
 # hat_last_seq_for_worker <worker>
 # 印出 $REG/inbox 底下屬於 <worker> 的所有記錄裡，seq 數值最大的那一
 # 個。本節後面幾個「本任務自行補上」的斷言需要「找出我剛剛那次呼叫寫
-# 出的是哪一筆」，改用數值排序（而不是任務簡報 Step 5 那種
-# `ls | tail -1` 的字典排序）：字典排序在 seq 跨過個位數（例如 9 之後
-# 到 10）就會失真，"10" 會排在 "2" 前面。本節目前的真實寫入次數還在個
-# 位數以內，兩種排序法結果相同，但把「找我自己那一筆」這件事寫成不依
-# 賴這個巧合，之後這裡再插入新的斷言也不會悄悄壞掉。任務簡報 Step 5
-# 給的那一行字典排序寫法本身不動（見下方），因為那是逐字採用的斷言配
-# 套程式碼，不是本函式要取代的對象。
+# 出的是哪一筆」，用數值排序：若改用字典排序（例如 `ls | tail -1`），
+# seq 跨過個位數（例如 9 之後到 10）就會失真，"10" 會排在 "2" 前面。本
+# 節目前的真實寫入次數還在個位數以內，兩種排序法結果相同，但把「找我
+# 自己那一筆」這件事寫成不依賴這個巧合，之後這裡再插入新的斷言也不會
+# 悄悄壞掉。修正迴圈第一輪之後，Step 5 本身已經改用 team.json 的
+# next_seq 直接預測序號（見下方），不再用 `ls | tail -1`；本函式只給
+# 本節自行補上的其餘斷言使用。
 hat_last_seq_for_worker() {
   local worker="$1" f base num best=""
   while IFS= read -r -d '' f; do
@@ -1274,9 +1273,9 @@ else
   bad "report：ack 摘要被擋下（rc=$rc），對帳會靜默失效"
 fi
 
-# ===== Step 5（任務簡報逐字；&&/|| 鏈改寫成 if/then/else/fi；第二次呼
-#      叫的 out 賦值補上 `|| true`，理由同 Step 3）：need-you 阻塞與逾
-#      時退場 =====
+# ===== Step 5（修正迴圈第一輪重新產生的簡報逐字；&&/|| 鏈改寫成
+#      if/then/else/fi；成功那次呼叫的 out 賦值補上 `|| true`，理由同
+#      Step 3）：need-you 阻塞、逾時退場、只認自己這次的 seq =====
 start=$(date +%s)
 rc=0; bash "$SCRIPTS/report.sh" --token need-you --summary '要定案' --wait-timeout 3 >/dev/null 2>&1 || rc=$?
 elapsed=$(( $(date +%s) - start ))
@@ -1291,16 +1290,28 @@ else
   bad "report：沒有等待就返回"
 fi
 
-# 回覆先放好時應立刻取回並印出
-# shellcheck disable=SC2012 # 任務簡報逐字；檔名全由本測試套件自己控制
-seq="$(ls "$REG/inbox" | tail -1 | cut -d- -f1)"
+# 回覆放在「本次呼叫配到的那個 seq」底下才算數。
+# 先預測下一個序號（team.json 的 next_seq），把回覆先放好，再發問。
+next="$(jq -r '.next_seq' "$REG/team.json")"
 mkdir -p "$REG/replies/$AGENT_TEAM_SELF"
-printf '{"decision":"照 A 案做"}' > "$REG/replies/$AGENT_TEAM_SELF/$seq.json"
+printf '{"decision":"照 A 案做"}' > "$REG/replies/$AGENT_TEAM_SELF/$next.json"
 out="$(bash "$SCRIPTS/report.sh" --token need-you --summary '再問一次' --wait-timeout 5 2>/dev/null)" || true
 case "$out" in
-  *照\ A\ 案做*) pass "report：取回定案內容並印出" ;;
+  *照\ A\ 案做*) pass "report：取回本次 seq 的定案內容並印出" ;;
   *) bad "report：沒有印出定案內容" ;;
 esac
+
+# 舊 seq 底下的回覆不得滿足新的一次發問——這條是防「第二個問題收到第一
+# 個問題的答案」的回歸測試（修正迴圈第一輪的核心裁決）。
+stale="$(jq -r '.next_seq' "$REG/team.json")"
+printf '{"decision":"這是上一題的答案"}' > "$REG/replies/$AGENT_TEAM_SELF/$stale.json"
+bash "$SCRIPTS/report.sh" --token need-you --summary '第一題' --wait-timeout 3 >/dev/null 2>&1 || true
+rc=0; out2="$(bash "$SCRIPTS/report.sh" --token need-you --summary '第二題' --wait-timeout 3 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 7 ]; then
+  pass "report：舊 seq 的回覆不會被新的一次發問取走"
+else
+  bad "report：第二題收到了上一題的答案（rc=$rc out='$out2'）"
+fi
 
 # ---- 本任務自行補上：--detail-file 落檔進 details/、inbox 記錄的
 #      detail_path 指向該檔（任務簡報 Produces 明講「落檔到 inbox/ 與
@@ -1334,9 +1345,10 @@ else
 fi
 
 # ---- 本任務自行補上：投遞被 agent_blocked 拒絕時不是本腳本的失敗
-#      （本次實作的判斷，見 report.sh 檔頭「投遞失敗不是本腳本的失
-#      敗」一節；任務簡報的 5 個測試步驟沒有覆蓋這個分支，補上避免這
-#      個判斷完全沒有自動化斷言盯著）----
+#      （這個判斷已由編排端在修正迴圈第一輪裁決採納，並加了一項要
+#      求：必須在 stdout 印一行「已記錄、投遞延後」，見下方第三條斷
+#      言。任務簡報的 5 個測試步驟沒有排這個分支，補上避免它完全沒有
+#      自動化斷言盯著）----
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
 printf '{"error":{"code":"agent_blocked","message":"blocked"}}' >&2
@@ -1345,7 +1357,7 @@ STUB
 chmod +x "$STUB_BIN/herdr"
 hat_assert_herdr_stubbed "$STUB_BIN" report-blocked-delivery
 
-rc=0; bash "$SCRIPTS/report.sh" --token fyi --summary '對方卡住時的一則' >/dev/null 2>&1 || rc=$?
+rc=0; out="$(bash "$SCRIPTS/report.sh" --token fyi --summary '對方卡住時的一則' 2>/dev/null)" || rc=$?
 if [ "$rc" -eq 0 ]; then
   pass "report：投遞被 agent_blocked 拒絕時，仍以 0 結束（不是本腳本的失敗）"
 else
@@ -1358,13 +1370,17 @@ if [ "$delivery_status" = "blocked" ]; then
 else
   bad "report：delivery 欄位是 '$delivery_status'"
 fi
+case "$out" in
+  *已記錄*投遞延後*) pass "report：投遞延後時 stdout 印出提示，不完全靜默" ;;
+  *) bad "report：投遞延後卻沒有印出提示，worker 會誤以為已送達：'$out'" ;;
+esac
 
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=135
+HAT_EXPECTED_ASSERTIONS=137
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

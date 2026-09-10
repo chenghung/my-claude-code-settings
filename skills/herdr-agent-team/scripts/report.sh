@@ -30,16 +30,23 @@
 # stalled` 這個歧義狀態要處理，唯一要判別的失敗是「對方卡在核准框而以
 # `agent_blocked` 拒絕」。因此本腳本的投遞呼叫絕對不加這三個選項。
 #
-# ---- 投遞失敗（agent_blocked）不是本腳本的失敗 ----
-# 本次實作的判斷（測試沒有覆蓋這個分支，記錄於任務報告）：落檔成功之
-# 後，投遞是 best-effort——失敗（不論是 agent_blocked 還是任何其他
-# herdr 拒絕）只記在該筆 inbox 記錄的 `.delivery` 欄位（"blocked"），
-# 本腳本仍以 0 結束。理由：規格明講「看門狗只在投遞失敗時介入重
-# 試」，重試責任已經明確歸給看門狗，不歸呼叫端（worker）；若本腳本此
-# 時回報失敗，worker 很可能誤判成「這則回報整個沒有送出」而重新呼叫一
-# 次，造成 inbox 出現重複記錄、`next_seq` 被多耗用一個號碼。落檔本身
-# （寫 inbox／details）才是本腳本自己要對呼叫端負責的部分：那個失敗才
-# 真的以非 0 結束（見下方各步驟）。
+# ---- 投遞失敗（agent_blocked）不是本腳本的失敗，但不能完全靜默 ----
+# 編排端已裁決採納本次實作原本的判斷：落檔成功之後，投遞是
+# best-effort——失敗（不論是 agent_blocked 還是任何其他 herdr 拒絕）只
+# 記在該筆 inbox 記錄的 `.delivery` 欄位（"blocked"），本腳本仍以 0 結
+# 束。理由：規格明講「看門狗只在投遞失敗時介入重試」，重試責任已經明
+# 確歸給看門狗，不歸呼叫端（worker）；若本腳本此時回報失敗，worker 很
+# 可能誤判成「這則回報整個沒有送出」而重新呼叫一次，造成 inbox 出現重
+# 複記錄、`next_seq` 被多耗用一個號碼；而且那則回報已經 durable 地落
+# 在磁碟上，從 worker 的角度它確實已經被系統接受了。落檔本身（寫
+# inbox／details）才是本腳本自己要對呼叫端負責的部分：那個失敗才真的
+# 以非 0 結束（見下方各步驟）。
+#
+# 修正迴圈第一輪新增的要求：投遞被判定 blocked 時，必須在 stdout 印一
+# 行明講「已記錄、投遞延後」。單純把結束碼留在 0、卻什麼都不印，會讓
+# worker 誤以為 orchestrator 已經看到這則回報了，而它其實還躺在佇列裡
+# 等看門狗補投——結束碼的沉默和這裡要擋的其中一種「完全靜默的錯誤」是
+# 同一種類，只是換了個位置。
 #
 # ---- ACK 的固定摘要格式：本腳本不產生，但長度上限不得把它擋下 ----
 # `worker_id=<id> cwd=<絕對路徑> model=<名稱>`（Global Constraints、
@@ -59,38 +66,35 @@
 # UTF-8，本腳本不強制切換 locale。
 #
 # ---- need-you 阻塞等待：逾時不是失敗 ----
-# 每 2 秒看一次回覆目錄，上限預設 540000 毫秒（9 分鐘）。9 分鐘的依據
+# 每 2 秒看一次那個固定檔名的回覆檔案是否出現，上限預設 540000 毫秒
+# （9 分鐘）。9 分鐘的依據
 # 是 Claude Code 的工具逾時上限是 600000 毫秒，留一分鐘餘裕；其餘三家
 # CLI 的上限沒有查證，不能假設更寬（見背景說明，規格 §15 同一份未驗清
 # 單的呼應）。逾時以 7 結束並印出提示：已上報、未在時限內收到回覆、請
 # 結束回合等下行——worker 退回一般的停等模式，由看門狗接手升級，不是
 # 這支腳本的失敗。
 #
-# ---- need-you 的等待對象：整個回覆目錄，不是「這一次呼叫自己配到的
-#      seq」----
-# 規格文字（Global Constraints、本任務行為要求 8）字面上寫的是「看
-# replies/<self>/<seq>.json」，讀起來像是只看這次呼叫自己剛配到的那個
-# seq。但下面這個情境沒辦法用「只看自己那個 seq」的讀法滿足：worker 第
-# 一次 need-you 逾時退場、回合結束；下一輪它再次呼叫 report.sh（可能換
-#了一句摘要，例如「再問一次」）——這次呼叫會配到一個**新的** seq，而
-# orchestrator 當初回覆的，是**第一次**那個 seq 的位址（`instruct.sh
-# --reply-to <seq>` 寫的是它認得的那個 seq，見 Task 8 簡報第 4
-# 項）。若本腳本只看「這次呼叫自己的 seq」，這則回覆永遠不會被看到，
-# 而 orchestrator 也沒有辦法知道 worker 又發了一次新的 need-you、該回
-# 哪一個。
+# ---- need-you 的等待對象：只看這一次呼叫自己配到的 seq ----
+# 修正迴圈第一輪：本檔曾經改成「看 replies/<self>/ 整個目錄，找到任何
+# 一個檔案就算數」，理由是誤以為這樣才能接住「上一輪逾時、下一輪換了
+# 新 seq 再問」的情境。編排端已裁決這是錯的，散文原本的字面讀法（只看
+# 自己這次配到的 seq）才對，理由是這個「整個目錄」讀法會製造一個完全
+# 靜默的錯誤答案來源：worker 問完第一個問題（seq=N）沒等到回覆就逾時退
+# 場；下一輪換了新問題（seq=N+1）再呼叫一次，這次呼叫的等待邏輯若掃整
+# 個目錄、逮到誰就算誰，會把「orchestrator 之後才回覆給第一題（存在
+# replies/<self>/N.json 底下）」的內容，誤當成第二題（N+1）的答案讀
+# 走——而且沒有任何錯誤訊息，orchestrator 也不會知道自己對第二題的定
+# 案其實從來沒被 worker 讀到。序號全域唯一且單調（規格、Global
+# Constraints「inbox 序號配發」一節），這正是用來擋住這件事的機制：只
+# 認自己這次配到的 seq，舊序號的回覆檔案在數學上不可能匹配到新序號，
+# 不需要另外判斷「這則回覆是不是屬於我這次問的」。
 #
-# 因此本腳本的等待邏輯改成：看 `replies/<self>/` 這個目錄底下**任何一
-# 個**回覆檔案，不限定檔名裡的 seq 要等於這次呼叫自己配到的那個。找到
-# 就讀出內容、印到 stdout、刪掉該檔（消費一次即刪除，避免同一則回覆被
-# 下一次 need-you 誤重複撿到），然後以 0 結束。這個目錄設計上同時間只
-# 會有一個 worker 自己的回覆檔案（一個 worker 同一時間只會有一個未解
-# 決的 need-you 在等），用「整個目錄」而非「特定檔名」來等待，換到的
-# 是能正確接住「上一輪逾時、下一輪換了新 seq 再問」這個真實會發生的情
-# 境，而不需要另外一套「找出我上一個未解決 need-you 的 seq」的邏輯。
-# 這個決定被下面 Step 5 的測試直接驗證到：測試把回覆放在第一次呼叫的
-# seq 底下，卻是第二次（seq 不同）呼叫取回它。回報這個與規格文字字面
-# 讀法的落差，是本次實作的職責；規格文字要不要跟著改，由編排端決定，
-# 見任務報告。
+# 因此等待對象是單一個固定路徑 `replies/<self>/<seq>.json`（<seq> 是本
+# 次呼叫在上面「落檔在先」那一步已經配到的號碼），不是整個目錄；讀完
+# 也不必刪除該檔——序號不會重複使用，同一個檔案不會被下一次呼叫誤讀
+# 到。下面 Step 5 新增的回歸測試直接驗證這一點：先在某個序號底下放一份
+# 回覆，連問兩題，斷言第二題必須逾時（拿不到那份屬於第一題的舊回覆），
+# 而不是把它當成自己的答案印出來。
 #
 # ---- 序號配發：在 registry 鎖內做「讀舊值＋算新值＋寫回」，不透過
 #      hat_json_set ----
@@ -300,42 +304,31 @@ else
     hat_json_set "$inbox_file" '.delivery' '"delivered"'
   else
     hat_json_set "$inbox_file" '.delivery' '"blocked"'
+    # 不能只把結束碼留在 0：完全靜默會讓 worker 以為 orchestrator 已經
+    # 看到了，見檔頭「投遞失敗不是本腳本的失敗，但不能完全靜默」一節。
+    printf '已記錄、投遞延後：orchestrator 目前收不到，看門狗會另行重試投遞\n'
   fi
 fi
 
 # ---- need-you：阻塞等回覆，逾時不算失敗（規格 §8、本任務行為要求
 #      8）----
-# 等待對象是整個 replies/<self>/ 目錄，不是這次呼叫自己配到的 seq；理
-# 由見檔頭「need-you 的等待對象」一節。
+# 等待對象只有這次呼叫自己配到的 seq 那一個固定檔名，不是整個目錄；理
+# 由見檔頭「need-you 的等待對象」一節。讀完不刪除該檔：seq 全域唯一且
+# 單調，同一個檔案不會被下一次呼叫誤讀到。
 if [ "$token" = "need-you" ]; then
-  reply_dir="$state_dir/replies/$self_name"
+  reply_file="$state_dir/replies/$self_name/${seq}.json"
   elapsed=0
-  reply_file=""
-  while :; do
-    reply_file=""
-    while IFS= read -r -d '' f; do
-      reply_file="$f"
-      break
-    done < <(find "$reply_dir" -mindepth 1 -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null)
-
-    if [ -n "$reply_file" ]; then
-      break
-    fi
+  while [ ! -f "$reply_file" ]; do
     if [ "$elapsed" -ge "$wait_timeout_seconds" ]; then
-      break
+      printf '已上報，未在時限內收到回覆，請結束回合等下行\n'
+      exit 7
     fi
     sleep "$HAT_NEEDYOU_POLL_INTERVAL_SECONDS"
     elapsed=$((elapsed + HAT_NEEDYOU_POLL_INTERVAL_SECONDS))
   done
 
-  if [ -n "$reply_file" ]; then
-    cat "$reply_file"
-    rm -f "$reply_file"
-    exit 0
-  fi
-
-  printf '已上報，未在時限內收到回覆，請結束回合等下行\n'
-  exit 7
+  cat "$reply_file"
+  exit 0
 fi
 
 exit 0
