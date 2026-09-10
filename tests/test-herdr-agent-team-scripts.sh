@@ -39,12 +39,14 @@ mkdir -p "$STUB_BIN"
 # herdr 是本檔唯一需要遮蔽的外部二進位（會啟動或附接終端介面、可能連
 # 到真實 socket），也是唯一「跑真的會有副作用」的外部指令；其餘用到的
 # 工具（jq／mktemp／mkdir／rm／cat／chmod／grep／tr／dirname／
-# sha256sum／basename／cut／ln／mv／flock／find／wc／sort）都是唯讀或
-# 副作用侷限在測試自己的暫存目錄內、零成本，已查證全部位於 /usr/bin，
-# 跑真的完全安全（Task 2 新增 mv／flock／find／wc／sort 五項，用於
-# hat_json_set 的加鎖讀改寫與 hat_worker_list／測試斷言本身，已在本任
-# 務底下用受限 PATH（僅 /usr/bin:/bin，不含任何樁目錄）重新查證過五者
-# 皆解析到 /usr/bin，不會落到別處）。整份套件的 PATH 一律是「樁目錄＋
+# sha256sum／basename／cut／ln／mv／flock／find／wc／sort／date）都是唯
+# 讀或副作用侷限在測試自己的暫存目錄內、零成本，已查證全部位於
+# /usr/bin，跑真的完全安全（Task 2 新增 mv／flock／find／wc／sort 五
+# 項，用於 hat_json_set 的加鎖讀改寫與 hat_worker_list／測試斷言本身，
+# 已在本任務底下用受限 PATH（僅 /usr/bin:/bin，不含任何樁目錄）重新查
+# 證過五者皆解析到 /usr/bin，不會落到別處；Task 4 新增 date 一項，用於
+# set-goal.sh 替 goal_history 每筆紀錄蓋時間戳，同樣以受限 PATH 查證過
+# 解析到 /usr/bin）。整份套件的 PATH 一律是「樁目錄＋
 # /usr/bin:/bin」，真實 herdr 所在的 ~/.local/bin 從頭到尾不在 PATH
 # 上，忘了建樁的段落只會得到 command-not-found 而失敗，不會靜默地改打
 # 真實 herdr session。
@@ -478,12 +480,97 @@ else
   bad "recover：清單被清掉了"
 fi
 
+# ===== set-goal.sh：四項必填 =====
+rc=0; bash "$SCRIPTS/set-goal.sh" --achieve a --success b --not-doing c >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "goal：缺 --assumption 以 2 結束"
+else
+  bad "goal：得到 rc=$rc"
+fi
+
+# ===== set-goal.sh：開工閘門 =====
+bash "$SCRIPTS/set-goal.sh" --achieve a --success b --not-doing c --assumption d >/dev/null 2>&1
+rc=0; ( hat_require_goal_confirmed ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "閘門：未確認時擋住"
+else
+  bad "閘門：未確認卻放行（rc=$rc）"
+fi
+
+bash "$SCRIPTS/set-goal.sh" --achieve a --success b --not-doing c --assumption d --confirmed >/dev/null 2>&1
+rc=0; ( hat_require_goal_confirmed ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "閘門：確認後放行"
+else
+  bad "閘門：確認後仍擋（rc=$rc）"
+fi
+
+# ===== set-goal.sh：版本遞增與成功定義變動通知 =====
+v1="$(jq -r '.goal_version' "$REG/team.json")"
+out="$(bash "$SCRIPTS/set-goal.sh" --achieve a --success 'b2 改過的成功定義' --not-doing c --assumption d --changed-by worker-report --rationale '前提被推翻')"
+v2="$(jq -r '.goal_version' "$REG/team.json")"
+if [ "$v2" -gt "$v1" ]; then
+  pass "goal：版本遞增"
+else
+  bad "goal：版本沒動（$v1 → $v2）"
+fi
+case "$out" in
+  *GOAL-SUCCESS-CHANGED*) pass "goal：成功定義變動有顯著標記" ;;
+  *) bad "goal：成功定義變了卻沒有標記" ;;
+esac
+n="$(jq -r '.goal_history | length' "$REG/team.json")"
+if [ "$n" -ge 2 ]; then
+  pass "goal：變更紀錄有累積"
+else
+  bad "goal：goal_history 只有 $n 筆"
+fi
+
+# ---- 本任務自行補上：--confirmed 不在時不得翻旗標（行為要求 3，簡報
+#      Step 1-3 沒有安排任何測試步驟覆蓋它）----
+# 上一步的呼叫沒有帶 --confirmed，若實作誤把 goal_confirmed 寫回
+# false，會讓 orchestrator 自決階段的每一次目標調整都重新鎖上已經通過
+# 的開工閘門，而且不會有任何錯誤訊息——這正是規格 §9 定案「第一版由人
+# 類確認，之後每一次變更由 orchestrator 自決」要保護的狀態。
+confirmed_after="$(jq -r '.goal_confirmed' "$REG/team.json")"
+if [ "$confirmed_after" = "true" ]; then
+  pass "goal：--confirmed 不在時不翻動 goal_confirmed（維持既有的 true）"
+else
+  bad "goal：goal_confirmed 被改成 '$confirmed_after'（--confirmed 不在時不該碰這個欄位）"
+fi
+
+# ---- 本任務自行補上：goal_history 單筆紀錄的實際內容（行為要求 2 明
+#      訂要有新舊四項、changed_by、rationale、時間戳，簡報 Step 3 只驗
+#      證了筆數成長，沒有驗證內容本身）----
+last_entry="$(jq -c '.goal_history[-1]' "$REG/team.json")"
+changed_by_recorded="$(printf '%s' "$last_entry" | jq -r '.changed_by')"
+rationale_recorded="$(printf '%s' "$last_entry" | jq -r '.rationale')"
+if [ "$changed_by_recorded" = "worker-report" ] && [ "$rationale_recorded" = "前提被推翻" ]; then
+  pass "goal：goal_history 記錄 changed_by 與 rationale"
+else
+  bad "goal：changed_by='$changed_by_recorded' rationale='$rationale_recorded'"
+fi
+
+old_success_recorded="$(printf '%s' "$last_entry" | jq -r '.old.success')"
+new_success_recorded="$(printf '%s' "$last_entry" | jq -r '.new.success')"
+if [ "$old_success_recorded" = "b" ] && [ "$new_success_recorded" = "b2 改過的成功定義" ]; then
+  pass "goal：goal_history 記錄變更前後的成功定義"
+else
+  bad "goal：old='$old_success_recorded' new='$new_success_recorded'"
+fi
+
+changed_at_recorded="$(printf '%s' "$last_entry" | jq -r '.changed_at // empty')"
+if [ -n "$changed_at_recorded" ]; then
+  pass "goal：goal_history 記錄時間戳"
+else
+  bad "goal：goal_history 缺時間戳"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=51
+HAT_EXPECTED_ASSERTIONS=61
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

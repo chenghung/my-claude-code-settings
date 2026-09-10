@@ -405,3 +405,32 @@ hat_worker_list() {
 
   return 0
 }
+
+# hat_require_goal_confirmed
+# team.json 的 .goal_confirmed 不是字面 "true" 時（欄位整個缺席、值是
+# false、或任何其他值）以 4 結束：規格 §9 的開工閘門，人類確認之前派
+# 不出任何 worker，這一關無條件，不論素材多明確。
+#
+# 內部讀取刻意用 hat_json_get，不繞過去自己呼叫 jq；但本函式要把
+# hat_json_get 的兩種結果都收斂成同一個結束碼 4：
+#   - 欄位缺漏（人類還沒確認過，goal 甚至可能還沒設過）：hat_json_get
+#     本身會以 5 結束，那是它對「讀取這件事本身失敗」的判斷，不是本函
+#     式要的語意——對呼叫端而言，「還沒確認」與「欄位還沒被寫過」是同
+#     一件事，都該是 4，不是讓 5 把整支呼叫端腳本直接帶走。
+#   - 值合法地是 false（已對真實情境確認這是正常狀態）：hat_json_get
+#     正常回傳該值，本函式再自己比對是否等於 "true"。
+# 因此呼叫必須包在 `|| rc=$?` 裡讀結束碼，不能用裸陳述句：這裡的
+# hat_json_get 本身也可能 exit 5（命令替換的子殼吸收掉這個 exit，只留
+# 下結束碼），裸陳述句會在呼叫端的 errexit 之下於讀到 rc 之前就把本函
+# 式所在的 shell 帶走（與本檔 hat_herdr 開頭說明的成因相同）。
+hat_require_goal_confirmed() {
+  local team_json rc value
+
+  team_json="$(hat_registry_root)/team.json"
+
+  rc=0
+  value="$(hat_json_get "$team_json" '.goal_confirmed')" || rc=$?
+  if [ "$rc" -ne 0 ] || [ "$value" != "true" ]; then
+    hat_die 4 "goal_confirmed 不是 true：人類確認之前派不出任何 worker"
+  fi
+}
