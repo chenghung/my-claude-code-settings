@@ -1899,7 +1899,10 @@ else
   pass "代按：workspace 守衛擋下時沒有呼叫 herdr（含 send-keys）"
 fi
 
-# ---- Step 3（任務簡報逐字）：允許清單兩個方向 ----
+# ---- Step 3（任務簡報逐字）：允許清單兩個方向；樁固定回 blocked，用
+#      於本節所有「不會走到送出按鍵之後」的情境（清單外升級、缺
+#      --rule、--key 與清單不一致），以及故意驗證「代按後仍是 blocked
+#      該以 7 結束」的情境（見下方，此時 blocked 是刻意不變的） ----
 cat > "$STUB_BIN/herdr" <<STUB
 #!/usr/bin/env bash
 printf '%s\n' "\$1 \$2" >> "$HERDR_CALL_LOG"
@@ -1912,14 +1915,6 @@ exit 0
 STUB
 chmod +x "$STUB_BIN/herdr"
 hat_assert_herdr_stubbed "$STUB_BIN" press-approval-blocked
-
-: > "$HERDR_CALL_LOG"
-rc=0; bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 2 --allows '略過更新' --startup --rule startup_update >/dev/null 2>&1 || rc=$?
-if [ "$rc" -eq 0 ]; then
-  pass "代按：允許清單上的啟動框自決代按"
-else
-  bad "代按：清單上的規則被擋（rc=$rc）"
-fi
 
 : > "$HERDR_CALL_LOG"
 rc=0; bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 1 --allows '未知' --startup --rule some_new_box >/dev/null 2>&1 || rc=$?
@@ -1945,21 +1940,111 @@ else
   bad "代按：得到 rc=$rc"
 fi
 
-# ---- 本任務自行補上：允許清單命中時，實際送出的按鍵取自清單本身，
-#      不是呼叫端給的 --key（見腳本檔頭「為什麼自決代按時按鍵取自清單
-#      而非 --key」一節；--key 刻意給成 9，與清單載明的值 2 不同，藉此
-#      區分「覆蓋成清單值」與「原樣轉送呼叫端的 --key」兩種讀法——兩者
-#      在 --key 剛好等於清單值時看起來一樣，唯有故意給不同值才測得出
-#      差異）----
+# ---- 修正迴圈第一輪裁決：允許清單命中時，--key 與清單載明的按鍵不一
+#      致要以 2 拒絕，不是靜默覆蓋成清單值（見腳本檔頭「允許清單命中
+#      時，--key 與清單不一致就拒絕」一節）。--key 刻意給成 9，與清單
+#      載明的值 2 不同；本節重用上面的 blocked 樁，因為這個情境在重查
+#      blocked 之前就該被擋下，理論上完全不會呼叫任何 herdr 子指令 ----
 : > "$HERDR_FULL_ARGS"
-bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 9 --allows '略過更新' --startup --rule startup_update >/dev/null 2>&1
-send_keys_line="$(grep -m1 'send-keys' "$HERDR_FULL_ARGS")" || true
-case "$send_keys_line" in
-  *' 2')
-    pass "代按：允許清單命中時，實際送出的按鍵是清單載明的值，不是呼叫端給的 --key"
+rc=0; err_out="$(bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 9 --allows '略過更新' --startup --rule startup_update 2>&1 >/dev/null)" || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "代按：--key 與允許清單不一致時以 2 拒絕"
+else
+  bad "代按：得到 rc=$rc"
+fi
+case "$err_out" in
+  *'9'*'2'*)
+    pass "代按：不一致的訊息同時點出呼叫端給的值與清單載明的值"
     ;;
   *)
-    bad "代按：實際送出的是 '$send_keys_line'，不是清單載明的鍵"
+    bad "代按：訊息沒有同時點出兩個值：$err_out"
+    ;;
+esac
+if [ -s "$HERDR_FULL_ARGS" ]; then
+  bad "代按：--key 與清單不一致卻仍呼叫了 herdr（含代按前的重查）"
+else
+  pass "代按：--key 與清單不一致時完全沒有呼叫 herdr，沒有送出任何按鍵"
+fi
+
+# ---- 修正迴圈第一輪補上：代按後重查仍是 blocked，以 7 結束、訊息指
+#      出框還在（見腳本檔頭「代按後重查狀態」一節）。沿用上面的
+#      blocked 樁：它對每一次 agent get 都回 blocked，正好模擬「按鍵送
+#      出了，但框沒有消失」----
+: > "$HERDR_FULL_ARGS"
+rc=0; err_out="$(bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 'y' --allows '不放行任何動作，僅解除阻塞' 2>&1 >/dev/null)" || rc=$?
+if [ "$rc" -eq 7 ]; then
+  pass "代按：代按後重查仍是 blocked 時以 7 結束"
+else
+  bad "代按：得到 rc=$rc"
+fi
+case "$err_out" in
+  *'框還在'*)
+    pass "代按：仍是 blocked 的訊息指出框還在"
+    ;;
+  *)
+    bad "代按：訊息沒有指出框還在：$err_out"
+    ;;
+esac
+if grep -q 'send-keys' "$HERDR_FULL_ARGS"; then
+  pass "代按：按鍵確實送出了，只是框還在（不是沒按，是按了沒用）"
+else
+  bad "代按：這個情境下應該要送出按鍵，卻沒有呼叫 send-keys"
+fi
+n_get="$(grep -c 'agent get' "$HERDR_FULL_ARGS")" || true
+if [ "$n_get" -ge 2 ]; then
+  pass "代按：代按前後各查了一次狀態（不是只查一次就重複使用同一個結果）"
+else
+  bad "代按：只查了 $n_get 次狀態，代按後那一次沒有真的執行"
+fi
+
+# ---- Step 3（任務簡報逐字，rc=0 那一半）：允許清單上的啟動框自決代
+#      按，且代按後真的成功（狀態離開 blocked）。改用會依呼叫次數變化
+#      回應的樁：第一次 agent get（代按前重查）回 blocked，第二次
+#      （代按後重查）回 idle——若沿用「永遠回 blocked」的樁，本節新增
+#      的「代按後重查」guard 會讓這個原本該成功的情境也以 7 結束，測不
+#      出「自決代按＋真的成功」這個路徑。計數器落在 $T 底下，每次呼叫
+#      press-approval.sh 前都要重置，因為計數是跨行程累計的（樁腳本每
+#      次被呼叫都是全新的子行程，狀態只能落磁碟）----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+case "\$1 \$2" in
+  "agent get")
+    n=0
+    if [ -f "$T/press-approval-get-count" ]; then
+      n="\$(cat "$T/press-approval-get-count")"
+    fi
+    n=\$((n + 1))
+    printf '%s' "\$n" > "$T/press-approval-get-count"
+    if [ "\$n" -eq 1 ]; then
+      printf '{"result":{"agent":{"agent_status":"blocked"}}}'
+    else
+      printf '{"result":{"agent":{"agent_status":"idle"}}}'
+    fi
+    ;;
+  *)
+    printf '{"result":{}}'
+    ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" press-approval-success
+
+rm -f "$T/press-approval-get-count"
+: > "$HERDR_FULL_ARGS"
+rc=0; out="$(bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 2 --allows '略過更新' --startup --rule startup_update 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "代按：允許清單上的啟動框自決代按"
+else
+  bad "代按：清單上的規則被擋（rc=$rc）"
+fi
+case "$out" in
+  *'post_press_status=idle'*)
+    pass "代按：成功時 stdout 印出代按後重查得到的狀態"
+    ;;
+  *)
+    bad "代按：stdout 沒有印出重查後的狀態，得到：$out"
     ;;
 esac
 
@@ -1968,7 +2053,9 @@ esac
 #      全相同（第四類：按鍵值一律取自調查者的指名，腳本原樣轉送不解
 #      讀）。任務簡報 Step 1-3 只涵蓋 --allows 必填、狀態已變、允許清
 #      單兩個方向，沒有一條走到「非啟動框、狀態真的是 blocked」這個最
-#      常見的成功路徑 ----
+#      常見的成功路徑；沿用上面的計數器樁，重置計數讓這次呼叫重新從
+#      「第一次 blocked、第二次 idle」開始 ----
+rm -f "$T/press-approval-get-count"
 : > "$HERDR_FULL_ARGS"
 rc=0; bash "$SCRIPTS/press-approval.sh" --to w3n-backend --key 'y' --allows '不放行任何動作，僅解除阻塞' >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 0 ]; then
@@ -1991,7 +2078,7 @@ esac
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=188
+HAT_EXPECTED_ASSERTIONS=195
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
