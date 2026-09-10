@@ -307,14 +307,26 @@ hat_registry_init() {
 # null、jq 求值本身失敗）一律以 5 結束：對呼叫端而言「這個欄位還沒被
 # 任何人寫過」與「registry 本身有問題」是同一件事，後續邏輯都沒有可用
 # 的資料可以往下走。
+#
+# 判斷缺漏刻意不用 `// empty` 加上「輸出是不是空字串」：`// empty` 把
+# JSON `false` 也當成假值換成空字串，於是合法的布林 `false`（例如
+# team.json 的 `.goal_confirmed`、workers/<name>.json 的 `.held`，兩者
+# 初值都是 `false`，是完全正常的狀態，不是缺漏）會被誤判成缺漏而觸發
+# `hat_die 5`——那是真正的 exit，會把整個呼叫端帶走，不是能讓呼叫端自
+# 己分支處理的回傳值；同一個判斷方式也會把合法的空字串值一併誤判成缺
+# 漏。已用真實 jq 1.8.2 實測：`echo '{"x":false}' | jq -r '.x'` 印出
+# 字面 `false`、`{"x":""}` 印出空字串、`{}` 對不存在的路徑印出字面
+# `null`（巢狀路徑一樣，例如 `.goal.achieve`）——三者在原始輸出的層次
+# 是可以分開的，只有「輸出等於字面 `null`」才代表路徑不存在或值真的
+# 是 JSON null，因此改成直接比對這一點，不看輸出是否為空字串。
 hat_json_get() {
   local file="$1" jq_path="$2" value
 
-  if ! value="$(jq -r "${jq_path} // empty" "$file" 2>/dev/null)"; then
+  if ! value="$(jq -r "$jq_path" "$file" 2>/dev/null)"; then
     hat_die 5 "hat_json_get: 讀取失敗：'$file' 的 '$jq_path'"
   fi
 
-  if [ -z "$value" ]; then
+  if [ "$value" = "null" ]; then
     hat_die 5 "hat_json_get: 欄位缺漏：'$file' 的 '$jq_path'"
   fi
 

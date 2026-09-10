@@ -270,6 +270,45 @@ else
   bad "registry：得到 rc=$rc"
 fi
 
+# ---- Important 修復（審查回合 1）：合法的 false／空字串不得被誤判成
+#      缺漏 ----
+# 根因是舊寫法用 `jq -r "$jq_path // empty"` 取值、再看輸出是否為空字
+# 串來判斷缺漏，而 `// empty` 把 JSON false 也當假值換成空字串。
+# team.json 的 .goal_confirmed、workers/<name>.json 的 .held 兩個白名
+# 單欄位初值就是合法的 false，被誤判成缺漏會在完全正常的狀態下觸發
+# hat_die 5（真正的 exit，把整個呼叫端帶走），而不是讓呼叫端能分支處
+# 理的結束碼。同一根因也會把合法的空字串值一併誤判成缺漏。
+#
+# 這兩條刻意不用裸陳述句 `v="$(hat_json_get ...)"` 擷取：套件開頭有
+# errexit，如果修法又壞掉、hat_json_get 對合法值誤判缺漏而 die 5，裸
+# 陳述句會在讀到 rc 之前就把整個套件行程帶走（跟本檔其餘擷取可能失敗
+# 之呼叫的既有慣例同一個理由），因此改用「先把 rc 設成 0，再用 or 接
+# 上讀取」的安全寫法。
+hat_json_set "$REG/team.json" '.goal_confirmed' 'false'
+rc=0; v="$(hat_json_get "$REG/team.json" '.goal_confirmed')" || rc=$?
+if [ "$rc" -eq 0 ] && [ "$v" = "false" ]; then
+  pass "registry：hat_json_get 對合法的 false 值不誤判成缺漏"
+else
+  bad "registry：得到 rc=$rc v='$v'（false 被誤判成缺漏是本輪審查要修的 Important 缺陷）"
+fi
+
+hat_json_set "$REG/team.json" '.thin_command_source' '""'
+rc=0; v="$(hat_json_get "$REG/team.json" '.thin_command_source')" || rc=$?
+if [ "$rc" -eq 0 ] && [ "$v" = "" ]; then
+  pass "registry：hat_json_get 對合法的空字串值不誤判成缺漏"
+else
+  bad "registry：得到 rc=$rc v='$v'"
+fi
+
+# 修法沒有連帶改壞「路徑真的缺漏」的行為：換一個從未被任何測試寫過的
+# 巢狀路徑（跟上面兩條分屬不同欄位、不同層級），確認它仍以 5 結束。
+rc=0; ( hat_json_get "$REG/team.json" '.goal.success' ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "registry：hat_json_get 對真的缺漏的巢狀路徑仍以 5 結束（沒有被 false／空字串的修法連帶改壞）"
+else
+  bad "registry：得到 rc=$rc"
+fi
+
 hat_json_set "$REG/team.json" '.goal.achieve' '"做出 PRD"'
 v="$(hat_json_get "$REG/team.json" '.goal.achieve')"
 if [ "$v" = "做出 PRD" ]; then
@@ -309,7 +348,7 @@ esac
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=30
+HAT_EXPECTED_ASSERTIONS=33
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
