@@ -434,3 +434,73 @@ hat_require_goal_confirmed() {
     hat_die 4 "goal_confirmed 不是 true：人類確認之前派不出任何 worker"
   fi
 }
+
+# ---- provider 驅動表（規格 §5、2.1、2.5，逐字內容見 references/
+#      provider-drivers.md）----
+# herdr 自己認得二十二種 agent kind，但本 skill 只支援四種：claude、
+# codex、agy、opencode。清單外的至少兩種 kind herdr 收得下、卻連狀態
+# 偵測規則檔都沒有——它們的 worker 會永遠顯示閒置，watchdog 會持續對一
+# 個其實卡住的 worker 送出「繼續」，而使用者只看得到一個一直被推卻沒
+# 有進展的東西，完全不知道原因。所以寫錯 kind 必須在啟動之前就被拒
+# 絕，而不是啟動之後才發現；錯誤訊息點名支援清單，讓寫錯的人立刻知道
+# 有哪些選擇。
+
+# hat_assert_supported_kind <kind>
+# <kind> 不在支援清單內時以 4 結束，訊息依序點名 claude、codex、agy、
+# opencode 四個名字。
+hat_assert_supported_kind() {
+  local kind="$1"
+
+  case "$kind" in
+    claude | codex | agy | opencode) return 0 ;;
+  esac
+
+  hat_die 4 "不支援的 agent kind '$kind'：herdr-agent-team 只支援 claude、codex、agy、opencode"
+}
+
+# hat_kind_fidelity <kind>
+# 印出 <kind> 的狀態偵測保真度：high（claude、codex）或 low（agy、
+# opencode）。已對真實 herdr 規則檔量測：claude 十六條規則、三條正向
+# idle 規則；codex 九條規則、一條正向 idle 規則；agy 與 opencode 各只
+# 有三條規則，且沒有任何正向 idle 規則——它們的「閒置」字面意思是「所
+# 有規則都沒命中」的預設值，不是正向證據。low 保真不改變角色與
+# provider 的自由組合，只影響呼叫端要不要對這個 worker 額外開一道回報
+# 靜默逾時，接住「違約沒回報就停下」與「原地繞圈」這兩種只有 low 保真
+# 才會漏接的失效。
+#
+# 呼叫端必須先過 hat_assert_supported_kind；<kind> 不在支援清單內時本
+# 函式以 2 結束（呼叫端用錯，沿用本檔 hat_json_set 對無法辨識輸入的既
+# 有處理方式），不會靜默印出空字串或恆為 0 的結束碼。
+hat_kind_fidelity() {
+  local kind="$1"
+
+  case "$kind" in
+    claude | codex) printf '%s\n' high ;;
+    agy | opencode) printf '%s\n' low ;;
+    *) hat_die 2 "hat_kind_fidelity: 未知的 kind '$kind'" ;;
+  esac
+}
+
+# hat_approval_allowlist <rule_name>
+# 啟動框按鍵允許清單，射程封閉：命中清單才印出要按的鍵並以 0 結束；沒
+# 命中一律印空字串並以非 0 結束，讓呼叫端一律把框升級給人確認、絕不代
+# 按沒見過的框。目前清單只有一筆：startup_update（codex 的版本更新提
+# 示），按 2（Skip）。它可以自決代按的理由是不放行任何會改變世界的動
+# 作，而不按掉的話那個 worker 從一開始就廢了。清單短不是安全問題，只
+# 是會比較常停下來問人；清單絕不能改成「擋掉已知的壞的、其餘放行」，
+# 那會對沒見過的框照按不誤，正是這個函式要防的事。遇到新的啟動框時，
+# 把規則名與鍵值加進下面的 case，並同步更新
+# references/provider-drivers.md。
+hat_approval_allowlist() {
+  local rule_name="$1"
+
+  case "$rule_name" in
+    startup_update)
+      printf '%s\n' 2
+      return 0
+      ;;
+  esac
+
+  printf '%s\n' ''
+  return 1
+}

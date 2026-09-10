@@ -565,12 +565,68 @@ else
   bad "goal：goal_history 缺時間戳"
 fi
 
+# ===== provider 驅動表：kind 白名單 =====
+# 這幾條斷言改寫成 if/then/else/fi，不是任務簡報原始給的
+# `(...) && pass ... || bad ...` 串接：理由與上面「命名正規化」小節說
+# 明的 SC2015 成因相同，判斷式與訊息完全不變。
+for k in claude codex agy opencode; do
+  if ( hat_assert_supported_kind "$k" ) >/dev/null 2>&1; then
+    pass "kind 白名單：$k 放行"
+  else
+    bad "kind 白名單：$k 被誤拒"
+  fi
+done
+
+for k in gemini cursor omp mastracode pi; do
+  rc=0
+  ( hat_assert_supported_kind "$k" ) >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -eq 4 ]; then
+    pass "kind 白名單：$k 以 4 拒絕"
+  else
+    bad "kind 白名單：$k 沒被拒（rc=$rc）"
+  fi
+done
+
+msg="$( ( hat_assert_supported_kind gemini ) 2>&1 || true )"
+case "$msg" in
+  *claude*codex*agy*opencode*) pass "kind 白名單：錯誤訊息點名支援清單" ;;
+  *) bad "kind 白名單：錯誤訊息沒有點名清單：$msg" ;;
+esac
+
+# ===== provider 驅動表：保真度分級與啟動框允許清單 =====
+if [ "$(hat_kind_fidelity agy)" = "low" ]; then
+  pass "保真度：agy 低"
+else
+  bad "保真度：agy 判錯"
+fi
+
+if [ "$(hat_kind_fidelity claude)" = "high" ]; then
+  pass "保真度：claude 高"
+else
+  bad "保真度：claude 判錯"
+fi
+
+k="$(hat_approval_allowlist startup_update)"
+if [ "$k" = "2" ]; then
+  pass "允許清單：startup_update 按 2"
+else
+  bad "允許清單：得到 '$k'"
+fi
+
+rc=0
+( hat_approval_allowlist some_unknown_rule ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then
+  pass "允許清單：未知規則名不放行"
+else
+  bad "允許清單：未知規則名被放行（這會按下沒見過的鍵）"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=61
+HAT_EXPECTED_ASSERTIONS=75
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
