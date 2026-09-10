@@ -1097,12 +1097,274 @@ else
   bad "launch：終局失敗卻留下了指向已死 tab 的狀態記錄"
 fi
 
+# ===== report.sh：worker 上行 =====
+# 沿用既有已匯出的 AGENT_TEAM_HOME=$T/teamhome、HOME=$T/fakehome、
+# HERDR_WORKSPACE_ID=w3N；$REG 沿用「registry 讀寫」小節算出的值。額外
+# 匯出 report.sh 專屬需要的三個環境變數：AGENT_TEAM_STATE_DIR 直接給
+# $REG（report.sh 不呼叫 hat_registry_root，見腳本檔頭「序號配發」一
+# 節的說明，因此不能靠 AGENT_TEAM_HOME／HERDR_WORKSPACE_ID 間接推導，
+# 必須直接給同一個目錄）、AGENT_TEAM_SELF 是這個 worker 的名稱、
+# AGENT_TEAM_ORCHESTRATOR 是收件人名稱（樁不檢查這個值，任意取一個）。
+export AGENT_TEAM_STATE_DIR="$REG" AGENT_TEAM_SELF="w3n-reporter" AGENT_TEAM_ORCHESTRATOR="w3n-orchestrator"
+
+# 清空 inbox／details／replies 三個目錄：下面 Step 5 用「ls "$REG/inbox"
+# | tail -1」取得目前最後一筆的 seq（任務簡報逐字），前面幾個小節
+# （registry 讀寫、launch-worker 等）留下的檔案若還在，會讓這個 lexical
+# 排序取到的不是本節自己寫入的那一筆，測試會變得不可靠。
+rm -rf "$REG/inbox" "$REG/details" "$REG/replies"
+mkdir -p "$REG/inbox" "$REG/details" "$REG/replies"
+
+# hat_last_seq_for_worker <worker>
+# 印出 $REG/inbox 底下屬於 <worker> 的所有記錄裡，seq 數值最大的那一
+# 個。本節後面幾個「本任務自行補上」的斷言需要「找出我剛剛那次呼叫寫
+# 出的是哪一筆」，改用數值排序（而不是任務簡報 Step 5 那種
+# `ls | tail -1` 的字典排序）：字典排序在 seq 跨過個位數（例如 9 之後
+# 到 10）就會失真，"10" 會排在 "2" 前面。本節目前的真實寫入次數還在個
+# 位數以內，兩種排序法結果相同，但把「找我自己那一筆」這件事寫成不依
+# 賴這個巧合，之後這裡再插入新的斷言也不會悄悄壞掉。任務簡報 Step 5
+# 給的那一行字典排序寫法本身不動（見下方），因為那是逐字採用的斷言配
+# 套程式碼，不是本函式要取代的對象。
+hat_last_seq_for_worker() {
+  local worker="$1" f base num best=""
+  while IFS= read -r -d '' f; do
+    base="$(basename "$f")"
+    num="${base%%-*}"
+    if [ -z "$best" ] || [ "$num" -gt "$best" ]; then
+      best="$num"
+    fi
+  done < <(find "$REG/inbox" -maxdepth 1 -type f -name "*-$worker.json" -print0 2>/dev/null)
+  printf '%s\n' "$best"
+}
+
+HERDR_CALL_LOG="$T/herdr-call-log-report"
+HERDR_FULL_ARGS="$T/herdr-full-args-report"
+: > "$HERDR_CALL_LOG"
+: > "$HERDR_FULL_ARGS"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$1 \$2" >> "$HERDR_CALL_LOG"
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" report-uplink
+
+# ---- Step 1（任務簡報逐字；&&/|| 鏈改寫成 if/then/else/fi）：token 白
+#      名單與環境缺席 ----
+rc=0; ( unset AGENT_TEAM_STATE_DIR; bash "$SCRIPTS/report.sh" --token fyi --summary x ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then
+  pass "report：狀態目錄缺席時失敗"
+else
+  bad "report：環境缺席卻成功"
+fi
+
+msg="$( ( unset AGENT_TEAM_STATE_DIR; bash "$SCRIPTS/report.sh" --token fyi --summary x ) 2>&1 || true )"
+case "$msg" in
+  *--state-dir*) pass "report：錯誤訊息提示備援參數" ;;
+  *) bad "report：沒有提示 --state-dir" ;;
+esac
+
+rc=0; bash "$SCRIPTS/report.sh" --token 沒事 --summary x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "report：token 白名單外以 2 拒絕"
+else
+  bad "report：接受了不存在的 token"
+fi
+
+# ---- 本任務自行補上：AGENT_TEAM_SELF／AGENT_TEAM_ORCHESTRATOR 缺席
+#      （任務簡報 Interfaces 明講從環境讀這兩個變數，Step 1-5 只排了
+#      AGENT_TEAM_STATE_DIR 缺席的測試，沒有排這兩個）----
+rc=0; ( unset AGENT_TEAM_SELF; bash "$SCRIPTS/report.sh" --token fyi --summary x ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "report：AGENT_TEAM_SELF 缺席時以 4 結束"
+else
+  bad "report：得到 rc=$rc"
+fi
+
+rc=0; ( unset AGENT_TEAM_ORCHESTRATOR; bash "$SCRIPTS/report.sh" --token fyi --summary x ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "report：AGENT_TEAM_ORCHESTRATOR 缺席時以 4 結束"
+else
+  bad "report：得到 rc=$rc"
+fi
+
+# ---- 本任務自行補上：--state-dir 在環境變數缺席時仍可運作（Produces
+#      有列這個參數，Step 1-5 只測了「兩者都沒給」失敗的那一半，沒有測
+#      「有給 --state-dir 就能成功」這一半）----
+rc=0; ( unset AGENT_TEAM_STATE_DIR; bash "$SCRIPTS/report.sh" --token fyi --summary x --state-dir "$REG" ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "report：--state-dir 覆寫在環境變數缺席時仍可運作"
+else
+  bad "report：得到 rc=$rc"
+fi
+
+# ===== Step 2（任務簡報逐字；&&/|| 鏈改寫成 if/then/else/fi）：working
+#      只落檔不投遞 =====
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/report.sh" --token working --summary '這回合沒事' >/dev/null 2>&1
+# shellcheck disable=SC2012 # 任務簡報逐字；檔名全由本測試套件自己控制（十進位 seq 加正規化過的 worker 名），不含 ls 處理不了的特殊字元
+if [ "$(ls "$REG/inbox" | wc -l)" -ge 1 ]; then
+  pass "report：working 有落檔"
+else
+  bad "report：working 沒落檔"
+fi
+if grep -q 'agent prompt' "$HERDR_CALL_LOG"; then
+  bad "report：working 被投遞上去了（這會淹掉 orchestrator）"
+else
+  pass "report：working 不投遞"
+fi
+
+# ===== Step 3（任務簡報逐字；grep -m1 補上 `|| true`，理由與
+#      launch-worker 那節既有的同型寫法相同：找不到相符行時 grep 回非
+#      0，裸賦值會被 errexit 帶走整個套件）：投遞不帶握手選項 =====
+: > "$HERDR_FULL_ARGS"
+bash "$SCRIPTS/report.sh" --token fyi --summary '一則說一聲' >/dev/null 2>&1
+line="$(grep -m1 'agent prompt' "$HERDR_FULL_ARGS")" || true
+case "$line" in
+  *--wait*|*--until*|*--timeout*) bad "report：投遞帶了握手選項，會引入 agent_prompt_stalled 歧義" ;;
+  *) pass "report：投遞不帶握手選項" ;;
+esac
+
+# ---- 本任務自行補上：正面驗證真的投遞成功（上面那條斷言只驗證「沒
+#      有出現壞的選項」，若樁根本沒被叫到，$line 會是空字串，一樣落進
+#      「沒有壞選項」那個分支而誤判成功——本節在證明 PATH guard 那段時
+#      已經實測到這個弱點：樁真的缺席時，這條字面斷言仍然會判成通過。
+#      補這一條，用 .delivery 欄位正面確認樁真的被呼叫且回報成功，讓
+#      這個弱點不再是唯一的防線）----
+fyi_seq="$(hat_last_seq_for_worker w3n-reporter)"
+delivered_status="$(jq -r '.delivery' "$REG/inbox/${fyi_seq}-w3n-reporter.json")"
+if [ "$delivered_status" = "delivered" ]; then
+  pass "report：fyi 正常投遞成功時，delivery 標成 delivered"
+else
+  bad "report：delivery 欄位是 '$delivered_status'，投遞可能根本沒有真的執行"
+fi
+
+# ===== Step 4（任務簡報逐字；&&/|| 鏈改寫成 if/then/else/fi；
+#      prev_count 由本任務補上初值——任務簡報這裡引用了這個變數卻沒有
+#      先賦值，見任務報告）：摘要超長拒絕 =====
+# shellcheck disable=SC2012 # 理由同上一個 ls | wc -l：檔名全由本測試套件自己控制
+prev_count="$(ls "$REG/inbox" | wc -l)"
+long="$(printf 'x%.0s' {1..600})"
+rc=0; out="$(bash "$SCRIPTS/report.sh" --token fyi --summary "$long" 2>&1)" || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "report：超長摘要以 2 拒絕"
+else
+  bad "report：超長摘要沒被拒（rc=$rc）"
+fi
+case "$out" in
+  *--detail-file*) pass "report：錯誤訊息教人用 detail 欄位" ;;
+  *) bad "report：錯誤訊息沒有教下一步" ;;
+esac
+# shellcheck disable=SC2012 # 理由同上：檔名全由本測試套件自己控制
+if [ "$(ls "$REG/inbox" | wc -l)" = "$prev_count" ]; then
+  pass "report：拒絕時不落檔"
+else
+  bad "report：拒絕了卻還是落了檔"
+fi
+
+# ---- 本任務自行補上：ack 固定格式的摘要不會被長度上限擋下（Global
+#      Constraints 明訂上限不得把它截斷或拒絕，Step 1-5 沒有排測試涵蓋
+#      這一半）----
+ack_summary="worker_id=w3n-reporter cwd=$REG model=claude-3-test"
+rc=0; bash "$SCRIPTS/report.sh" --token ack --summary "$ack_summary" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "report：符合 ack 固定格式的摘要不會被長度上限擋下"
+else
+  bad "report：ack 摘要被擋下（rc=$rc），對帳會靜默失效"
+fi
+
+# ===== Step 5（任務簡報逐字；&&/|| 鏈改寫成 if/then/else/fi；第二次呼
+#      叫的 out 賦值補上 `|| true`，理由同 Step 3）：need-you 阻塞與逾
+#      時退場 =====
+start=$(date +%s)
+rc=0; bash "$SCRIPTS/report.sh" --token need-you --summary '要定案' --wait-timeout 3 >/dev/null 2>&1 || rc=$?
+elapsed=$(( $(date +%s) - start ))
+if [ "$rc" -eq 7 ]; then
+  pass "report：need-you 逾時以 7 結束（非失敗）"
+else
+  bad "report：得到 rc=$rc"
+fi
+if [ "$elapsed" -ge 3 ]; then
+  pass "report：need-you 真的有阻塞等待"
+else
+  bad "report：沒有等待就返回"
+fi
+
+# 回覆先放好時應立刻取回並印出
+# shellcheck disable=SC2012 # 任務簡報逐字；檔名全由本測試套件自己控制
+seq="$(ls "$REG/inbox" | tail -1 | cut -d- -f1)"
+mkdir -p "$REG/replies/$AGENT_TEAM_SELF"
+printf '{"decision":"照 A 案做"}' > "$REG/replies/$AGENT_TEAM_SELF/$seq.json"
+out="$(bash "$SCRIPTS/report.sh" --token need-you --summary '再問一次' --wait-timeout 5 2>/dev/null)" || true
+case "$out" in
+  *照\ A\ 案做*) pass "report：取回定案內容並印出" ;;
+  *) bad "report：沒有印出定案內容" ;;
+esac
+
+# ---- 本任務自行補上：--detail-file 落檔進 details/、inbox 記錄的
+#      detail_path 指向該檔（任務簡報 Produces 明講「落檔到 inbox/ 與
+#      details/」，Step 1-5 沒有排測試涵蓋 details/ 這一半）----
+detail_src="$T/report-detail.txt"
+printf '完整細節內容_DETAIL_MARKER\n' > "$detail_src"
+bash "$SCRIPTS/report.sh" --token fyi --summary '含細節的一則' --detail-file "$detail_src" >/dev/null 2>&1
+detail_seq="$(hat_last_seq_for_worker w3n-reporter)"
+detail_dest="$REG/details/${detail_seq}-w3n-reporter.txt"
+if grep -q 'DETAIL_MARKER' "$detail_dest" 2>/dev/null; then
+  pass "report：--detail-file 落檔進 details/"
+else
+  bad "report：details/ 底下找不到細節內容"
+fi
+recorded_detail_path="$(jq -r '.detail_path' "$REG/inbox/${detail_seq}-w3n-reporter.json")"
+if [ "$recorded_detail_path" = "$detail_dest" ]; then
+  pass "report：inbox 記錄的 detail_path 指向該檔"
+else
+  bad "report：detail_path 記錄的是 '$recorded_detail_path'，預期 '$detail_dest'"
+fi
+
+# ---- 本任務自行補上：--locator 寫進 inbox 記錄（任務簡報 Produces 有
+#      列這個參數，Step 1-5 沒有排測試涵蓋）----
+bash "$SCRIPTS/report.sh" --token delivered --summary '產物可以拿去用了' --locator "https://example.invalid/pr/1" >/dev/null 2>&1
+locator_seq="$(hat_last_seq_for_worker w3n-reporter)"
+recorded_locator="$(jq -r '.locator' "$REG/inbox/${locator_seq}-w3n-reporter.json")"
+if [ "$recorded_locator" = "https://example.invalid/pr/1" ]; then
+  pass "report：--locator 寫進 inbox 記錄"
+else
+  bad "report：locator 記錄的是 '$recorded_locator'"
+fi
+
+# ---- 本任務自行補上：投遞被 agent_blocked 拒絕時不是本腳本的失敗
+#      （本次實作的判斷，見 report.sh 檔頭「投遞失敗不是本腳本的失
+#      敗」一節；任務簡報的 5 個測試步驟沒有覆蓋這個分支，補上避免這
+#      個判斷完全沒有自動化斷言盯著）----
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"agent_blocked","message":"blocked"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" report-blocked-delivery
+
+rc=0; bash "$SCRIPTS/report.sh" --token fyi --summary '對方卡住時的一則' >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "report：投遞被 agent_blocked 拒絕時，仍以 0 結束（不是本腳本的失敗）"
+else
+  bad "report：得到 rc=$rc"
+fi
+blocked_seq="$(hat_last_seq_for_worker w3n-reporter)"
+delivery_status="$(jq -r '.delivery' "$REG/inbox/${blocked_seq}-w3n-reporter.json")"
+if [ "$delivery_status" = "blocked" ]; then
+  pass "report：投遞被拒絕時，inbox 記錄的 delivery 標成 blocked"
+else
+  bad "report：delivery 欄位是 '$delivery_status'"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=113
+HAT_EXPECTED_ASSERTIONS=135
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
