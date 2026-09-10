@@ -704,6 +704,95 @@ else
   bad "launch：寫出了孤兒記錄"
 fi
 
+# ---- 本任務自行補上（審查回合 1 覆蓋度缺口）：字面字串 "null" 那個
+#      分支要真的被觸發過，不能只靠「空結果物件」永遠只測到空字串那
+#      一半 ----
+# `jq -r '... // empty'` 對「路徑缺席」與「值真的是 JSON null」都會印
+# 出空字串，上面那組斷言測的正是這一半；但若酬載裡的值本身是「字串型
+# 別的 null」（值是 "null" 這四個字元組成的字串，不是 JSON null 型
+# 別），`// empty` 不會攔下它——只有 JSON null／false 才會被換成
+# empty，非空字串（即使內容剛好是 "null"）對 `//` 而言是真值，會原樣
+# 印出 "null" 文字。這是另一半分支，任務簡報明講兩種情況各要測一次，
+# 已用真實 jq 1.8.2 對三種資料形狀分別實測過此行為。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab create") printf '{"result":{"tab":{"tab_id":"null"},"root_pane":{"pane_id":"w3N:p9"}}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" launch-string-null
+
+before="$(find "$REG/workers" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l)"
+rc=0; bash "$SCRIPTS/launch-worker.sh" --role nulltest --kind claude --cwd . --briefing-file "$BRIEF" >/dev/null 2>&1 || rc=$?
+after="$(find "$REG/workers" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l)"
+if [ "$rc" -eq 6 ]; then
+  pass "launch：識別碼是字面字串 null 時以 6 結束"
+else
+  bad "launch：得到 rc=$rc"
+fi
+if [ "$before" = "$after" ]; then
+  pass "launch：字面字串 null 的識別碼也沒有寫 registry"
+else
+  bad "launch：寫出了孤兒記錄"
+fi
+
+# ---- 本任務自行補上（審查回合 1 Important）：重試迴圈疊加「識別碼
+#      取不到」時，不得留下指向已死 tab 的孤兒記錄，rc=6 的訊息也必
+#      須照實反映「這是重試路徑、上一筆記錄已清除」----
+# 樁用計數器檔案分辨這是第幾次 tab create：第一次回合法識別碼（讓第 2
+# 步通過、第 3 步真的把座標寫進 registry）；agent start 一律失敗（觸
+# 發重試，見規格 §6 的重試規則）；第二次 tab create 回一個空的結果物
+# 件（重演「重試之後又碰上識別碼取不到」這個組合情境）。
+printf '0' > "$T/retry-orphan-count"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "tab create")
+    n="\$(cat "$T/retry-orphan-count")"
+    n=\$((n + 1))
+    printf '%s' "\$n" > "$T/retry-orphan-count"
+    if [ "\$n" -eq 1 ]; then
+      printf '{"result":{"tab":{"tab_id":"w3N:t9"},"root_pane":{"pane_id":"w3N:p9"}}}'
+    else
+      printf '{"result":{}}'
+    fi
+    ;;
+  "agent start") exit 1 ;;
+  "tab close")   printf '{"result":{}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" launch-retry-orphan
+
+rc=0
+msg="$(bash "$SCRIPTS/launch-worker.sh" --role retryorphan --kind claude --cwd . --briefing-file "$BRIEF" 2>&1 >/dev/null)" || rc=$?
+if [ "$rc" -eq 6 ]; then
+  pass "launch：重試後第二次識別碼取不到仍以 6 結束"
+else
+  bad "launch：得到 rc=$rc"
+fi
+if [ ! -e "$REG/workers/w3n-retryorphan.json" ]; then
+  pass "launch：重試疊加識別碼取不到時，上一次嘗試留下的孤兒記錄已被清除"
+else
+  bad "launch：registry 留下了一筆指向已死 tab 的孤兒記錄"
+fi
+case "$msg" in
+  *"未寫入 registry"*)
+    bad "launch：這是重試路徑卻仍宣稱「未寫入 registry」，訊息與實際狀態不符"
+    ;;
+  *"已一併移除"*)
+    pass "launch：rc=6 的訊息照實反映「重試路徑、上一筆記錄已清除」"
+    ;;
+  *)
+    bad "launch：訊息內容不如預期：$msg"
+    ;;
+esac
+
 # ---- 本任務自行補上：入口守衛 hat_assert_workspace 真的接上（Task 15
 #      要求接受 target 的八支腳本都必須呼叫它，這裡驗證的是「真的被
 #      跑到且真的能擋下」，不是只有函式名出現在檔案裡）----
@@ -909,7 +998,7 @@ esac
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=100
+HAT_EXPECTED_ASSERTIONS=105
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

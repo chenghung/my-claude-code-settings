@@ -224,10 +224,32 @@ while [ "$attempt" -le 2 ]; do
   tab_id="$(printf '%s' "$tab_json" | jq -r '.result.tab.tab_id // empty')"
   pane_id="$(printf '%s' "$tab_json" | jq -r '.result.root_pane.pane_id // empty')"
 
-  # jq 取不到路徑時安靜印出字面 "null"，不是報錯，所以要同時擋空字串
-  # 與字串 "null"；取不到就立刻結束，不寫 registry——寫進去會留下一
-  # 筆座標指不到任何東西、而且再也關不掉的孤兒記錄。
+  # jq 帶 `// empty` 之後：路徑缺席或值真的是 JSON null 都會印出空字
+  # 串；但若酬載裡的值本身就是「字串型別的 null」（例如 `"tab_id":
+  # "null"`），`// empty` 不會攔下它——空字串與非 null 值對 `//` 而言
+  # 都是真值，只有 JSON null／false 才會被換成 empty（已用真實 jq
+  # 1.8.2 對三種資料形狀各自實測：字串 "null"、JSON null、路徑缺席，
+  # 前者印出 "null" 文字、後兩者印出空字串）。所以要同時擋空字串與字
+  # 面字串 "null"，兩者都代表「這個識別碼不可信」；取不到就立刻結
+  # 束，正常情況下（第一次嘗試）不寫 registry——寫進去會留下一筆座標
+  # 指不到任何東西、而且再也關不掉的孤兒記錄。
   if [ -z "$tab_id" ] || [ "$tab_id" = "null" ] || [ -z "$pane_id" ] || [ "$pane_id" = "null" ]; then
+    # ---- 重試路徑上的孤兒記錄：上一次嘗試留下的座標已經隨重試關閉，
+    #      這裡不能讓它繼續躺在 registry 裡假裝是正常在途的 worker ----
+    # `attempt > 1` 在這個迴圈的控制流程下等價於「上一次嘗試已經走過
+    # 第 2 步（拿到合法識別碼）與第 3 步（把座標寫進 worker_file）」：
+    # 唯一能讓 `attempt` 增加的路徑是第 4／5／7 步判定啟動失敗，而那三
+    # 步全部排在第 2／3 步之後才會執行到。因此走到這裡且 `attempt` 大
+    # 於 1 時，`worker_file` 必然存在、且其座標就是剛剛被關掉的那個
+    # tab——繼續留著它會被恢復模式／狀態查詢當成合法的在途 worker，而
+    # 它其實什麼都不是。必須把這筆記錄一併移除，訊息也要照實說「這是
+    # 重試路徑，上一筆記錄已清除」，不能沿用第一次嘗試那句「未寫入
+    # registry」——那句話在這裡是假的，會讓讀訊息的人以為 registry 一
+    # 直是乾淨的。
+    if [ "$attempt" -gt 1 ]; then
+      rm -f "$worker_file"
+      hat_die 6 "launch-worker.sh: 重試時 tab create 回報成功，但回應裡取不到可用的識別碼（tab_id='$tab_id' pane_id='$pane_id'）。第 $((attempt - 1)) 次嘗試留下的 registry 記錄（座標已隨重試關閉，指向一個已死的 tab）已一併移除，不留下孤兒記錄。這次的 tab 可能已經真的建立，請以 workspace $workspace_id、label $role 人工確認並關閉"
+    fi
     hat_die 6 "launch-worker.sh: tab create 回報成功，但回應裡取不到可用的識別碼（tab_id='$tab_id' pane_id='$pane_id'），未寫入 registry。tab 可能已經真的建立，請以 workspace $workspace_id、label $role 人工確認並關閉"
   fi
 
