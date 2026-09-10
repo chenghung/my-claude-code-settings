@@ -993,12 +993,116 @@ case "$line" in
   *) bad "launch：--arg 沒有正確直通：$line" ;;
 esac
 
+# ---- 本任務自行補上（審查回合 2 裁決）：兩次都失敗、終局以 8 結束
+#      時，不得留下該 worker 的狀態記錄——與審查回合 1「重試疊加識別
+#      碼取不到」那條路徑採一致的語意。三種失敗成因（啟動指令失敗、
+#      查到被阻擋狀態、等不到 worker 回報而逾時）各測一次，每條都斷言
+#      最終以 8 結束、且狀態目錄裡沒有留下該 worker 的記錄。訊息內容
+#      （「狀態記錄已移除」與「該名稱仍可用於讀畫面與送按鍵、處理完之
+#      後重跑本腳本」兩句話都要在）只在第一條（啟動指令失敗）驗證一
+#      次：三種成因共用同一句 hat_die 8 訊息模板，驗證一次即可代表全
+#      部三種成因的訊息內容，不必逐條重複驗證同一件事。
+
+# 成因一：agent start 一律失敗（herdr 拒絕，結束碼 1）。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab create")  printf '{"result":{"tab":{"tab_id":"w3N:t5"},"root_pane":{"pane_id":"w3N:p5"}}}' ;;
+  "agent start") exit 1 ;;
+  "tab close")   printf '{"result":{}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" launch-final-fail-agentstart
+
+rc=0
+msg="$(bash "$SCRIPTS/launch-worker.sh" --role startfail --kind claude --cwd . --briefing-file "$BRIEF" 2>&1 >/dev/null)" || rc=$?
+if [ "$rc" -eq 8 ]; then
+  pass "launch：agent start 一律失敗、兩次都失敗後以 8 結束"
+else
+  bad "launch：得到 rc=$rc"
+fi
+if [ ! -e "$REG/workers/w3n-startfail.json" ]; then
+  pass "launch：agent start 終局失敗後，狀態記錄已移除"
+else
+  bad "launch：終局失敗卻留下了指向已死 tab 的狀態記錄"
+fi
+case "$msg" in
+  *"狀態記錄已移除"*) pass "launch：rc=8 訊息明講狀態記錄已移除" ;;
+  *) bad "launch：rc=8 訊息沒有明講狀態記錄已移除：$msg" ;;
+esac
+case "$msg" in
+  *"herdr agent read"*"herdr agent send-keys"*"重跑本腳本"*)
+    pass "launch：rc=8 訊息仍保留名稱可用於讀畫面／送按鍵／重跑的指引"
+    ;;
+  *)
+    bad "launch：rc=8 訊息漏了名稱可用於讀畫面／送按鍵／重跑的指引：$msg"
+    ;;
+esac
+
+# 成因二：查到被阻擋狀態（agent_status=blocked）。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab create") printf '{"result":{"tab":{"tab_id":"w3N:t6"},"root_pane":{"pane_id":"w3N:p6"}}}' ;;
+  "agent get")  printf '{"result":{"agent":{"agent_status":"blocked"}}}' ;;
+  "tab close")  printf '{"result":{}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" launch-final-fail-blocked
+
+rc=0; bash "$SCRIPTS/launch-worker.sh" --role blockedfinal --kind claude --cwd . --briefing-file "$BRIEF" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 8 ]; then
+  pass "launch：blocked 兩次都撞上後以 8 結束"
+else
+  bad "launch：得到 rc=$rc"
+fi
+if [ ! -e "$REG/workers/w3n-blockedfinal.json" ]; then
+  pass "launch：blocked 終局失敗後，狀態記錄已移除"
+else
+  bad "launch：終局失敗卻留下了指向已死 tab 的狀態記錄"
+fi
+
+# 成因三：等不到 worker 回報而逾時（agent start／blocked 檢查都過，
+# 送出啟動包後 inbox 裡永遠沒有出現這個 worker 的 ack）。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "tab create")   printf '{"result":{"tab":{"tab_id":"w3N:t8"},"root_pane":{"pane_id":"w3N:p8"}}}' ;;
+  "agent start")  printf '{"result":{}}' ;;
+  "agent get")    printf '{"result":{"agent":{"agent_status":"idle"}}}' ;;
+  "agent prompt") printf '{"result":{}}' ;;
+  "tab close")    printf '{"result":{}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" launch-final-fail-acktimeout
+
+rc=0; bash "$SCRIPTS/launch-worker.sh" --role acktimeoutfinal --kind claude --cwd . --briefing-file "$BRIEF" --ack-timeout 2 >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 8 ]; then
+  pass "launch：ACK 逾時兩次都發生後以 8 結束"
+else
+  bad "launch：得到 rc=$rc"
+fi
+if [ ! -e "$REG/workers/w3n-acktimeoutfinal.json" ]; then
+  pass "launch：ACK 逾時終局失敗後，狀態記錄已移除"
+else
+  bad "launch：終局失敗卻留下了指向已死 tab 的狀態記錄"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=105
+HAT_EXPECTED_ASSERTIONS=113
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

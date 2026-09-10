@@ -383,7 +383,18 @@ while [ "$attempt" -le 2 ]; do
   hat_herdr tab close "$tab_id" >/dev/null 2>&1 || true
 
   if [ "$attempt" -ge 2 ]; then
-    hat_die 8 "launch-worker.sh: 啟動失敗，已重試一次仍未成功（worker=$name role=$role），升級給人處理。最後一次失敗原因：$last_failure_reason"
+    # ---- 兩次都失敗，終局升級給人：不留下這筆狀態記錄 ----
+    # 「記錄存在」這件事對下游（恢復模式、狀態查詢腳本）的語意就是
+    # 「這個 worker 是活的、或曾經是活的」，而一次失敗的啟動根本沒有
+    # 產生過活的 worker；剛才那一行已經把最後一次嘗試的 tab 關掉了。
+    # 留著這筆記錄，恢復模式與狀態查詢腳本會把一個 tab 已經不存在的
+    # 東西當成在途 worker 處理，而且沒有任何機制會自動修正——與上面
+    # 「重試疊加識別碼取不到」那條路徑是同一個語意（見第 2 步識別碼檢
+    # 查那段的既有處理），這裡採一致的做法。追查脈絡的需求不必靠這筆
+    # 記錄：啟動包全文已經在第 3 步複製進 briefings/<worker>.md，那份
+    # 副本留著就夠回答「當初到底想派什麼」。
+    rm -f "$worker_file"
+    hat_die 8 "launch-worker.sh: 啟動失敗，已重試一次仍未成功（worker=$name role=$role），升級給人處理。狀態記錄已移除，不留下指向已死 tab 的孤兒記錄；$name 這個名稱仍可用於 herdr agent read／herdr agent send-keys 讀畫面與送按鍵，處理完之後重跑本腳本。最後一次失敗原因：$last_failure_reason"
   fi
 
   attempt=$((attempt + 1))
