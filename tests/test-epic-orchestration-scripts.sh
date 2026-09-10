@@ -1164,9 +1164,9 @@ fi
 
 # --startup：一樣是確認狀態已離開 blocked，但落點不含 working——那個
 # 時點沒有任何 prompt 排著等做，通過信任對話框只是讓 agent 可以開始接
-# 受輸入。而「已離開」有 idle 與 done 兩種，兩種都要接受（沒被使用者
-# 在 herdr 介面裡點進去看過的 tab，停下時回報的是 done；這條路徑的情
-# 境正是使用者只在對話裡回答「信任」、未必點進過那個 tab）。用獨立的
+# 受輸入。而「已離開」有 idle 與 done 兩種，兩種都要接受（實測到的落
+# 點是 done；為什麼是 done 只有幾次樣本支持的解釋、不是查證過的機制，
+# 所以兩種都收——見 press-approval.sh 檔頭）。用獨立的
 # phase 302，樁直接檢查 herdr agent wait 收到的 --until 同時涵蓋 idle
 # 與 done、而且不含 working。跟上面 phase 301 那組（正面要求 idle／
 # done／working 三個都在）合在一起看：兩條分支現在共用「已離開
@@ -3065,10 +3065,11 @@ fi
 #           件事就讀不到這個欄位、以 5 結束（既有語意是「檔案不存在或
 #           該 phase 不在檔內」，指不到真正的成因），整支腳本死在任何
 #           守衛與代按之前。
-#   缺陷四：啟動階段模式代按後只等 idle，但沒被使用者在 herdr 介面裡
-#           點進去看過的 tab，停下時回報的是 done——而這條路徑的情境
-#           正是使用者只在對話裡回答「信任」、未必點進過那個 tab。舊
-#           行為因此每一次都等到逾時、拿到 7。
+#   缺陷四：啟動階段模式代按後只等 idle，而實測到的落點是 done（只等
+#           idle 的那次等待在 25042 毫秒逾時，狀態早已是 done）。舊行
+#           為因此等到逾時、拿到 7。為什麼落點是 done 只有幾次樣本支
+#           持的解釋、不是查證過的機制，所以修法是兩種都收，不是改成
+#           只等 done。
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
 # section=start-phase-agent-name-on-8
@@ -3128,7 +3129,7 @@ case "$1 $2" in
       printf '{"error":{"code":"timeout","message":"stub: --until 未同時涵蓋 idle 與 done"}}\n' >&2
       exit 1
     fi
-    # 沒被使用者點進去看過的 tab，停下時回報的是 done 而不是 idle。
+    # 樁出實測到的那個落點：停下時回報 done 而不是 idle。
     printf '%s' '{"result":{"agent":{"agent_status":"done"}}}'
     exit 0 ;;
 esac

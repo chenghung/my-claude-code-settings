@@ -7,11 +7,17 @@
 #
 # ---- 這支腳本要修的問題 ----
 # 現行編排端用前景輪詢觀測 phase agent，只等 idle 與 blocked、刻意排
-# 除 done。但無人值守的 phase agent 回合結束一律落在 done，idle 只
-# 有使用者親自在 herdr UI 點進那個 tab 之後才會出現——現行版本因此
-# 永遠等不到，漏不漏取決於使用者有沒有看過那個 tab，不取決於 phase
-# 做了什麼。本檔把觀測換成事件推送：常駐守著每個 phase，停下就立刻
-# 知道，不必靠編排端記得回來查。
+# 除 done。實測到的落點卻是 done：只等 idle 的那次等待在 25042 毫秒
+# 逾時，而狀態早已是 done——那一次停下因此沒有被發現。
+#
+# 這裡只寫實測到的那一層。至於 idle 與 done 為什麼會這樣分佈（例如
+# 「同一個底層休止態的兩個名字，差別在那個 tab 有沒有被使用者點進去
+# 看過」），那是幾次樣本支持的最合理解釋、不是查證過的機制，本檔不據
+# 它推論；完整的降級說明與「不要反過來把 idle 從等待清單裡拿掉」那條
+# 警告見 SKILL.md 與 references/rationale.md。
+#
+# 本檔把觀測換成事件推送：常駐守著每個 phase，停下就立刻知道，不必靠
+# 編排端記得回來查。
 #
 # ---- 整體形狀：每個 phase 一條邊緣迴圈＋一條低頻掃描 ----
 # 每個 phase 一條迴圈，以子行程執行；main 每輪重讀狀態檔決定監看清
@@ -322,7 +328,7 @@ _eo_ensure_field() {
 # 叫一次，成本是最多幾次 `jq -e` 查詢，換來不必假設有任何人已經初始
 # 化過這些欄位。
 #
-# 六個預設值已核對過與 constraints.md 狀態檔 schema 一致：三個靜音
+# 六個預設值已核對過與 SKILL.md「進度表與狀態檔」的欄位一致：三個靜音
 # 欄位（spinning_muted／gone_muted／unclassified_muted）schema 裡就
 # 是 false，直接採用；unknown_rounds schema 範例本來就是 0，直接採
 # 用；last_marker_seq／auto_push_count 兩個計數欄位 schema 範例分別
@@ -535,8 +541,9 @@ eo_classify_stop() {
   held="$(eo_state_get "$phase" held_by_orchestrator 2>/dev/null)" || held=false
   # 已 blocked 的目標不做自動推進：approval 對話框需要
   # press-approval.sh 代按，不是文字下行。send-to-phase.sh 對 blocked
-  # 目標本來就會被 herdr 以 agent_blocked 拒絕（見 constraints.md 已
-  # 查證表），在分類階段就先排除，不必等呼叫失敗才發現、也不會因此
+  # 目標本來就會被 herdr 以 agent_blocked 拒絕（已實測，見
+  # references/rationale.md「下行對 blocked 的對象會被明確拒絕」），
+  # 在分類階段就先排除，不必等呼叫失敗才發現、也不會因此
   # 吞掉一次原本該讓 orchestrator 看到的通知。
   if [ "$held" != "true" ] && [ "$stopped" != "blocked" ] && [ "$state_str" = "working-ok" ]; then
     auto_count="$(eo_state_get "$phase" auto_push_count)"
