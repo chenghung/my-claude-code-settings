@@ -2887,6 +2887,15 @@ esac
 # 不保證（已實測踩到這個間歇性失敗）。改用 `-printf '%T@'` 取次秒精度
 # 的修改時間、數值排序取最後一筆，精確鎖定「最新寫入」的那一份。
 blocked_entry="$(find "$REG/peer-log" -maxdepth 1 -type f -name '*.json' -printf '%T@ %p\n' | sort -n | tail -n1 | cut -d' ' -f2-)"
+# ---- 本任務自行補上：投遞失敗時紀錄仍然存在（先落檔、後更新狀態，見
+#      send-peer.sh 檔頭「橫向是直接的」一節）且狀態正確，比照上面
+#      「橫向：peer-log 紀錄檔真的非空」的既有寫法，拆成存在性與內容
+#      兩條斷言 ----
+if [ -n "$blocked_entry" ] && [ -s "$blocked_entry" ]; then
+  pass "send-peer：投遞失敗時 peer-log 紀錄檔仍然存在"
+else
+  bad "send-peer：投遞失敗時找不到 peer-log 紀錄檔，或紀錄檔是空的"
+fi
 blocked_delivery="$(jq -r '.delivery' "$blocked_entry" 2>/dev/null)" || blocked_delivery=""
 if [ "$blocked_delivery" = "blocked" ]; then
   pass "send-peer：投遞失敗時 peer-log 的 delivery 欄位記成 blocked"
@@ -3891,7 +3900,7 @@ jq '.auto_push_count=0 | .held=false | .pending_resend=[]' "$REG/workers/w3n-bac
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=363
+HAT_EXPECTED_ASSERTIONS=364
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

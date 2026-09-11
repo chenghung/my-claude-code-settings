@@ -116,6 +116,14 @@ fi
 mkdir -p "$state_dir/peer-log"
 created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+log_file="$(mktemp "$state_dir/peer-log/${self_name}-to-${to}-XXXXXX.json")" || hat_die 5 "send-peer.sh: 無法建立 peer-log 紀錄檔"
+if ! jq -n --arg from "$self_name" --arg to "$to" --arg text "$text" \
+    --arg created_at "$created_at" \
+    '{from: $from, to: $to, text: $text, created_at: $created_at, delivery: "pending"}' \
+    > "$log_file"; then
+  hat_die 5 "send-peer.sh: peer-log 紀錄檔寫入失敗：$log_file"
+fi
+
 rc=0
 hat_herdr agent prompt "$to" "$text" >/dev/null || rc=$?
 if [ "$rc" -eq 0 ]; then
@@ -124,13 +132,17 @@ else
   delivery="blocked"
 fi
 
-log_file="$(mktemp "$state_dir/peer-log/${self_name}-to-${to}-XXXXXX.json")" || hat_die 5 "send-peer.sh: 無法建立 peer-log 紀錄檔"
-if ! jq -n --arg from "$self_name" --arg to "$to" --arg text "$text" \
-    --arg created_at "$created_at" --arg delivery "$delivery" \
-    '{from: $from, to: $to, text: $text, created_at: $created_at, delivery: $delivery}' \
-    > "$log_file"; then
-  hat_die 5 "send-peer.sh: peer-log 紀錄檔寫入失敗：$log_file"
+# 更新剛剛落下的那筆紀錄的投遞狀態。不透過 hat_json_set：它的欄位白
+# 名單只認 team.json／workers/*.json／inbox/*.json 三種路徑（見
+# lib/common.sh），peer-log/*.json 不在其中，因此比照 hat_json_set 內
+# 部同樣的 mktemp／jq／mv 三步自己做一次，失敗一律 hat_die 5，與上面建
+# 檔失敗的處置一致。
+log_tmp="$(mktemp "${log_file}.XXXXXX")" || hat_die 5 "send-peer.sh: 無法更新 peer-log 紀錄檔的投遞狀態：$log_file"
+if ! jq --arg delivery "$delivery" '.delivery = $delivery' "$log_file" > "$log_tmp"; then
+  rm -f "$log_tmp"
+  hat_die 5 "send-peer.sh: peer-log 紀錄檔投遞狀態更新失敗：$log_file"
 fi
+mv "$log_tmp" "$log_file"
 
 if [ "$delivery" = "blocked" ]; then
   printf '已記錄、投遞失敗：%s 目前收不到（可能忙碌中）。橫向沒有待補送機制，需要確認對方讀到請改呼叫 wait-peer.sh，或回報 orchestrator\n' "$to"
