@@ -40,6 +40,32 @@
 #      位，若因此判定失敗，等於這支腳本在自己的功能上線前完全無法使
 #      用。兩者任一成立以 4 結束。
 #
+# ---- 參與檔案鎖協定：整段關閉序列全程持有該 worker 記錄的檔案鎖
+#      （修正迴圈第一輪裁決）----
+# `watchdog.sh`（後續任務）會透過 `hat_json_set` 對同一個 `workers/
+# <name>.json` 做讀-改-寫，而 `hat_json_set` 走的是「每個檔案一把鎖」
+# 的序列化模型（鎖檔路徑 `<file>.lock`，見 common.sh 該函式檔頭）。本
+# 腳本若不參與同一個協定，會出現這個具體的競態：`watchdog.sh` 已經讀出
+# 舊內容、正要把新內容置換回去的空檔裡，若本腳本這段關閉序列（讀取記
+# 錄、`tab close`、歸檔、移除記錄）整段插進來完成，`watchdog.sh` 隨後
+# 那次遲到的置換會把一筆已經永久關閉的記錄原地復活——一個 session 已
+# 經被丟掉的 worker 又出現在清單上，且看起來是正常在途的。這與本腳本
+# 「不可逆、不支援 resume」的核心前提直接牴觸：一個能被復活的「不可
+# 逆」動作等於沒有不可逆。
+#
+# 修法是從讀取記錄開始，一路持有 `${worker_file}.lock` 這把鎖到最後移
+# 除記錄為止，寫法沿用 `hat_json_set` 自己的既有慣用手法（`exec
+# {fd}>"$lock_file"; flock -x "$fd"`）、鎖檔路徑也用同一條，這樣兩邊搶
+# 的才是同一把鎖，不是各自序列化、彼此不排隊（那等於沒鎖，跟
+# `instruct.sh` 檔頭「`.pending_resend` 有兩個寫入端」一節點出的教訓同
+# 一個成因）。移除記錄時（見下方成功路徑）連同它的鎖檔一併移除，不留
+# 下指不到任何現存記錄的孤兒鎖檔。
+#
+# 這只解決「讀出舊內容之後才被插入」這一半；另一半（鎖內置換前重查目
+# 標檔是否還存在，不存在就大聲失敗而不是照樣置換）由 `watchdog.sh` 那
+# 個任務在 `hat_json_set` 自己那一側補上，兩道一起擋住同一個競態的兩
+# 端，不在本腳本的職責範圍內。
+#
 # ---- 三道守衛全過才 `tab close`；close 失敗要留著記錄 ----
 # 三道守衛依序是：入口的 workspace 邊界（見下方「入口守衛」一節）、
 # 「有人正在等它」（上一節）、`delivered` 關卡（上上節）。全部通過之後
@@ -49,7 +75,9 @@
 # 一行 registry 寫入都還沒發生——`workers/<name>.json` 完全沒被動到，
 # 下一次呼叫還找得到同一個 tab_id。這不是巧合，是刻意的順序：所有會改
 # 變 registry 的動作（歸檔）都排在 `tab close` 之後，讓「關閉失敗」與
-# 「記錄消失」在結構上不可能同時發生，不需要額外的復原程式碼。
+# 「記錄消失」在結構上不可能同時發生，不需要額外的復原程式碼。這段期
+# 間鎖全程持有著，`errexit` 觸發的行程結束會自動關閉鎖用的檔案描述
+# 符、釋放鎖，不需要額外的 trap 或明確的解鎖呼叫。
 #
 # `tab close` 成功之後，把 `workers/<name>.json` 的內容外加
 # `reason`／`evidence`／`handoff_file`／`closed_at` 四個欄位一起寫進
@@ -196,6 +224,18 @@ hat_assert_agent_name "$to"
 
 registry_root="$(hat_registry_root)"
 worker_file="$registry_root/workers/$to.json"
+lock_file="${worker_file}.lock"
+
+# ---- 整段關閉序列參與 hat_json_set 既有的「每個檔案一把鎖」協定（見
+#      檔頭「參與檔案鎖協定」一節）：從這裡讀取記錄開始，一路持有到最
+#      後關閉 tab、歸檔、移除記錄為止，鎖檔路徑跟 hat_json_set 用的同
+#      一條（`<file>.lock`），寫法也沿用同一個慣用手法（`exec
+#      {fd}>"$lock_file"; flock -x "$fd"`），才會跟 watchdog.sh 未來對
+#      同一個檔案的 hat_json_set 呼叫排隊，不是各自序列化、彼此不排隊
+#      （那等於沒鎖）----
+lock_fd=""
+exec {lock_fd}>"$lock_file"
+flock -x "$lock_fd"
 
 # ---- 入口守衛：workspace 邊界，早於任何 herdr 呼叫 ----
 pane_id="$(hat_json_get "$worker_file" '.pane_id')"
@@ -252,7 +292,13 @@ if ! mv "$tmp_handoff" "$registry_root/handoff/$to.json"; then
   rm -f "$tmp_handoff"
   hat_die 5 "shutdown-worker.sh: tab 已關閉，但記錄歸檔失敗（置換），workers/$to.json 保留原地：$worker_file"
 fi
-rm -f "$worker_file"
+
+# ---- 移除記錄時連同它的鎖檔一併移除（見檔頭「參與檔案鎖協定」一
+#      節）：這個 fd 已經持有的 flock 只綁在這個開啟的檔案描述上，跟檔
+#      名本身脫鉤，unlink 掉 lock_file 不會讓目前這個行程失去它，也不
+#      影響下面即將發生的行程結束——真正釋放要等到 fd 關閉或行程結
+#      束；但 workers/ 目錄不會留下一個指不到任何現存記錄的孤兒鎖檔----
+rm -f "$worker_file" "$lock_file"
 
 printf 'to=%s reason=%s tab=%s closed\n' "$to" "$reason" "$tab_id"
 exit 0

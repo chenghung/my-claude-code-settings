@@ -2337,12 +2337,69 @@ else
   pass "關閉：tab close 失敗時沒有歸檔"
 fi
 
+# ---- 修正迴圈第一輪裁決：整段關閉序列要持有該 worker 記錄的檔案鎖
+#      （見腳本檔頭「參與檔案鎖協定」一節）。驗證手法採用審查者建議的
+#      第二種：讓關閉動作持鎖期間，另一個行程對同一把鎖做非阻塞
+#      （flock -n）嘗試，確認它取不到——用非阻塞嘗試而非背景行程加逾
+#      時等待，結果立即分曉，不會讓套件變慢。探測的時機選在 `tab
+#      close` 這一步：herdr 樁在這一步是本腳本唯一會真的 fork 出去的
+#      外部子行程，正好可以在鎖被持有期間，從「這支腳本自己以外」的行
+#      程角度重新 open 同一個鎖檔路徑（不是沿用繼承來的 fd，而是自己
+#      重新 exec 開一個新的檔案描述，才會是真正獨立的鎖持有者，見任務
+#      報告的機制驗證記錄）並嘗試搶鎖 ----
+printf '{"pane_id":"w3N:pL","held":false,"tab_id":"w3N:tL","stage":"running"}' \
+  > "$REG/workers/w3n-locktest.json"
+lock_probe="$T/shutdown-lock-probe"
+lock_target="$REG/workers/w3n-locktest.json.lock"
+: > "$lock_probe"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$1 \$2" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "tab close" ]; then
+  exec 8>"$lock_target"
+  if flock -n -x 8; then
+    printf 'child_got_lock\n' > "$lock_probe"
+    flock -u 8
+  else
+    printf 'child_blocked\n' > "$lock_probe"
+  fi
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" shutdown-lock-held
+
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-locktest --reason "done" --evidence x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "關閉：加入檔案鎖協定後，正常關閉流程依然成功（rc=0）"
+else
+  bad "關閉：得到 rc=$rc"
+fi
+if [ -s "$lock_probe" ]; then
+  pass "關閉：鎖持有探測樁真的執行並寫出了結果（不是空檔案，heredoc 展開正確）"
+else
+  bad "關閉：鎖持有探測樁沒有寫出任何內容，探測沒有真的執行，這條斷言測不出任何東西"
+fi
+lock_probe_result="$(cat "$lock_probe" 2>/dev/null || true)"
+if [ "$lock_probe_result" = "child_blocked" ]; then
+  pass "關閉：tab close 執行期間，另一個行程對同一把鎖的非阻塞嘗試確實取不到——鎖真的在整段關閉序列期間被持有"
+else
+  bad "關閉：探測結果是 '$lock_probe_result'，鎖沒有在關閉序列期間被持有"
+fi
+if [ -e "$lock_target" ]; then
+  bad "關閉：成功關閉後鎖檔還留著，成了指不到任何現存記錄的孤兒檔：$lock_target"
+else
+  pass "關閉：成功關閉後連同鎖檔一併移除，不留孤兒鎖檔"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=222
+HAT_EXPECTED_ASSERTIONS=226
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
