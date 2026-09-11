@@ -143,6 +143,69 @@
 # stripped（帶的是模型與使用者原文），本腳本組摘要時也只用 worker 名
 # 稱、agent_status、門檻數字這些已知安全的值，不會把任何 herdr 原始回
 # 應轉發出去。
+#
+# ---- 單一 worker 的致命失敗不得帶走整個行程：保護放在逐筆的呼叫點 ----
+# 競態：`shutdown-worker.sh` 從讀取記錄開始一路持有
+# `${worker_file}.lock`，直到最後 `rm -f "$worker_file"` 才放手（見該腳
+# 本「參與檔案鎖協定」一節）。`hat_wd_process_worker` 開頭的
+# `[ -f "$worker_file" ]` 只證明「進入這一筆的當下」記錄還在；關閉序列
+# 完全可以在那之後才跑完，於是本輪後續任何一次寫入——更新
+# .last_seq_stamp／.last_seq_changed_at、推進計數、升級時寫 inbox 記
+# 錄的 `hat_json_set`，以及補投佇列走的 `hat_remove_pending_resend`
+# ——都會在等到鎖之後發現目標檔已經不在，以 `hat_die 5` 結束。那是真正
+# 的 `exit`，不是 `return`。
+#
+# 舊版的後果：這個 `hat_die` 一路傳播出 `hat_wd_run_once`，把底下的
+# `while :; do ... done` 整個帶走，自動推進、停滯偵測、投遞重試三項一
+# 起停止；沒有重掛機制，也沒有人會發現看門狗已經不在了。這正是本設計
+# 最想消滅的失效形狀，成因跟 `hat_wd_process_worker`「修正迴圈第一輪」
+# 那一節同一類：原則寫在檔頭，沒有寫進控制流程——當時只有 workspace 那
+# 一道守衛被包進子殼，寫入這條路徑完全沒有被涵蓋。
+#
+# 保護放在哪一層：放在 `hat_wd_run_once` 逐筆呼叫
+# `hat_wd_process_worker` 的那一個點，整次呼叫包進子殼，而不是逐一包住
+# 每個 `hat_json_set`。三個理由——一、要擋的不是某幾個特定呼叫，而是
+# 「處理這一筆時發生致命失敗」這整個類別：逐一包只保護得到今天數得出
+# 來的呼叫點（光 `hat_wd_escalate` 內部就有七次 `hat_json_set`，補投走
+# 的又是另一個同樣會 `hat_die 5` 的函式），明天多一個寫入就漏一個，而
+# 漏掉的代價是整個行程再次靜默消失。二、這一筆的記錄既然已經讀不到，
+# 後面所有評估都建立在不存在的狀態上，本來就該整筆放棄，沒有「跳過這
+# 一句、繼續往下做」這種中間語意。三、`hat_wd_process_worker` 全程只用
+# local 變數、狀態一律落在檔案上，子殼不會吞掉任何該留下的變動：已經
+# 寫出去的部分照樣留著，跟原本中止在同一個點的結果一致。
+#
+# 被跳過的那一筆在 registry 根目錄的 watchdog.log 留一行
+# `skip worker=... reason=process_failed rc=... at=...`（欄位風格沿用
+# 同一個檔案既有的 skip／auto-push 行）。子殼的 stderr 刻意不攔截，
+# `hat_die` 印出的原始訊息照樣出得來：日誌行負責「哪一筆、什麼時候、
+# 以什麼結束碼」這種事後追得到的骨架，原始訊息負責「是哪個函式、哪個
+# 欄位、哪個檔案」這種細節，兩者缺一都追不完整。
+#
+# 跟 `hat_wd_process_worker` 入口那道 workspace 子殼的關係：兩道並存，
+# 不是重複。內層那一道處理的是一個已知且良性的情況（座標對不上或缺
+# 席），它吞掉 `hat_assert_workspace` 的 stderr、缺座標時另外落一行語
+# 意明確的 `reason=missing_pane_id`；外層這一道是對「其餘任何致命失
+# 敗」的兜底。拿掉內層不會讓行程掛掉，但會把一個已經分類好的情況降級
+# 成不明失敗，日誌多噪音而少資訊。
+#
+# ---- `--once` 與長駐模式一律同樣處理，不分模式 ----
+# `hat_wd_process_worker`「入口守衛」一節提到的「一次性腳本才維持中止
+# 語意」，區分的是 instruct.sh／press-approval.sh 那種「呼叫端指定單一
+# target」的腳本與本腳本這種「一輪掃過全部 worker」的腳本，不是同一支
+# 腳本的兩種跑法：`--once` 就是這個長駐迴圈的一次迭代，它照樣要掃過每
+# 一個 worker，一筆壞掉就讓其餘 worker 這一輪完全沒被看到，代價跟長駐
+# 模式的單輪一模一樣。另一個決定性的理由是可測性：測試只能從 `--once`
+# 進來（長駐模式要背景行程加 kill 才測得到），`--once` 若改回中止語
+# 意，這道保護在唯一測得到的路徑上等於從來沒有被驗證過。
+#
+# 這使 `--once` 有一處明確改變的行為，在此寫明而不是無聲帶過：以前一
+# 筆 worker 記錄在處理途中消失，會讓整個指令以 5 結束、其餘 worker 不
+# 再被處理；現在改成以 0 結束、其餘照常處理。診斷不因此減少——`hat_
+# die` 的原始訊息仍然印在 stderr，另外多一行持久的 watchdog.log 記錄。
+# 受影響的是「用結束碼判斷這一輪有沒有出事」這個讀法，改判準為「看
+# watchdog.log 這一輪有沒有多出 skip 行」。附帶一提，記錄在處理途中消
+# 失多半根本不是故障，而是一次成功的 `shutdown-worker.sh` 剛好跟這一輪
+# 重疊，用非 0 結束碼回報它本來就偏重。
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -603,9 +666,11 @@ hat_wd_process_worker() {
 
 # hat_wd_run_once
 # 跑一輪：一次 agent list、4a) inbox 上行重投、逐一處理每個已知
-# worker。
+# worker。逐筆處理包在子殼裡、失敗只跳過那一筆並記一行日誌，理由與
+# `--once` 的語意見檔頭「單一 worker 的致命失敗不得帶走整個行程」與
+# 「`--once` 與長駐模式一律同樣處理」兩節。
 hat_wd_run_once() {
-  local registry_root team_json orchestrator_name agents_json whitelisted worker
+  local registry_root team_json orchestrator_name agents_json whitelisted worker rc
 
   registry_root="$(hat_registry_root)"
   team_json="$registry_root/team.json"
@@ -618,8 +683,20 @@ hat_wd_run_once() {
 
   while IFS= read -r worker; do
     [ -n "$worker" ] || continue
-    hat_wd_process_worker "$registry_root" "$orchestrator_name" "$worker" "$whitelisted" \
-      "$stall_seconds" "$auto_push_limit" "$needyou_limit_seconds"
+    # 整次呼叫包進子殼：`hat_wd_process_worker` 底下任何一個 hat_die
+    # （最常見的是 worker 記錄被 shutdown-worker.sh 移除後，寫入函式撞
+    # 上目標檔已不存在而以 5 結束）只結束這個子殼，不會把長駐迴圈帶
+    # 走。`|| rc=$?` 而不是裸呼叫：errexit 之下裸呼叫失敗會直接終止本
+    # 行程，結束碼根本讀不到。stderr 不攔截，hat_die 的原始訊息照樣外
+    # 流（見檔頭同名一節）。
+    rc=0
+    ( hat_wd_process_worker "$registry_root" "$orchestrator_name" "$worker" "$whitelisted" \
+        "$stall_seconds" "$auto_push_limit" "$needyou_limit_seconds" ) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf 'skip worker=%s reason=process_failed rc=%s at=%s\n' \
+        "$worker" "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        >> "$registry_root/watchdog.log"
+    fi
   done < <(hat_worker_list)
 }
 

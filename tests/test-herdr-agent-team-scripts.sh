@@ -4053,6 +4053,101 @@ else
 fi
 rm -f "$REG/workers/w3n-nopane-watchdog.json"
 
+# ---- 本次修正（Critical 回歸）：worker 記錄在「已進入 hat_wd_process_
+#      worker、下一個 hat_json_set 還沒取得鎖」這個空檔被移除（
+#      shutdown-worker.sh 關閉序列競態），不得把整個看門狗行程帶走 ----
+# 舊版沒有任何保護：hat_json_set 撞上目標檔已不存在會 hat_die 5，那是
+# 真正的 exit，會一路穿出 hat_wd_run_once 把長駐的 while 迴圈整個帶
+# 走，自動推進／停滯偵測／投遞重試三項一起靜默停止（見 watchdog.sh 檔
+# 頭「單一 worker 的致命失敗不得帶走整個行程」一節）。
+#
+# 時序怎麼造出來：樁在收到第一則自動推進（agent prompt <worker> 繼續）
+# 時就地把那個 worker 的記錄與鎖檔刪掉——呼叫端正是
+# hat_wd_process_worker 送出推進之後、緊接著寫 .auto_push_count 之前的
+# 那一行，所以這是真的時序，不是等價替身。誰先被處理由 find 的目錄順
+# 序決定，樁刻意不假設，改成「第一個收到推進的就是受害者」，下一個必
+# 然是倖存者；因此「行程沒被帶走」與「迴圈確實走到下一筆」兩件事跟目
+# 錄順序無關，mutation 的紅綠不會因為順序而擺盪。
+#
+# 兩個 worker 用本節專屬的新名字（w3n-racea／w3n-raceb），不沿用
+# w3n-backend：沿用的話會拖進前面章節在 inbox 留下的 need-you／
+# delivered 記錄，豁免或計數重置一旦命中就沒有自動推進可送，時序根本
+# 造不出來，斷言會變成在驗證空情境。
+rm -f "$T/wd-race-victim"
+printf '{"pane_id":"w3N:p6","held":false,"role":"race-a","auto_push_count":0}' > "$REG/workers/w3n-racea.json"
+printf '{"pane_id":"w3N:p7","held":false,"role":"race-b","auto_push_count":0}' > "$REG/workers/w3n-raceb.json"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-racea","workspace_id":"w3N","agent_status":"idle","state_change_seq":21000,"pane_id":"w3N:p6","tab_id":"w3N:t6"},{"name":"w3n-raceb","workspace_id":"w3N","agent_status":"idle","state_change_seq":21001,"pane_id":"w3N:p7","tab_id":"w3N:t7"}]}}'
+  exit 0
+fi
+if [ "\$1 \$2" = "agent prompt" ] && [ "\$4" = "繼續" ] && [ ! -f "$T/wd-race-victim" ]; then
+  printf '%s' "\$3" > "$T/wd-race-victim"
+  rm -f "$REG/workers/\$3.json" "$REG/workers/\$3.json.lock"
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-shutdown-race
+
+: > "$HERDR_CALL_LOG"
+: > "$REG/watchdog.log"
+rc=0; bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>"$T/wd-race-stderr" || rc=$?
+wd_race_victim=""
+if [ -f "$T/wd-race-victim" ]; then wd_race_victim="$(cat "$T/wd-race-victim")"; fi
+if [ "$wd_race_victim" = "w3n-racea" ]; then
+  wd_race_survivor="w3n-raceb"
+else
+  wd_race_survivor="w3n-racea"
+fi
+
+# 先確認樁真的觸發了：這一條有無保護都會通過，它不是回歸斷言，而是底
+# 下四條的前提——樁沒觸發的話那四條會變成在驗證一個沒有競態的空情境。
+case "$wd_race_victim" in
+  w3n-racea | w3n-raceb)
+    pass "watchdog：樁真的在自動推進的當下移除了那一筆 worker 記錄（受害者=$wd_race_victim）" ;;
+  *)
+    bad "watchdog：樁沒有觸發，競態時序沒有造出來（受害者='$wd_race_victim'），底下四條斷言不成立" ;;
+esac
+
+if [ "$rc" -eq 0 ]; then
+  pass "watchdog：worker 記錄在處理途中消失，整個行程仍以 0 結束"
+else
+  bad "watchdog：得到 rc=$rc——記錄消失把整個看門狗行程帶走了（長駐模式下自動推進／停滯偵測／投遞重試會一起靜默停止）"
+fi
+
+if grep -q "skip worker=$wd_race_victim reason=process_failed rc=5 " "$REG/watchdog.log"; then
+  pass "watchdog：被跳過的那一筆在 watchdog.log 留下 skip 行（含 worker 名與結束碼）"
+else
+  bad "watchdog：watchdog.log 沒有 $wd_race_victim 的 skip 行，被跳過的一筆追不出來：$(cat "$REG/watchdog.log")"
+fi
+
+if grep -q "agent prompt $wd_race_survivor 繼續" "$HERDR_CALL_LOG"; then
+  pass "watchdog：壞掉的那一筆之後，迴圈繼續處理下一個 worker（$wd_race_survivor 仍收到自動推進）"
+else
+  bad "watchdog：$wd_race_survivor 沒有被處理到，被前一筆連累中止了：$(cat "$HERDR_CALL_LOG")"
+fi
+
+wd_race_survivor_count="$(jq -r '.auto_push_count' "$REG/workers/$wd_race_survivor.json" 2>/dev/null)" \
+  || wd_race_survivor_count="(記錄不存在)"
+if [ "$wd_race_survivor_count" = "1" ]; then
+  pass "watchdog：下一個 worker 是完整處理完的，推進送出之後的 hat_json_set 也跑到了"
+else
+  bad "watchdog：$wd_race_survivor 的自動推進計數是 '$wd_race_survivor_count'，預期 1"
+fi
+
+if grep -q 'hat_json_set' "$T/wd-race-stderr"; then
+  pass "watchdog：子殼不攔截 stderr，hat_die 的原始訊息照樣印得出來（日誌行之外的另一半診斷）"
+else
+  bad "watchdog：hat_die 的原始訊息被吞掉了，只剩日誌行：$(cat "$T/wd-race-stderr")"
+fi
+
+rm -f "$REG/workers/w3n-racea.json" "$REG/workers/w3n-raceb.json" \
+  "$REG/workers/w3n-racea.json.lock" "$REG/workers/w3n-raceb.json.lock"
+
 # 收尾：把 w3n-backend 留在一個乾淨、不會誤觸後續（此檔案已無更多章
 # 節）斷言的狀態。
 jq '.auto_push_count=0 | .held=false | .pending_resend=[]' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
@@ -4062,7 +4157,7 @@ jq '.auto_push_count=0 | .held=false | .pending_resend=[]' "$REG/workers/w3n-bac
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=381
+HAT_EXPECTED_ASSERTIONS=387
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
