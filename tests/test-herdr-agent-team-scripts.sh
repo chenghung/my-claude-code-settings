@@ -39,14 +39,17 @@ mkdir -p "$STUB_BIN"
 # herdr 是本檔唯一需要遮蔽的外部二進位（會啟動或附接終端介面、可能連
 # 到真實 socket），也是唯一「跑真的會有副作用」的外部指令；其餘用到的
 # 工具（jq／mktemp／mkdir／rm／cat／chmod／grep／tr／dirname／
-# sha256sum／basename／cut／ln／mv／flock／find／wc／sort／date）都是唯
-# 讀或副作用侷限在測試自己的暫存目錄內、零成本，已查證全部位於
+# sha256sum／basename／cut／ln／mv／flock／find／wc／sort／date／awk）都
+# 是唯讀或副作用侷限在測試自己的暫存目錄內、零成本，已查證全部位於
 # /usr/bin，跑真的完全安全（Task 2 新增 mv／flock／find／wc／sort 五
 # 項，用於 hat_json_set 的加鎖讀改寫與 hat_worker_list／測試斷言本身，
 # 已在本任務底下用受限 PATH（僅 /usr/bin:/bin，不含任何樁目錄）重新查
 # 證過五者皆解析到 /usr/bin，不會落到別處；Task 4 新增 date 一項，用於
 # set-goal.sh 替 goal_history 每筆紀錄蓋時間戳，同樣以受限 PATH 查證過
-# 解析到 /usr/bin）。整份套件的 PATH 一律是「樁目錄＋
+# 解析到 /usr/bin；Task 11 新增 awk 一項，用於 wait-peer.sh 從
+# hat_whitelist_agents 的 TSV 輸出篩出目標 agent 那一行，同樣以受限
+# PATH（`env -i PATH=/usr/bin:/bin`）查證過解析到 /usr/bin/awk）。整份
+# 套件的 PATH 一律是「樁目錄＋
 # /usr/bin:/bin」，真實 herdr 所在的 ~/.local/bin 從頭到尾不在 PATH
 # 上，忘了建樁的段落只會得到 command-not-found 而失敗，不會靜默地改打
 # 真實 herdr session。
@@ -1214,9 +1217,15 @@ mkdir -p "$diff_cwd"
 rc=0
 (
   unset AGENT_TEAM_HOME
-  export AGENT_TEAM_ROLE="backend" AGENT_TEAM_SCRIPTS="$SCRIPTS"
   cd "$diff_cwd" || exit 1
-  bash "$SCRIPTS/report.sh" --token fyi --summary '只有五個變數也要能完整回報'
+  # 改成前綴賦值只套用在這一個指令上（而不是先 export 再另起一行呼
+  # 叫）：Task 11 後面的橫向小節重複使用同一批 AGENT_TEAM_* 變數名稱
+  # 時，shellcheck 會把這裡的 `export` 誤判成「在子殼裡改了值，後面可
+  # 能會被誤以為還留著」（SC2030／SC2031）——前綴賦值的作用範圍在語法
+  # 上就是這一個指令，沒有這個疑慮，純粹是為了通過 shellcheck 零警告
+  # 的寫法調整，不改變實際行為。
+  AGENT_TEAM_ROLE="backend" AGENT_TEAM_SCRIPTS="$SCRIPTS" \
+    bash "$SCRIPTS/report.sh" --token fyi --summary '只有五個變數也要能完整回報'
 ) >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 0 ]; then
   pass "report：只有五個注入變數、cwd 與 registry 根不同時仍成功回報"
@@ -2394,12 +2403,348 @@ else
   pass "關閉：成功關閉後連同鎖檔一併移除，不留孤兒鎖檔"
 fi
 
+# ===== 橫向：grant-peer.sh／send-peer.sh／wait-peer.sh =====
+# 起始準備：重置本節要用到的 worker 記錄，不依賴前面小節留下的狀態（同
+# instruct.sh／shutdown-worker.sh 節開頭「起始準備」的既有作法）。
+# w3n-frontend／w3n-backend 是任務簡報逐字給的名稱；帶 role 欄位供
+# grant-peer.sh 的下行通知取用。
+printf '{"pane_id":"w3N:p5","held":false,"role":"frontend"}' > "$REG/workers/w3n-frontend.json"
+printf '{"pane_id":"w3N:p2","held":false,"role":"backend"}'  > "$REG/workers/w3n-backend.json"
+rm -rf "$REG/peer-log"
+mkdir -p "$REG/peer-log"
+
+HERDR_CALL_LOG="$T/herdr-call-log-peer"
+HERDR_FULL_ARGS="$T/herdr-full-args-peer"
+: > "$HERDR_CALL_LOG"
+: > "$HERDR_FULL_ARGS"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$1 \$2" >> "$HERDR_CALL_LOG"
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" peer-channel
+
+# ---- 本任務自行補上：純參數檢查（Produces 有列三支腳本的介面，Step
+#      1-3 只涵蓋業務邏輯，沒有排定必填參數與名稱格式的測試步驟）----
+rc=0; bash "$SCRIPTS/grant-peer.sh" --to w3n-backend >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "grant：--from 必填"; else bad "grant：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/grant-peer.sh" --from w3n-frontend >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "grant：--to 必填"; else bad "grant：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/grant-peer.sh" --from '../evil' --to w3n-backend >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "grant：--from 名稱格式不符時以 2 拒絕"; else bad "grant：格式不符的 --from 被接受（rc=$rc）"; fi
+
+rc=0; bash "$SCRIPTS/grant-peer.sh" --from w3n-frontend --to '../evil' >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "grant：--to 名稱格式不符時以 2 拒絕"; else bad "grant：格式不符的 --to 被接受（rc=$rc）"; fi
+
+rc=0; bash "$SCRIPTS/send-peer.sh" --text x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "send-peer：--to 必填"; else bad "send-peer：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/send-peer.sh" --to w3n-backend >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "send-peer：--text 必填"; else bad "send-peer：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/send-peer.sh" --to '../evil' --text x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "send-peer：--to 名稱格式不符時以 2 拒絕"; else bad "send-peer：格式不符的 --to 被接受（rc=$rc）"; fi
+
+rc=0; bash "$SCRIPTS/wait-peer.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "wait-peer：--peer 必填"; else bad "wait-peer：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/wait-peer.sh" --peer w3n-backend --timeout abc >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "wait-peer：--timeout 非數字時以 2 拒絕"; else bad "wait-peer：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/wait-peer.sh" --peer w3n-backend --poll abc >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "wait-peer：--poll 非數字時以 2 拒絕"; else bad "wait-peer：得到 rc=$rc"; fi
+
+# ---- 本任務自行補上：AGENT_TEAM_STATE_DIR／AGENT_TEAM_SELF 缺席（worker
+#      端環境約束，Global Constraints 明講缺席時接受 --state-dir 明
+#      給）----
+rc=0; ( unset AGENT_TEAM_STATE_DIR; AGENT_TEAM_SELF=w3n-frontend bash "$SCRIPTS/send-peer.sh" --to w3n-backend --text x ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then pass "send-peer：AGENT_TEAM_STATE_DIR 與 --state-dir 都缺席時以 4 結束"; else bad "send-peer：得到 rc=$rc"; fi
+
+rc=0; ( unset AGENT_TEAM_SELF; bash "$SCRIPTS/send-peer.sh" --to w3n-backend --text x ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then pass "send-peer：AGENT_TEAM_SELF 缺席時以 4 結束"; else bad "send-peer：得到 rc=$rc"; fi
+
+rc=0; ( unset AGENT_TEAM_STATE_DIR; bash "$SCRIPTS/wait-peer.sh" --peer w3n-backend --timeout 1 --poll 1 ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then pass "wait-peer：AGENT_TEAM_STATE_DIR 與 --state-dir 都缺席時以 4 結束"; else bad "wait-peer：得到 rc=$rc"; fi
+
+# ---- 本任務自行補上：workspace 邊界守衛真的被接上（沿用 instruct.sh／
+#      press-approval.sh／shutdown-worker.sh 節既有的 w3n-otherws 記
+#      錄，pane_id 指向別的 workspace），且守衛擋下時完全不呼叫 herdr
+#      ----
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/grant-peer.sh" --from w3n-otherws --to w3n-backend >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then pass "grant：--from 不屬於本 workspace 時拒絕"; else bad "grant：得到 rc=$rc"; fi
+if [ -s "$HERDR_CALL_LOG" ]; then bad "grant：--from workspace 守衛擋下時仍呼叫了 herdr"; else pass "grant：--from workspace 守衛擋下時沒有呼叫 herdr"; fi
+
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/grant-peer.sh" --from w3n-frontend --to w3n-otherws >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then pass "grant：--to 不屬於本 workspace 時拒絕"; else bad "grant：得到 rc=$rc"; fi
+if [ -s "$HERDR_CALL_LOG" ]; then bad "grant：--to workspace 守衛擋下時仍呼叫了 herdr"; else pass "grant：--to workspace 守衛擋下時沒有呼叫 herdr"; fi
+
+: > "$HERDR_CALL_LOG"
+rc=0; ( AGENT_TEAM_SELF=w3n-frontend bash "$SCRIPTS/send-peer.sh" --to w3n-otherws --text x ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then pass "send-peer：--to 不屬於本 workspace 時拒絕"; else bad "send-peer：得到 rc=$rc"; fi
+if [ -s "$HERDR_CALL_LOG" ]; then bad "send-peer：workspace 守衛擋下時仍呼叫了 herdr"; else pass "send-peer：workspace 守衛擋下時沒有呼叫 herdr"; fi
+
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/wait-peer.sh" --peer w3n-otherws --timeout 1 --poll 1 >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then pass "wait-peer：--peer 不屬於本 workspace 時拒絕"; else bad "wait-peer：得到 rc=$rc"; fi
+if [ -s "$HERDR_CALL_LOG" ]; then bad "wait-peer：workspace 守衛擋下時仍呼叫了 herdr"; else pass "wait-peer：workspace 守衛擋下時沒有呼叫 herdr"; fi
+
+# ---- Step 1（任務簡報逐字；&&/|| 鏈改寫成 if/then/else/fi）：未 grant
+#      不得送，grant 後放行，且落了紀錄檔 ----
+export AGENT_TEAM_SELF=w3n-frontend
+rc=0; bash "$SCRIPTS/send-peer.sh" --to w3n-backend --text '欄位叫什麼' >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then pass "橫向：未 grant 時拒絕"; else bad "橫向：未 grant 卻送出（rc=$rc）"; fi
+
+: > "$HERDR_FULL_ARGS"
+bash "$SCRIPTS/grant-peer.sh" --from w3n-frontend --to w3n-backend >/dev/null 2>&1
+rc=0; bash "$SCRIPTS/send-peer.sh" --to w3n-backend --text '欄位叫什麼' >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "橫向：grant 後放行"; else bad "橫向：grant 後仍被擋（rc=$rc）"; fi
+# shellcheck disable=SC2012 # 檔名全由本測試套件自己控制（self-to-peer 加 mktemp 亂數），不含 ls 處理不了的特殊字元
+if [ "$(ls "$REG/peer-log" | wc -l)" -ge 1 ]; then pass "橫向：落了紀錄檔"; else bad "橫向：沒有落檔"; fi
+
+# ---- 本任務自行補上：grant 真的把對方寫進 .grants 清單，且下行通知真
+#      的送出並揭露對方的名字與角色（見 grant-peer.sh 檔頭「授權就是揭
+#      露位址」一節；簡報只用 send-peer 的放行結果間接驗證，這裡直接驗
+#      證機制本身）----
+grants_after="$(jq -c '.grants' "$REG/workers/w3n-frontend.json")"
+case "$grants_after" in
+  *w3n-backend*) pass "grant：.grants 清單真的寫進了 w3n-backend" ;;
+  *) bad "grant：.grants 清單內容不對：$grants_after" ;;
+esac
+grant_notify_line="$(grep -m1 'agent prompt w3n-frontend' "$HERDR_FULL_ARGS")" || true
+case "$grant_notify_line" in
+  *w3n-backend*backend*) pass "grant：下行通知同時揭露了對方的名字與角色" ;;
+  *) bad "grant：下行通知內容不對：$grant_notify_line" ;;
+esac
+
+# ---- 本任務自行補上：peer-log 紀錄檔的內容正確（from／to／text／
+#      delivery 四個欄位），不是只驗證「有沒有落檔」----
+peer_log_entry="$(find "$REG/peer-log" -maxdepth 1 -type f -name '*.json' | head -n1)"
+if [ -n "$peer_log_entry" ] && [ -s "$peer_log_entry" ]; then
+  pass "橫向：peer-log 紀錄檔真的非空"
+else
+  bad "橫向：peer-log 紀錄檔是空的或找不到，後面的內容比對測不出任何東西"
+fi
+log_from="$(jq -r '.from' "$peer_log_entry")"
+log_to="$(jq -r '.to' "$peer_log_entry")"
+log_text="$(jq -r '.text' "$peer_log_entry")"
+log_delivery="$(jq -r '.delivery' "$peer_log_entry")"
+if [ "$log_from" = "w3n-frontend" ] && [ "$log_to" = "w3n-backend" ] && [ "$log_text" = '欄位叫什麼' ] && [ "$log_delivery" = "delivered" ]; then
+  pass "橫向：peer-log 紀錄檔的 from／to／text／delivery 四個欄位內容正確"
+else
+  bad "橫向：peer-log 內容不符（from=$log_from to=$log_to text=$log_text delivery=$log_delivery）"
+fi
+
+# ---- 本任務自行補上：worker 端環境約束的強制覆蓋——只給
+#      launch-worker.sh 實際會注入的那五個變數，完全不設 AGENT_TEAM_HOME，
+#      且 cwd 換到跟 registry 根無關的目錄，完整跑一次橫向送出流程（跟
+#      report.sh 節同型的 Critical 1 回歸測試，Global Constraints 明訂
+#      本任務兩支 worker 端腳本都要有這一條）----
+diff_cwd_send="$T/send-peer-diff-cwd"
+mkdir -p "$diff_cwd_send"
+rc=0
+(
+  unset AGENT_TEAM_HOME
+  cd "$diff_cwd_send" || exit 1
+  # 前綴賦值只套用在這一個指令上，理由同 report.sh 節那一條同型測試的
+  # 註解：避免 shellcheck 把「先 export 再另起一行呼叫」誤判成子殼裡的
+  # 修改會外洩（SC2030／SC2031），純粹是寫法調整。
+  AGENT_TEAM_STATE_DIR="$REG" AGENT_TEAM_SELF="w3n-frontend" \
+    AGENT_TEAM_ORCHESTRATOR="w3n-orchestrator" AGENT_TEAM_ROLE="frontend" AGENT_TEAM_SCRIPTS="$SCRIPTS" \
+    bash "$SCRIPTS/send-peer.sh" --to w3n-backend --text '只有五個變數也要能完整送出'
+) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "send-peer：只有五個注入變數、cwd 與 registry 根不同時仍成功送出"
+else
+  bad "send-peer：得到 rc=$rc（可能又是共用函式重算了 registry 根）"
+fi
+
+# ---- 本任務自行補上：投遞失敗（agent_blocked 或其他拒絕）不是本腳本
+#      的失敗，仍以 0 結束、peer-log 記成 blocked、stdout 印出提示（見
+#      send-peer.sh 檔頭「橫向是直接的」一節）----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+printf '{"error":{"code":"agent_blocked","message":"忙碌中"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" send-peer-blocked
+
+out="$(bash "$SCRIPTS/send-peer.sh" --to w3n-backend --text '再問一次' 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "send-peer：投遞被拒絕時仍以 0 結束（best-effort，不是失敗）"; else bad "send-peer：得到 rc=$rc"; fi
+case "$out" in
+  *投遞失敗*) pass "send-peer：投遞失敗時 stdout 印出提示，不完全靜默" ;;
+  *) bad "send-peer：投遞失敗卻沒有任何提示：$out" ;;
+esac
+# 用 `-newer` 找「比 $peer_log_entry 新」的檔案不夠精確：這中間還有一
+# 次 env-isolation 測試也落了一份 delivered 紀錄檔，若檔案系統的 mtime
+# 解析度不夠細，`-newer` 可能同時比對出兩個檔案，`head -n1` 挑到哪一個
+# 不保證（已實測踩到這個間歇性失敗）。改用 `-printf '%T@'` 取次秒精度
+# 的修改時間、數值排序取最後一筆，精確鎖定「最新寫入」的那一份。
+blocked_entry="$(find "$REG/peer-log" -maxdepth 1 -type f -name '*.json' -printf '%T@ %p\n' | sort -n | tail -n1 | cut -d' ' -f2-)"
+blocked_delivery="$(jq -r '.delivery' "$blocked_entry" 2>/dev/null)" || blocked_delivery=""
+if [ "$blocked_delivery" = "blocked" ]; then
+  pass "send-peer：投遞失敗時 peer-log 的 delivery 欄位記成 blocked"
+else
+  bad "send-peer：peer-log 的 delivery 欄位是 '$blocked_delivery'，不是 blocked"
+fi
+
+# 換回一般成功樁，供後面 Step 2 與 wait-peer 各節使用。
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$1 \$2" >> "$HERDR_CALL_LOG"
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" peer-channel-restored
+
+# ---- Step 2（任務簡報逐字）：撤銷後拒絕 ----
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/grant-peer.sh" --from w3n-frontend --to w3n-backend --revoke >/dev/null 2>&1
+rc=0; bash "$SCRIPTS/send-peer.sh" --to w3n-backend --text '再問' >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then pass "橫向：撤銷後拒絕"; else bad "橫向：撤銷後仍能送（rc=$rc）"; fi
+
+# ---- 本任務自行補上：撤銷真的把對方從 .grants 清單移除，且撤銷不觸發
+#      下行通知（見 grant-peer.sh 檔頭：撤銷沒有新位址要揭露）----
+grants_after_revoke="$(jq -c '.grants' "$REG/workers/w3n-frontend.json")"
+case "$grants_after_revoke" in
+  *w3n-backend*) bad "grant：撤銷後 .grants 清單仍含 w3n-backend：$grants_after_revoke" ;;
+  *) pass "grant：撤銷後 .grants 清單已移除 w3n-backend" ;;
+esac
+if grep -q 'agent prompt' "$HERDR_CALL_LOG"; then
+  bad "grant：--revoke 不該送出下行通知，卻呼叫了 agent prompt"
+else
+  pass "grant：--revoke 沒有送出下行通知（沒有新位址要揭露）"
+fi
+
+# ===== wait-peer.sh：死鎖防護 =====
+# ---- 本任務自行補上：對方從一開始就查無 agent 記錄，視為迴圈異常
+#      （1），不是逾時（7），且立刻結束不會等到逾時 ----
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"result":{"agents":[]}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" wait-peer-not-found
+
+start=$(date +%s)
+rc=0; bash "$SCRIPTS/wait-peer.sh" --peer w3n-backend --timeout 5 --poll 1 >/dev/null 2>&1 || rc=$?
+elapsed=$(( $(date +%s) - start ))
+if [ "$rc" -eq 1 ]; then pass "wait-peer：對方一開始就查無 agent 記錄時以 1 結束"; else bad "wait-peer：得到 rc=$rc"; fi
+if [ "$elapsed" -lt 5 ]; then pass "wait-peer：對方查無記錄時立刻結束，不等到逾時"; else bad "wait-peer：等了 ${elapsed}s"; fi
+
+# ---- 本任務自行補上：對方在基準觀測之後、等待過程中才從 agent list 消
+#      失，同樣以 1 結束（跟上面「一開始就查無」是腳本裡兩個不同的判斷
+#      點，各自要有斷言）----
+rm -f "$T/wait-peer-vanish-counter"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+n=0
+if [ -f "$T/wait-peer-vanish-counter" ]; then
+  n="\$(cat "$T/wait-peer-vanish-counter")"
+fi
+n=\$((n + 1))
+printf '%s' "\$n" > "$T/wait-peer-vanish-counter"
+if [ "\$n" -eq 1 ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"working","state_change_seq":1000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+else
+  printf '{"result":{"agents":[]}}'
+fi
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" wait-peer-vanish-midway
+
+start=$(date +%s)
+rc=0; bash "$SCRIPTS/wait-peer.sh" --peer w3n-backend --timeout 5 --poll 1 >/dev/null 2>&1 || rc=$?
+elapsed=$(( $(date +%s) - start ))
+if [ "$rc" -eq 1 ]; then pass "wait-peer：對方在基準觀測之後才消失時以 1 結束"; else bad "wait-peer：得到 rc=$rc"; fi
+if [ "$elapsed" -lt 5 ]; then pass "wait-peer：對方中途消失時立刻結束，不等到逾時"; else bad "wait-peer：等了 ${elapsed}s"; fi
+
+# ---- 本任務自行補上：對方 stamp 真的改變時立刻成功結束（不是只驗證死
+#      鎖防護那一半），同時疊上 worker 端環境約束的強制覆蓋（只給五個
+#      注入變數、cwd 與 registry 根不同）----
+rm -f "$T/wait-peer-progress-counter"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+n=0
+if [ -f "$T/wait-peer-progress-counter" ]; then
+  n="\$(cat "$T/wait-peer-progress-counter")"
+fi
+n=\$((n + 1))
+printf '%s' "\$n" > "$T/wait-peer-progress-counter"
+printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"working","state_change_seq":%s,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}' "\$((1000 + n))"
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" wait-peer-progress
+
+diff_cwd_wait="$T/wait-peer-diff-cwd"
+mkdir -p "$diff_cwd_wait"
+start=$(date +%s)
+rc=0
+(
+  unset AGENT_TEAM_HOME
+  cd "$diff_cwd_wait" || exit 1
+  # 前綴賦值只套用在這一個指令上，理由同上（send-peer 節同型測試的註
+  # 解）：避免 shellcheck 誤判子殼裡的 export 會外洩。
+  AGENT_TEAM_STATE_DIR="$REG" AGENT_TEAM_SELF="w3n-frontend" \
+    AGENT_TEAM_ORCHESTRATOR="w3n-orchestrator" AGENT_TEAM_ROLE="frontend" AGENT_TEAM_SCRIPTS="$SCRIPTS" \
+    bash "$SCRIPTS/wait-peer.sh" --peer w3n-backend --timeout 5 --poll 1
+) >/dev/null 2>&1 || rc=$?
+elapsed=$(( $(date +%s) - start ))
+if [ "$rc" -eq 0 ]; then
+  pass "wait-peer：只有五個注入變數、cwd 與 registry 根不同時，偵測到 stamp 改變即成功結束"
+else
+  bad "wait-peer：得到 rc=$rc（可能又是共用函式重算了 registry 根）"
+fi
+if [ "$elapsed" -lt 5 ]; then pass "wait-peer：偵測到變化後立刻結束，不等到逾時"; else bad "wait-peer：等了 ${elapsed}s"; fi
+
+# ---- 本任務自行補上：--state-dir 在 AGENT_TEAM_STATE_DIR 缺席時仍可運
+#      作（沿用上面同一個會不斷回傳遞增 stamp 的樁）----
+rc=0; ( unset AGENT_TEAM_STATE_DIR; bash "$SCRIPTS/wait-peer.sh" --peer w3n-backend --timeout 5 --poll 1 --state-dir "$REG" ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "wait-peer：--state-dir 覆寫在環境變數缺席時仍可運作"; else bad "wait-peer：得到 rc=$rc"; fi
+
+# ---- Step 3（任務簡報逐字；&&/|| 鏈改寫成 if/then/else/fi）：死鎖防
+#      護——對方 stamp 不動時，逾時結束而不是永久等下去 ----
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"working","state_change_seq":1000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" wait-peer-deadlock
+
+start=$(date +%s)
+rc=0; bash "$SCRIPTS/wait-peer.sh" --peer w3n-backend --timeout 4 --poll 1 >/dev/null 2>&1 || rc=$?
+elapsed=$(( $(date +%s) - start ))
+if [ "$rc" -ne 0 ]; then pass "wait-peer：對方 stamp 不動時逾時結束"; else bad "wait-peer：stamp 不動卻回成功（死鎖防護失效）"; fi
+if [ "$elapsed" -lt 10 ]; then pass "wait-peer：沒有永久等下去"; else bad "wait-peer：等了 ${elapsed}s"; fi
+
+# ---- 本任務自行補上：逾時的結束碼精確是 7（未取得憑據、呼叫端需要決
+#      定下一步），不是隨便一個非 0 值 ----
+if [ "$rc" -eq 7 ]; then
+  pass "wait-peer：死鎖逾時精確以 7 結束（呼叫端決定下一步，不是硬性失敗）"
+else
+  bad "wait-peer：逾時結束碼是 $rc，不是 7"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=226
+HAT_EXPECTED_ASSERTIONS=271
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
