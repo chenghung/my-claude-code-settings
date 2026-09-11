@@ -52,7 +52,7 @@ orchestrator 必須跑在 herdr 環境內：進入本流程任何動作之前，
 3. **`set-goal.sh --achieve ... --success ... --not-doing ... --assumption ...`**（不帶 `--confirmed`）：把四項寫進 `team.json`。
 4. **停下來，把這四項原文呈給人類，請他確認**。這一關無條件，不論素材看起來多明確——見下方「開工閘門的射程」。
 5. **`set-goal.sh` 再呼叫一次、同樣四項內容、加上 `--confirmed`**：把 `goal_confirmed` 設成 `true`。
-6. **起 `watchdog.sh`**（不帶 `--once`，長駐）：goal 確認之後就該掛上，不必等第一個 worker 真的啟動——它自己會在沒有任何 worker 時安靜地跑，不產生任何動作。
+6. **以背景／detach 方式啟動 `watchdog.sh`**（不帶 `--once`，長駐）：goal 確認之後就該掛上，不必等第一個 worker 真的啟動——它自己會在沒有任何 worker 時安靜地跑，不產生任何動作。**這支腳本是一個無界的輪詢迴圈（`while :; do ...; sleep <間隔>; done`），絕不能用一般前景阻塞呼叫啟動**——跟下方「不使用任何 `wait-*` 動作」是同一個理由：前景呼叫本身就變成一次阻塞的等待，工具逾時會把整個行程收掉，而看門狗消失是靜默的，自動推進、停滯偵測、投遞重試三項功能自此全部停止，不會有任何錯誤訊息。啟動後可檢查 registry 根目錄下的 `watchdog.log` 判斷它有沒有在動：**這個檔案只在真的觸發一次自動推進時才會被追加一行 `auto-push worker=<名稱> count=<次數> at=<時間>`**（見 `watchdog.sh` 的 `hat_wd_process_worker`），不是每輪 poll 都寫；因此沒有新記錄不代表看門狗已經停止，也可能只是目前沒有任何 worker 需要被推一把。
 7. **逐個 `launch-worker.sh`**：對每個要啟動的 role，先依 `briefing-template.md` 組好啟動包內容、寫成檔案，再呼叫 `launch-worker.sh --role <role> --kind <kind> --cwd <路徑> --briefing-file <路徑> [--arg <原生引數>]...`。`hat_require_goal_confirmed` 會在腳本內部再確認一次 `goal_confirmed`，第 4 步沒做完這裡會被結束碼 `4` 擋下。
 
 ## 開工閘門的射程
@@ -202,7 +202,7 @@ session 被取代時清空，沒有位址則後面任何一步只要牽涉聯絡
 | `grant-peer.sh --from <> --to <> [--revoke]` | thin command 的 `grant` 落地時；漂移處置改變了介面時 | 成功印 `from=<> to=<> granted`（或 `revoked`）；下行通知是 best-effort，送不到只印一句提示，不影響授權本身已經生效 |
 | `team-status.sh` | 中斷恢復核對哪些 tab 還活著；想看全隊概況時 | 逐行 `worker=<> stage=<> status=<> seq=<> held=<> pending_resend=<> unprocessed=<>`；某一筆座標對不上本 workspace 會被跳過，不影響其餘行 |
 | `fetch-detail.sh --seq <序號>` | 某則回報需要讀細節之前，先取路徑 | 印出絕對路徑（不含內容）；結束碼 `5` 是該序號沒有細節檔 |
-| `watchdog.sh [--once]` | goal 確認、第一個 worker 啟動之後即掛上長駐（不帶 `--once`）；中斷恢復補送完才重掛 | 長駐時不會自己結束；`--once` 供人工巡檢一輪，可觀察 registry 根目錄下的 `watchdog.log` 有沒有新的 `auto-push` 記錄 |
+| `watchdog.sh [--once]` | goal 確認之後即掛上長駐（不帶 `--once`，不必等第一個 worker 啟動）；中斷恢復補送完才重掛 | **長駐模式必須以背景／detach 方式啟動，不得前景阻塞呼叫**——它是無界輪詢迴圈，前景呼叫逾時會被工具收掉，看門狗從此消失且不會有任何錯誤訊息；長駐時不會自己結束。`--once` 供人工巡檢一輪。存活判準：registry 根目錄下的 `watchdog.log` 有沒有新的 `auto-push` 記錄——但這個檔案只在真的觸發自動推進時才追加一行，不是每輪 poll 都寫，沒有新記錄不代表它已經停止，可能只是目前沒有 worker 需要推 |
 
 ### worker 端腳本
 
