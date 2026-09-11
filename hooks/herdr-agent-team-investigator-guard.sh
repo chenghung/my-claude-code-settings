@@ -10,6 +10,24 @@
 # ("以上邊界沒有任何技術機制在背後強制執行... 邊界完全靠這份定義檔的文字
 # 對模型的約束力生效") — its `tools` field grants full Bash, and
 # permissions.deny is empty. This hook is that enforcement point.
+#
+# ---- Enumeration always goes through team-status.sh; only point-reads use
+#      the raw herdr command ----
+# `herdr agent list` and `herdr api snapshot` are deliberately NOT on the
+# allowlist below, even though both are read-only. Their raw response
+# carries the terminal_title/terminal_title_stripped fields (verbatim
+# model/user output) that this whole design exists to keep out of the
+# investigator's own context, and both are server-wide — they return every
+# team's agents, not just this workspace's. team-status.sh already exists
+# specifically to close this hole: it projects the response down to a fixed
+# field whitelist and filters to this workspace before the investigator
+# ever sees it, and it is already on the allowlist below. Any enumeration
+# need should go through team-status.sh; the raw `herdr agent get`/`herdr
+# agent read`/`herdr pane read` stay allowed only because they are
+# point-reads of a single target the main agent already named and
+# authorized — seeing that one target's title is not an escalation, seeing
+# the whole server's is. Do not re-add `agent list`/`api snapshot` to the
+# allowlist for convenience without re-deriving this boundary.
 # Must never exit non-zero (a failing hook would stall Claude Code).
 # Target shell: bash 4.3+ (persistent script, repo compatibility floor).
 set -euo pipefail
@@ -20,7 +38,7 @@ set -euo pipefail
 # allowed read-only shapes — so this text leads with that mechanism.
 # shellcheck disable=SC2016 # single quotes are intentional: the literal
 # $(...) shown to the model is illustrative text, not meant to expand.
-SHAPE_MISMATCH_REASON='herdr-agent-team-investigator 的 Bash 呼叫只放行唯讀查詢：herdr 的 agent get／agent list／agent read／pane read／api snapshot，gh 的 issue view／pr view／pr diff，以及這個 skill 自己腳本裡的 team-status.sh／fetch-detail.sh 兩支唯讀腳本；且必須是單一、未串接其他指令的呼叫。這次呼叫不符合上述任何一種允許的形狀，因此被擋下。判斷依據是整條指令的形狀與指令名稱，管線、分號、&&、||、指令替換（$(...) 或反引號）、輸出或輸入重導向都會讓呼叫被視為不符合「單一未串接指令」而一律拒絕，不論夾帶在其中的是否原本合法。任何形式的寫檔、對外網路呼叫（curl、wget）、以及會改變 herdr 或這個 skill 狀態的操作（例如 agent prompt、agent send-keys、tab close、tab create、agent start、agent rename，或 instruct.sh／press-approval.sh／shutdown-worker.sh／send-peer.sh／grant-peer.sh／launch-worker.sh／set-worker-field.sh／report.sh 這幾支腳本）一律不在允許範圍內。需要執行被禁止的操作時，請回報 main agent（orchestrator），由其決定後續處理，不得自行執行。'
+SHAPE_MISMATCH_REASON='herdr-agent-team-investigator 的 Bash 呼叫只放行唯讀查詢：herdr 的 agent get／agent read／pane read（列舉性查詢一律改用 team-status.sh，不直接放行 herdr agent list／herdr api snapshot——原始回應帶著終端標題等原文欄位，且涵蓋整台伺服器其他團隊），gh 的 issue view／pr view／pr diff，以及這個 skill 自己腳本裡的 team-status.sh／fetch-detail.sh 兩支唯讀腳本；且必須是單一、未串接其他指令的呼叫。這次呼叫不符合上述任何一種允許的形狀，因此被擋下。判斷依據是整條指令的形狀與指令名稱，管線、分號、&&、||、指令替換（$(...) 或反引號）、輸出或輸入重導向都會讓呼叫被視為不符合「單一未串接指令」而一律拒絕，不論夾帶在其中的是否原本合法。任何形式的寫檔、對外網路呼叫（curl、wget）、以及會改變 herdr 或這個 skill 狀態的操作（例如 agent prompt、agent send-keys、tab close、tab create、agent start、agent rename，或 instruct.sh／press-approval.sh／shutdown-worker.sh／send-peer.sh／grant-peer.sh／launch-worker.sh／set-worker-field.sh／report.sh 這幾支腳本）一律不在允許範圍內。需要執行被禁止的操作時，請回報 main agent（orchestrator），由其決定後續處理，不得自行執行。'
 
 # Emits the PreToolUse deny decision as JSON on stdout. $1 is the reason
 # shown to the model.
@@ -111,11 +129,16 @@ is_allowed_command() {
       # not by scanning the whole string, so an argument that happens to
       # contain one of these words elsewhere is unaffected.
       case "$second $third" in
-        "agent get" | "agent list" | "agent read" | "pane read" | "api snapshot")
+        "agent get" | "agent read" | "pane read")
           return 0 ;;
+        "agent list" | "api snapshot")
+          # Deliberately excluded even though read-only — see header
+          # "Enumeration always goes through team-status.sh" note.
+          subcommand_deny_reason="herdr-agent-team-investigator 不得執行 herdr $second $third：這兩個列舉性子指令的原始回應帶著終端標題等模型／使用者原文欄位，且涵蓋整台伺服器其他團隊的 agent，會讓調查者自己的 context 重建本該被過濾掉的材料。列舉需求請改用已經過白名單欄位投影與 workspace 過濾的 team-status.sh（已在允許清單上）；只有針對 main agent 指名目標的定點讀取（agent get／agent read／pane read）留在允許範圍內。"
+          return 1 ;;
         "agent prompt" | "agent send-keys" | "tab close" | "tab create" | \
           "agent start" | "agent rename")
-          subcommand_deny_reason="herdr-agent-team-investigator 不得執行 herdr $second $third：這是會改變 agent、pane 或 tab 狀態的操作，只有查狀態、讀畫面、列清單這類唯讀子指令在允許範圍內。"
+          subcommand_deny_reason="herdr-agent-team-investigator 不得執行 herdr $second $third：這是會改變 agent、pane 或 tab 狀態的操作，只有查狀態、讀畫面這類唯讀子指令在允許範圍內。"
           return 1 ;;
         *)
           return 1 ;;

@@ -66,15 +66,23 @@ assert_silent() {
 }
 
 # ===== allowed read-only shapes =====
+# (tests 2 and 5 below are the two deliberate exceptions kept at their
+# original numbers rather than moved/renumbered: they used to be allowed
+# and were converted in place to denials, see each test's own comment)
 
 @test "1: herdr agent get is allowed" {
   run run_hook_raw "$(build_investigator_payload "herdr agent get w3n-backend")"
   assert_silent
 }
 
-@test "2: herdr agent list is allowed" {
+@test "2: herdr agent list is denied (enumeration must go through team-status.sh)" {
+  # Deliberately excluded even though read-only: the raw response carries
+  # terminal_title fields and covers the whole server, not just this
+  # workspace — see the guard's header "Enumeration always goes through
+  # team-status.sh" note.
   run run_hook_raw "$(build_investigator_payload "herdr agent list")"
-  assert_silent
+  assert_deny
+  [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")" == *"agent list"* ]]
 }
 
 @test "3: herdr agent read is allowed" {
@@ -87,9 +95,12 @@ assert_silent() {
   assert_silent
 }
 
-@test "5: herdr api snapshot is allowed" {
+@test "5: herdr api snapshot is denied (enumeration must go through team-status.sh)" {
+  # Same rationale as the agent list case above: server-wide, un-projected
+  # raw response.
   run run_hook_raw "$(build_investigator_payload "herdr api snapshot")"
-  assert_silent
+  assert_deny
+  [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")" == *"api snapshot"* ]]
 }
 
 @test "6: gh issue view is allowed" {
