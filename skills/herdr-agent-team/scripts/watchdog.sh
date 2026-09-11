@@ -33,11 +33,14 @@
 # 「有沒有增加」這個讀法會讓停滯偵測恆真式地失效。跟 wait-peer.sh 的
 # 死鎖防護判準是同一個成因，這裡是它的多 worker 版本。
 #
-# ---- 三個門檻值都能覆寫，而且都沒有實測依據 ----
+# ---- 四個門檻值都能覆寫，而且都沒有實測依據 ----
 # AGENT_TEAM_POLL_SECONDS（預設 20）、AGENT_TEAM_STALL_SECONDS（預設
-# 1800）、AGENT_TEAM_AUTO_PUSH_LIMIT（預設 10）三者皆可用同名環境變數
-# 覆寫；三個數字都是私用階段的起點，沒有任何實測依據（規格 §15 未驗清
-# 單「摘要長度上限、自動推進上限、空轉判定秒數都是估的」）。
+# 1800）、AGENT_TEAM_AUTO_PUSH_LIMIT（預設 10）、AGENT_TEAM_NEEDYOU_
+# LIMIT_SECONDS（預設 AGENT_TEAM_STALL_SECONDS 的三倍，見下方「豁免的
+# 時間上限」一節）四者皆可用同名環境變數覆寫；四個數字都是私用階段的
+# 起點，沒有任何實測依據（規格 §15 未驗清單「摘要長度上限、自動推進上
+# 限、空轉判定秒數都是估的」；三倍這個倍數是最終審查修正時拍的，同樣
+# 沒有實測依據）。
 #
 # ---- 停滯門檻的代價 ----
 # worker 靜默停住，最壞情況要等滿一個 AGENT_TEAM_STALL_SECONDS 週期才
@@ -103,15 +106,36 @@
 #       下行時那個 worker 剛好卡在核准框（見 instruct.sh 檔頭
 #       「blocked 是待補送」一節）。這裡的「對象」是那個 worker：只在
 #       這一輪觀測到它的狀態不是 blocked 時才逐筆補投，每成功一筆就
-#       呼叫 hat_remove_pending_resend 移除該筆；佇列清空後才放掉持
-#       有旗標（沒清空代表還有訊息沒補投出去，orchestrator 仍在跟它
-#       對話中，不該放行別的下行插隊）。
+#       呼叫 hat_remove_pending_resend 移除該筆。持有旗標跟這個佇列清
+#       不清空無關，本腳本完全不寫 .held（見 hat_wd_retry_pending_
+#       resend 檔頭「最終審查 Critical」一節）。
 #
 # ---- 豁免：等待 need-you 回覆的 worker 一律豁免自動推進與停滯升級 ----
 # 有未回覆 need-you 的 worker 停著是正常的——它在等 orchestrator 決
 # 定，不是卡住。豁免範圍包含第 1、3 兩項（第 2 項的 blocked／達上限升
 # 級不受影響：核准框與達上限本身就是需要人介入的訊號，跟等 need-you
 # 回覆是兩件不同的事，兩者可能同時成立，此時仍要升級）。
+#
+# ---- 豁免的時間上限：最終審查 Important 修正 ----
+# 上面這個豁免原本沒有上限，而它能不能結束完全繫於 orchestrator 有沒
+# 有回覆——判準是 inbox 那筆定案請求有沒有被標成已處理，而這個標記只
+# 有下行腳本帶 --reply-to 回覆時才會寫。orchestrator（一個 context 固
+# 定、會被壓縮的 LLM）若回覆時漏帶這個參數、或根本忘了回，那筆記錄永
+# 遠是未處理：該 worker 從此同時豁免自動推進與停滯升級，且
+# shutdown-worker.sh 本身也會因為同一筆未回覆記錄拒絕關閉它——三條出
+# 口同時關上，全程零訊息。停滯偵測是設計裡「worker 停住而沒人知道」的
+# 唯一後盾，尤其對低保真 kind（見第 3 項），把它對「等定案」無上限地
+# 關掉，等於假設 orchestrator 永遠不會忘記回覆。
+#
+# 修法：從這個 worker 名下最早一筆仍未回覆的定案請求算起（用它的
+# .created_at），等待超過 AGENT_TEAM_NEEDYOU_LIMIT_SECONDS（預設是
+# AGENT_TEAM_STALL_SECONDS 的三倍）就視為豁免到期，不論當下 agent_
+# status 是什麼都直接升級，摘要明講「有一則你還沒回的定案請求」，讓
+# orchestrator 一看就知道該做什麼。這個檢查獨立於第 3 項的停滯偵測
+# （state_change_seq 比對）：等待中的 worker 完全可能持續轉換狀態、
+# state_change_seq 一直在動，那套機制永遠不會判定它停滯，因此上限到期
+# 這件事不能只靠放寬第 3 項的豁免條件，需要一條不看 state_change_seq
+# 的獨立路徑。
 #
 # ---- 白名單欄位：任何要投遞給 orchestrator 的內容只能是本腳本自己組
 #      出來的摘要文字 ----
@@ -144,6 +168,13 @@ case "$stall_seconds" in
 esac
 case "$auto_push_limit" in
   '' | *[!0-9]*) hat_die 2 "watchdog.sh: AGENT_TEAM_AUTO_PUSH_LIMIT 必須是純數字，收到：$auto_push_limit" ;;
+esac
+
+# 預設是 stall_seconds 的三倍（見檔頭「豁免的時間上限」一節）；算預設
+# 值之前 stall_seconds 已經過上面的純數字檢查，這裡的算術是安全的。
+needyou_limit_seconds="${AGENT_TEAM_NEEDYOU_LIMIT_SECONDS:-$((stall_seconds * 3))}"
+case "$needyou_limit_seconds" in
+  '' | *[!0-9]*) hat_die 2 "watchdog.sh: AGENT_TEAM_NEEDYOU_LIMIT_SECONDS 必須是純數字秒數，收到：$needyou_limit_seconds" ;;
 esac
 
 once=0
@@ -222,6 +253,33 @@ hat_wd_needyou_pending() {
   done < <(find "$registry_root/inbox" -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null)
 
   printf '0\n'
+}
+
+# hat_wd_needyou_oldest_created_at <registry_root> <worker>
+# <worker> 名下最早一筆仍未回覆（token=need-you、processed_at 仍是
+# JSON null）的定案請求，印出它的 .created_at（report.sh／本腳本一律
+# 寫成 `date -u +%Y-%m-%dT%H:%M:%SZ` 這個固定格式）；沒有這種記錄則印
+# 空字串。用途見檔頭「豁免的時間上限」一節。ISO 8601 UTC 字串照字典序
+# 排序就是時間序，直接用 `[[ < ]]` 比大小取最早一筆，不需要先各自轉成
+# epoch。
+hat_wd_needyou_oldest_created_at() {
+  local registry_root="$1" worker="$2" f token who processed created oldest
+
+  oldest=""
+  while IFS= read -r -d '' f; do
+    token="$(jq -r '.token // empty' "$f")"
+    who="$(jq -r '.worker // empty' "$f")"
+    processed="$(jq -r '.processed_at' "$f")"
+    if [ "$token" = "need-you" ] && [ "$who" = "$worker" ] && [ "$processed" = "null" ]; then
+      created="$(jq -r '.created_at // empty' "$f")"
+      [ -n "$created" ] || continue
+      if [ -z "$oldest" ] || [[ "$created" < "$oldest" ]]; then
+        oldest="$created"
+      fi
+    fi
+  done < <(find "$registry_root/inbox" -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null)
+
+  printf '%s\n' "$oldest"
 }
 
 # hat_wd_escalate <registry_root> <orchestrator_name> <worker> <summary>
@@ -337,7 +395,23 @@ hat_wd_retry_blocked_inbox() {
 # 見檔頭「投遞重試與待補送補投」b) 一節：<worker> 目前不是 blocked
 # 時，逐筆嘗試補投 .pending_resend 佇列，每成功一筆就移除該筆；一旦
 # 有一筆失敗（例如又卡進 blocked），停止處理這個 worker 剩下的佇列，
-# 留給下一輪。佇列清空後才放掉持有旗標。
+# 留給下一輪。
+#
+# ---- 最終審查 Critical：本函式不寫 .held，佇列清空跟持有旗標無關 ----
+# 舊版在佇列清空後無條件把 .held 寫回 false，理由是「沒清空代表還有
+# 訊息沒補投出去，orchestrator 仍在跟它對話中」——但這個推論反過來不成
+# 立：佇列為空是 instruct.sh 送出下行期間的正常狀態（它只有在收到
+# agent_blocked 才會入列，而那條路徑本身就會把 .held 設回 false，見該
+# 腳本「blocked 是待補送」一節）。持有旗標的語意是「orchestrator 正在
+# 跟這個 worker 對話，這個空窗期不要有第三則訊息插進來」，設不設、收
+# 不收全由下行腳本自己決定，不是「待補送佇列還沒清空」的衍生欄位。舊
+# 版把兩者混為一談的後果：審查者用樁重現過——旗標為真、佇列為空、狀態
+# 閒置這個組合下跑一輪，旗標被清成 false、自動推進計數加一、且真的送
+# 出了一則「繼續」，直接踩爛下行腳本剛設下的持有窗口。修法是本函式完
+# 全不寫 .held，讓這個欄位回到單一語意：orchestrator 端腳本設它，中斷
+# 恢復由 team-init.sh --recover 收回殘留（規格 §13 第 3 步），看門狗
+# 不再是第三個寫入端（連帶更新 lib/common.sh 欄位白名單一節的分配表註
+# 解）。
 hat_wd_retry_pending_resend() {
   local worker="$1" worker_file="$2" whitelisted="$3"
   local line status entry text rc
@@ -367,19 +441,18 @@ hat_wd_retry_pending_resend() {
 
     hat_remove_pending_resend "$worker_file"
   done
-
-  if [ "$(jq -r '(.pending_resend // []) | length' "$worker_file")" -eq 0 ]; then
-    hat_json_set "$worker_file" '.held' 'false'
-  fi
 }
 
 # hat_wd_process_worker <registry_root> <orchestrator_name> <worker> \
-#   <whitelisted> <stall_seconds> <auto_push_limit>
+#   <whitelisted> <stall_seconds> <auto_push_limit> <needyou_limit_seconds>
 # 對單一 worker 依序執行：4b) 待補送補投 → 讀取這一輪觀測值 → 更新
-# stamp 追蹤 → 3) 停滯偵測（內建豁免） → 2) blocked／達上限升級（不
-# 受豁免影響） → unknown 直接跳過 → 豁免檢查（只擋第 1 項） →
-# 1) 自動推進。先做補投，讓後面的自動推進評估用到的是補投後的最新持
-# 有旗標狀態（見檔頭「四個職責」b) 一節）。
+# stamp 追蹤 → 豁免的時間上限到期就直接升級（檔頭同名一節，不看
+# status） → 3) 停滯偵測（內建豁免） → 2) blocked／達上限升級（不受豁
+# 免影響） → unknown 直接跳過 → 豁免檢查（只擋第 1 項） → 1) 自動推
+# 進。先做補投，把上一輪卡住、這一輪解除的下行儘快送出；持有旗標由下
+# 行腳本自己收放，本函式的執行順序不會改變它的值（見 hat_wd_retry_
+# pending_resend 檔頭「最終審查 Critical」一節），因此這個順序跟後面
+# 的自動推進評估互不影響，純粹是「先把積壓的事做完」。
 #
 # ---- 修正迴圈第一輪：豁免檢查不得排在 2) 之前 ----
 # 檔頭「豁免」一節承諾「豁免範圍包含第 1、3 兩項，第 2 項的 blocked／
@@ -394,9 +467,10 @@ hat_wd_retry_pending_resend() {
 # 進」的實際送出動作前面，不再是一句擋住後面所有分支的早退。
 hat_wd_process_worker() {
   local registry_root="$1" orchestrator_name="$2" worker="$3" whitelisted="$4"
-  local stall_seconds="$5" auto_push_limit="$6"
+  local stall_seconds="$5" auto_push_limit="$6" needyou_limit_seconds="$7"
   local worker_file pane_id line status stamp held needyou_pending
   local last_stamp last_changed_at now elapsed auto_push_count new_count rc
+  local needyou_expired needyou_created_at needyou_created_epoch needyou_wait_elapsed
 
   worker_file="$registry_root/workers/$worker.json"
   [ -f "$worker_file" ] || return 0
@@ -405,9 +479,17 @@ hat_wd_process_worker() {
   #      部 worker，一筆記錄的座標對不上就不該讓 hat_assert_workspace
   #      的 hat_die 4 把整個看門狗行程帶走（`--once` 之外的長駐模式下
   #      那等於整個團隊都停止被照看），因此包在子殼裡捕捉失敗、只跳
-  #      過這一筆，`hat_assert_workspace` 本身仍然被呼叫到 ----
+  #      過這一筆，`hat_assert_workspace` 本身仍然被呼叫到；座標缺席
+  #      時也視同守衛沒通過（見 team-status.sh 同名一節「最終審查修
+  #      正」——缺座標比座標對不上更可疑，不當成通過），跳過該筆並記一
+  #      行日誌到 watchdog.log ----
   pane_id="$(jq -r '.pane_id // empty' "$worker_file")"
-  if [ -n "$pane_id" ] && ! ( hat_assert_workspace "$pane_id" ) 2>/dev/null; then
+  if [ -z "$pane_id" ]; then
+    printf 'skip worker=%s reason=missing_pane_id at=%s\n' "$worker" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      >> "$registry_root/watchdog.log"
+    return 0
+  fi
+  if ! ( hat_assert_workspace "$pane_id" ) 2>/dev/null; then
     return 0
   fi
 
@@ -434,6 +516,29 @@ hat_wd_process_worker() {
     hat_json_set "$worker_file" '.last_seq_stamp' "$(hat_json_string "$stamp")"
     hat_json_set "$worker_file" '.last_seq_changed_at' "$now"
     last_changed_at="$now"
+  fi
+
+  # ---- 豁免的時間上限（檔頭同名一節）：不看 status，從最早一筆仍未回
+  #      覆的定案請求算起，超過 needyou_limit_seconds 就直接升級，不透
+  #      過第 3 項的 state_change_seq 比對——等待中的 worker 可能持續轉
+  #      換狀態，那套機制永遠不會判定它停滯 ----
+  needyou_expired=0
+  if [ "$needyou_pending" = "1" ]; then
+    needyou_created_at="$(hat_wd_needyou_oldest_created_at "$registry_root" "$worker")"
+    if [ -n "$needyou_created_at" ]; then
+      needyou_created_epoch="$(date -d "$needyou_created_at" +%s 2>/dev/null)" || needyou_created_epoch=""
+      if [ -n "$needyou_created_epoch" ]; then
+        needyou_wait_elapsed=$((now - needyou_created_epoch))
+        if [ "$needyou_wait_elapsed" -ge "$needyou_limit_seconds" ]; then
+          needyou_expired=1
+        fi
+      fi
+    fi
+  fi
+  if [ "$needyou_expired" -eq 1 ]; then
+    hat_wd_escalate "$registry_root" "$orchestrator_name" "$worker" \
+      "worker=$worker 有一則你還沒回的定案請求（need-you）已經等了 ${needyou_wait_elapsed}s（上限 ${needyou_limit_seconds}s），豁免到期，改為升級"
+    return 0
   fi
 
   # ---- 3：停滯偵測（見檔頭同名一節；豁免見「豁免」一節）----
@@ -514,7 +619,7 @@ hat_wd_run_once() {
   while IFS= read -r worker; do
     [ -n "$worker" ] || continue
     hat_wd_process_worker "$registry_root" "$orchestrator_name" "$worker" "$whitelisted" \
-      "$stall_seconds" "$auto_push_limit"
+      "$stall_seconds" "$auto_push_limit" "$needyou_limit_seconds"
   done < <(hat_worker_list)
 }
 

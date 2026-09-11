@@ -23,7 +23,8 @@
 # 這是規格 §9 定案的第二項不打擾補償：目標的變更權轉移給 orchestrator
 # 之後，人類沒有機制得知目標被怎麼改了。這次變更若動到「怎樣算成功」
 # （四項裡唯一設計成外部可查驗的一項），就在 stdout 印一行機器可辨識
-# 的固定字串（不是散文），供 orchestrator 往事件流轉述。
+# 的固定字串（不是散文），供 orchestrator 往事件流轉述。第一次呼叫
+# （`.goal.success` 舊值不存在）例外，見下方「首次設定不算變更」一節。
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -113,11 +114,25 @@ old_assumption="$(jq -r '.goal.assumptions // empty' "$team_json" 2>/dev/null)" 
 old_version="$(jq -r '.goal_version // 0' "$team_json" 2>/dev/null)" || old_version=0
 old_history="$(jq -c '.goal_history // []' "$team_json" 2>/dev/null)" || old_history="[]"
 
+# ---- 最終審查修正：首次設定不算「變更」----
+# `.goal.success` 這個路徑不存在時，`jq -r` 不加 `// empty` 印的是字面
+# `null`（見 lib/common.sh hat_json_get 檔頭同一個判斷方式）；只有這種
+# 情形才代表舊值真的不存在，不能靠上面 old_success 是不是空字串來判
+# 斷——空字串本身也可能是先前真的存過的合法值。第一次呼叫
+# `.goal.success` 必然不存在，此時不論新值是什麼都不算「變更」，不印
+# GOAL-SUCCESS-CHANGED：那行通知的語意是「這個團隊的成功定義剛剛被改
+# 掉了」，開團第一次就發是偽陽性，會稀釋這個訊號日後真正要承載的份量。
+old_success_check="$(jq -r '.goal.success' "$team_json" 2>/dev/null)" || old_success_check="null"
+old_success_exists=1
+if [ "$old_success_check" = "null" ]; then
+  old_success_exists=0
+fi
+
 new_version=$((old_version + 1))
 timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 success_changed=0
-if [ "$old_success" != "$success" ]; then
+if [ "$old_success_exists" -eq 1 ] && [ "$old_success" != "$success" ]; then
   success_changed=1
 fi
 

@@ -51,6 +51,14 @@
 # 個代價比「跳過這一筆、其餘照印」大得多。因此呼叫包在子殼裡，命中就
 # `continue` 跳過這一筆，不是讓 hat_die 往外傳播；`hat_assert_workspace`
 # 本身仍然被呼叫到，行為只是「捕捉它的失敗」，不是繞過它。
+#
+# ---- 最終審查修正：座標缺席也要跳過，不是短路當成通過 ----
+# 原本寫成「座標非空且守衛不通過才跳過」，座標為空字串時整個條件短
+# 路，該筆完全不經任何檢查就被當成通過處理——但「缺座標」比「座標對
+# 不上」更可疑：後者至少證明 launch-worker.sh 曾經寫入過一個座標，前
+# 者代表這筆記錄從一開始就沒有座標可驗。因此座標缺席時也視同守衛沒通
+# 過，跳過該筆並在 stderr 記一行可查的診斷（本腳本唯讀、沒有既有的持
+# 久 log 檔可寫，不比照 watchdog.sh 寫進 watchdog.log）。
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -95,7 +103,11 @@ while IFS= read -r worker; do
   [ -f "$worker_file" ] || continue
 
   pane_id="$(jq -r '.pane_id // empty' "$worker_file")"
-  if [ -n "$pane_id" ] && ! ( hat_assert_workspace "$pane_id" ) 2>/dev/null; then
+  if [ -z "$pane_id" ]; then
+    printf 'team-status.sh: 略過 worker=%s：workers/%s.json 缺少 pane_id\n' "$worker" "$worker" >&2
+    continue
+  fi
+  if ! ( hat_assert_workspace "$pane_id" ) 2>/dev/null; then
     continue
   fi
 

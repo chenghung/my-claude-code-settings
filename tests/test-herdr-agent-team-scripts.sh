@@ -520,7 +520,16 @@ else
 fi
 
 # ===== set-goal.sh：開工閘門 =====
-bash "$SCRIPTS/set-goal.sh" --achieve a --success b --not-doing c --assumption d >/dev/null 2>&1
+# ---- 最終審查修正：首次設定不算「變更」，不印 GOAL-SUCCESS-CHANGED
+#      ----
+# 這是 team.json 全新建立後第一次呼叫 set-goal.sh，`.goal.success` 舊
+# 值必然不存在；舊版拿「新舊成功定義不同」判斷要不要印這行顯眼通知，
+# 首次呼叫時舊值是空字串必然跟新值不同，會偽陽性印出。
+first_goal_out="$(bash "$SCRIPTS/set-goal.sh" --achieve a --success b --not-doing c --assumption d 2>&1)"
+case "$first_goal_out" in
+  *GOAL-SUCCESS-CHANGED*) bad "goal：首次設定成功定義卻印了 GOAL-SUCCESS-CHANGED（偽陽性）" ;;
+  *) pass "goal：首次設定成功定義不印 GOAL-SUCCESS-CHANGED" ;;
+esac
 rc=0; ( hat_require_goal_confirmed ) >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 4 ]; then
   pass "閘門：未確認時擋住"
@@ -3292,6 +3301,28 @@ case "$out" in
 esac
 rm -f "$REG/workers/w3n-otherws-status.json"
 
+# ---- 最終審查修正：座標缺席（.pane_id 整個沒寫）時也要跳過，不能被
+#      「座標非空且守衛不通過才跳過」這個短路條件當成通過——舊版座標
+#      為空字串時 `[ -n "$pane_id" ]` 直接為假，整個條件短路，該筆完
+#      全不經 hat_assert_workspace 檢查就被當成通過處理 ----
+printf '{"held":false}' > "$REG/workers/w3n-nopane-status.json"
+rc=0; out="$(bash "$SCRIPTS/team-status.sh" 2>"$T/status-err")" || rc=$?
+status_err="$(cat "$T/status-err")"
+if [ "$rc" -eq 0 ]; then
+  pass "status：座標缺席時整支腳本仍以 0 結束"
+else
+  bad "status：得到 rc=$rc"
+fi
+case "$out" in
+  *w3n-nopane-status*) bad "status：座標缺席的記錄沒有被跳過，仍出現在輸出裡" ;;
+  *) pass "status：座標缺席的記錄被跳過，沒有出現在輸出裡" ;;
+esac
+case "$status_err" in
+  *w3n-nopane-status*) pass "status：座標缺席時記了一行可查的診斷" ;;
+  *) bad "status：座標缺席時沒有留下任何診斷：$status_err" ;;
+esac
+rm -f "$REG/workers/w3n-nopane-status.json"
+
 # ---- Step 2（任務簡報逐字）：白名單欄位缺席時輸出空字串，不是字面
 #      null（Task 1 審查留下的 Minor，在這裡補掉）----
 sample='{"result":{"agents":[{"workspace_id":"w3N","agent_status":"working","state_change_seq":1052,"pane_id":"w3N:p1","tab_id":"w3N:t1"}]}}'
@@ -3557,6 +3588,57 @@ else
 fi
 rm -f "$REG/inbox/11-w3n-backend.json"
 
+# ---- 最終審查 Important：等定案豁免有時間上限，超過就照常升級——沿用
+#      上面同一份 idle 樁，把這筆定案請求的 .created_at 設成很久以
+#      前，並用 AGENT_TEAM_NEEDYOU_LIMIT_SECONDS 把上限壓到很短，讓
+#      「已經等了」明確超過上限 ----
+printf '{"token":"need-you","worker":"w3n-backend","processed_at":null,"created_at":"2020-01-01T00:00:00Z"}' > "$REG/inbox/13-w3n-backend.json"
+jq '.auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+: > "$HERDR_CALL_LOG"
+AGENT_TEAM_NEEDYOU_LIMIT_SECONDS=10 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after" -gt "$n_inbox_before" ]; then
+  pass "watchdog：等定案豁免超過時間上限後改為升級"
+else
+  bad "watchdog：等定案豁免超過上限仍然沒有升級（before=$n_inbox_before after=$n_inbox_after）"
+fi
+if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+  bad "watchdog：豁免到期時仍對 worker 自動推進了"
+else
+  pass "watchdog：豁免到期時沒有對 worker 自動推進"
+fi
+if grep -q 'agent prompt w3n-orchestrator' "$HERDR_CALL_LOG"; then
+  pass "watchdog：豁免到期升級時嘗試通知 orchestrator"
+else
+  bad "watchdog：豁免到期升級沒有嘗試通知 orchestrator"
+fi
+newest_inbox_entry="$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' -printf '%T@ %p\n' | sort -n | tail -n1 | cut -d' ' -f2-)"
+newest_summary="$(jq -r '.summary // empty' "$newest_inbox_entry" 2>/dev/null)"
+case "$newest_summary" in
+  *定案*) pass "watchdog：豁免到期升級摘要明確指出在等一則未回覆的定案請求" ;;
+  *) bad "watchdog：豁免到期升級摘要沒有提到定案：$newest_summary" ;;
+esac
+rm -f "$REG/inbox/13-w3n-backend.json"
+
+# ---- 本任務自行補上：定案請求還在上限內時不受影響，同上一段用同一個
+#      短上限，但這筆的 .created_at 設成剛剛，兩相對照佐證上面那組斷
+#      言真的在測「超過上限」，不是上限設定本身就會讓任何等定案的
+#      worker 一律被升級 ----
+printf '{"token":"need-you","worker":"w3n-backend","processed_at":null,"created_at":"%s"}' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$REG/inbox/14-w3n-backend.json"
+jq '.auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+: > "$HERDR_CALL_LOG"
+AGENT_TEAM_NEEDYOU_LIMIT_SECONDS=10000 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after" -eq "$n_inbox_before" ]; then
+  pass "watchdog：定案請求還在上限內時豁免照常生效，不會被升級"
+else
+  bad "watchdog：還在上限內就被升級了（before=$n_inbox_before after=$n_inbox_after）"
+fi
+rm -f "$REG/inbox/14-w3n-backend.json"
+
 # ---- 修正迴圈第一輪 High：等定案豁免與 blocked 升級疊加——兩者同時成
 #      立時仍要升級，豁免不得把 blocked 升級整段吞掉（見 watchdog.sh
 #      hat_wd_process_worker 檔頭「修正迴圈第一輪」一節）----
@@ -3617,8 +3699,11 @@ STUB
 chmod +x "$STUB_BIN/herdr"
 hat_assert_herdr_stubbed "$STUB_BIN" watchdog-pending-resend-setup
 
-# ---- Step 7（任務簡報逐字）：待補送補投——目標不再是 blocked 時逐筆
-#      補投，成功就清空清單並放掉持有旗標 ----
+# ---- Step 7（任務簡報逐字，斷言依最終審查 Critical 修正調整）：待補
+#      送補投——目標不再是 blocked 時逐筆補投，成功就清空清單；持有旗
+#      標由下行腳本自己收放，本腳本補投完不會去動它（見
+#      hat_wd_retry_pending_resend 檔頭「最終審查 Critical」一節：舊版
+#      在這裡把旗標寫回 false，會清掉下行腳本剛設下的持有窗口） ----
 jq '.pending_resend=[{"text":"goal 更新","kind":"goal-update"}] | .held=true' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
 : > "$HERDR_CALL_LOG"
 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
@@ -3627,16 +3712,42 @@ if [ "$(jq -r '.pending_resend | length' "$REG/workers/w3n-backend.json")" = "0"
 else
   bad "watchdog：待補送沒有被補投"
 fi
-if [ "$(jq -r '.held' "$REG/workers/w3n-backend.json")" = "false" ]; then
-  pass "watchdog：補投後放掉持有旗標"
+if [ "$(jq -r '.held' "$REG/workers/w3n-backend.json")" = "true" ]; then
+  pass "watchdog：補投完全不動持有旗標（收放交給下行腳本自己）"
 else
-  bad "watchdog：持有旗標卡在 true"
+  bad "watchdog：持有旗標被本腳本動了，變成 '$(jq -r '.held' "$REG/workers/w3n-backend.json")'"
 fi
 if grep -q 'agent prompt w3n-backend goal 更新' "$HERDR_CALL_LOG"; then
   pass "watchdog：補投的內容正確送給了目標 worker"
 else
   bad "watchdog：補投內容不對或沒有送出：$(cat "$HERDR_CALL_LOG")"
 fi
+
+# ---- 最終審查 Critical：旗標為真、待補送佇列為空、狀態為閒置——套件
+#      從未構造過的組合，且正是下行腳本送出下行期間的正常狀態（見
+#      hat_wd_retry_pending_resend 檔頭「最終審查 Critical」一節：舊版
+#      在這個組合下會把旗標清掉並在同一輪送出自動推進，直接踩爛下行
+#      腳本剛設下的持有窗口）。跑一輪之後旗標必須仍是真、自動推進計
+#      數不得被推動、也不得送出任何自動推進 ----
+jq '.held=true | .pending_resend=[] | .auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.held' "$REG/workers/w3n-backend.json")" = "true" ]; then
+  pass "watchdog：旗標為真且佇列已空時，看門狗不會清掉旗標"
+else
+  bad "watchdog：旗標被清掉了，變成 '$(jq -r '.held' "$REG/workers/w3n-backend.json")'（Critical 回歸）"
+fi
+if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "0" ]; then
+  pass "watchdog：旗標為真且佇列已空時，自動推進計數沒有被推動"
+else
+  bad "watchdog：自動推進計數被推動了（Critical 回歸）"
+fi
+if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+  bad "watchdog：旗標為真且佇列已空時仍送出了自動推進（Critical 回歸）"
+else
+  pass "watchdog：旗標為真且佇列已空時沒有送出任何自動推進"
+fi
+jq '.held=false' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
 
 # ---- 本任務自行補上：目標仍是 blocked 時不補投，清單與持有旗標都不
 #      動 ----
@@ -3915,6 +4026,33 @@ else
 fi
 rm -f "$REG/workers/w3n-otherws-watchdog.json"
 
+# ---- 最終審查修正：座標缺席（.pane_id 整個沒寫）時也要跳過，不能被
+#      「座標非空且守衛不通過才跳過」這個短路條件當成通過——缺座標比
+#      座標對不上更可疑，不該比座標對不上更容易放行。本腳本是長駐行
+#      程，記一行日誌到 watchdog.log（唯讀的 team-status.sh 才印到
+#      stderr，見那裡同名一節） ----
+printf '{"held":false}' > "$REG/workers/w3n-nopane-watchdog.json"
+printf '{"pane_id":"w3N:p2","held":false,"role":"backend","auto_push_count":0}' > "$REG/workers/w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+: > "$REG/watchdog.log"
+rc=0; bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "watchdog：座標缺席時整個行程仍以 0 結束"
+else
+  bad "watchdog：得到 rc=$rc"
+fi
+if grep -q 'agent prompt w3n-backend' "$HERDR_CALL_LOG"; then
+  pass "watchdog：座標缺席的一筆不會讓其餘正常 worker（w3n-backend）也不被處理"
+else
+  bad "watchdog：w3n-backend 沒有被處理到，可能被前面那筆壞記錄連累中止了"
+fi
+if grep -q 'missing_pane_id' "$REG/watchdog.log"; then
+  pass "watchdog：座標缺席時記了一行日誌到 watchdog.log"
+else
+  bad "watchdog：座標缺席時沒有留下任何日誌：$(cat "$REG/watchdog.log")"
+fi
+rm -f "$REG/workers/w3n-nopane-watchdog.json"
+
 # 收尾：把 w3n-backend 留在一個乾淨、不會誤觸後續（此檔案已無更多章
 # 節）斷言的狀態。
 jq '.auto_push_count=0 | .held=false | .pending_resend=[]' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
@@ -3924,7 +4062,7 @@ jq '.auto_push_count=0 | .held=false | .pending_resend=[]' "$REG/workers/w3n-bac
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=366
+HAT_EXPECTED_ASSERTIONS=381
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
