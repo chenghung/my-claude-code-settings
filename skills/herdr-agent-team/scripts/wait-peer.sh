@@ -133,7 +133,7 @@ hat_assert_workspace "$peer_pane_id"
 #      一節）----
 observation="$(hat_peer_observation "$peer")"
 if [ -z "$observation" ]; then
-  hat_die 1 "wait-peer.sh: 對方 '$peer' 目前查無 agent 記錄，判斷不出狀態變化"
+  hat_die 1 "wait-peer.sh: 對方 '$peer' 目前查無 agent 記錄，判斷不出狀態變化。這是終局狀態、不是暫時性的：對方可能已被關閉或改名，不必再重試等待，請直接回報上層"
 fi
 prev_stamp="$(printf '%s' "$observation" | cut -f4)"
 
@@ -148,7 +148,7 @@ while :; do
 
   observation="$(hat_peer_observation "$peer")"
   if [ -z "$observation" ]; then
-    hat_die 1 "wait-peer.sh: 對方 '$peer' 在等待過程中查無 agent 記錄，判斷不出狀態變化（見檔頭「對方在等待過程中徹底消失」一節）"
+    hat_die 1 "wait-peer.sh: 對方 '$peer' 在等待過程中查無 agent 記錄，判斷不出狀態變化（見檔頭「對方在等待過程中徹底消失」一節）。這是終局狀態、不是暫時性的：對方可能已被關閉或改名，不必再重試等待，請直接回報上層"
   fi
 
   cur_stamp="$(printf '%s' "$observation" | cut -f4)"

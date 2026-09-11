@@ -2739,12 +2739,58 @@ else
   bad "wait-peer：逾時結束碼是 $rc，不是 7"
 fi
 
+# ---- 修正迴圈第一輪 High：死鎖防護樁補強成多 agent 情境，讓「依名稱
+#      篩選」與「不論名字、只看清單裡最後一筆有沒有變動」這兩種讀法給
+#      出不同結果 ----
+# 審查者實測：上面 Step 3 與本節其餘幾組樁，`agent list` 回應裡從頭到
+# 尾只有一個 agent；把 wait-peer.sh 的篩選邏輯改壞成「不管名字、只看清
+# 單最後一筆是否變動」（正是簡報明講要避免的錯誤理解），重跑整份測試
+# 檔，271 條斷言零失敗——因為清單只有一個 agent 時，「這個 agent 的
+# stamp 變了嗎」跟「清單裡有任何東西變了嗎」是同一個問題，兩種讀法在
+# 這個資料形狀下無法區分。真實環境不是這樣：`state_change_seq` 是全域
+# 共用的遞增計數器，同時有其他 agent 在動是常態（規格 2.5 實測六個
+# agent 的值落在同一區間、跨兩個 workspace 交錯出現）。
+#
+# 這裡讓 `agent list` 同時回傳目標 w3n-backend（stamp 固定在 1000，永
+# 遠不動）與另一個 agent w3n-frontend（stamp 每次呼叫遞增，且刻意放在
+# 陣列的最後一個位置，對應審查者「只看最後一筆」的具體改壞方式），斷
+# 言 wait-peer.sh 仍然只依 --peer 指名的對象判斷，不被別人的變動騙
+# 過，精確以 7 逾時結束。
+rm -f "$T/wait-peer-multi-agent-counter"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+n=0
+if [ -f "$T/wait-peer-multi-agent-counter" ]; then
+  n="\$(cat "$T/wait-peer-multi-agent-counter")"
+fi
+n=\$((n + 1))
+printf '%s' "\$n" > "$T/wait-peer-multi-agent-counter"
+printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"working","state_change_seq":1000,"pane_id":"w3N:p2","tab_id":"w3N:t2"},{"name":"w3n-frontend","workspace_id":"w3N","agent_status":"working","state_change_seq":%s,"pane_id":"w3N:p5","tab_id":"w3N:t5"}]}}' "\$((2000 + n))"
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" wait-peer-multi-agent-deadlock
+
+start=$(date +%s)
+rc=0; bash "$SCRIPTS/wait-peer.sh" --peer w3n-backend --timeout 4 --poll 1 >/dev/null 2>&1 || rc=$?
+elapsed=$(( $(date +%s) - start ))
+if [ "$rc" -eq 7 ]; then
+  pass "wait-peer：清單裡有其他 agent 的 stamp 在動，目標對象自己的 stamp 不動時，仍精確以 7 逾時結束（不會被別人的變動騙過）"
+else
+  bad "wait-peer：得到 rc=$rc（若不是 7，篩選邏輯可能把別的 agent 誤判成目標——這正是簡報要防的錯誤理解）"
+fi
+if [ "$elapsed" -lt 10 ]; then
+  pass "wait-peer：多 agent 情境下也沒有永久等下去"
+else
+  bad "wait-peer：等了 ${elapsed}s"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=271
+HAT_EXPECTED_ASSERTIONS=273
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
