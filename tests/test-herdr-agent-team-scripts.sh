@@ -2073,12 +2073,276 @@ case "$send_keys_line" in
     ;;
 esac
 
+# ===== shutdown-worker.sh：關閉閘門 =====
+# 起始準備：重置本節要用到的 worker 記錄，不依賴前面小節留下的狀態
+# （同 instruct.sh 節開頭「起始準備」的既有作法）。w3n-backend／
+# w3n-frontend／w3n-ux 三個是任務簡報逐字給的名稱；w3n-frontend 在此之
+# 前的小節從未出現過，本節自己建立。三者皆給 tab_id，模擬
+# launch-worker.sh 正常啟動完成後的狀態；stage 給 "running"，不是
+# "delivered"，才不會讓 Step 3 以外的斷言意外撞上交付點守衛。
+printf '{"pane_id":"w3N:p2","held":false,"tab_id":"w3N:t2","stage":"running"}' \
+  > "$REG/workers/w3n-backend.json"
+printf '{"pane_id":"w3N:p5","held":false,"tab_id":"w3N:t5","stage":"running"}' \
+  > "$REG/workers/w3n-frontend.json"
+printf '{"pane_id":"w3N:p6","held":false,"tab_id":"w3N:t6","stage":"running"}' \
+  > "$REG/workers/w3n-ux.json"
+rm -f "$REG"/inbox/*-w3n-backend.json "$REG"/inbox/*-w3n-frontend.json "$REG"/inbox/*-w3n-ux.json
+
+HERDR_CALL_LOG="$T/herdr-call-log-shutdown"
+HERDR_FULL_ARGS="$T/herdr-full-args-shutdown"
+
+# ---- Step 1（任務簡報逐字）：必填證據／交接檔 ----
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-backend --reason "done" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "關閉：done 缺 --evidence 以 2 拒絕"
+else
+  bad "關閉：無證據卻放行（rc=$rc）"
+fi
+
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-backend --reason abandon >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "關閉：abandon 缺 --handoff-file 以 2 拒絕"
+else
+  bad "關閉：無交接檔卻放行（rc=$rc）"
+fi
+
+# ---- 本任務自行補上：--to／--reason 必填、--reason 白名單、--to 名稱
+#      格式、--handoff-file 存在性、superseded 與 abandon 同一條路
+#      （Produces 介面四項參數，簡報 Step 1 只涵蓋 evidence／
+#      handoff-file 兩項的必填性，其餘是本次實作為了不留下沒被跑過一
+#      次的程式碼路徑而自行補上）----
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --reason "done" --evidence x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "關閉：--to 必填"
+else
+  bad "關閉：沒有 --to 卻放行（rc=$rc）"
+fi
+
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-backend >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "關閉：--reason 必填"
+else
+  bad "關閉：沒有 --reason 卻放行（rc=$rc）"
+fi
+
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-backend --reason no-such-reason >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "關閉：不支援的 --reason 以 2 拒絕"
+else
+  bad "關閉：不支援的 --reason 被接受（rc=$rc）"
+fi
+
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to '../evil' --reason "done" --evidence x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "關閉：--to 名稱格式不符時以 2 拒絕"
+else
+  bad "關閉：格式不符的名稱被接受（rc=$rc）"
+fi
+
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-backend --reason abandon --handoff-file "$T/no-such-handoff-file" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "關閉：--handoff-file 指向不存在的檔案時以 2 拒絕"
+else
+  bad "關閉：不存在的交接檔被接受（rc=$rc）"
+fi
+
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-backend --reason superseded >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "關閉：superseded 缺 --handoff-file 以 2 拒絕（與 abandon 同一條路）"
+else
+  bad "關閉：superseded 無交接檔卻放行（rc=$rc）"
+fi
+
+# ---- Step 2（任務簡報逐字）：「有人在等它就拒絕」的兩個條件 ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$1 \$2" >> "$HERDR_CALL_LOG"
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" shutdown-guard
+
+# 條件一：自己有未回覆的 need-you
+printf '{"token":"need-you","worker":"w3n-backend","processed_at":null}' > "$REG/inbox/9-w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-backend --reason "done" --evidence 'PR #1 已合併' >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "關閉：有未回覆的 need-you 時拒絕"
+else
+  bad "關閉：得到 rc=$rc"
+fi
+if grep -q 'tab close' "$HERDR_CALL_LOG"; then
+  bad "關閉：守衛沒過卻關了 tab"
+else
+  pass "關閉：守衛沒過就不關 tab"
+fi
+rm -f "$REG/inbox/9-w3n-backend.json"
+
+# 條件二：別人的 grant 還指向它
+jq '.grants = ["w3n-backend"]' "$REG/workers/w3n-frontend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-frontend.json"
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-backend --reason "done" --evidence 'PR #1 已合併' >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "關閉：仍有 grant 指向它時拒絕"
+else
+  bad "關閉：得到 rc=$rc"
+fi
+if grep -q 'tab close' "$HERDR_CALL_LOG"; then
+  bad "關閉：grant 守衛沒過卻關了 tab"
+else
+  pass "關閉：grant 守衛沒過就不關 tab"
+fi
+
+# ---- 本任務自行補上：入口守衛 hat_assert_workspace 真的接上（沿用
+#      instruct.sh／press-approval.sh 節既有的 w3n-otherws 記錄，pane_id
+#      指向別的 workspace）----
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-otherws --reason "done" --evidence x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "關閉：workspace 守衛擋下不屬於本 workspace 的 worker"
+else
+  bad "關閉：得到 rc=$rc"
+fi
+if [ -s "$HERDR_CALL_LOG" ]; then
+  bad "關閉：workspace 守衛擋下時仍呼叫了 herdr"
+else
+  pass "關閉：workspace 守衛擋下時沒有呼叫 herdr（含 tab close）"
+fi
+
+# ---- Step 3（任務簡報逐字）：delivered 關卡不得走本腳本 ----
+jq '.stage = "delivered"' "$REG/workers/w3n-ux.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-ux.json"
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-ux --reason "done" --evidence 'mockup.md 存在' >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "關閉：交付點不等於終點，拒絕關閉"
+else
+  bad "關閉：在交付點就關掉了（rc=$rc）"
+fi
+if grep -q 'tab close' "$HERDR_CALL_LOG"; then
+  bad "關閉：delivered 守衛沒過卻關了 tab"
+else
+  pass "關閉：delivered 守衛沒過就不關 tab"
+fi
+
+# ---- 本任務自行補上：三道守衛全過的成功路徑，以及 tab close 失敗時記
+#      錄留在原地（簡報 Step 1-3 只涵蓋三道守衛各自的拒絕路徑，沒有一
+#      條走到「全部通過、真的關閉並歸檔」，也沒有涵蓋「close 失敗要留
+#      著記錄」這個背景說明特別強調的行為；見任務報告）----
+
+# ---- reason=done 成功：關閉、歸檔、原始記錄消失 ----
+printf '{"pane_id":"w3N:pD","held":false,"tab_id":"w3N:tD","stage":"running"}' \
+  > "$REG/workers/w3n-shutdownok.json"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" shutdown-success-done
+
+: > "$HERDR_FULL_ARGS"
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-shutdownok --reason "done" --evidence 'PR #9 已合併' >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "關閉：三道守衛全過時成功關閉（rc=0）"
+else
+  bad "關閉：得到 rc=$rc"
+fi
+if [ -e "$REG/workers/w3n-shutdownok.json" ]; then
+  bad "關閉：關閉成功後 workers/ 底下的記錄還在，沒有被移除"
+else
+  pass "關閉：關閉成功後原始記錄已從 workers/ 移除"
+fi
+if [ -f "$REG/handoff/w3n-shutdownok.json" ]; then
+  pass "關閉：關閉成功後記錄已歸檔進 handoff/"
+else
+  bad "關閉：handoff/ 底下找不到歸檔的記錄"
+fi
+archived_reason="$(jq -r '.reason' "$REG/handoff/w3n-shutdownok.json")"
+archived_evidence="$(jq -r '.evidence' "$REG/handoff/w3n-shutdownok.json")"
+archived_closed_at="$(jq -r '.closed_at' "$REG/handoff/w3n-shutdownok.json")"
+if [ "$archived_reason" = "done" ] && [ "$archived_evidence" = 'PR #9 已合併' ] && [ "$archived_closed_at" != "null" ]; then
+  pass "關閉：歸檔的記錄留下 reason／evidence／closed_at 三項可查證的欄位"
+else
+  bad "關閉：歸檔內容不完整（reason=$archived_reason evidence=$archived_evidence closed_at=$archived_closed_at）"
+fi
+if grep -q 'tab close w3N:tD' "$HERDR_FULL_ARGS"; then
+  pass "關閉：真的呼叫了 tab close，且用的是這個 worker 自己的 tab_id"
+else
+  bad "關閉：沒有呼叫 tab close，或用錯了 tab_id：$(cat "$HERDR_FULL_ARGS")"
+fi
+
+# ---- reason=abandon 成功：交接檔內容複製進 handoff/<name>.md ----
+printf '{"pane_id":"w3N:pE","held":false,"tab_id":"w3N:tE","stage":"running"}' \
+  > "$REG/workers/w3n-shutdownho.json"
+handoff_src="$T/handoff-source.md"
+printf '殘留隔離區已刪除_HANDOFF_MARKER\n' > "$handoff_src"
+
+: > "$HERDR_FULL_ARGS"
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-shutdownho --reason abandon --handoff-file "$handoff_src" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "關閉：abandon 附交接檔時成功關閉（rc=0）"
+else
+  bad "關閉：得到 rc=$rc"
+fi
+if grep -q 'HANDOFF_MARKER' "$REG/handoff/w3n-shutdownho.md" 2>/dev/null; then
+  pass "關閉：交接檔內容已複製進 handoff/<name>.md"
+else
+  bad "關閉：handoff/w3n-shutdownho.md 找不到交接檔內容"
+fi
+if [ -f "$REG/handoff/w3n-shutdownho.json" ] && [ ! -e "$REG/workers/w3n-shutdownho.json" ]; then
+  pass "關閉：abandon 同樣把記錄從 workers/ 移進 handoff/ 歸檔"
+else
+  bad "關閉：abandon 的記錄歸檔沒有正確完成"
+fi
+
+# ---- tab close 失敗：不歸檔，記錄留在 workers/ 原地（見腳本檔頭「三道
+#      守衛全過才 tab close」一節，這是背景說明特別強調、簡報未安排測
+#      試的行為）----
+printf '{"pane_id":"w3N:pF","held":false,"tab_id":"w3N:tF","stage":"running"}' \
+  > "$REG/workers/w3n-shutdownfail.json"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+case "\$1 \$2" in
+  "tab close")
+    printf '{"error":{"code":"tab_not_found","message":"樁刻意製造的關閉失敗"}}' >&2
+    exit 1
+    ;;
+  *)
+    printf '{"result":{}}'
+    ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" shutdown-tab-close-fail
+
+: > "$HERDR_FULL_ARGS"
+rc=0; bash "$SCRIPTS/shutdown-worker.sh" --to w3n-shutdownfail --reason "done" --evidence x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 6 ]; then
+  pass "關閉：tab close 失敗（herdr 拒絕）時以 6 結束"
+else
+  bad "關閉：得到 rc=$rc"
+fi
+if [ -e "$REG/workers/w3n-shutdownfail.json" ]; then
+  pass "關閉：tab close 失敗時記錄留在 workers/ 原地，下次還找得到 tab id"
+else
+  bad "關閉：tab close 失敗卻把記錄移掉了"
+fi
+if [ -e "$REG/handoff/w3n-shutdownfail.json" ]; then
+  bad "關閉：tab close 失敗卻仍歸了檔"
+else
+  pass "關閉：tab close 失敗時沒有歸檔"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=195
+HAT_EXPECTED_ASSERTIONS=222
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
