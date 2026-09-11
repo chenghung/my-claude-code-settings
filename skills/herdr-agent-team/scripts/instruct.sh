@@ -43,8 +43,8 @@
 # launch-worker.sh 對同一類問題的既有手法，自己擷取 stderr 解析
 # error.code，不假手 hat_herdr。
 #
-# ---- .pending_resend 有兩個寫入端，每一次變動都必須是單一加鎖 jq 轉
-#      換，不得在 shell 端讀出陣列、改完再寫回去 ----
+# ---- .pending_resend 有兩個寫入端，兩者共用 common.sh 的單一加鎖 jq
+#      轉換實作 ----
 # 這一則加入清單由本腳本做，補投成功後移除那一則由看門狗（Task 12）
 # 做，兩者是同一個欄位的兩個獨立寫入端。common.sh「寫入端分邊，欄位集
 # 合刻意不重疊」那份分配表原本沒有把 .pending_resend 分配給任何一邊
@@ -54,19 +54,12 @@
 # 次 jq 呼叫裡對來源檔案求值，不能先用一次 jq 呼叫把陣列讀出到 shell
 # 變數、算完新陣列、再用 hat_json_set 另開一次加鎖呼叫寫回去。後者是兩
 # 次獨立的加鎖呼叫，中間那個沒有鎖保護的空窗，剛好就是另一個寫入端
-#（看門狗的移除）會插進來的地方：若它在這個空窗裡先讀到舊陣列、算出移
-# 除後的新陣列、再寫回，本腳本這邊晚一步寫回的「舊陣列＋新加的一則」
-# 就會整個蓋掉看門狗剛剛的移除結果，等於用一次遲到的寫入讓被移除的那
-# 筆記錄復活；反過來，若本腳本先寫、看門狗的空窗接在後面，則是本腳本
-# 剛加進去的那一則被覆蓋掉、憑空消失——兩個方向的結果都是靜默的資料遺
-# 失，而且都正好是規格 §13 講的「該送而還沒送到的下行，外部世界沒有任
-# 何地方查得到」那件事。因此 hat_append_pending_resend（見下方定義）不
-# 透過 hat_json_set（它的介面是「設成呼叫端已經算好的字面值」，不是
-# 「對現有內容做轉換」），改成沿用 report.sh 的 hat_allocate_seq 對
-# .next_seq 取號同一類問題的既有手法：自己重做一次 flock／mktemp／
-# jq／mv 四步，鎖檔路徑跟 hat_json_set 用的同一條（`<file>.lock`），理
-# 由同 hat_allocate_seq 檔頭：兩者若用不同鎖檔會各自序列化、彼此不排
-# 隊，等於沒鎖。
+#（看門狗的移除）會插進來的地方；兩個方向的結果都是靜默的資料遺失，正
+# 是規格 §13 講的「該送而還沒送到的下行，外部世界沒有任何地方查得到」
+# 那件事。Task 12 的前置整理已把這個共用實作（`_hat_pending_resend_
+# apply`）與加入／移除兩個入口（`hat_append_pending_resend`／
+# `hat_remove_pending_resend`）一併移進 lib/common.sh，本腳本改為直接
+# 呼叫共用函式庫的 `hat_append_pending_resend`，不再自己定義。
 #
 # ---- --reply-to：回覆定案，順手標記已處理 ----
 # 上層重啟之後 context 全沒了，它收到過的訊息也一起沒了，所以「哪些上
@@ -131,32 +124,6 @@ hat_require_herdr_env
 # 獨立定義，不共用（理由見 set-goal.sh 檔頭）。
 hat_json_string() {
   jq -Rn --arg v "$1" '$v'
-}
-
-# hat_append_pending_resend <file> <text> <kind>
-# 在 <file>.lock 的鎖保護下，把 {text, kind} 追加進 <file> 的
-# .pending_resend 陣列，全程只用一次 jq 呼叫對來源檔案求值（讀現有內
-# 容與算新內容是同一次求值，不是分成兩次獨立加鎖呼叫）。理由見檔頭
-# 「.pending_resend 有兩個寫入端」一節；手法沿用 report.sh 的
-# hat_allocate_seq，不透過 hat_json_set（見同一節）。
-hat_append_pending_resend() {
-  local file="$1" text="$2" kind="$3"
-  local lock_fd tmp
-
-  lock_fd=""
-  exec {lock_fd}>"${file}.lock"
-  flock -x "$lock_fd"
-
-  tmp="$(mktemp "${file}.XXXXXX")" || hat_die 5 "instruct.sh: 無法建立暫存檔，pending_resend 未寫入：$file"
-  if ! { jq --arg text "$text" --arg kind "$kind" \
-      '.pending_resend = ((.pending_resend // []) + [{text: $text, kind: $kind}])' \
-      "$file" > "$tmp" && mv "$tmp" "$file"; }; then
-    rm -f "$tmp"
-    hat_die 5 "instruct.sh: 寫入失敗（jq 解析或置換未成功），pending_resend 未寫入：$file"
-  fi
-
-  exec {lock_fd}>&-
-  return 0
 }
 
 to="" text="" text_file="" reply_to="" kind="instruct"

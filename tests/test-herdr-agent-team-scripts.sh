@@ -2785,12 +2785,662 @@ else
   bad "wait-peer：等了 ${elapsed}s"
 fi
 
+# ===== lib/common.sh：前置整理（Task 12）=====
+# 前置一：.pending_resend 的加入端（hat_append_pending_resend）已經在
+# instruct.sh 節被既有斷言反覆驗證過（該節的斷言全數維持不變、仍然通
+# 過，證明搬進 common.sh 之後行為沒有改變）。這裡補的是尚未被任何既有
+# 斷言碰過的兩塊：新函式 hat_remove_pending_resend，以及前置二（置換前
+# 重新確認目標檔仍存在）。
+
+T_PRE="$T/pending-resend-unit"
+mkdir -p "$T_PRE"
+
+# ---- hat_remove_pending_resend：移除陣列第一筆 ----
+printf '{"pending_resend":[{"text":"a","kind":"instruct"},{"text":"b","kind":"instruct"}]}' > "$T_PRE/w.json"
+hat_remove_pending_resend "$T_PRE/w.json"
+remaining="$(jq -c '.pending_resend' "$T_PRE/w.json")"
+if [ "$remaining" = '[{"text":"b","kind":"instruct"}]' ]; then
+  pass "hat_remove_pending_resend：移除陣列第一筆，保留其餘"
+else
+  bad "hat_remove_pending_resend：結果是 $remaining"
+fi
+
+# ---- hat_remove_pending_resend：欄位缺席／已空時是安全的無動作 ----
+printf '{}' > "$T_PRE/empty.json"
+rc=0; ( hat_remove_pending_resend "$T_PRE/empty.json" ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "hat_remove_pending_resend：pending_resend 缺席時是安全的無動作"
+else
+  bad "hat_remove_pending_resend：得到 rc=$rc"
+fi
+after_empty="$(jq -c '.pending_resend' "$T_PRE/empty.json")"
+if [ "$after_empty" = '[]' ]; then
+  pass "hat_remove_pending_resend：缺席欄位處理後變成空陣列，不是 null 或報錯"
+else
+  bad "hat_remove_pending_resend：結果是 $after_empty"
+fi
+
+# ---- 前置二：hat_json_set 在 jq 算出新內容之後、mv 之前，若目標檔已
+#      經被移除，拒絕置換並以 5 結束，不得讓記錄原地復活 ----
+# 用一個「先呼叫真正的 jq 產生正確輸出、再刪掉目標檔」的 jq 樁，模擬
+# shutdown-worker.sh 在本函式取得鎖之後、mv 之前，已經完整跑完並移除
+# 記錄的情境（兩者搶的是同一把 <file>.lock，因此这個模擬只需要重現
+# 「jq 讀取當下檔案還在、mv 之前檔案已經不在」這個時間點，不需要真的
+# 跑兩個行程）。
+#
+# ---- hash -r：bash 的指令雜湊表會讓這個樁被無聲忽略 ----
+# 本檔前面（`hat_json_set "$REG/team.json" '.goal_version' '5'` 那一
+# 條，非子殼直接呼叫）已經把 `jq` 解析並快取成 `/usr/bin/jq`；bash 的
+# 雜湊只認指令名對應到的路徑，不感知該路徑底下的檔案內容或
+# `$STUB_BIN` 這個更早的 PATH 目錄後來多了同名檔案，之後任何一次
+# `jq` 呼叫都會繼續沿用快取、不會重新搜尋 PATH（已實測：`bash -c` 內
+# 先呼叫一次真正的 jq、再於 PATH 更前面的目錄新增同名樁，之後的 `jq`
+# 呼叫仍解析成舊路徑，樁完全不會被執行到）。子殼會原封不動繼承這份
+# 快取，因此不能指望把呼叫包進 `( ... )` 就能繞開；`hash -r` 必須在
+# 父殼（也就是這裡，本測試檔自己的層級）執行，逼下一次 `jq` 呼叫重新
+# 搜尋 PATH，才會找到剛剛建立的樁。
+mkdir -p "$T_PRE/workers"
+victim="$T_PRE/workers/victim.json"
+printf '{}' > "$victim"
+cat > "$STUB_BIN/jq" <<STUB
+#!/usr/bin/env bash
+/usr/bin/jq "\$@"
+rc=\$?
+rm -f "$victim"
+exit "\$rc"
+STUB
+chmod +x "$STUB_BIN/jq"
+hash -r
+
+rc=0; out="$( ( hat_json_set "$victim" '.role' '"backend"' ) 2>&1 )" || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "hat_json_set：mv 前目標檔已消失時以 5 結束"
+else
+  bad "hat_json_set：得到 rc=$rc"
+fi
+if [ -e "$victim" ]; then
+  bad "hat_json_set：目標檔原地復活了（不可逆動作的前提被破壞）"
+else
+  pass "hat_json_set：目標檔沒有被復活，維持已移除狀態"
+fi
+case "$out" in
+  *已不存在*) pass "hat_json_set：錯誤訊息說明了目標檔已不存在" ;;
+  *) bad "hat_json_set：錯誤訊息不如預期：$out" ;;
+esac
+
+# ---- 前置一＋前置二疊加：_hat_pending_resend_apply（Task 12 新增，
+#      instruct.sh 的 hat_append_pending_resend／watchdog.sh 的
+#      hat_remove_pending_resend 共用的底層函式）同樣套用置換前重新確
+#      認，理由與 hat_json_set 相同：兩個寫入端都可能在 shutdown-
+#      worker.sh 移除記錄之後才拿到鎖 ----
+printf '{}' > "$victim"
+rc=0; ( hat_append_pending_resend "$victim" 'x' 'instruct' ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "hat_append_pending_resend：mv 前目標檔已消失時以 5 結束，不透過共用函式的置換前檢查復活記錄"
+else
+  bad "hat_append_pending_resend：得到 rc=$rc"
+fi
+if [ -e "$victim" ]; then
+  bad "hat_append_pending_resend：目標檔原地復活了"
+else
+  pass "hat_append_pending_resend：目標檔沒有被復活"
+fi
+# 移除樁之後同樣要 hash -r：雜湊表這時指向剛剛刪掉的 $STUB_BIN/jq，
+# 不清掉的話後面任何一次 jq 呼叫都會是「找不到檔案」而不是退回真正的
+# jq（理由同上方新增樁時的說明）。
+rm -f "$STUB_BIN/jq"
+hash -r
+
+# ===== team-status.sh / fetch-detail.sh（Task 12）=====
+# 本任務自行補上的前置設定：重置 w3n-backend 的 worker 記錄作為本節共
+# 同起點，不依賴前面各節（launch-worker／instruct／shutdown-worker／
+# peer 系列）跑到最後留下的內容——沿用 instruct.sh 節「本任務自行補上
+# 的前置設定」同一個理由：前一節可能已經把這筆記錄改寫或刪除。
+printf '{"pane_id":"w3N:p2","held":false,"role":"backend"}' > "$REG/workers/w3n-backend.json"
+
+# ---- Step 1（任務簡報逐字）：team-status.sh 不洩漏標題 ----
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"done","state_change_seq":1007,"pane_id":"w3N:p2","tab_id":"w3N:t2","terminal_title":"洩漏標記_TITLE"}]}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" team-status-leak
+
+out="$(bash "$SCRIPTS/team-status.sh" 2>&1)"
+case "$out" in *洩漏標記*) bad "status：標題外洩" ;; *) pass "status：標題沒有外洩" ;; esac
+case "$out" in *w3n-backend*) pass "status：列出了 worker" ;; *) bad "status：沒有列出 worker" ;; esac
+
+# ---- 本任務自行補上：輸出格式與欄位內容正確（Step 1 只驗證了不洩漏
+#      與有列出，沒有驗證七個欄位真的都印對）----
+case "$out" in
+  *"worker=w3n-backend"*"status=done"*"seq=1007"*"held=false"*"pending_resend=0"*)
+    pass "status：worker／status／seq／held／pending_resend 欄位內容正確" ;;
+  *)
+    bad "status：輸出格式不如預期：$out" ;;
+esac
+
+# ---- 本任務自行補上：不接受任何參數 ----
+rc=0; bash "$SCRIPTS/team-status.sh" --bogus >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "status：帶未知參數以 2 結束"
+else
+  bad "status：得到 rc=$rc"
+fi
+
+# ---- 本任務自行補上：unprocessed 欄位真的數對——一筆尚未處理的
+#      need-you、一筆已標記 processed_at 的 delivered，只有前者算進
+#      unprocessed ----
+printf '{"token":"need-you","worker":"w3n-backend","processed_at":null}' > "$REG/inbox/21-w3n-backend.json"
+printf '{"token":"delivered","worker":"w3n-backend","processed_at":"2020-01-01T00:00:00Z"}' > "$REG/inbox/22-w3n-backend.json"
+out="$(bash "$SCRIPTS/team-status.sh" 2>&1)"
+case "$out" in
+  *"unprocessed=1"*) pass "status：unprocessed 只算 processed_at 仍是 null 的記錄" ;;
+  *) bad "status：unprocessed 計數不對：$out" ;;
+esac
+rm -f "$REG/inbox/21-w3n-backend.json" "$REG/inbox/22-w3n-backend.json"
+
+# ---- 本任務自行補上：workspace 守衛真的接上——worker 記錄的座標指向
+#      別的 workspace 時，那一筆被跳過、不出現在輸出裡，但不會讓整支
+#      腳本連 w3n-backend 這種正常記錄都印不出來（唯讀健檢工具，一筆
+#      壞記錄不該讓其餘可用的狀態也一起看不到，見腳本檔頭同名一節）----
+printf '{"pane_id":"otherws:p9","held":false}' > "$REG/workers/w3n-otherws-status.json"
+rc=0; out="$(bash "$SCRIPTS/team-status.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "status：workspace 守衛只跳過那一筆，腳本本身仍以 0 結束"
+else
+  bad "status：得到 rc=$rc"
+fi
+case "$out" in
+  *w3n-otherws-status*) bad "status：不屬於本 workspace 的記錄仍然出現在輸出裡" ;;
+  *) pass "status：不屬於本 workspace 的記錄被跳過，沒有出現在輸出裡" ;;
+esac
+case "$out" in
+  *w3n-backend*) pass "status：其餘正常記錄不受一筆壞記錄影響，仍然印得出來" ;;
+  *) bad "status：w3n-backend 也不見了，一筆壞記錄把整份報告拖垮了" ;;
+esac
+rm -f "$REG/workers/w3n-otherws-status.json"
+
+# ---- Step 2（任務簡報逐字）：白名單欄位缺席時輸出空字串，不是字面
+#      null（Task 1 審查留下的 Minor，在這裡補掉）----
+sample='{"result":{"agents":[{"workspace_id":"w3N","agent_status":"working","state_change_seq":1052,"pane_id":"w3N:p1","tab_id":"w3N:t1"}]}}'
+out="$(hat_whitelist_agents "$sample")"
+case "$out" in
+  *null*) bad "白名單：缺席欄位印成字面 null（下游會拿它當 agent 名稱去呼叫 herdr）" ;;
+  *w3N*)  pass "白名單：缺席欄位輸出空字串而非 null" ;;
+  *)      bad "白名單：輸出不如預期：$out" ;;
+esac
+
+# ---- Step 3（任務簡報逐字）：fetch-detail 只印路徑不印內容 ----
+printf '這是很長的細節內容_CONTENT_MARKER' > "$REG/details/5-w3n-backend.txt"
+out="$(bash "$SCRIPTS/fetch-detail.sh" --seq 5 2>&1)"
+case "$out" in
+  *CONTENT_MARKER*) bad "fetch-detail：把內容印出來了（這會直接進 orchestrator 的 context）" ;;
+  *details/5-w3n-backend.txt*) pass "fetch-detail：只印路徑" ;;
+  *) bad "fetch-detail：輸出不如預期：$out" ;;
+esac
+
+# ---- 本任務自行補上：序號不存在、--seq 非數字、缺 --seq 三種用錯 ----
+rc=0; bash "$SCRIPTS/fetch-detail.sh" --seq 999999 >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "fetch-detail：序號不存在時以 5 結束"
+else
+  bad "fetch-detail：得到 rc=$rc"
+fi
+
+rc=0; bash "$SCRIPTS/fetch-detail.sh" --seq abc >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "fetch-detail：--seq 非數字時以 2 結束"
+else
+  bad "fetch-detail：得到 rc=$rc"
+fi
+
+rc=0; bash "$SCRIPTS/fetch-detail.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "fetch-detail：缺 --seq 時以 2 結束"
+else
+  bad "fetch-detail：得到 rc=$rc"
+fi
+
+# ===== watchdog.sh（Task 12）=====
+# 本節共用的呼叫紀錄檔；每個小節開頭都會視需要清空。
+HERDR_CALL_LOG="$T/herdr-call-log-watchdog"
+: > "$HERDR_CALL_LOG"
+
+# ---- 本任務自行補上的前置設定：重置 w3n-backend 為本節共同起點 ----
+printf '{"pane_id":"w3N:p2","held":false,"role":"backend"}' > "$REG/workers/w3n-backend.json"
+
+# ---- Step 4（任務簡報逐字；&&/|| 鏈改寫成 if/then/else/fi；補上本節
+#      需要的樁——簡報沒有給，樁若沿用 Step 1 留下的那份不會記錄任何呼
+#      叫，兩條斷言都會落空，見任務報告）：idle/done 時自動推進，且計
+#      數加一 ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":1000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-auto-push
+
+jq '.held=false | .auto_push_count=0 | .stage="running"' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if grep -q 'agent prompt' "$HERDR_CALL_LOG"; then
+  pass "watchdog：idle/done 時自動推進"
+else
+  bad "watchdog：沒有自動推進"
+fi
+if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "1" ]; then
+  pass "watchdog：自動推進計數加一"
+else
+  bad "watchdog：計數沒動"
+fi
+
+# ---- 本任務自行補上：自動推進直接經 hat_herdr agent prompt 送出，不
+#      走 instruct.sh——用 --wait／--until／--timeout 這類握手選項的缺
+#      席佐證，同時確認持有旗標沒有被設成 true（instruct.sh 才會設）----
+if [ "$(jq -r '.held' "$REG/workers/w3n-backend.json")" = "false" ]; then
+  pass "watchdog：自動推進不設持有旗標（不是走 instruct.sh）"
+else
+  bad "watchdog：持有旗標被設成 true 了"
+fi
+
+jq '.auto_push_count=10' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "10" ]; then
+  pass "watchdog：達上限後停止自動推進"
+else
+  bad "watchdog：超過上限仍在推進"
+fi
+if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+  bad "watchdog：達上限後仍對 worker 送出繼續"
+else
+  pass "watchdog：達上限後不再對 worker 送出繼續"
+fi
+# ---- 本任務自行補上：把簡報留下的 n_inbox_before 變數用起來（簡報字
+#      面上算完就沒用到，是遺漏的斷言，見任務報告）：達上限後改為升
+#      級，inbox 應該多出一筆 ----
+if [ "$n_inbox_after" -gt "$n_inbox_before" ]; then
+  pass "watchdog：達上限後升級摘要真的落了一筆 inbox 記錄"
+else
+  bad "watchdog：inbox 筆數沒有增加（before=$n_inbox_before after=$n_inbox_after）"
+fi
+if grep -q 'agent prompt w3n-orchestrator' "$HERDR_CALL_LOG"; then
+  pass "watchdog：達上限後嘗試通知 orchestrator"
+else
+  bad "watchdog：沒有嘗試通知 orchestrator"
+fi
+
+# ---- Step 5（任務簡報逐字）：unknown 狀態不得自動推進 ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$1 \$2" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"unknown","state_change_seq":1007,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-unknown
+
+jq '.auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if grep -q 'agent prompt' "$HERDR_CALL_LOG"; then
+  bad "watchdog：unknown 狀態被自動推進（可能打斷正在做事的 worker）"
+else
+  pass "watchdog：unknown 狀態不自動推進"
+fi
+
+# ---- 本任務自行補上：blocked 不得送文字下行給那個 worker，但要一律
+#      升級給 orchestrator（簡報 Step 6 的註解描述了這個情境，字面程式
+#      碼卻沒有實作，見任務報告）；stub 用 idle 而非沿用 Step 5 的
+#      unknown，讓斷言真的有鑑別力——unknown 本來就不會自動推進，用它
+#      測不出「blocked 特別擋下文字下行」這件事 ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"blocked","state_change_seq":1007,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-blocked
+
+jq '.auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if grep -q 'agent prompt w3n-backend' "$HERDR_CALL_LOG"; then
+  bad "watchdog：blocked 的 worker 收到文字下行（會被 herdr 直接拒絕）"
+else
+  pass "watchdog：blocked 的 worker 不會收到文字下行"
+fi
+if [ "$n_inbox_after" -gt "$n_inbox_before" ]; then
+  pass "watchdog：blocked 一律升級，落了一筆 inbox 記錄"
+else
+  bad "watchdog：blocked 沒有升級（before=$n_inbox_before after=$n_inbox_after）"
+fi
+if grep -q 'agent prompt w3n-orchestrator' "$HERDR_CALL_LOG"; then
+  pass "watchdog：blocked 升級時嘗試通知 orchestrator"
+else
+  bad "watchdog：blocked 升級沒有嘗試通知 orchestrator"
+fi
+
+# ---- Step 6（任務簡報逐字；stub 改用 idle，理由見上一段：Step 5／
+#      Step 6 沿用同一份 unknown 樁時，這條斷言就算沒實作豁免邏輯也會
+#      通過，因為 unknown 本來就不會自動推進，鑑別力不足，見任務報
+#      告）：等定案豁免——worker 有未回覆的 need-you 時不得自動推進 ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":1007,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-needyou-exempt
+
+printf '{"token":"need-you","worker":"w3n-backend","processed_at":null}' > "$REG/inbox/11-w3n-backend.json"
+jq '.auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "0" ]; then
+  pass "watchdog：等定案的 worker 豁免自動推進"
+else
+  bad "watchdog：把等定案誤判成停住"
+fi
+if grep -q 'agent prompt w3n-backend' "$HERDR_CALL_LOG"; then
+  bad "watchdog：等定案的 worker 仍然收到繼續（豁免沒有生效）"
+else
+  pass "watchdog：等定案的 worker 沒有收到任何下行文字"
+fi
+rm -f "$REG/inbox/11-w3n-backend.json"
+
+# ---- Step 7（任務簡報逐字）：待補送補投——目標不再是 blocked 時逐筆
+#      補投，成功就清空清單並放掉持有旗標 ----
+jq '.pending_resend=[{"text":"goal 更新","kind":"goal-update"}] | .held=true' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.pending_resend | length' "$REG/workers/w3n-backend.json")" = "0" ]; then
+  pass "watchdog：待補送補投後清空"
+else
+  bad "watchdog：待補送沒有被補投"
+fi
+if [ "$(jq -r '.held' "$REG/workers/w3n-backend.json")" = "false" ]; then
+  pass "watchdog：補投後放掉持有旗標"
+else
+  bad "watchdog：持有旗標卡在 true"
+fi
+if grep -q 'agent prompt w3n-backend goal 更新' "$HERDR_CALL_LOG"; then
+  pass "watchdog：補投的內容正確送給了目標 worker"
+else
+  bad "watchdog：補投內容不對或沒有送出：$(cat "$HERDR_CALL_LOG")"
+fi
+
+# ---- 本任務自行補上：目標仍是 blocked 時不補投，清單與持有旗標都不
+#      動 ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"blocked","state_change_seq":1007,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-pending-resend-still-blocked
+
+jq '.pending_resend=[{"text":"goal 更新","kind":"goal-update"}] | .held=true' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.pending_resend | length' "$REG/workers/w3n-backend.json")" = "1" ]; then
+  pass "watchdog：目標仍是 blocked 時不補投，清單保留"
+else
+  bad "watchdog：目標仍是 blocked 卻補投了"
+fi
+if [ "$(jq -r '.held' "$REG/workers/w3n-backend.json")" = "true" ]; then
+  pass "watchdog：目標仍是 blocked 時持有旗標不放掉"
+else
+  bad "watchdog：持有旗標被提早放掉"
+fi
+jq '.pending_resend=[]' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+
+# ---- 本任務自行補上：投遞重試——inbox 裡 .delivery=blocked 的上行，
+#      orchestrator 離開 blocked 之後補投一次並改成 delivered ----
+printf '{"token":"fyi","worker":"w3n-backend","summary":"補投測試摘要","delivery":"blocked","processed_at":null}' > "$REG/inbox/31-w3n-backend.json"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-orchestrator","workspace_id":"w3N","agent_status":"idle","state_change_seq":1,"pane_id":"w3N:p1","tab_id":"w3N:t1"},{"name":"w3n-backend","workspace_id":"w3N","agent_status":"blocked","state_change_seq":1007,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-inbox-retry
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.delivery' "$REG/inbox/31-w3n-backend.json")" = "delivered" ]; then
+  pass "watchdog：orchestrator 離開 blocked 後，上行的 blocked 記錄補投成功"
+else
+  bad "watchdog：上行記錄的 delivery 是 $(jq -r '.delivery' "$REG/inbox/31-w3n-backend.json")"
+fi
+if grep -q 'agent prompt w3n-orchestrator 補投測試摘要' "$HERDR_CALL_LOG"; then
+  pass "watchdog：補投的上行內容正確送給了 orchestrator"
+else
+  bad "watchdog：補投內容不對：$(cat "$HERDR_CALL_LOG")"
+fi
+rm -f "$REG/inbox/31-w3n-backend.json"
+
+# ---- 本任務自行補上：orchestrator 自己也 blocked 時，上行的補投保
+#      守跳過，不猜測 ----
+printf '{"token":"fyi","worker":"w3n-backend","summary":"不該被補投","delivery":"blocked","processed_at":null}' > "$REG/inbox/32-w3n-backend.json"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-orchestrator","workspace_id":"w3N","agent_status":"blocked","state_change_seq":1,"pane_id":"w3N:p1","tab_id":"w3N:t1"},{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":1008,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-inbox-retry-orch-blocked
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.delivery' "$REG/inbox/32-w3n-backend.json")" = "blocked" ]; then
+  pass "watchdog：orchestrator 自己也 blocked 時，保守跳過上行補投"
+else
+  bad "watchdog：orchestrator 仍是 blocked 卻仍嘗試補投了"
+fi
+rm -f "$REG/inbox/32-w3n-backend.json"
+jq '.auto_push_count=0 | .held=false' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+
+# ---- 本任務自行補上：計數重置——收到 delivered 之後計數歸零，且同一
+#      則 delivered 不會在下一輪重複歸零（否則自動推進上限形同虛設，
+#      見 lib/common.sh .auto_push_reset_seq 的說明）----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":9000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-reset-on-delivered
+
+jq '.auto_push_count=3 | .held=false | .auto_push_reset_seq=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+printf '{"token":"delivered","worker":"w3n-backend","summary":"完成了","processed_at":null,"delivery":"delivered"}' > "$REG/inbox/41-w3n-backend.json"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "1" ]; then
+  pass "watchdog：收到 delivered 後計數歸零，這一輪再推進一次變成 1"
+else
+  bad "watchdog：計數是 $(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")，預期 1"
+fi
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "2" ]; then
+  pass "watchdog：同一則 delivered 不會在下一輪重複歸零，計數正常累加到 2"
+else
+  bad "watchdog：計數是 $(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")，預期 2（若卡在 1，代表每輪都被重置，上限形同虛設）"
+fi
+rm -f "$REG/inbox/41-w3n-backend.json"
+
+# ---- 本任務自行補上：停滯偵測——同一個 worker 的 state_change_seq 連
+#      續超過門檻沒有改變時升級；用兩輪、中間夾一個很小的真實
+#      sleep（不使用背景行程或無限迴圈，只用 --once 各跑一次），並疊
+#      上 AGENT_TEAM_STALL_SECONDS 覆寫成極小值，驗證門檻真的可覆寫 ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"unknown","state_change_seq":5000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-stall
+
+printf '{"pane_id":"w3N:p2","held":false,"role":"backend"}' > "$REG/workers/w3n-backend.json"
+n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_mid=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_mid" -eq "$n_inbox_before" ]; then
+  pass "watchdog：第一次觀測到這個 stamp 只是建立基準，還不算停滯"
+else
+  bad "watchdog：第一輪就升級了，門檻沒有生效（before=$n_inbox_before mid=$n_inbox_mid）"
+fi
+sleep 2
+AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after" -gt "$n_inbox_mid" ]; then
+  pass "watchdog：stamp 連續超過門檻沒有改變時升級（AGENT_TEAM_STALL_SECONDS 可覆寫）"
+else
+  bad "watchdog：超過門檻仍未升級（mid=$n_inbox_mid after=$n_inbox_after）"
+fi
+
+# ---- 本任務自行補上：AGENT_TEAM_AUTO_PUSH_LIMIT 真的可覆寫——把上限
+#      調到 1，計數為 1 時應該直接升級，不再自動推進 ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":9999,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-auto-push-limit-override
+
+printf '{"pane_id":"w3N:p2","held":false,"role":"backend","auto_push_count":1}' > "$REG/workers/w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+AGENT_TEAM_AUTO_PUSH_LIMIT=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+  bad "watchdog：AGENT_TEAM_AUTO_PUSH_LIMIT=1 沒有生效，計數 1 仍被推進"
+else
+  pass "watchdog：AGENT_TEAM_AUTO_PUSH_LIMIT 可覆寫，調到 1 之後計數 1 就改為升級"
+fi
+
+# ---- 本任務自行補上：三個門檻值非數字時以 2 結束 ----
+rc=0; AGENT_TEAM_POLL_SECONDS=abc bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：AGENT_TEAM_POLL_SECONDS 非數字時以 2 結束"
+else
+  bad "watchdog：得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_STALL_SECONDS=abc bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：AGENT_TEAM_STALL_SECONDS 非數字時以 2 結束"
+else
+  bad "watchdog：得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_AUTO_PUSH_LIMIT=abc bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：AGENT_TEAM_AUTO_PUSH_LIMIT 非數字時以 2 結束"
+else
+  bad "watchdog：得到 rc=$rc"
+fi
+
+# ---- 本任務自行補上：未知參數以 2 結束 ----
+rc=0; bash "$SCRIPTS/watchdog.sh" --bogus >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：未知參數以 2 結束"
+else
+  bad "watchdog：得到 rc=$rc"
+fi
+
+# ---- 本任務自行補上：workspace 守衛真的接上——worker 記錄的座標指向
+#      別的 workspace 時，那一筆被跳過，但不會讓整個看門狗行程中止、
+#      連本 team 其餘正常的 worker 都不再被照看（見腳本檔頭同名一
+#      節）。用一個此時應該會被自動推進的 w3n-backend 佐證：即使
+#      registry 裡混著一筆壞記錄，w3n-backend 仍然照常被處理到 ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":12000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-workspace-guard
+
+printf '{"pane_id":"otherws:p9","held":false}' > "$REG/workers/w3n-otherws-watchdog.json"
+printf '{"pane_id":"w3N:p2","held":false,"role":"backend","auto_push_count":0}' > "$REG/workers/w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "watchdog：workspace 守衛只跳過那一筆，整個行程仍以 0 結束"
+else
+  bad "watchdog：得到 rc=$rc"
+fi
+if grep -q 'agent prompt w3n-backend' "$HERDR_CALL_LOG"; then
+  pass "watchdog：一筆壞記錄不會讓其餘正常 worker（w3n-backend）也不被處理"
+else
+  bad "watchdog：w3n-backend 沒有被處理到，可能被前面那筆壞記錄連累中止了"
+fi
+rm -f "$REG/workers/w3n-otherws-watchdog.json"
+
+# 收尾：把 w3n-backend 留在一個乾淨、不會誤觸後續（此檔案已無更多章
+# 節）斷言的狀態。
+jq '.auto_push_count=0 | .held=false | .pending_resend=[]' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=273
+HAT_EXPECTED_ASSERTIONS=326
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

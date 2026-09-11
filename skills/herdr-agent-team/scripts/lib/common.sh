@@ -262,8 +262,19 @@ hat_whitelist_agents() {
 #
 # 寫入端分邊，欄位集合刻意不重疊——座標類欄位由 launch-worker.sh 寫；
 # 整筆記錄由 shutdown-worker.sh 移除；計數類欄位（.auto_push_count、
-# .last_seq_stamp、.last_seq_changed_at）由 watchdog.sh 維護；.stage 與
-# .held 由 orchestrator 端腳本寫。
+# .last_seq_stamp、.last_seq_changed_at、.auto_push_reset_seq）由
+# watchdog.sh 維護；.stage 與 .held 由 orchestrator 端腳本寫。
+#
+# .auto_push_reset_seq（Task 12 新增，task-1 訂這份清單時沒有預見到）：
+# 記錄「自動推進計數上一次歸零檢查已經看過的最高 inbox seq」，watchdog.sh
+# 自己讀寫，見該腳本檔頭「計數重置」一節。task-1 當時的目標是「涵蓋後續
+# 每個任務要寫的欄位，避免每個任務都要回頭改這裡」，但自動推進計數的歸
+# 零時機（.pending_resend 移除時放掉 .held 不算數，「收到 delivered 或
+# orchestrator 送出定案回覆才歸零、fyi 不歸零」才是規格原文）需要一個能
+# 分辨「這次 delivered／回覆是不是新的」的水位線，否則同一則 delivered
+# 記錄會在每一輪都把計數重新歸零，讓上限形同虛設（原地繞圈永遠推不到上
+# 限）——這正是這份清單原本想避免、但沒有涵蓋到的一個欄位需求，回報見任
+# 務報告。
 _HAT_TEAM_JSON_FIELDS=(
   '.orchestrator_name' '.orchestrator_pane' '.team_home'
   '.thin_command_source' '.next_seq' '.goal_version' '.goal_confirmed'
@@ -274,7 +285,7 @@ _HAT_WORKER_JSON_FIELDS=(
   '.role' '.kind' '.args' '.tab_id' '.pane_id' '.agent_name' '.cwd'
   '.completion_criteria' '.delivery_point' '.end_point' '.stage' '.held'
   '.auto_push_count' '.last_seq_stamp' '.last_seq_changed_at'
-  '.ack_reconciliation' '.grants' '.pending_resend'
+  '.auto_push_reset_seq' '.ack_reconciliation' '.grants' '.pending_resend'
 )
 _HAT_INBOX_JSON_FIELDS=(
   '.token' '.worker' '.summary' '.detail_path' '.locator' '.created_at'
@@ -378,6 +389,18 @@ hat_json_get() {
 # `return 0`，讓函式的結束碼由這句明確給出，不依賴「關 fd 這個動作恰
 # 好也回 0」這件事本身——已對 bash 5.3.15 實測 mktemp／jq 各自失敗與
 # 正常成功三種路徑，結束碼與訊息均如預期（記錄見任務報告）。
+#
+# ---- 前置整理之二（Task 12）：置換前重新確認目標檔仍存在，絕不置換
+#      ----
+# `shutdown-worker.sh` 會在關閉成功後移除 `workers/<name>.json`（不可逆
+# 動作的收尾，見該腳本檔頭「參與檔案鎖協定」一節，它與本函式走同一把
+# `<file>.lock`）。把 jq 這一步拆成獨立指令（不再跟 `mv` 用 `&&` 串成同
+# 一個複合指令）之後，在 jq 已經成功算出新內容、`mv` 還沒執行的這個空
+# 檔，明確重新確認一次 `$file` 是否還在：不在就直接以 5 結束、絕不
+# `mv`。理由是若目標檔此時已經不在，代表它已經被別的持鎖者（例如
+# `shutdown-worker.sh`）在本函式取得鎖之前就完整跑完並移除，本函式手上
+# 這份是依據舊內容算出來的新內容，若照樣置換回去，等於讓一筆已經永久
+# 關閉的記錄原地復活——大聲失敗遠比安靜復活好。
 hat_json_set() {
   local file="$1" path="$2" json_value="$3"
   local -a fields
@@ -407,13 +430,102 @@ hat_json_set() {
 
   tmp="$(mktemp "${file}.XXXXXX")" || hat_die 5 "hat_json_set: 無法建立暫存檔，'$path' 未寫入：$file"
 
-  if ! { jq --argjson v "$json_value" "${path} = \$v" "$file" > "$tmp" && mv "$tmp" "$file"; }; then
+  if ! jq --argjson v "$json_value" "${path} = \$v" "$file" > "$tmp"; then
     rm -f "$tmp"
-    hat_die 5 "hat_json_set: 寫入失敗（jq 解析或置換未成功），'$path' 未寫入：$file"
+    hat_die 5 "hat_json_set: 寫入失敗（jq 解析未成功），'$path' 未寫入：$file"
+  fi
+
+  if [ ! -e "$file" ]; then
+    rm -f "$tmp"
+    hat_die 5 "hat_json_set: 置換前重新確認，目標檔已不存在（可能已被 shutdown-worker.sh 等不可逆動作移除），拒絕置換，'$path' 未寫入：$file"
+  fi
+
+  if ! mv "$tmp" "$file"; then
+    rm -f "$tmp"
+    hat_die 5 "hat_json_set: 寫入失敗（置換未成功），'$path' 未寫入：$file"
   fi
 
   exec {lock_fd}>&-
   return 0
+}
+
+# ---- 前置整理之一（Task 12）：.pending_resend 的兩個寫入端共用同一條
+#      「單一加鎖 jq 轉換」實作 ----
+# 這個欄位原本只有加入端（instruct.sh 的 hat_append_pending_resend）；
+# Task 12 的看門狗是移除端。兩者若各自在自己的腳本裡獨立實作一份
+# mktemp／jq／mv，各自對「什麼算一次原子變動」的理解只要有一點點落
+# 差，就可能重演 instruct.sh 檔頭「.pending_resend 有兩個寫入端」一節
+# 描述的競態：一次遲到的寫入把另一邊剛做的變動整個蓋掉，而外部世界查
+# 不到那一則「該送而還沒送到的下行」，後果完全靜默。因此兩者移到這裡共
+# 用同一個底層函式 `_hat_pending_resend_apply`，只有 jq 轉換式與引數不
+# 同；不透過 `hat_json_set`（它的介面是「設成呼叫端已經算好的字面
+# 值」，不是「對現有內容做轉換」，理由見 `hat_json_set` 上方「函式最後
+# 一句」說明前的整段檔頭），鎖檔路徑仍是 `<file>.lock`，跟 `hat_json_
+# set` 用的同一條——兩者若用不同鎖檔會各自序列化、彼此不排隊，等於沒
+# 鎖，同一個成因見 report.sh `hat_allocate_seq` 檔頭「序號配發」一節。
+#
+# _hat_pending_resend_apply <file> <jq_filter> [jq 選項與引數...]
+# 加鎖執行一次 jq 轉換並置換回 <file>；<jq_filter> 與其後的引數原樣轉
+# 給 jq（選項在前、filter 由本函式自己接在引數之後、file 放最後，符合
+# jq 的呼叫慣例）。前置整理之二（見 hat_json_set 同名一節）同樣套用在
+# 這裡：mv 前重新確認 <file> 是否還存在，不在就以 5 結束、絕不置換。
+_hat_pending_resend_apply() {
+  local file="$1" filter="$2"
+  shift 2
+  local lock_fd tmp
+
+  lock_fd=""
+  exec {lock_fd}>"${file}.lock"
+  flock -x "$lock_fd"
+
+  tmp="$(mktemp "${file}.XXXXXX")" || hat_die 5 "_hat_pending_resend_apply: 無法建立暫存檔，pending_resend 未變動：$file"
+
+  if ! jq "$@" "$filter" "$file" > "$tmp"; then
+    rm -f "$tmp"
+    hat_die 5 "_hat_pending_resend_apply: 寫入失敗（jq 解析未成功），pending_resend 未變動：$file"
+  fi
+
+  if [ ! -e "$file" ]; then
+    rm -f "$tmp"
+    hat_die 5 "_hat_pending_resend_apply: 置換前重新確認，目標檔已不存在，拒絕置換，pending_resend 未變動：$file"
+  fi
+
+  if ! mv "$tmp" "$file"; then
+    rm -f "$tmp"
+    hat_die 5 "_hat_pending_resend_apply: 寫入失敗（置換未成功），pending_resend 未變動：$file"
+  fi
+
+  exec {lock_fd}>&-
+  return 0
+}
+
+# hat_append_pending_resend <file> <text> <kind>
+# 在 <file>.lock 的鎖保護下，把 {text, kind} 追加進 <file> 的
+# .pending_resend 陣列。呼叫端：instruct.sh（下行被 herdr 判定
+# agent_blocked 時排進待補送清單）。
+hat_append_pending_resend() {
+  local file="$1" text="$2" kind="$3"
+  # $text／$kind 是 jq 自己的 --arg 變數，故意留給 jq 展開，不是本函式
+  # 的 shell 變數；直接傳給 jq 的舊寫法不會觸發 SC2016，改成先傳進
+  # _hat_pending_resend_apply 再轉給 jq 之後，shellcheck 看不到下游是
+  # jq 呼叫，才需要下面這行抑制。
+  # shellcheck disable=SC2016
+  _hat_pending_resend_apply "$file" \
+    '.pending_resend = ((.pending_resend // []) + [{text: $text, kind: $kind}])' \
+    --arg text "$text" --arg kind "$kind"
+}
+
+# hat_remove_pending_resend <file>
+# 移除 <file> 的 .pending_resend 陣列第一筆（索引 0）。呼叫端：
+# watchdog.sh，補投成功一筆就呼叫一次，讓移除順序跟「先加入的先補投」
+# 一致。不接受索引參數：多寫入端環境下，索引由呼叫端自己在 shell 裡算
+# 好、卻讓中間插進來的一次加入動作改變陣列長度，會讓算好的索引指到錯
+# 誤的位置；本函式只認「目前的第一筆」，永遠是同一次 jq 求值裡看到的
+# 陣列決定要移除誰，沒有這個落差。
+hat_remove_pending_resend() {
+  local file="$1"
+  _hat_pending_resend_apply "$file" \
+    '.pending_resend = ((.pending_resend // [])[1:])'
 }
 
 # hat_worker_list
