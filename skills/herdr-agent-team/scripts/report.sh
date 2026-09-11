@@ -154,6 +154,15 @@
 # 卻沒注入的座標／身分變數缺席」在這個 skill 裡一律歸類成守衛不通過，
 # 不是呼叫端用錯（呼叫端只是正常呼叫報告動作，沒有做錯任何事）。
 #
+# ---- AGENT_TEAM_SELF 的名稱格式驗證（全域約束）----
+# AGENT_TEAM_SELF 會被直接用來組 `inbox/<seq>-<self>.json`、
+# `details/<seq>-<self>.txt`、`replies/<self>/<seq>.json` 這幾條
+# registry 路徑；含斜線或上層目錄記號的值可以組出跳脫 registry 根目錄
+# 的路徑，因此必須先驗過 herdr agent 名稱正規表示式
+# （`^[a-z][a-z0-9_-]{0,31}$`）才能使用，不合格式的以 2 結束（沿用
+# press-approval.sh／grant-peer.sh 等腳本已經在用的
+# hat_assert_agent_name，定義在 lib/common.sh）。
+#
 # ---- 上行前綴：轉發給 orchestrator 的訊息帶序號／token／發訊 worker
 #      ----
 # 修法見 lib/common.sh「上行前綴」一節（`hat_build_uplink_message`／
@@ -269,6 +278,9 @@ self_name="${AGENT_TEAM_SELF:-}"
 if [ -z "$self_name" ]; then
   hat_die 4 "report.sh: AGENT_TEAM_SELF 未設，不知道自己是誰、回報要記在哪個 worker 名下"
 fi
+# AGENT_TEAM_SELF 的名稱格式驗證，見檔頭同名一節。早於任何 registry
+# 路徑組裝（下方 inbox_file／details_dest／reply_file）。
+hat_assert_agent_name "$self_name"
 
 orchestrator_name="${AGENT_TEAM_ORCHESTRATOR:-}"
 if [ -z "$orchestrator_name" ]; then

@@ -97,6 +97,14 @@
 # workspace，早於任何 herdr 呼叫。三道 workspace 守衛裡唯一擋得住「誤
 # 觸別的 team 的 worker」的一道。
 #
+# ---- --to 的名稱格式驗證（全域約束）----
+# --to 會被直接用來組 `workers/<--to>.json`、`inbox/<--reply-to>-
+# <--to>.json`、`replies/<--to>/` 這幾條 registry 路徑；含斜線或上層
+# 目錄記號的值可以組出跳脫 registry 根目錄的路徑，因此必須先驗過
+# herdr agent 名稱正規表示式（`^[a-z][a-z0-9_-]{0,31}$`）才能使用，不
+# 合格式的以 2 結束（呼叫端用錯，不是守衛不通過）。沿用 press-
+# approval.sh 已經在用的 hat_assert_agent_name，定義在 lib/common.sh。
+#
 # ---- --kind 是下行訊息的種類標記，跟 provider 的 agent kind 是完全不
 #      同的命名空間 ----
 # hat_assert_supported_kind／hat_kind_fidelity 判斷的是 claude／codex／
@@ -154,6 +162,9 @@ done
 if [ "$have_to" -ne 1 ]; then
   hat_die 2 "instruct.sh: --to 為必填"
 fi
+# --to 的名稱格式驗證，見檔頭「--to 的名稱格式驗證」一節。早於任何
+# registry 路徑組裝。
+hat_assert_agent_name "$to"
 
 if [ "$have_text" -eq 1 ] && [ "$have_text_file" -eq 1 ]; then
   hat_die 2 "instruct.sh: --text／--text-file 只能擇一"

@@ -94,6 +94,30 @@ hat_guard_script_shape() {
   esac
 }
 
+# hat_agent_read_source_ok <cmd>
+# True (exit 0) when <cmd>'s tokens contain `--source recent-unwrapped` as
+# adjacent words. agents/herdr-agent-team-investigator.md states that
+# `agent read` is only ever used with this one source (recent-unwrapped is
+# the spec-designated source for transcript/log reads; visible/recent/
+# detection are for detection snapshots and out of scope for this
+# subagent) — this is the enforcement point for that claim. Only the
+# space-separated `--source recent-unwrapped` form is checked because that
+# is the only form this skill's docs and scripts ever use; a `--source=
+# value` form is not handled since nothing in scope produces it.
+hat_agent_read_source_ok() {
+  local -a toks
+  read -ra toks <<< "$1"
+  local i tok val
+  for ((i = 0; i < ${#toks[@]}; i++)); do
+    tok="$(strip_wrapping_quotes "${toks[i]}")"
+    if [[ "$tok" == "--source" ]]; then
+      val="$(strip_wrapping_quotes "${toks[i + 1]:-}")"
+      [[ "$val" == "recent-unwrapped" ]] && return 0
+    fi
+  done
+  return 1
+}
+
 # True (exit 0) when $1 is exactly one of the read-only shapes
 # herdr-agent-team-investigator is allowed to run. This is an allowlist, not
 # a blacklist: anything that doesn't confidently match one of these shapes
@@ -129,8 +153,12 @@ is_allowed_command() {
       # not by scanning the whole string, so an argument that happens to
       # contain one of these words elsewhere is unaffected.
       case "$second $third" in
-        "agent get" | "agent read" | "pane read")
+        "agent get" | "pane read")
           return 0 ;;
+        "agent read")
+          hat_agent_read_source_ok "$cmd" && return 0
+          subcommand_deny_reason="herdr-agent-team-investigator 不得執行不帶 --source recent-unwrapped（或帶其餘來源）的 herdr agent read：本 subagent 讀畫面只放行 recent-unwrapped 這一個來源，用於讀逐字稿與日誌；visible／recent／detection 等其餘來源是取偵測用途，不在允許範圍內。"
+          return 1 ;;
         "agent list" | "api snapshot")
           # Deliberately excluded even though read-only — see header
           # "Enumeration always goes through team-status.sh" note.

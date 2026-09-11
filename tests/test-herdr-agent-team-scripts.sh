@@ -1287,6 +1287,18 @@ else
   bad "report：得到 rc=$rc"
 fi
 
+# ---- 本任務（Task 15 整合驗收）自行補上：AGENT_TEAM_SELF 名稱格式驗
+#      證真的接上（不是只有 hat_assert_agent_name 這個函式存在——見上方
+#      「名稱格式驗證」小節，以及 press-approval.sh 該節同型斷言的既有
+#      做法）。這條全域約束是在 report.sh 完成之後才訂下的，本檔原本沒
+#      有驗證，Step 4 掃描發現後在本任務補上。----
+rc=0; ( AGENT_TEAM_SELF='../evil' bash "$SCRIPTS/report.sh" --token fyi --summary x ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "report：AGENT_TEAM_SELF 名稱格式不符時以 2 拒絕"
+else
+  bad "report：格式不符的 AGENT_TEAM_SELF 被接受（rc=$rc）"
+fi
+
 # ---- 本任務自行補上：--state-dir 在環境變數缺席時仍可運作（Produces
 #      有列這個參數，Step 1-5 只測了「兩者都沒給」失敗的那一半，沒有測
 #      「有給 --state-dir 就能成功」這一半）----
@@ -1700,6 +1712,18 @@ if [ "$rc" -eq 2 ]; then
   pass "instruct：缺 --to 以 2 結束"
 else
   bad "instruct：得到 rc=$rc"
+fi
+
+# ---- 本任務（Task 15 整合驗收）自行補上：--to 名稱格式驗證真的接上
+#      （不是只有 hat_assert_agent_name 這個函式存在——見上方「名稱格式
+#      驗證」小節，以及 press-approval.sh 該節同型斷言的既有做法）。這
+#      條全域約束是在 instruct.sh 完成之後才訂下的，本檔原本沒有驗證，
+#      Step 4 掃描發現後在本任務補上。----
+rc=0; bash "$SCRIPTS/instruct.sh" --to '../evil' --text x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "instruct：--to 名稱格式不符時以 2 拒絕"
+else
+  bad "instruct：格式不符的 --to 被接受（rc=$rc）"
 fi
 
 rc=0; bash "$SCRIPTS/instruct.sh" --to w3n-backend >/dev/null 2>&1 || rc=$?
@@ -3900,7 +3924,7 @@ jq '.auto_push_count=0 | .held=false | .pending_resend=[]' "$REG/workers/w3n-bac
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=364
+HAT_EXPECTED_ASSERTIONS=366
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

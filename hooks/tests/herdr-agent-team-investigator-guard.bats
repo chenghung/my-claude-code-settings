@@ -90,6 +90,23 @@ assert_silent() {
   assert_silent
 }
 
+# ===== agent read: --source is checked, not just the subcommand name =====
+# (numbered 43/44, appended after the existing 1-42 sequence per this
+# file's own "don't renumber" convention noted above test 1, but placed
+# here next to test 3 for readability since they cover the same shape)
+
+@test "43: herdr agent read without --source is denied" {
+  run run_hook_raw "$(build_investigator_payload "herdr agent read w3n-backend --lines 50")"
+  assert_deny
+  [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")" == *"recent-unwrapped"* ]]
+}
+
+@test "44: herdr agent read with --source visible is denied" {
+  run run_hook_raw "$(build_investigator_payload "herdr agent read w3n-backend --source visible --lines 50")"
+  assert_deny
+  [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")" == *"recent-unwrapped"* ]]
+}
+
 @test "4: herdr pane read is allowed" {
   run run_hook_raw "$(build_investigator_payload "herdr pane read w3n-backend")"
   assert_silent
