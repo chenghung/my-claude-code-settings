@@ -664,3 +664,60 @@ hat_assert_agent_name() {
     hat_die 2 "hat_assert_agent_name: 名稱不符合 agent 名稱格式（需以小寫字母開頭，其後只能是小寫字母、數字、底線或連字號，長度上限 32 字元）：'$name'"
   fi
 }
+
+# ---- 上行前綴（report.sh 轉發給 orchestrator 的訊息，缺口二）----
+# report.sh 轉發給 orchestrator 的訊息（`hat_herdr agent prompt` 那一
+# 通呼叫）原本只有摘要文字本身：orchestrator 需要某一則的 inbox 序號
+# 時（例如要用 `instruct.sh --reply-to <序號>` 回覆一則 need-you），只
+# 能自己去掃 inbox 目錄猜。本節提供的兩個函式讓 report.sh 在轉發前把
+# 序號、token、發訊 worker 三項釘進訊息最前面，且集中定義在這裡（不像
+# `hat_json_string` 那樣各腳本各自獨立定義一份）：建構端（report.sh）
+# 與解析端（launch-worker.sh 第 8 步的 ACK 對帳，見該檔檔頭「ACK 摘要
+# 格式」一節）分屬兩支腳本，格式是兩邊都要遵守的契約，各自獨立實作只
+# 會製造格式漂移的風險，跟 `hat_json_set` 的欄位白名單、
+# `hat_normalize_name` 是同一類「正確性依賴兩邊一致」的函式，理由同它
+# 們一樣集中在這裡。
+#
+# 格式固定為 `[[HAT seq=<seq> token=<token> worker=<worker>]] <summary>`。
+# `seq` 是十進位整數、`token` 是六個 token 之一、`worker` 是已經過
+# `hat_normalize_name` 正規化的名稱，三者依規則都不含空白字元，因此前
+# 綴本身保證是一段不含空白的文字，跟後面可能含空白的摘要正文之間，用
+# `]] `（兩個右中括號加一個空白）當固定的分界，肉眼就能在第一個
+# `]] ` 處切開兩段，不會混在一起分不出邊界。
+#
+# 這個前綴只加在「轉發給 orchestrator 的訊息」上，不是另開一個新欄
+# 位：report.sh 把組好前綴的整串內容同時當成 `.summary` 存進 inbox 記
+# 錄、也當成投遞內容送出，這樣 `watchdog.sh` 的
+# `hat_wd_retry_blocked_inbox`（補投當初被 `agent_blocked` 擋下的訊
+# 息）讀的正是同一個 `.summary` 欄位，補投出去的內容自然也帶著同一個
+# 前綴，不需要另外處理重試路徑。
+
+# hat_build_uplink_message <seq> <token> <worker> <summary>
+# 印出組好前綴的完整訊息（不含結尾換行以外的多餘字元）。
+hat_build_uplink_message() {
+  local seq="$1" token="$2" worker="$3" summary="$4"
+  printf '[[HAT seq=%s token=%s worker=%s]] %s\n' "$seq" "$token" "$worker" "$summary"
+}
+
+# hat_strip_uplink_prefix <text>
+# <text> 符合上面那個前綴格式時，印出去掉前綴之後剩下的部分；不符合格
+# 式（例如根本沒有前綴）就原樣印出，不動它。`${text#*]] }` 用 `#`（最
+# 短匹配、從左邊算）去掉「開頭到第一個 `]] ` 為止」的內容——本函式庫
+# 自己組出來的前綴保證是字串裡第一個出現的 `]] `（`seq`／`token`／
+# `worker` 三個欄位值都不含 `]` 字元），所以就算後面的摘要正文本身也
+# 剛好含有 `]] ` 這個子字串，也不影響切點落在正確的位置。
+#
+# 呼叫端：launch-worker.sh 第 8 步解析 ACK 摘要（`worker_id=`／
+# `cwd=`／`model=` 三個欄位）之前，先呼叫本函式去掉前綴——目前選用的
+# 前綴欄位名稱（`seq=`／`token=`／`worker=`）不會跟那三個欄位撞名，但
+# 明確去除仍然比依賴「這次剛好沒撞名」更可靠，格式未來若調整也不必回
+# 頭檢查這個巧合還成不成立。
+hat_strip_uplink_prefix() {
+  local text="$1"
+  case "$text" in
+    '[[HAT '*']] '*)
+      text="${text#*]] }"
+      ;;
+  esac
+  printf '%s\n' "$text"
+}

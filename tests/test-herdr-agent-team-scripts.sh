@@ -166,6 +166,34 @@ case "$out" in
   *) bad "白名單：輸出不如預期：$out" ;;
 esac
 
+# ===== 上行前綴：hat_build_uplink_message／hat_strip_uplink_prefix
+#      （缺口二，report.sh 轉發訊息與 launch-worker.sh 第 8 步對帳共用
+#      的格式，見 lib/common.sh「上行前綴」一節）=====
+built="$(hat_build_uplink_message 5 fyi w3n-backend '一段摘要內容')"
+if [ "$built" = "[[HAT seq=5 token=fyi worker=w3n-backend]] 一段摘要內容" ]; then
+  pass "上行前綴：hat_build_uplink_message 組出預期格式"
+else
+  bad "上行前綴：組出來的是 '$built'"
+fi
+
+stripped="$(hat_strip_uplink_prefix "$built")"
+if [ "$stripped" = "一段摘要內容" ]; then
+  pass "上行前綴：hat_strip_uplink_prefix 正確去掉前綴，剩下原文"
+else
+  bad "上行前綴：去掉前綴後剩下 '$stripped'"
+fi
+
+# 不是這個格式的輸入（例如根本沒有前綴的 ACK 摘要）要原樣印出，不動
+# 它——launch-worker.sh 第 8 步對舊格式（沒有前綴）的 ack_summary 一樣
+# 要能正確解析。
+no_prefix="worker_id=w3n-backend cwd=/tmp model=claude-3-test"
+passthrough="$(hat_strip_uplink_prefix "$no_prefix")"
+if [ "$passthrough" = "$no_prefix" ]; then
+  pass "上行前綴：不是這個格式的輸入原樣印出，不動它"
+else
+  bad "上行前綴：不該被動到的輸入變成了 '$passthrough'"
+fi
+
 # ===== registry 讀寫 =====
 # 這裡是本檔第一次用到 registry。先把 AGENT_TEAM_HOME／HOME 都收斂進
 # $T：hat_registry_root 內部會呼叫 hat_project_tmp，而 hat_project_tmp
@@ -996,6 +1024,74 @@ case "$line" in
   *) bad "launch：--arg 沒有正確直通：$line" ;;
 esac
 
+# ---- 本任務自行補上（缺口二連帶效應）：ACK 摘要帶著 report.sh 現在
+#      會加的上行前綴時，第 8 步的對帳仍然正確——launch-worker.sh 解析
+#      ack_summary 之前先呼叫 hat_strip_uplink_prefix 去掉前綴（見該檔
+#      檔頭「解析前先去掉上行前綴」一節）。這裡的樁直接模擬 report.sh
+#      加了前綴之後真正會落進 inbox 記錄的內容（`[[HAT seq=... token=
+#      ack worker=...]] worker_id=... cwd=... model=...`），不是呼叫
+#      hat_build_uplink_message 現算一份——保持這條斷言獨立於它自己要
+#      驗證的那個實作 ----
+HERDR_FULL_ARGS="$T/herdr-full-args-prefixed-ack"
+: > "$HERDR_FULL_ARGS"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+case "\$1 \$2" in
+  "tab create")  printf '{"result":{"tab":{"tab_id":"w3N:t9"},"root_pane":{"pane_id":"w3N:p9"}}}' ;;
+  "agent start") printf '{"result":{}}' ;;
+  "agent get")   printf '{"result":{"agent":{"agent_status":"idle"}}}' ;;
+  "agent prompt")
+    printf '{"token":"ack","worker":"w3n-prefixedack","summary":"[[HAT seq=41 token=ack worker=w3n-prefixedack]] worker_id=w3n-prefixedack cwd=$REG model=claude-4-prefixed"}' > "$REG/inbox/41-w3n-prefixedack.json"
+    printf '{"result":{}}'
+    ;;
+  "tab close")   printf '{"result":{}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" launch-success-prefixed-ack
+
+rc=0
+bash "$SCRIPTS/launch-worker.sh" --role prefixedack --kind claude --cwd "$REG" --briefing-file "$BRIEF" --ack-timeout 5 >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "launch：ACK 摘要帶上行前綴時，啟動仍以 0 結束"
+else
+  bad "launch：得到 rc=$rc"
+fi
+
+pfx_wid_match="$(jq -r '.ack_reconciliation.worker_id_match' "$REG/workers/w3n-prefixedack.json")"
+pfx_cwd_match="$(jq -r '.ack_reconciliation.cwd_match' "$REG/workers/w3n-prefixedack.json")"
+pfx_model_reported="$(jq -r '.ack_reconciliation.model_reported' "$REG/workers/w3n-prefixedack.json")"
+if [ "$pfx_wid_match" = "true" ] && [ "$pfx_cwd_match" = "true" ] && [ "$pfx_model_reported" = "claude-4-prefixed" ]; then
+  pass "launch：ACK 摘要帶上行前綴時，對帳仍然正確（前綴沒有干擾 worker_id／cwd／model 的解析）"
+else
+  bad "launch：對帳被前綴干擾（worker_id_match=$pfx_wid_match cwd_match=$pfx_cwd_match model_reported=$pfx_model_reported）"
+fi
+
+# ---- 結構性補強（實測發現上面那條斷言測不出的一個洞，見任務報告）：
+#      目前選用的前綴欄位名稱（seq=／token=／worker=）剛好不會撞到
+#      worker_id=／cwd=／model= 三個真正的欄位，這代表「拿掉
+#      hat_strip_uplink_prefix 這通呼叫」對上面這條端對端斷言而言是零
+#      行為差異的變更——已用真的拿掉那通呼叫實測過，上面那條斷言仍然
+#      全線通過，抓不到這個回歸。手法沿用任務簡報 Step 3（task-15-
+#      brief.md）對 hat_assert_workspace 用過的同一招：函式存在但沒人
+#      呼叫，行為測試看不出來，改成結構性檢查——直接確認呼叫點還在原始
+#      碼裡。
+#
+#      這裡不能只 grep 函式名稱本身：檔頭「解析前先去掉上行前綴」一節
+#      的說明文字裡也提到這個函式名稱（在反引號裡，不是呼叫語法），若
+#      只比對函式名稱，拿掉呼叫、只留下說明文字時這條檢查一樣會誤判通
+#      過——這一點也已經實測過。改成比對實際呼叫語法（函式名稱後面緊
+#      接空白、雙引號、`$`，即傳一個變數進去），檔頭那句說明文字裡函式
+#      名稱後面接的是反引號，不會誤中 ----
+if grep -q 'hat_strip_uplink_prefix "\$' "$SCRIPTS/launch-worker.sh"; then
+  pass "launch：原始碼裡真的呼叫了 hat_strip_uplink_prefix（不是只有函式存在、沒人呼叫，也不是只在說明文字裡提過名字）"
+else
+  bad "launch：launch-worker.sh 沒有呼叫 hat_strip_uplink_prefix，上面那條對帳斷言測不出這個回歸"
+fi
+
 # ---- 本任務自行補上（審查回合 2 裁決）：兩次都失敗、終局以 8 結束
 #      時，不得留下該 worker 的狀態記錄——與審查回合 1「重試疊加識別
 #      碼取不到」那條路徑採一致的語意。三種失敗成因（啟動指令失敗、
@@ -1324,10 +1420,14 @@ else
 fi
 ack_seq="$(hat_last_seq_for_worker w3n-reporter)"
 recorded_ack_summary="$(jq -r '.summary' "$REG/inbox/${ack_seq}-w3n-reporter.json")"
-if [ "$recorded_ack_summary" = "$ack_summary" ]; then
-  pass "report：超長 ack 摘要正常落檔，內容完整未被截斷"
+# 本任務加了上行前綴之後，.summary 存的是「前綴 + 原文」，不再是原文
+# 本身（見「本任務自行補上（缺口二）」一節）；expected 值改成同樣帶前
+# 綴，驗證的仍是同一件事——長內容完整落檔、沒有被截斷或寫壞。
+expected_ack_summary="[[HAT seq=$ack_seq token=ack worker=w3n-reporter]] $ack_summary"
+if [ "$recorded_ack_summary" = "$expected_ack_summary" ]; then
+  pass "report：超長 ack 摘要正常落檔，內容完整未被截斷（含上行前綴）"
 else
-  bad "report：落檔的摘要與原文不符，可能被截斷或寫壞"
+  bad "report：落檔的摘要與預期不符，可能被截斷或寫壞：$recorded_ack_summary"
 fi
 
 # ===== Step 5（修正迴圈第一輪重新產生的簡報逐字；&&/|| 鏈改寫成
@@ -1431,6 +1531,71 @@ case "$out" in
   *已記錄*投遞延後*) pass "report：投遞延後時 stdout 印出提示，不完全靜默" ;;
   *) bad "report：投遞延後卻沒有印出提示，worker 會誤以為已送達：'$out'" ;;
 esac
+
+# ---- 本任務自行補上（缺口二）：轉發給 orchestrator 的訊息帶機器可讀
+#      前綴（序號／token／發訊 worker），上層不必再靠掃 inbox 目錄猜
+#      序號。恢復成一個正常會投遞成功的樁（上一段用的是 agent_blocked
+#      樁）----
+: > "$HERDR_FULL_ARGS"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$1 \$2" >> "$HERDR_CALL_LOG"
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" report-uplink-prefix
+
+# next_seq 先讀出來預測這次呼叫會配到的序號（手法同 Step 5 need-you
+# 小節「先預測下一個序號」）。
+predicted_seq="$(jq -r '.next_seq' "$REG/team.json")"
+bash "$SCRIPTS/report.sh" --token fyi --summary '這是一則機器可讀前綴測試摘要' >/dev/null 2>&1
+prefix_line="$(grep -m1 'agent prompt' "$HERDR_FULL_ARGS")" || true
+case "$prefix_line" in
+  *"[[HAT seq=$predicted_seq token=fyi worker=w3n-reporter]] 這是一則機器可讀前綴測試摘要")
+    pass "report：轉發給 orchestrator 的訊息帶機器可讀前綴（序號／token／worker），且正文緊接在後、沒有混在一起"
+    ;;
+  *)
+    bad "report：轉發訊息沒有帶預期的前綴：$prefix_line"
+    ;;
+esac
+
+# 正面驗證「上層能從轉發訊息取出序號」：不是只驗證子字串存在，而是真
+# 的用一段獨立於 hat_build_uplink_message 本身的擷取邏輯（sed）把序號
+# 抓出來，證明這是一段可以被程式化解析的前綴，不是巧合對上的文字。
+extracted_seq="$(printf '%s' "$prefix_line" | sed -n 's/.*\[\[HAT seq=\([0-9]\{1,\}\) .*/\1/p')"
+if [ "$extracted_seq" = "$predicted_seq" ]; then
+  pass "report：上層能從轉發訊息裡取出這一則的 inbox 序號"
+else
+  bad "report：從轉發訊息取出的序號是 '$extracted_seq'，預期 '$predicted_seq'"
+fi
+
+# .summary 存的必須是同一份含前綴的內容（不是另開欄位存前綴、.summary
+# 保留原文）：watchdog.sh 補投 blocked 訊息時讀的正是這個欄位，兩者不
+# 一致的話，補投出去的訊息就會漏掉前綴。用去掉已知的
+# "agent prompt w3n-orchestrator " 前三個位置引數之後剩下的內容，跟
+# .summary 逐字比對。
+prefix_seq="$(hat_last_seq_for_worker w3n-reporter)"
+recorded_prefixed_summary="$(jq -r '.summary' "$REG/inbox/${prefix_seq}-w3n-reporter.json")"
+delivered_message="${prefix_line#agent prompt w3n-orchestrator }"
+if [ "$recorded_prefixed_summary" = "$delivered_message" ]; then
+  pass "report：inbox 記錄的 .summary 與實際轉發的內容一致（watchdog.sh 補投時讀到的也會帶著同一個前綴）"
+else
+  bad "report：.summary='$recorded_prefixed_summary' 與轉發內容='$delivered_message' 不一致"
+fi
+
+# working 從不投遞，orchestrator 永遠看不到這一則，加前綴沒有服務對
+# 象：.summary 應該維持呼叫端給的原文，不带前綴。
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/report.sh" --token working --summary '純文字不該被加前綴' >/dev/null 2>&1
+working_seq="$(hat_last_seq_for_worker w3n-reporter)"
+recorded_working_summary="$(jq -r '.summary' "$REG/inbox/${working_seq}-w3n-reporter.json")"
+if [ "$recorded_working_summary" = "純文字不該被加前綴" ]; then
+  pass "report：working 這個 token 從不投遞，.summary 維持原文，不加前綴"
+else
+  bad "report：working 的 .summary 被改成了 '$recorded_working_summary'"
+fi
 
 # ===== instruct.sh：下行、持有旗標、待補送 =====
 # 沿用既有已匯出的 AGENT_TEAM_HOME=$T/teamhome、HOME=$T/fakehome、
@@ -2401,6 +2566,139 @@ if [ -e "$lock_target" ]; then
   bad "關閉：成功關閉後鎖檔還留著，成了指不到任何現存記錄的孤兒檔：$lock_target"
 else
   pass "關閉：成功關閉後連同鎖檔一併移除，不留孤兒鎖檔"
+fi
+
+# ===== set-worker-field.sh：帶守衛的欄位設定（缺口一）=====
+# 起始準備：不依賴前面小節留下的狀態（同其餘小節「起始準備」的既有作
+# 法）。w3n-fieldtest 是屬於本 workspace 的正常 worker；
+# w3n-otherws-field 的 pane_id 屬於別的 workspace，專門給 workspace 邊
+# 界那條斷言用。本腳本不呼叫任何 herdr 子指令，不需要另外裝 herdr
+# 樁——PATH 全程只有樁目錄（見本檔開頭「樁遮蔽的結構性修法」一節），
+# 若本腳本的某條路徑意外呼叫了 herdr，找不到對應樁只會直接失敗，不會
+# 悄悄打到真正的 herdr。
+printf '{"pane_id":"w3N:pFT","tab_id":"w3N:tFT","held":false}' \
+  > "$REG/workers/w3n-fieldtest.json"
+printf '{"pane_id":"otherws:p1","tab_id":"otherws:t1","held":false}' \
+  > "$REG/workers/w3n-otherws-field.json"
+rm -f "$REG/workers/w3n-nosuchworker.json"
+
+# ---- 環境前提：HERDR_ENV 不是 "1" 時以 3 結束（守衛順序第一關）----
+rc=0; ( unset HERDR_ENV; bash "$SCRIPTS/set-worker-field.sh" --to w3n-fieldtest --field stage --value running ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 3 ]; then
+  pass "set-worker-field：HERDR_ENV 不是 1 時以 3 結束"
+else
+  bad "set-worker-field：得到 rc=$rc"
+fi
+
+# ---- 三項全部必填 ----
+rc=0; bash "$SCRIPTS/set-worker-field.sh" --field stage --value running >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-worker-field：--to 必填"; else bad "set-worker-field：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/set-worker-field.sh" --to w3n-fieldtest --value running >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-worker-field：--field 必填"; else bad "set-worker-field：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/set-worker-field.sh" --to w3n-fieldtest --field stage >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-worker-field：--value 必填"; else bad "set-worker-field：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/set-worker-field.sh" --to w3n-fieldtest --field stage --value running --bogus x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-worker-field：未知參數以 2 拒絕"; else bad "set-worker-field：得到 rc=$rc"; fi
+
+# ---- 本腳本自己的欄位白名單，比 hat_json_set 的白名單更窄：座標類欄
+#      位（例如 .pane_id，由 launch-worker.sh 專責寫入）與完全不存在
+#      的欄位都要被拒絕，不能透過本腳本繞道寫入 ----
+rc=0; bash "$SCRIPTS/set-worker-field.sh" --to w3n-fieldtest --field pane_id --value "w3N:hijack" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "set-worker-field：白名單外的座標類欄位（.pane_id）以 2 拒絕，不能繞過 launch-worker.sh 專責寫入"
+else
+  bad "set-worker-field：得到 rc=$rc（座標欄位被本腳本繞道寫入了）"
+fi
+
+rc=0; bash "$SCRIPTS/set-worker-field.sh" --to w3n-fieldtest --field no_such_field --value x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "set-worker-field：完全不存在的欄位以 2 拒絕"
+else
+  bad "set-worker-field：得到 rc=$rc"
+fi
+
+# ---- .stage 的值只放行設計定義的生命週期關卡名稱 ----
+rc=0; bash "$SCRIPTS/set-worker-field.sh" --to w3n-fieldtest --field stage --value not-a-real-stage >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "set-worker-field：.stage 的值不在生命週期關卡清單內時以 2 拒絕"
+else
+  bad "set-worker-field：得到 rc=$rc（寫錯字的關卡名被接受了）"
+fi
+
+# ---- 名稱格式驗證早於組 registry 路徑 ----
+rc=0; bash "$SCRIPTS/set-worker-field.sh" --to '../evil' --field stage --value running >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "set-worker-field：--to 名稱格式不符時以 2 拒絕"
+else
+  bad "set-worker-field：格式不符的名稱被接受（rc=$rc）"
+fi
+
+# ---- registry 缺漏：--to 格式合法但沒有對應的 worker 記錄 ----
+rc=0; bash "$SCRIPTS/set-worker-field.sh" --to w3n-nosuchworker --field stage --value running >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "set-worker-field：目標 worker 沒有記錄時以 5 結束"
+else
+  bad "set-worker-field：得到 rc=$rc"
+fi
+
+# ---- workspace 邊界：座標屬於別的 workspace 時以 4 拒絕，早於任何寫
+#      入 ----
+rc=0; bash "$SCRIPTS/set-worker-field.sh" --to w3n-otherws-field --field stage --value running >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ]; then
+  pass "set-worker-field：目標不屬於本 workspace 時以 4 拒絕"
+else
+  bad "set-worker-field：得到 rc=$rc"
+fi
+if [ "$(jq -r '.stage // empty' "$REG/workers/w3n-otherws-field.json")" = "" ]; then
+  pass "set-worker-field：workspace 守衛擋下之後，.stage 真的沒有被寫入"
+else
+  bad "set-worker-field：workspace 守衛沒擋住，.stage 被寫進了別的 workspace 的記錄"
+fi
+
+# ---- 成功路徑：四個欄位都寫得進去 ----
+for stage_value in running delivered closing closed; do
+  rc=0; out="$(bash "$SCRIPTS/set-worker-field.sh" --to w3n-fieldtest --field stage --value "$stage_value" 2>&1)" || rc=$?
+  recorded="$(jq -r '.stage' "$REG/workers/w3n-fieldtest.json")"
+  if [ "$rc" -eq 0 ] && [ "$recorded" = "$stage_value" ]; then
+    pass "set-worker-field：.stage 接受生命週期關卡值 '$stage_value'"
+  else
+    bad "set-worker-field：.stage='$recorded'（預期 '$stage_value'），rc=$rc，out='$out'"
+  fi
+done
+
+expected_stage_out="to=w3n-fieldtest field=stage set"
+last_out="$(bash "$SCRIPTS/set-worker-field.sh" --to w3n-fieldtest --field stage --value running 2>&1)"
+if [ "$last_out" = "$expected_stage_out" ]; then
+  pass "set-worker-field：成功時 stdout 印出 to／field 的固定格式"
+else
+  bad "set-worker-field：輸出是 '$last_out'，預期 '$expected_stage_out'"
+fi
+
+bash "$SCRIPTS/set-worker-field.sh" --to w3n-fieldtest --field completion_criteria --value '一個 PR 已合併到 main' >/dev/null 2>&1
+recorded_cc="$(jq -r '.completion_criteria' "$REG/workers/w3n-fieldtest.json")"
+if [ "$recorded_cc" = "一個 PR 已合併到 main" ]; then
+  pass "set-worker-field：.completion_criteria 正確寫入（自由文字，不驗內容）"
+else
+  bad "set-worker-field：.completion_criteria='$recorded_cc'"
+fi
+
+bash "$SCRIPTS/set-worker-field.sh" --to w3n-fieldtest --field delivery_point --value 'https://example.invalid/pr/42' >/dev/null 2>&1
+recorded_dp="$(jq -r '.delivery_point' "$REG/workers/w3n-fieldtest.json")"
+if [ "$recorded_dp" = "https://example.invalid/pr/42" ]; then
+  pass "set-worker-field：.delivery_point 正確寫入"
+else
+  bad "set-worker-field：.delivery_point='$recorded_dp'"
+fi
+
+bash "$SCRIPTS/set-worker-field.sh" --to w3n-fieldtest --field end_point --value '整個 epic 收尾' >/dev/null 2>&1
+recorded_ep="$(jq -r '.end_point' "$REG/workers/w3n-fieldtest.json")"
+if [ "$recorded_ep" = "整個 epic 收尾" ]; then
+  pass "set-worker-field：.end_point 正確寫入"
+else
+  bad "set-worker-field：.end_point='$recorded_ep'"
 fi
 
 # ===== 橫向：grant-peer.sh／send-peer.sh／wait-peer.sh =====
@@ -3593,7 +3891,7 @@ jq '.auto_push_count=0 | .held=false | .pending_resend=[]' "$REG/workers/w3n-bac
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=333
+HAT_EXPECTED_ASSERTIONS=363
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

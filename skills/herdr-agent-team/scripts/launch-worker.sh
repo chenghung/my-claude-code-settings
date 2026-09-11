@@ -89,6 +89,16 @@
 # ---- 摘要解析失敗不影響啟動結果 ----
 # ack_reconciliation 只負責記錄與比對，本身從不改變結束碼：ACK 有沒有
 # 抵達才是啟動成功與否的唯一判準（規格 §6 第 7 步）。
+#
+# ---- 解析前先去掉上行前綴（缺口二的連帶效應）----
+# report.sh 現在會替轉發給 orchestrator 的訊息加一段機器可讀的前綴
+# （見 lib/common.sh「上行前綴」一節），`inbox/<seq>-<worker>.json` 的
+# `.summary` 欄位存的就是加了前綴之後的完整內容，ACK 的 `.summary` 自
+# 然也不例外。本腳本解析 `worker_id=`／`cwd=`／`model=` 三個欄位之前，
+# 先呼叫 `hat_strip_uplink_prefix` 去掉前綴：目前的前綴欄位名稱
+# （`seq=`／`token=`／`worker=`）不會撞到這三個欄位名，就算不去除，這
+# 次的格式也還解析得出正確結果，但那是「這次剛好沒撞名」，不是靠設計
+# 保證——明確去除，格式以後若調整也不必回頭確認這個巧合還成不成立。
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -410,8 +420,10 @@ fi
 
 # ---- 第 8 步：對帳 ----
 # ack_summary 的格式與解析方式見檔頭「ACK 摘要格式」一節；解析結果只
-# 影響這個欄位的內容，不影響本腳本的結束碼。用 tr 把空白換成換行再逐
-# 行讀，不動全域 IFS（本腳本開頭已設成 $'\n\t'，不含空白）。
+# 影響這個欄位的內容，不影響本腳本的結束碼。先用 hat_strip_uplink_
+# prefix 去掉 report.sh 加的上行前綴（見檔頭「解析前先去掉上行前綴」
+# 一節），再用 tr 把空白換成換行逐行讀，不動全域 IFS（本腳本開頭已設
+# 成 $'\n\t'，不含空白）。
 #
 # `printf '%s\n'`（而非 `%s`）在轉換前先補一個結尾換行：`while read`
 # 對「沒有結尾換行的最後一行」會把內容讀進變數、但迴圈條件本身回報失
@@ -420,13 +432,14 @@ fi
 # 明有這個 token）。三個欄位裡任一個排在最後都會中這個坑，補這個換行
 # 讓三者都能被讀到，不只是修一個看起來會中獎的欄位。
 reported_worker_id="" reported_cwd="" reported_model=""
+ack_summary_body="$(hat_strip_uplink_prefix "$ack_summary")"
 while IFS= read -r tok; do
   case "$tok" in
     worker_id=*) reported_worker_id="${tok#worker_id=}" ;;
     cwd=*) reported_cwd="${tok#cwd=}" ;;
     model=*) reported_model="${tok#model=}" ;;
   esac
-done < <(printf '%s\n' "$ack_summary" | tr ' ' '\n')
+done < <(printf '%s\n' "$ack_summary_body" | tr ' ' '\n')
 
 worker_id_match=false
 if [ "$reported_worker_id" = "$name" ]; then

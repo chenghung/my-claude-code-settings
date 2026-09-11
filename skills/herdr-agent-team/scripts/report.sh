@@ -153,6 +153,19 @@
 # `HERDR_PANE_ID` 缺席的既有處理方式——這類「herdr 或啟動流程本該注入
 # 卻沒注入的座標／身分變數缺席」在這個 skill 裡一律歸類成守衛不通過，
 # 不是呼叫端用錯（呼叫端只是正常呼叫報告動作，沒有做錯任何事）。
+#
+# ---- 上行前綴：轉發給 orchestrator 的訊息帶序號／token／發訊 worker
+#      ----
+# 修法見 lib/common.sh「上行前綴」一節（`hat_build_uplink_message`／
+# `hat_strip_uplink_prefix` 兩個函式集中定義在那裡，理由也寫在那
+# 裡）。這裡只記本腳本這一側的取捨：`working` 這個 token 從不投遞（見
+# 上方同名一節），orchestrator 永遠看不到它，加前綴沒有對象可服務，維
+# 持原文不動；其餘五個 token 一律加。`.summary` 這個欄位存的就是加了
+# 前綴之後的完整內容，不是另開一個新欄位存前綴——這是刻意的：
+# `watchdog.sh` 的 `hat_wd_retry_blocked_inbox` 補投當初被
+# `agent_blocked` 擋下的訊息時，讀的正是 `.summary`，若前綴只存在另一
+# 個欄位、`.summary` 保持原文，補投出去的內容就會漏掉前綴，造成「第一
+# 次就送達的訊息有前綴、被擋過又補投成功的訊息沒有」這種不一致。
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -286,6 +299,15 @@ fi
 # ---- 落檔在先，投遞在後：落檔失敗即失敗，不嘗試投遞 ----
 seq="$(hat_allocate_seq "$state_dir")"
 inbox_file="$state_dir/inbox/${seq}-${self_name}.json"
+
+# ---- 上行前綴（見 lib/common.sh「上行前綴」一節）：working 不投遞，
+#      也不需要讓 orchestrator 一眼取出序號，維持原文不加前綴；其餘五
+#      個 token 把序號／token／發訊 worker 釘進 .summary 最前面，同一
+#      份內容既落檔也拿去投遞，補投（watchdog.sh）讀的是同一個欄位，
+#      自然也帶著前綴 ----
+if [ "$token" != "working" ]; then
+  summary="$(hat_build_uplink_message "$seq" "$token" "$self_name" "$summary")"
+fi
 
 detail_path_json='null'
 if [ -n "$detail_file" ]; then
