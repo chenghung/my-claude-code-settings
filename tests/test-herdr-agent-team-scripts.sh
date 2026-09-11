@@ -3050,6 +3050,58 @@ else
   bad "watchdog：持有旗標被設成 true 了"
 fi
 
+# ---- 修正迴圈第一輪 High 修補：自動推進整段測試的樁一律用閒置狀
+#      態，完成狀態零覆蓋 ----
+# 審查者實測：把判斷改成只認閒置（拿掉完成），重跑套件同樣是 327 通
+# 過、0 失敗——因為上面那組斷言全程只餵過 agent_status=idle。簡報明
+# 講 worker 的 tab 一律不搶焦點、人不會去看，所以停下來時多半回報的
+# 是完成狀態（herdr 對閒置的定義是「已準備好接受輸入，且 tab 曾經在
+# 聚焦的介面中被看見過」；完成是同一個底層狀態發生在未被看見的背景工
+# 作結束之後）——這才是實務上更常見的觸發條件，補一組把狀態設成完成
+# 的樁，重跑同一組自動推進斷言。
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"done","state_change_seq":2000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-auto-push-done
+
+jq '.held=false | .auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+  pass "watchdog：done 狀態（背景工作結束後的更常見觸發條件）也會自動推進"
+else
+  bad "watchdog：done 狀態沒有自動推進"
+fi
+if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "1" ]; then
+  pass "watchdog：done 狀態下自動推進計數同樣加一"
+else
+  bad "watchdog：done 狀態下計數沒動"
+fi
+
+# 換回 idle 樁，供下面「達上限」測試使用（沿用檔案既有「換回一般成功
+# 樁」的手法，狀態本身在達上限測試裡不是重點，只是延續前面 idle 的既
+# 有設定）。
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":1000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-auto-push-limit-setup
+
 jq '.auto_push_count=10' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
 n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
 : > "$HERDR_CALL_LOG"
@@ -3173,6 +3225,66 @@ else
   pass "watchdog：等定案的 worker 沒有收到任何下行文字"
 fi
 rm -f "$REG/inbox/11-w3n-backend.json"
+
+# ---- 修正迴圈第一輪 High：等定案豁免與 blocked 升級疊加——兩者同時成
+#      立時仍要升級，豁免不得把 blocked 升級整段吞掉（見 watchdog.sh
+#      hat_wd_process_worker 檔頭「修正迴圈第一輪」一節）----
+# 審查者實測：把豁免檢查放在 blocked 升級之前的舊版程式碼跑這個情境
+# （worker 同時有未回覆的 need-you，agent_status 又變成 blocked），完
+# 全沒有升級發生——這正是設計最想消滅的「卡住、沒人知道、沒有任何訊
+# 息」。這裡固定用同一個情境重跑一次，斷言確實有升級（inbox 多一筆、
+# 且嘗試通知了 orchestrator）。
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"blocked","state_change_seq":1007,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-needyou-and-blocked-overlap
+
+printf '{"token":"need-you","worker":"w3n-backend","processed_at":null}' > "$REG/inbox/12-w3n-backend.json"
+jq '.auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after" -gt "$n_inbox_before" ]; then
+  pass "watchdog：等定案與 blocked 同時成立時，blocked 升級仍然發生（豁免沒有把它吞掉）"
+else
+  bad "watchdog：升級沒有發生，等定案豁免把 blocked 升級吞掉了（before=$n_inbox_before after=$n_inbox_after）"
+fi
+if grep -q 'agent prompt w3n-orchestrator' "$HERDR_CALL_LOG"; then
+  pass "watchdog：疊加情境下仍嘗試通知 orchestrator"
+else
+  bad "watchdog：疊加情境下沒有嘗試通知 orchestrator"
+fi
+if grep -q 'agent prompt w3n-backend' "$HERDR_CALL_LOG"; then
+  bad "watchdog：疊加情境下仍對 blocked 的 worker 送出文字下行"
+else
+  pass "watchdog：疊加情境下仍然不對 blocked 的 worker 送文字下行"
+fi
+rm -f "$REG/inbox/12-w3n-backend.json"
+
+# 換回一般成功樁（idle）：上一段疊加測試把 w3n-backend 樁成 blocked，
+# Step 7 需要「目標不再是 blocked」這個前提才能驗證補投，不能沿用上一
+# 段的樁（同一手法見 grant-peer 節「換回一般成功樁」一節）。
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":1007,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-pending-resend-setup
 
 # ---- Step 7（任務簡報逐字）：待補送補投——目標不再是 blocked 時逐筆
 #      補投，成功就清空清單並放掉持有旗標 ----
@@ -3310,15 +3422,39 @@ else
 fi
 rm -f "$REG/inbox/41-w3n-backend.json"
 
-# ---- 本任務自行補上：停滯偵測——同一個 worker 的 state_change_seq 連
-#      續超過門檻沒有改變時升級；用兩輪、中間夾一個很小的真實
-#      sleep（不使用背景行程或無限迴圈，只用 --once 各跑一次），並疊
-#      上 AGENT_TEAM_STALL_SECONDS 覆寫成極小值，驗證門檻真的可覆寫 ----
+# ---- 本任務自行補上、修正迴圈第一輪 High 修補：停滯偵測必須是雙
+#      worker 樁，不能只放一個 agent ----
+# 審查者實測：上一版樁全程只有 w3n-backend 一個 agent，把判斷改壞成
+# 「比對整個名單這一輪跟上一輪有沒有任何變動」（名字無關的錯誤讀
+# 法），重跑整份套件得到 327 通過、0 失敗，跟改壞前完全一樣——因為清
+# 單只有一個 agent 時，「這個 agent 的 stamp 變了嗎」跟「清單裡有任何
+# 東西變了嗎」是同一個問題，兩種讀法在這個資料形狀下無法區分。
+# state_change_seq 是全域共用的遞增計數器，同時有其他 agent 在動是常
+# 態（規格 2.5 實測六個 agent 的值落在同一區間、跨兩個 workspace 交
+# 錯），若誤實作成「名單裡任何一個變了就不算停滯」，會讓「某個 worker
+# 真的卡住、但團隊裡其他 worker 還在動」這個最常見的情境被判成沒有停
+# 滯，恰好跟 wait-peer.sh 死鎖防護當初撞到的教訓（該檔案 3c25fa1
+# commit）同一個成因。
+#
+# 這裡改成兩個 agent：w3n-backend 的 stamp 固定在 5000 不動（該被判定
+# 停滯），w3n-frontend 的 stamp 每次呼叫遞增（不該被判定停滯）；用兩
+# 輪、中間夾一個很小的真實 sleep（不使用背景行程或無限迴圈，只用
+# --once 各跑一次），並疊上 AGENT_TEAM_STALL_SECONDS 覆寫成極小值，驗
+# 證門檻真的可覆寫。
+rm -f "$T/watchdog-stall-frontend-counter"
+printf '{"pane_id":"w3N:p2","held":false,"role":"backend"}' > "$REG/workers/w3n-backend.json"
+printf '{"pane_id":"w3N:p5","held":false,"role":"frontend"}' > "$REG/workers/w3n-frontend.json"
 cat > "$STUB_BIN/herdr" <<STUB
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
 if [ "\$1 \$2" = "agent list" ]; then
-  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"unknown","state_change_seq":5000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  n=0
+  if [ -f "$T/watchdog-stall-frontend-counter" ]; then
+    n="\$(cat "$T/watchdog-stall-frontend-counter")"
+  fi
+  n=\$((n + 1))
+  printf '%s' "\$n" > "$T/watchdog-stall-frontend-counter"
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"unknown","state_change_seq":5000,"pane_id":"w3N:p2","tab_id":"w3N:t2"},{"name":"w3n-frontend","workspace_id":"w3N","agent_status":"working","state_change_seq":%s,"pane_id":"w3N:p5","tab_id":"w3N:t5"}]}}' "\$((6000 + n))"
   exit 0
 fi
 printf '{"result":{}}'
@@ -3327,7 +3463,6 @@ STUB
 chmod +x "$STUB_BIN/herdr"
 hat_assert_herdr_stubbed "$STUB_BIN" watchdog-stall
 
-printf '{"pane_id":"w3N:p2","held":false,"role":"backend"}' > "$REG/workers/w3n-backend.json"
 n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
 AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
 n_inbox_mid=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
@@ -3340,10 +3475,28 @@ sleep 2
 AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
 n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
 if [ "$n_inbox_after" -gt "$n_inbox_mid" ]; then
-  pass "watchdog：stamp 連續超過門檻沒有改變時升級（AGENT_TEAM_STALL_SECONDS 可覆寫）"
+  pass "watchdog：stamp 不動的 worker（w3n-backend）連續超過門檻時升級（AGENT_TEAM_STALL_SECONDS 可覆寫）"
 else
   bad "watchdog：超過門檻仍未升級（mid=$n_inbox_mid after=$n_inbox_after）"
 fi
+stall_hit_backend=0
+stall_hit_frontend=0
+while IFS= read -r -d '' f; do
+  who="$(jq -r '.worker // empty' "$f")"
+  [ "$who" = "w3n-backend" ] && stall_hit_backend=1
+  [ "$who" = "w3n-frontend" ] && stall_hit_frontend=1
+done < <(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' -print0)
+if [ "$stall_hit_backend" -eq 1 ]; then
+  pass "watchdog：停滯升級精確指名 stamp 不動的 w3n-backend"
+else
+  bad "watchdog：停滯升級沒有指名 w3n-backend"
+fi
+if [ "$stall_hit_frontend" -eq 0 ]; then
+  pass "watchdog：stamp 持續變動的 w3n-frontend 沒有被誤判成停滯（不會被別人不動騙過，也不會被自己會動的名單掩蓋 backend 真的不動）"
+else
+  bad "watchdog：w3n-frontend 也被判定停滯了，篩選邏輯可能改成了名字無關的錯誤讀法"
+fi
+rm -f "$REG/workers/w3n-frontend.json"
 
 # ---- 本任務自行補上：AGENT_TEAM_AUTO_PUSH_LIMIT 真的可覆寫——把上限
 #      調到 1，計數為 1 時應該直接升級，不再自動推進 ----
@@ -3440,7 +3593,7 @@ jq '.auto_push_count=0 | .held=false | .pending_resend=[]' "$REG/workers/w3n-bac
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=326
+HAT_EXPECTED_ASSERTIONS=333
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

@@ -376,9 +376,22 @@ hat_wd_retry_pending_resend() {
 # hat_wd_process_worker <registry_root> <orchestrator_name> <worker> \
 #   <whitelisted> <stall_seconds> <auto_push_limit>
 # 對單一 worker 依序執行：4b) 待補送補投 → 讀取這一輪觀測值 → 更新
-# stamp 追蹤 → 3) 停滯偵測 → 豁免檢查 → 2) blocked／unknown 升級 →
+# stamp 追蹤 → 3) 停滯偵測（內建豁免） → 2) blocked／達上限升級（不
+# 受豁免影響） → unknown 直接跳過 → 豁免檢查（只擋第 1 項） →
 # 1) 自動推進。先做補投，讓後面的自動推進評估用到的是補投後的最新持
 # 有旗標狀態（見檔頭「四個職責」b) 一節）。
+#
+# ---- 修正迴圈第一輪：豁免檢查不得排在 2) 之前 ----
+# 檔頭「豁免」一節承諾「豁免範圍包含第 1、3 兩項，第 2 項的 blocked／
+# 達上限升級不受影響，兩者可能同時成立，此時仍要升級」；上一版把豁免
+# 檢查寫成一句涵蓋全部後續分支的無條件 `return`，擋在 2) 之前，等於把
+# 這句承諾寫在檔頭、卻沒有寫進控制流程。後果：一個有未回覆 need-you
+# 的 worker，若之後又撞上一個完全不相干的核准框（agent_status 變成
+# blocked），會被豁免直接放行、blocked 升級整段不會執行——這正是設計
+# 最想消滅的失效形狀（卡住、沒人知道、沒有任何訊息），已用審查回合的
+# mutation 實測重現並修正，見任務報告。修法：blocked 與達上限這兩個
+# 「2) 升級」的分支都挪到豁免檢查之前，豁免檢查本身只留在「1) 自動推
+# 進」的實際送出動作前面，不再是一句擋住後面所有分支的早退。
 hat_wd_process_worker() {
   local registry_root="$1" orchestrator_name="$2" worker="$3" whitelisted="$4"
   local stall_seconds="$5" auto_push_limit="$6"
@@ -437,12 +450,8 @@ hat_wd_process_worker() {
       ;;
   esac
 
-  # ---- 豁免：等 need-you 回覆的 worker 不評估自動推進 ----
-  if [ "$needyou_pending" = "1" ]; then
-    return 0
-  fi
-
-  # ---- 2：blocked 一律升級，不送文字下行給這個 worker ----
+  # ---- 2a：blocked 一律升級，不受 need-you 豁免影響（見上方「修正迴
+  #      圈第一輪」一節）；不送文字下行給這個 worker ----
   if [ "$status" = "blocked" ]; then
     hat_wd_escalate "$registry_root" "$orchestrator_name" "$worker" \
       "worker=$worker 卡在核准框（agent_status=blocked），文字下行會被拒絕，需要調查者讀畫面代按"
@@ -458,7 +467,9 @@ hat_wd_process_worker() {
     return 0
   fi
 
-  # ---- 1：自動推進，先套用計數重置（見檔頭同名一節）----
+  # ---- 2b：達上限升級，同樣不受 need-you 豁免影響，因此先套用計數重
+  #      置、算出目前計數，再判斷是否已達上限——這一步排在豁免檢查之
+  #      前（見上方「修正迴圈第一輪」一節）----
   hat_wd_apply_auto_push_reset "$registry_root" "$worker" "$worker_file"
   auto_push_count="$(jq -r '.auto_push_count // 0' "$worker_file")"
 
@@ -468,6 +479,13 @@ hat_wd_process_worker() {
     return 0
   fi
 
+  # ---- 豁免：等 need-you 回覆的 worker 不自動推進（只擋這一項，見上
+  #      方「修正迴圈第一輪」一節）----
+  if [ "$needyou_pending" = "1" ]; then
+    return 0
+  fi
+
+  # ---- 1：自動推進 ----
   rc=0
   hat_herdr agent prompt "$worker" "繼續" >/dev/null || rc=$?
   if [ "$rc" -eq 0 ]; then
