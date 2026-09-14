@@ -7018,4 +7018,69 @@ test_reviewer_contract_direct_comment_and_boundaries() {
 }
 test_reviewer_contract_direct_comment_and_boundaries
 
+# ------------------------------------------------------------
+# reviewer_home: .config/gh symlink for gh pr comment authentication
+# ------------------------------------------------------------
+test_reviewer_home_gh_config_symlink() {
+  local test_dir="$T/gh-config-symlink-test"
+  mkdir -p "$test_dir"
+
+  local expected_gh="$HOME/.config/gh"
+
+  # claude
+  local h_claude="$test_dir/claude-home"
+  local w_claude="$test_dir/claude-workdir"
+  mkdir -p "$w_claude"
+  _write_claude_home_interactive "$h_claude" "$w_claude"
+  if [ -L "$h_claude/.config/gh" ] && [ "$(readlink "$h_claude/.config/gh")" = "$expected_gh" ]; then
+    pass "test_reviewer_home_gh_config_symlink: claude 掛載 .config/gh 正確"
+  else
+    bad "test_reviewer_home_gh_config_symlink: claude 掛載 .config/gh 失敗"
+  fi
+
+  # codex
+  local h_codex="$test_dir/codex-home"
+  local w_codex="$test_dir/codex-workdir"
+  mkdir -p "$w_codex"
+  _write_codex_home_interactive "$h_codex" "$w_codex"
+  if [ -L "$h_codex/.config/gh" ] && [ "$(readlink "$h_codex/.config/gh")" = "$expected_gh" ]; then
+    pass "test_reviewer_home_gh_config_symlink: codex 掛載 .config/gh 正確"
+  else
+    bad "test_reviewer_home_gh_config_symlink: codex 掛載 .config/gh 失敗"
+  fi
+
+  # opencode
+  local h_opencode="$test_dir/opencode-home"
+  _write_opencode_home_interactive "$h_opencode"
+  if [ -L "$h_opencode/.config/gh" ] && [ "$(readlink "$h_opencode/.config/gh")" = "$expected_gh" ]; then
+    pass "test_reviewer_home_gh_config_symlink: opencode 掛載 .config/gh 正確"
+  else
+    bad "test_reviewer_home_gh_config_symlink: opencode 掛載 .config/gh 失敗"
+  fi
+
+  # agy
+  local h_agy="$test_dir/agy-home"
+  local w_agy="$test_dir/agy-workdir"
+  local wt_agy="$test_dir/agy-worktree"
+  mkdir -p "$w_agy" "$wt_agy"
+  _write_agy_home_interactive "$h_agy" "$w_agy" "$wt_agy"
+  if [ -L "$h_agy/.config/gh" ] && [ "$(readlink "$h_agy/.config/gh")" = "$expected_gh" ]; then
+    pass "test_reviewer_home_gh_config_symlink: agy 掛載 .config/gh 正確"
+  else
+    bad "test_reviewer_home_gh_config_symlink: agy 掛載 .config/gh 失敗"
+  fi
+
+  # GH_CONFIG_DIR 相容處理
+  local custom_cfg="$test_dir/custom-gh-config"
+  mkdir -p "$custom_cfg"
+  local h_custom="$test_dir/custom-home"
+  GH_CONFIG_DIR="$custom_cfg" _write_claude_home_interactive "$h_custom" "$w_claude"
+  if [ -L "$h_custom/.config/gh" ] && [ "$(readlink "$h_custom/.config/gh")" = "$custom_cfg" ]; then
+    pass "test_reviewer_home_gh_config_symlink: 自訂 GH_CONFIG_DIR 掛載正確"
+  else
+    bad "test_reviewer_home_gh_config_symlink: 自訂 GH_CONFIG_DIR 掛載失敗"
+  fi
+}
+test_reviewer_home_gh_config_symlink
+
 exit $fail
