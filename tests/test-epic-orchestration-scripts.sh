@@ -1429,6 +1429,65 @@ else
   bad "read-phase-pane 預設模式得到 '$out'"
 fi
 
+# 已實測缺陷：Antigravity CLI 把 agent 回覆的每一行整段做兩格縮排，
+# 標記行的行首因此是空白字元而非 `[`，原本嚴格錨定行首第一個字元的
+# 樣式會全部落空、靜默回報 marker=none。這裡重現該情境：畫面上的標記
+# 行帶兩格前導空白，驗證修正後仍抓得到，而且輸出原樣保留前導空白
+# （read-phase-pane.sh 只負責挑對行，不負責正規化，正規化留給
+# event-generator.sh 的解析樣式，見那裡的測試）。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+# section=read-pane-marker-indented
+case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_220"}]}}'; exit 0 ;;
+  "pane read")
+    printf '  [PHASE 220] seq=5 state=working-ok\n'
+    exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$EO_TEST_PATH"
+assert_herdr_stubbed "$STUB_BIN" read-pane-marker-indented
+eo_state_set 220 pane_id '"pane_220"'
+eo_state_set 220 tab_id '"tab_220"'
+
+out="$(bash "$SCRIPTS/read-phase-pane.sh" 220 --marker-only)"
+if [ "$out" = "  [PHASE 220] seq=5 state=working-ok" ]; then
+  pass "read-phase-pane --marker-only 容忍行首兩格縮排（Antigravity CLI 實測情境），照樣抓到標記行"
+else
+  bad "read-phase-pane --marker-only 對帶縮排的標記行得到 '$out'"
+fi
+export PATH="$EO_TEST_PATH"
+
+# 反向情境：標記格式不是出現在行首（縮排之外還有其他非空白字元），
+# 而是被其他文字引用或提及——不能放寬成「行內任何位置出現這個樣式都
+# 算」，這種行不該被當成真正的標記行。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+# section=read-pane-marker-not-anchored
+case "$1 $2" in
+  "tab list") printf '{"result":{"tabs":[{"tab_id":"tab_221"}]}}'; exit 0 ;;
+  "pane read")
+    printf '畫面上引用了格式 [PHASE 221] seq=9 state=working-ok 作說明\n'
+    exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+export PATH="$EO_TEST_PATH"
+assert_herdr_stubbed "$STUB_BIN" read-pane-marker-not-anchored
+eo_state_set 221 pane_id '"pane_221"'
+eo_state_set 221 tab_id '"tab_221"'
+
+out="$(bash "$SCRIPTS/read-phase-pane.sh" 221 --marker-only)"
+if [ "$out" = "marker=none" ]; then
+  pass "read-phase-pane --marker-only 不把行內被引用、非行首的標記格式誤判成真正的標記行"
+else
+  bad "read-phase-pane --marker-only 對非行首出現的標記格式得到 '$out'，預期 marker=none"
+fi
+export PATH="$EO_TEST_PATH"
+
 # 沒有標記行時回 marker=none，交由呼叫端派調查者。
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
@@ -1552,6 +1611,66 @@ if [ "$out" = "phase=108 stopped=done marker=pr-ready pr=456" ]; then
   pass "pr-ready 產生事件行"
 else
   bad "pr-ready 得到 '$out'"
+fi
+
+# ---- 已實測缺陷：Antigravity CLI 對回覆整段做兩格縮排，標記行行首
+# 因此是空白字元而非 `[` ----
+# eo_classify_stop 直接單元測試，不透過 read-phase-pane.sh：這裡驗證
+# 的是 event-generator.sh 自己那個解析樣式獨立能吃下前導與尾隨空
+# 白，不依賴上游先 trim 過。全程直接呼叫生產的 eo_classify_stop。
+eo_state_set 222 last_marker_seq 5
+eo_state_set 222 auto_push_count 0
+eo_state_set 222 held_by_orchestrator false
+
+# 一：行首兩格縮排＋working-ok，行為要與不帶縮排時一致（自動推進、不
+# 印事件），且基準真的推進到 6。
+out="$(eo_classify_stop 222 "done" '  [PHASE 222] seq=6 state=working-ok')"
+if [ -z "$out" ] && [ "$(eo_state_get 222 last_marker_seq)" = "6" ]; then
+  pass "eo_classify_stop 容忍行首兩格縮排：working-ok 照樣自動推進、基準照樣推進"
+else
+  bad "行首縮排的 working-ok 得到 out='$out'，基準='$(eo_state_get 222 last_marker_seq)'，預期空字串與基準 6"
+fi
+
+# 二：行首縮排＋pr-ready，要能正確解析出 seq 與 state，產生事件行（不
+# 是被自動推掉），證明縮排不只是「有沒有抓到」，抓到之後的欄位值也要
+# 對。
+out="$(eo_classify_stop 222 "done" '  [PHASE 222] seq=7 state=pr-ready pr=456')"
+if [ "$out" = "phase=222 stopped=done marker=pr-ready pr=456" ]; then
+  pass "eo_classify_stop 容忍行首兩格縮排：pr-ready 正確解析並產生事件行"
+else
+  bad "行首縮排的 pr-ready 得到 '$out'"
+fi
+
+# 三：行尾尾隨空白字元不該讓 state 值落在白名單之外——`(.*)` 會把尾
+# 隨空白一併吃進捕捉群組，沒有 trim 的話 `pr-ready pr=456   ` 對不上
+# 白名單，會被誤判成 marker=none。這裡驗證修正後仍正確解析、且輸出
+# 事件行裡的 state 值已經去掉尾隨空白。
+out="$(eo_classify_stop 222 "done" '[PHASE 222] seq=8 state=pr-ready pr=456   ')"
+if [ "$out" = "phase=222 stopped=done marker=pr-ready pr=456" ]; then
+  pass "eo_classify_stop 容忍標記行尾端的尾隨空白，state 值正確去除尾隨空白後仍過白名單"
+else
+  bad "行尾帶尾隨空白的標記得到 '$out'"
+fi
+
+# 四：行首縮排與行尾尾隨空白同時出現，兩者要同時被容忍。
+out="$(eo_classify_stop 222 "done" '  [PHASE 222] seq=9 state=need-decision  ')"
+if [ "$out" = "phase=222 stopped=done marker=need-decision" ] \
+   && [ "$(eo_state_get 222 last_marker_seq)" = "9" ]; then
+  pass "eo_classify_stop 同時容忍行首縮排與行尾尾隨空白"
+else
+  bad "行首縮排＋行尾尾隨空白得到 '$out'，基準='$(eo_state_get 222 last_marker_seq)'"
+fi
+
+# 五：反向情境——標記格式前面帶的不是純空白，而是其他文字（例如引用
+# 或提及這個格式），不可以放寬成「行內任何位置出現這個樣式都算」。這
+# 裡驗證仍視同標記缺席，而且沒有誤把 seq 往前推（基準留在 9，不是被
+# 未經檢驗的 99 污染）。
+out="$(eo_classify_stop 222 "done" 'note: [PHASE 222] seq=99 state=working-ok')"
+if [ "$out" = "phase=222 stopped=done marker=none" ] \
+   && [ "$(eo_state_get 222 last_marker_seq)" = "9" ]; then
+  pass "eo_classify_stop 不把行首帶其他文字（非純空白）的標記格式誤判成真正的標記行"
+else
+  bad "非行首出現的標記格式得到 '$out'，基準='$(eo_state_get 222 last_marker_seq)'，預期 marker=none 且基準維持 9"
 fi
 
 # 互斥：orchestrator 持有中時，產生器不得自動推。
@@ -3691,7 +3810,7 @@ fi
 #
 # 新增斷言時要把這個數字一起改大——這是刻意的成本：一個會隨新增斷言
 # 自動放寬的下限抓不到任何東西。數字不含本條斷言自己。
-EO_EXPECTED_ASSERTIONS=197
+EO_EXPECTED_ASSERTIONS=204
 if [ "$assert_count" -ge "$EO_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $EO_EXPECTED_ASSERTIONS）"
 else

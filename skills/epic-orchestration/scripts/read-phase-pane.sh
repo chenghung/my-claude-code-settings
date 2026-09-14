@@ -70,7 +70,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 # --marker-only 會把 phase 原樣接進下面 grep 的 basic regular
-# expression 樣式（`^\[PHASE ${phase}\] seq=`）。若 phase 帶有正規表
+# expression 樣式（`^[[:space:]]*\[PHASE ${phase}\] seq=`）。若 phase 帶有正規表
 # 示式特殊字元（例如未跳脫的中括號），grep 會把它解讀成字元類別、吃
 # 掉後面的字元，結果是靜默回報 `marker=none`——這個結果跟「畫面上真
 # 的沒有標記行」完全無法區分，不會有任何錯誤訊息（獨立審查以自建樁
@@ -123,7 +123,16 @@ fi
 # `|| true`：grep 在完全沒有命中時以結束碼 1 收場，本腳本開了
 # pipefail，命中零筆是「沒有標記行」這個正常、預期得到的結果，不是
 # 腳本的錯誤，因此吞掉這個結束碼，改以 matches 是否為空字串來判斷。
-matches="$(printf '%s\n' "$screen" | grep "^\[PHASE ${phase}\] seq=" || true)"
+#
+# 行首容忍前導空白：已對 Antigravity CLI 實測，它會把 agent 回覆的
+# 每一行整段做兩格縮排，標記行的行首因此是空白字元而非 `[`，原本錨
+# 定「行首第一個字元就是 `[`」的樣式會全部落空、靜默回報
+# `marker=none`——這個結果跟「畫面上真的沒有標記行」一樣無法區分。
+# `[[:space:]]*` 只放寬容忍行首的空白字元，不放寬成「行內任何位置出
+# 現這個樣式都算」：比對之後那一段仍然錨死在同一行，畫面上單純引用
+# 或討論這個格式的文字（前面帶其他非空白字元）不會被誤判成真正的標
+# 記行。
+matches="$(printf '%s\n' "$screen" | grep "^[[:space:]]*\[PHASE ${phase}\] seq=" || true)"
 if [ -z "$matches" ]; then
   printf 'marker=none\n'
   exit 0
