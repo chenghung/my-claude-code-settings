@@ -6438,6 +6438,12 @@ test_skill_md_direct_comment_workflow() {
     return
   fi
 
+  # 驗證移除「張貼是 main agent 的事」陳舊描述
+  if grep -q '張貼是 main agent 的事' "$skill_file"; then
+    bad "SKILL.md still claims posting is main agent's responsibility"
+    return
+  fi
+
   # 驗證載明 Reviewer 自己透過 gh pr comment / 直連張貼
   if ! grep -q 'gh pr comment' "$skill_file" || ! grep -q '直連張貼' "$skill_file"; then
     bad "SKILL.md missing direct comment posting description"
