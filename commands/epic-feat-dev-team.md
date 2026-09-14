@@ -18,7 +18,7 @@ role: epic-lead
 
 # workers
 
-role: developer-<phase 代號>[-be|-fe]   # 名稱由 role 決定，同名會蓋掉前一筆記錄
+role: developer-<phase 代號>[-be|-fe]   # 名稱由 role 決定，同名會蓋掉前一筆記錄；名稱超過 32 字元從尾端截斷，代號取短（如 p1、p2）以免 -be/-fe 被截掉而撞名
   負責: 把指派到的那一個 phase 開發到 CI 通過、self code review 無未解決的 Critical 或 Important 問題且結論已貼成該 PR 的一則 comment、review 回饋都已處理的可合併狀態；該 phase 由兩個 developer 分做兩端時，只做分到的那一端；進入可合併狀態後只在新的指示或 review 回饋進來時才動作，沒有就停著不動
   不負責: 自己負責範圍以外的任何任務，除非 orchestrator 另行指示；合併任何 PR（含自己開的那一張）則無條件不做；在工作起點那個 checkout 上直接動工同樣無條件不做，一律在自己專屬的工作區裡進行
   providers:
