@@ -2160,17 +2160,28 @@ lri_opencode_out="$(launch_reviewer_interactive opencode w2:p12 "$LRI_WT" \
 
 opencode_start_argv="$LRI_RECORD_DIR/agent-start.opencode.argv"
 mapfile -t lri_opencode_argv < "$opencode_start_argv"
-# Regression guard: the token right after `--` must be the positional
-# workdir itself, not "opencode" a second time -- a real opencode binary
-# would silently swallow that duplicate as its own project-directory
-# positional argument instead of erroring (see the claude section above
-# for why this needs its own explicit check).
+# Regression guard: herdr's own --kind already resolves the executable to
+# run (its --help names --kind "Supported agent kind and canonical
+# executable"), so the token right after `--` must be opencode's own first
+# flag, not "opencode" a second time -- a real opencode binary would
+# silently swallow that duplicate as a project-directory positional
+# argument instead of erroring (see the claude section above for why
+# this needs its own explicit check).
 lri_opencode_dashdash_idx=-1
 for idx in "${!lri_opencode_argv[@]}"; do
   [ "${lri_opencode_argv[$idx]}" = "--" ] && lri_opencode_dashdash_idx=$idx
 done
+lri_opencode_first_arg="${lri_opencode_argv[$((lri_opencode_dashdash_idx + 1))]:-}"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_opencode_dashdash_idx" -ge 0 ] && [ "${lri_opencode_argv[$((lri_opencode_dashdash_idx + 1))]:-}" = "$lri_opencode_workdir" ] && pass launch-reviewer-interactive-opencode-no-duplicate-executable-name || bad "launch-reviewer-interactive-opencode-no-duplicate-executable-name: $(cat "$opencode_start_argv")"
+[ "$lri_opencode_dashdash_idx" -ge 0 ] && [ "$lri_opencode_first_arg" != "opencode" ] && [ "${lri_opencode_first_arg#-}" != "$lri_opencode_first_arg" ] && pass launch-reviewer-interactive-opencode-no-duplicate-executable-name || bad "launch-reviewer-interactive-opencode-no-duplicate-executable-name: $(cat "$opencode_start_argv")"
+lri_opencode_auto_found=0
+for a in "${lri_opencode_argv[@]}"; do
+  case "$a" in
+    --auto) lri_opencode_auto_found=1 ;;
+  esac
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_opencode_auto_found" -eq 1 ] && pass launch-reviewer-interactive-opencode-auto-flag || bad launch-reviewer-interactive-opencode-auto-flag
 lri_opencode_run_found=0
 lri_opencode_dir_found=0
 for a in "${lri_opencode_argv[@]}"; do

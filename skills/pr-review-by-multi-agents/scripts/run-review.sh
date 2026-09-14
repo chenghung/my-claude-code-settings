@@ -218,10 +218,10 @@ readonly REVIEWER_CONFIRM_BUDGET_SECONDS=60
 # because REVIEWER_CONFIRM_BUDGET_SECONDS above only ever catches a
 # reviewer that never got moving in the first place -- it says nothing
 # about one that started working, then stopped partway (a crash, a network
-# hiccup, a tool-permission dialog neither codex nor opencode has an
-# auto-approve flag for the way claude's --permission-mode auto and agy's
+# hiccup, a tool-permission dialog codex has no auto-approve flag for the
+# way claude's --permission-mode auto, opencode's --auto, and agy's
 # --dangerously-skip-permissions do, see launch_reviewer_interactive's own
-# claude- and agy-branch comments) without herdr ever reporting it as
+# branch comments) without herdr ever reporting it as
 # agent_status=blocked. Not every such stall reports blocked -- herdr's own
 # blocked detection is necessarily specific to whatever dialog shapes it
 # recognizes, and nothing here guarantees every platform's every possible
@@ -2269,8 +2269,13 @@ launch_reviewer_interactive() {
         -- -C "$reviewer_workdir")
       ;;
     opencode)
+      # --auto: auto-approves permissions that are not explicitly denied,
+      # preventing an unattended reviewer pane from stalling on permission
+      # dialogs (matching claude's --permission-mode auto and agy's
+      # --dangerously-skip-permissions). High-risk shell commands remain
+      # blocked by OPENCODE_CONFIG (opencode-permission.json).
       cmd=(herdr agent start "$agent_name" --kind opencode --pane "$pane_id" \
-        -- "$reviewer_workdir")
+        -- --auto "$reviewer_workdir")
       ;;
     agy)
       # --dangerously-skip-permissions: once agy is actually running and
@@ -3937,10 +3942,9 @@ cmd_prepare() {
 #
 # Never fails, regardless of how many (or which) reviewers this confirms,
 # or how many times a given one gets resent to: an unconfirmed reviewer
-# might simply be waiting on a human at a tool-permission dialog neither
-# codex nor opencode has an auto-approve flag for (unlike claude and agy --
-# see launch_reviewer_interactive's own claude- and agy-branch comments),
-# in which case it is not broken and will run to completion normally the
+# might simply be waiting on a human at a tool-permission dialog codex has
+# no auto-approve flag for (unlike claude, opencode, and agy -- see
+# launch_reviewer_interactive's own branch comments), in which case it is not broken and will run to completion normally the
 # moment a human answers it; it might have exhausted its own resend budget
 # against a drop that just kept recurring; or it might just be slower than
 # this budget to report agent_status=working. Failing cmd_launch here on
