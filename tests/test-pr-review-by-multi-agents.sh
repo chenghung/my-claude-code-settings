@@ -6410,4 +6410,49 @@ test_reviewer_home_gh_config_symlink() {
 }
 test_reviewer_home_gh_config_symlink
 
+# ------------------------------------------------------------
+# SKILL.md: direct comment posting, multi-aspect review, no synthesis or github-manager delegation
+# ------------------------------------------------------------
+test_skill_md_direct_comment_workflow() {
+  local skill_file="$REPO/skills/pr-review-by-multi-agents/SKILL.md"
+
+  # 驗證移除 synthesis-contract 參照
+  if grep -q 'synthesis-contract' "$skill_file"; then
+    bad "SKILL.md still references synthesis-contract"
+    return
+  fi
+
+  # 驗證移除合流與 synthesis 關鍵字
+  if grep -q '合流' "$skill_file"; then
+    bad "SKILL.md still contains '合流'"
+    return
+  fi
+  if grep -qi 'synthesis' "$skill_file"; then
+    bad "SKILL.md still contains 'synthesis'"
+    return
+  fi
+
+  # 驗證移除委派 github-manager 張貼條款
+  if grep -q '委派 github-manager' "$skill_file"; then
+    bad "SKILL.md still mentions delegating to github-manager for posting"
+    return
+  fi
+
+  # 驗證載明 Reviewer 自己透過 gh pr comment / 直連張貼
+  if ! grep -q 'gh pr comment' "$skill_file" || ! grep -q '直連張貼' "$skill_file"; then
+    bad "SKILL.md missing direct comment posting description"
+    return
+  fi
+
+  # 驗證自主診斷多面向 / subagents 審查
+  if ! grep -q 'subagent' "$skill_file" || ! grep -q '多面向' "$skill_file"; then
+    bad "SKILL.md missing multi-aspect / subagents description"
+    return
+  fi
+
+  pass "SKILL.md correctly describes direct comment workflow without synthesis or github-manager"
+}
+test_skill_md_direct_comment_workflow
+
 exit $fail
+
