@@ -3100,8 +3100,8 @@ case "$ps_out" in
   *) pass print-summary-no-cross-validation-note-for-two ;;
 esac
 case "$ps_out" in
-  *"$PS_BASE/synthesis.log"*) pass print-summary-reports-synthesis-log-path ;;
-  *) bad print-summary-reports-synthesis-log-path ;;
+  *'synthesis'*|*'合流'*) bad print-summary-multi-reviewer-omits-synthesis ;;
+  *) pass print-summary-multi-reviewer-omits-synthesis ;;
 esac
 
 ps_out_single="$(print_summary "$PS_BASE" claude:w16:p3 --skipped codex opencode)"
@@ -3110,7 +3110,7 @@ case "$ps_out_single" in
   *) bad print-summary-cross-validation-note-for-one ;;
 esac
 case "$ps_out_single" in
-  *'synthesis.log'*) bad print-summary-single-reviewer-omits-synthesis-log ;;
+  *'synthesis'*|*'合流'*) bad print-summary-single-reviewer-omits-synthesis-log ;;
   *) pass print-summary-single-reviewer-omits-synthesis-log ;;
 esac
 
@@ -3978,11 +3978,13 @@ esac
 
 E2E_SUMMARY_FILE="$E2E_BASE_DIR/summary.txt"
 i=0
-until { [ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 4 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+until { [ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 3 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 4 ] && pass main-e2e-summary-file-converges || bad main-e2e-summary-file-converges
+[ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 3 ] && pass main-e2e-summary-file-converges || bad main-e2e-summary-file-converges
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -q 'worktree_status=ok' "$E2E_SUMMARY_FILE" 2>/dev/null && pass main-e2e-summary-file-worktree-status-ok || bad main-e2e-summary-file-worktree-status-ok
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+! grep -q 'cli=synthesis:' "$E2E_SUMMARY_FILE" 2>/dev/null && pass main-e2e-summary-file-no-synthesis || bad main-e2e-summary-file-no-synthesis
 
 i=0
 until [ ! -e "$E2E_WORKTREE_DIR" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
@@ -4292,7 +4294,7 @@ done
 
 CHMODE2E_SUMMARY_FILE="$CHMODE2E_BASE_DIR/summary.txt"
 i=0
-until { [ -f "$CHMODE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$CHMODE2E_SUMMARY_FILE")" -eq 4 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+until { [ -f "$CHMODE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$CHMODE2E_SUMMARY_FILE")" -eq 3 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 
 chmod -R u+w "$CHMODE2E_BASE_DIR" 2>/dev/null || true
 
@@ -4559,690 +4561,38 @@ else
 fi
 
 # ==============================================================
-# resolve_synthesis_contract_path / synthesis-contract.md
+# test_synthesis_contract_and_code_removed
 # ==============================================================
-
-# ---- 合流契約可被解析到 ----
-if out="$(resolve_synthesis_contract_path)" && [ -f "$out" ]; then
-  pass "resolve_synthesis_contract_path 指到存在的檔案"
-else
-  bad "resolve_synthesis_contract_path 失敗: $out"
-fi
-
-# ---- 合流契約含必要段落 ----
-sc="$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md"
-for kw in "矛盾" "platform/model" "重新計算" "摺疊區" "揭露"; do
-  if grep -q "$kw" "$sc"; then
-    pass "合流契約含: $kw"
+test_synthesis_contract_and_code_removed() {
+  local sc="$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md"
+  if [ ! -f "$sc" ]; then
+    pass "test_synthesis_contract_and_code_removed: synthesis-contract.md 已刪除"
   else
-    bad "合流契約缺: $kw"
+    bad "test_synthesis_contract_and_code_removed: synthesis-contract.md 仍存在: $sc"
   fi
-done
 
-# Symlink case: mirrors resolve_contract_path's symlink case above -- this
-# fixture symlinks only run-review.sh itself, not the whole skill directory
-# the way install.sh actually deploys it, but readlink resolves
-# BASH_SOURCE[0] the same way regardless of which level of the path is the
-# symlink, so this still exercises the exact resolution step
-# (readlink -f "${BASH_SOURCE[0]}") that install.sh's real deployment
-# depends on.
-SYNTHESIS_SYMLINKED_SKILL="$T/synthesis-symlinked-skill"
-mkdir -p "$SYNTHESIS_SYMLINKED_SKILL/scripts"
-ln -s "$RUN_SH" "$SYNTHESIS_SYMLINKED_SKILL/scripts/run-review.sh"
-out="$(bash -c "source '$SYNTHESIS_SYMLINKED_SKILL/scripts/run-review.sh'; resolve_synthesis_contract_path")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "$sc" ] && pass synthesis-contract-path-symlink || bad synthesis-contract-path-symlink
+  local fn
+  for fn in \
+    resolve_synthesis_contract_path \
+    launch_synthesis \
+    build_synthesis_prompt \
+    _select_synthesis_cli \
+    _record_synthesis_result \
+    _synthesis_log_path \
+    _write_opencode_synthesis_permission_config \
+    _count_ready \
+    _first_ready_cli \
+    _ready_content_files \
+    _disclosure_status_label; do
+    if grep -qE "^${fn}[ (]" "$RUN_SH"; then
+      bad "test_synthesis_contract_and_code_removed: run-review.sh 仍含有合流函式定義: $fn"
+    else
+      pass "test_synthesis_contract_and_code_removed: run-review.sh 已移除合流函式: $fn"
+    fi
+  done
+}
+test_synthesis_contract_and_code_removed
 
-# Missing case: a scripts/ directory with no sibling references/ at all ->
-# non-zero, no stdout. Must not be confused with the symlink case above.
-SYNTHESIS_NO_CONTRACT_SKILL="$T/synthesis-no-contract-skill"
-mkdir -p "$SYNTHESIS_NO_CONTRACT_SKILL/scripts"
-cp "$RUN_SH" "$SYNTHESIS_NO_CONTRACT_SKILL/scripts/run-review.sh"
-if out="$(bash -c "source '$SYNTHESIS_NO_CONTRACT_SKILL/scripts/run-review.sh'; resolve_synthesis_contract_path" 2>/dev/null)"; then
-  bad synthesis-contract-path-missing
-else
-  pass synthesis-contract-path-missing
-fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass synthesis-contract-path-missing-no-output || bad synthesis-contract-path-missing-no-output
-
-# ==============================================================
-# Task 7: 合流行程
-#
-# _count_ready / _first_ready_cli / _ready_content_files /
-# build_synthesis_prompt / launch_synthesis / _record_synthesis_result,
-# and spawn_supervisor_interactive's own tail wiring that strings them
-# together once every reviewer has finished and the worktree is gone.
-# ==============================================================
-
-# ---- _disclosure_status_label 把三個 raw content_status 譯成合流契約
-# 要求的詞彙，未知值則明確標示而非偽裝成已知的三者之一 ----
-dsl_out="$(_disclosure_status_label ready)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$dsl_out" = "完成" ] && pass "_disclosure_status_label ready -> 完成" || bad "_disclosure_status_label ready 譯成: $dsl_out"
-dsl_out="$(_disclosure_status_label withheld)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$dsl_out" = "完成但內容被判定為不可信" ] && pass "_disclosure_status_label withheld -> 完成但內容被判定為不可信" || bad "_disclosure_status_label withheld 譯成: $dsl_out"
-dsl_out="$(_disclosure_status_label no-content)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$dsl_out" = "失敗" ] && pass "_disclosure_status_label no-content -> 失敗" || bad "_disclosure_status_label no-content 譯成: $dsl_out"
-dsl_out="$(_disclosure_status_label some-unexpected-value)"
-case "$dsl_out" in
-  *"some-unexpected-value"*) pass "_disclosure_status_label 未知值不偽裝成三者之一" ;;
-  *) bad "_disclosure_status_label 未知值被吃掉或誤判: $dsl_out" ;;
-esac
-
-# ---- build_synthesis_prompt 內嵌契約、名單與各份 review 的固定樣本 ----
-# 四份都各代表不同狀態：claude/agy 是 ready，codex 是「沒有內容」
-# （沒有標記可抓），opencode 是「內容被判定為不可信」（標記齊全、有
-# content_file，但 exit 非零或 worktree 被竄改而 withheld）——這兩類都
-# 是簡報明列要擋在合流輸入之外的類別，缺一都會讓涵蓋不完整。
-mkdir -p "$T/synth"
-cat > "$T/synth/summary.txt" <<'SUM'
-cli=claude pid=111 exit=0 ended_at=2026-08-27T00:00:00Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth/.comment-body-111.md
-cli=agy pid=222 exit=0 ended_at=2026-08-27T00:00:01Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth/.comment-body-222.md
-cli=codex pid=333 exit=1 ended_at=2026-08-27T00:00:02Z worktree_status=ok content_status=no-content content_file=
-cli=opencode pid=444 exit=1 ended_at=2026-08-27T00:00:03Z worktree_status=ok content_status=withheld content_file=T_PLACEHOLDER/synth/.comment-body-444.md
-SUM
-sed -i "s#T_PLACEHOLDER#$T#g" "$T/synth/summary.txt"
-printf 'REVIEW-FROM-CLAUDE\n' > "$T/synth/.comment-body-111.md"
-printf 'REVIEW-FROM-AGY\n'    > "$T/synth/.comment-body-222.md"
-printf 'REVIEW-FROM-OPENCODE-WITHHELD\n' > "$T/synth/.comment-body-444.md"
-# Lines end in " dispatched", matching exactly what cmd_prepare() itself
-# writes to .roster (see cmd_prepare()'s own .roster-writing loop) and what
-# build_synthesis_prompt's roster-lookup sed pattern requires to match at
-# all -- a line ending in anything else (e.g. "completed"/"failed") would
-# silently never match, always falling through to the missing-entry
-# 未提供 case regardless of content.
-printf 'claude opus-5 dispatched\nagy gemini-3.8-flash-high dispatched\ncodex unknown-model dispatched\nopencode qwen3-max dispatched\n' \
-  > "$T/synth/roster.txt"
-
-# ---- _count_ready 正確計數 ----
-n="$(_count_ready "$T/synth/summary.txt")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$n" -eq 2 ] && pass "_count_ready 回傳 2" || bad "_count_ready 回傳 $n"
-
-# ---- _count_ready 零命中時只印一行 "0"，不因 grep -c 自己已印出 "0"
-# 而讓 fallback 再多印一行（這是逐字照抄 brief 給的程式碼會踩到的真實
-# bug：grep -c 找不到符合時本身就會印 "0" 並回傳非零，`|| printf '0\n'`
-# 這時會在後面再補一行，讓呼叫端拿到 "0\n0" 兩行，`-ge 2` 比對就會噴
-# "integer expression expected"）----
-ZERO_READY_SUMMARY="$T/synth/summary-zero-ready.txt"
-printf 'cli=codex pid=999 exit=1 ended_at=2026-08-27T00:00:03Z worktree_status=ok content_status=no-content content_file=\n' \
-  > "$ZERO_READY_SUMMARY"
-zn="$(_count_ready "$ZERO_READY_SUMMARY")"
-case "$zn" in
-  *$'\n'*) bad "_count_ready 零命中時印出超過一行" ;;
-  0) pass "_count_ready 零命中時只印一行 0" ;;
-  *) bad "_count_ready 零命中時輸出不是 0: $zn" ;;
-esac
-
-# ---- _first_ready_cli 取第一個完成的 CLI ----
-c="$(_first_ready_cli "$T/synth/summary.txt")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$c" = "claude" ] && pass "_first_ready_cli 回傳 claude" || bad "_first_ready_cli 回傳 $c"
-
-# ---- _select_synthesis_cli 偏好可被鎖到零工具的 CLI，即使它不是第一個
-# ready -- codex 的 read-only sandbox 只擋本地檔案寫入，shell 與網路仍
-# 可用；claude 的允許清單為空、shell 工具整個被禁用，屬於能被鎖到底的
-# 那一種。故意讓 codex 先於 claude 完成，驗證挑選依據不是單純的
-# dispatch 順序 ----
-mkdir -p "$T/synth-lockable"
-cat > "$T/synth-lockable/summary.txt" <<'SUM'
-cli=codex pid=555 exit=0 ended_at=2026-08-27T00:00:00Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-lockable/.comment-body-555.md
-cli=claude pid=666 exit=0 ended_at=2026-08-27T00:00:01Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-lockable/.comment-body-666.md
-SUM
-sed -i "s#T_PLACEHOLDER#$T#g" "$T/synth-lockable/summary.txt"
-lc="$(_select_synthesis_cli "$T/synth-lockable/summary.txt")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lc" = "claude" ] && pass "_select_synthesis_cli 偏好可鎖定的 claude 而非先完成的 codex" || bad "_select_synthesis_cli 回傳 $lc"
-
-# ---- _select_synthesis_cli 當 ready 的都是不可被鎖到零工具的 CLI 時，
-# 仍要退回選出一個，不能因為找不到可鎖定的選項就選不出任何 CLI ----
-mkdir -p "$T/synth-no-lockable"
-cat > "$T/synth-no-lockable/summary.txt" <<'SUM'
-cli=opencode pid=777 exit=0 ended_at=2026-08-27T00:00:00Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-no-lockable/.comment-body-777.md
-cli=codex pid=888 exit=0 ended_at=2026-08-27T00:00:01Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-no-lockable/.comment-body-888.md
-SUM
-sed -i "s#T_PLACEHOLDER#$T#g" "$T/synth-no-lockable/summary.txt"
-nlc="$(_select_synthesis_cli "$T/synth-no-lockable/summary.txt")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$nlc" ] && pass "_select_synthesis_cli 沒有可鎖定選項時仍選出一個 CLI" || bad "_select_synthesis_cli 沒有可鎖定選項時選不出任何 CLI"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$nlc" = "opencode" ] && pass "_select_synthesis_cli 沒有可鎖定選項時退回第一個完成者" || bad "_select_synthesis_cli 回傳 $nlc"
-
-# ---- _ready_content_files 只列出 ready 的兩行，且對應內容檔路徑正確 ----
-rcf_out="$(_ready_content_files "$T/synth/summary.txt")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(printf '%s\n' "$rcf_out" | wc -l)" -eq 2 ] && pass "_ready_content_files 只印兩行" || bad "_ready_content_files 印了非兩行: $rcf_out"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF "$(printf 'claude\t%s/synth/.comment-body-111.md' "$T")" <<<"$rcf_out" \
-  && pass "_ready_content_files 含 claude 那一行" || bad "_ready_content_files 缺 claude 那一行"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF "$(printf 'agy\t%s/synth/.comment-body-222.md' "$T")" <<<"$rcf_out" \
-  && pass "_ready_content_files 含 agy 那一行" || bad "_ready_content_files 缺 agy 那一行"
-case "$rcf_out" in
-  *codex*) bad "_ready_content_files 誤含 codex（content_status=no-content）" ;;
-  *) pass "_ready_content_files 排除 no-content 的 codex" ;;
-esac
-# opencode 這行是 content_status=withheld：標記齊全、確實有 content_file
-# （不像 codex 的 no-content 那樣連檔案都沒有），但已被判定內容不可
-# 信。這是簡報明列要擋的另一類，與「沒有內容」是不同的失敗形狀，兩者
-# 都要各自有測試涵蓋，缺一都不算涵蓋完整。
-case "$rcf_out" in
-  *opencode*) bad "_ready_content_files 誤含 opencode（content_status=withheld）" ;;
-  *) pass "_ready_content_files 排除 withheld 的 opencode" ;;
-esac
-
-# ---- build_synthesis_prompt 內嵌契約、兩份 review 與完整名單（含未成
-# 功的 codex 與 withheld 的 opencode）----
-out="$(build_synthesis_prompt \
-  "$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md" \
-  "$T/synth/roster.txt" "$T/synth/summary.txt" "claude" "opus-5-synth-marker")"
-if grep -q 'REVIEW-FROM-CLAUDE' <<<"$out" \
-  && grep -q 'REVIEW-FROM-AGY' <<<"$out" \
-  && grep -q '共識' <<<"$out" \
-  && grep -q 'codex' <<<"$out" \
-  && grep -q 'opencode' <<<"$out" ; then
-  pass "build_synthesis_prompt 內嵌契約、兩份 review 與完整名單"
-else
-  bad "build_synthesis_prompt 內容不完整"
-fi
-
-# ---- 不得內嵌 no-content（連標記都沒有）的內容 ----
-if grep -q 'comment-body-333' <<<"$out"; then
-  bad "build_synthesis_prompt 誤含 no-content 的內容檔"
-else
-  pass "build_synthesis_prompt 只取 ready 的內容"
-fi
-
-# ---- 不得內嵌 withheld（標記齊全但被判定不可信）的內容全文，即使該
-# CLI 仍要出現在名單的揭露段落裡 ----
-if grep -q 'REVIEW-FROM-OPENCODE-WITHHELD' <<<"$out"; then
-  bad "build_synthesis_prompt 誤含 withheld 的 review 全文"
-else
-  pass "build_synthesis_prompt 排除 withheld 的 review 全文"
-fi
-# 名單這一欄印的必須是合流契約要的三個詞之一（完成／失敗／完成但內容被
-# 判定為不可信），不是 content_status 的原始英文值——契約禁止合流過程
-# 自行把 raw token 歸類，所以這個翻譯必須在這裡（呼叫端）就做完。四筆各
-# 代表一種原始值：claude/agy 是 ready、codex 是 no-content、opencode 是
-# withheld。
-case "$out" in
-  *'claude / opus-5：完成'*) pass "build_synthesis_prompt 名單把 claude 的 ready 譯成完成" ;;
-  *) bad "build_synthesis_prompt 名單未把 claude 的 ready 譯成完成" ;;
-esac
-case "$out" in
-  *'agy / gemini-3.8-flash-high：完成'*) pass "build_synthesis_prompt 名單把 agy 的 ready 譯成完成" ;;
-  *) bad "build_synthesis_prompt 名單未把 agy 的 ready 譯成完成" ;;
-esac
-case "$out" in
-  *'codex / unknown-model：失敗'*) pass "build_synthesis_prompt 名單把 codex 的 no-content 譯成失敗" ;;
-  *) bad "build_synthesis_prompt 名單未把 codex 的 no-content 譯成失敗" ;;
-esac
-case "$out" in
-  *'opencode / qwen3-max：完成但內容被判定為不可信'*) pass "build_synthesis_prompt 名單把 opencode 的 withheld 譯成完成但內容被判定為不可信" ;;
-  *) bad "build_synthesis_prompt 名單未把 opencode 的 withheld 譯成契約詞彙" ;;
-esac
-# 原始英文 token 不應該逐字出現在名單這一欄，防止翻譯被移除或繞過時測
-# 試仍然通過。
-case "$out" in
-  *'：ready'*|*'：withheld'*|*'：no-content'*)
-    bad "build_synthesis_prompt 名單仍外洩 content_status 的原始英文值"
-    ;;
-  *)
-    pass "build_synthesis_prompt 名單不外洩 content_status 的原始英文值"
-    ;;
-esac
-
-# ---- 控制端裁決帶入的額外要求：build_synthesis_prompt 必須揭露執行合
-# 流本身的 CLI 與 model，不只是各份 review 自己的身分。用一個與名單裡
-# 任何 model 字串都不同的標記值，確認確實是新加的這一段揭露，不是撞到
-# 既有名單或 review 內容裡的字串 ----
-if grep -qF 'opus-5-synth-marker' <<<"$out"; then
-  pass "build_synthesis_prompt 揭露執行合流本身的 model"
-else
-  bad "build_synthesis_prompt 未揭露執行合流本身的 model"
-fi
-if grep -qF 'CLI 名稱：claude' <<<"$out"; then
-  pass "build_synthesis_prompt 揭露執行合流本身的 CLI 名稱"
-else
-  bad "build_synthesis_prompt 未揭露執行合流本身的 CLI 名稱"
-fi
-
-# ---- 名單檔缺漏某個 CLI 的紀錄時，該欄要明確寫成「未提供」，不是留
-# 空白（合流契約要求缺漏一律據實記為未提供，不得渲染成看起來像沒填的
-# 空格）----
-ROSTER_GAP_SUMMARY="$T/synth/summary-roster-gap.txt"
-printf 'cli=claude pid=555 exit=0 ended_at=2026-08-27T00:00:04Z worktree_status=ok content_status=ready content_file=%s/synth/.comment-body-555.md\n' "$T" \
-  > "$ROSTER_GAP_SUMMARY"
-printf 'cli=agy pid=666 exit=0 ended_at=2026-08-27T00:00:05Z worktree_status=ok content_status=ready content_file=%s/synth/.comment-body-666.md\n' "$T" \
-  >> "$ROSTER_GAP_SUMMARY"
-printf 'REVIEW-GAP-A\n' > "$T/synth/.comment-body-555.md"
-printf 'REVIEW-GAP-B\n' > "$T/synth/.comment-body-666.md"
-# roster-gap.txt 只記錄 agy，claude 這筆缺漏
-printf 'agy some-model dispatched\n' > "$T/synth/roster-gap.txt"
-
-gap_out="$(build_synthesis_prompt \
-  "$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md" \
-  "$T/synth/roster-gap.txt" "$ROSTER_GAP_SUMMARY" "claude" "some-synth-model")"
-if grep -qF -- '- claude / 未提供：完成' <<<"$gap_out"; then
-  pass "build_synthesis_prompt 名單缺漏時把 model 寫成未提供"
-else
-  bad "build_synthesis_prompt 名單缺漏時未寫成未提供"
-fi
-if grep -qF -- '- agy / some-model：完成' <<<"$gap_out"; then
-  pass "build_synthesis_prompt 名單有紀錄的那筆不受缺漏影響"
-else
-  bad "build_synthesis_prompt 名單有紀錄的那筆被誤判"
-fi
-
-# ---- 名單檔整個不存在時（不是「有檔案但缺一筆」，是連檔案都沒有）
-# 也不能讓整個函式中止。這不只是渲染問題：build_synthesis_prompt 是在
-# spawn_supervisor_interactive 自己的 set -e 子行程裡跑的，`model="$(sed
-# ... 2>/dev/null)"` 這種一般賦值句不像放在 `[ ]`／`if` 裡的指令替換那
-# 樣豁免 errexit——名單檔不存在時 sed 本身結束碼非零（2>/dev/null 只是
-# 消掉錯誤訊息，不會連結束碼也吃掉），沒有 `|| model=""` 接住的話，整
-# 個函式會在這裡靜默中止：不留錯誤訊息、不留摘要行、什麼都不剩。這正
-# 是先前一個直接呼叫已移除的無頭監督函式、從不寫 .roster 的 fixture
-# 曾經踩到的真實情境，之前這個中止完全沒有任何徵狀，唯一的旁
-# 證是 synthesis.log 從未出現過。----
-NO_ROSTER_FILE="$T/synth/nonexistent-roster.txt"
-if noroster_out="$(build_synthesis_prompt \
-  "$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md" \
-  "$NO_ROSTER_FILE" "$ROSTER_GAP_SUMMARY" "claude" "some-synth-model" 2>&1)"; then
-  pass "build_synthesis_prompt 名單檔整個不存在時仍正常回傳"
-else
-  bad "build_synthesis_prompt 名單檔整個不存在時卻中止: $noroster_out"
-fi
-if grep -qF -- '- claude / 未提供：完成' <<<"$noroster_out"; then
-  pass "build_synthesis_prompt 名單檔整個不存在時把 model 寫成未提供"
-else
-  bad "build_synthesis_prompt 名單檔整個不存在時未寫成未提供"
-fi
-
-# ---- 契約檔本身讀不到（路徑指向不存在的檔案）時，函式必須整個中
-# 止，不得吞掉這個失敗、繼續往下印出座標、名單與各份 review 全文後仍
-# 回傳成功。這是與 build_prompt 姊妹函式先前已修過的同一種缺陷：這裡
-# 的呼叫跟 spawn_supervisor_interactive 自己的呼叫一樣包在
-# `if build_synthesis_prompt ...; then` 底下，整個函式體因此豁免 set -e
-# 的 errexit，函式裡沒接
-# `|| return 1` 的那一行讀檔失敗就會被靜默吞掉，讓呼叫端拿到一份完全
-# 沒有合流契約指示、卻仍判定為成功的 prompt。----
-NO_CONTRACT_FILE="$T/synth/nonexistent-contract.md"
-if nocontract_out="$(build_synthesis_prompt \
-  "$NO_CONTRACT_FILE" \
-  "$T/synth/roster.txt" "$T/synth/summary.txt" "claude" "some-synth-model" 2>/dev/null)"; then
-  bad "build_synthesis_prompt 契約檔讀不到時仍回傳成功: $nocontract_out"
-else
-  pass "build_synthesis_prompt 契約檔讀不到時回傳非零"
-fi
-
-# ==============================================================
-# build_synthesis_prompt -- 保護閘：summary 判定 ready 的兩筆，其實際
-# content_file 在函式執行當下卻都讀不到（檔案在 summary 寫完之後被刪
-# 除、變得不可讀，或路徑本身就是假的），不得讓合流吃到一份沒有任何
-# review 全文的 prompt。這是這個分支的審查抓出的兩個真功能缺口之一：
-# 修正前，每個 content_file 是逐檔靜默跳過，即使全部跳光也照樣印出前
-# 面的契約、身分與名單三段並回傳成功，讓 launch_synthesis 拿一份沒有
-# 任何 review 內容的 prompt 去跑，其輸出卻仍會被判定為 ready、成為唯
-# 一貼上 PR 的東西。
-# ==============================================================
-mkdir -p "$T/synth-no-embeddable"
-cat > "$T/synth-no-embeddable/summary.txt" <<'SUM'
-cli=claude pid=901 exit=0 ended_at=2026-08-27T00:00:00Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-no-embeddable/.comment-body-901.md
-cli=agy pid=902 exit=0 ended_at=2026-08-27T00:00:01Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-no-embeddable/.comment-body-902.md
-SUM
-sed -i "s#T_PLACEHOLDER#$T#g" "$T/synth-no-embeddable/summary.txt"
-# 兩份 content_file 都刻意不建立——模擬 summary 已經寫下 ready，但實際
-# 檔案在合流真正跑起來之前就消失或從未落地的情境。
-printf 'claude some-model dispatched\nagy some-model dispatched\n' > "$T/synth-no-embeddable/roster.txt"
-
-NOEMBED_STDERR="$T/synth-no-embeddable/stderr"
-if noembed_out="$(build_synthesis_prompt \
-  "$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md" \
-  "$T/synth-no-embeddable/roster.txt" "$T/synth-no-embeddable/summary.txt" \
-  "claude" "some-synth-model" 2>"$NOEMBED_STDERR")"; then
-  bad "build_synthesis_prompt 在完全嵌不到任何 review 全文時仍回傳成功: $noembed_out"
-else
-  pass "build_synthesis_prompt 在完全嵌不到任何 review 全文時回傳非零"
-fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$NOEMBED_STDERR" ] && pass "build_synthesis_prompt 嵌不到任何內容時在 stderr 留下原因" || bad "build_synthesis_prompt 嵌不到任何內容時 stderr 是空的"
-
-# ---- 對照組：只要至少一份能嵌入，就不該觸發這道保護閘 ----
-mkdir -p "$T/synth-one-embeddable"
-cat > "$T/synth-one-embeddable/summary.txt" <<'SUM'
-cli=claude pid=903 exit=0 ended_at=2026-08-27T00:00:00Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-one-embeddable/.comment-body-903.md
-cli=agy pid=904 exit=0 ended_at=2026-08-27T00:00:01Z worktree_status=ok content_status=ready content_file=T_PLACEHOLDER/synth-one-embeddable/.comment-body-904.md
-SUM
-sed -i "s#T_PLACEHOLDER#$T#g" "$T/synth-one-embeddable/summary.txt"
-printf 'REVIEW-ONE-EMBEDDABLE\n' > "$T/synth-one-embeddable/.comment-body-903.md"
-# .comment-body-904.md 故意不建立，模擬其中一份消失、另一份還在的情境
-printf 'claude some-model dispatched\nagy some-model dispatched\n' > "$T/synth-one-embeddable/roster.txt"
-
-if oneembed_out="$(build_synthesis_prompt \
-  "$REPO/skills/pr-review-by-multi-agents/references/synthesis-contract.md" \
-  "$T/synth-one-embeddable/roster.txt" "$T/synth-one-embeddable/summary.txt" \
-  "claude" "some-synth-model")"; then
-  pass "build_synthesis_prompt 只要有一份可嵌入就不觸發保護閘"
-else
-  bad "build_synthesis_prompt 有一份可嵌入卻仍被保護閘擋下"
-fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q 'REVIEW-ONE-EMBEDDABLE' <<<"$oneembed_out" && pass "build_synthesis_prompt 對照組確實嵌入了那唯一一份 review" || bad "build_synthesis_prompt 對照組未嵌入那唯一一份 review"
-
-# ==============================================================
-# launch_synthesis
-#
-# Recording stubs, the same technique launch_reviewer_interactive's own
-# tests use elsewhere in this file, so this can assert on exactly what
-# launch_synthesis handed the underlying CLI: narrower flags than
-# launch_reviewer_interactive's own (no allowedTools at all for claude, an
-# empty agy permission list instead of the reviewer's `command(git diff)`
-# allowance), and that the prompt actually arrives over stdin.
-# ==============================================================
-
-SYNTH_LAUNCH_ROOT="$T/synth-launch-fixture"
-mkdir -p "$SYNTH_LAUNCH_ROOT"
-SYNTH_LAUNCH_RECORD_DIR="$SYNTH_LAUNCH_ROOT/records"
-mkdir -p "$SYNTH_LAUNCH_RECORD_DIR"
-
-SYNTH_LAUNCH_STUB_BIN="$T/synth-launch-stub-bin"
-mkdir -p "$SYNTH_LAUNCH_STUB_BIN"
-cat > "$SYNTH_LAUNCH_STUB_BIN/claude" <<'STUB'
-#!/usr/bin/env bash
-name="$(basename "$0")"
-: > "$SYNTH_LAUNCH_RECORD_DIR/$name.argv"
-for a in "$@"; do printf '%s\n' "$a" >> "$SYNTH_LAUNCH_RECORD_DIR/$name.argv"; done
-printf '%s' "${HOME:-}" > "$SYNTH_LAUNCH_RECORD_DIR/$name.env-home"
-cat > "$SYNTH_LAUNCH_RECORD_DIR/$name.stdin"
-echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
-echo "stub $name synthesis ran"
-echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
-exit 0
-STUB
-chmod +x "$SYNTH_LAUNCH_STUB_BIN/claude"
-cp "$SYNTH_LAUNCH_STUB_BIN/claude" "$SYNTH_LAUNCH_STUB_BIN/codex"
-cp "$SYNTH_LAUNCH_STUB_BIN/claude" "$SYNTH_LAUNCH_STUB_BIN/opencode"
-# agy gets its own stub, not a copy of claude's: a stub that merely
-# records argv without enforcing anything could not have caught the
-# real regression this task's own review round found -- launch_
-# synthesis's agy branch passed a bare, unattached -p, which a real agy
-# binary rejects outright ("flag needs an argument: -p", exit 2), same
-# as the now-removed headless reviewer launcher's own agy branch already
-# documented. This stub
-# reproduces exactly that one behavior (a bare -p/--print as the LAST
-# argument, i.e. nothing following it supplies its value, is rejected)
-# so a future regression that reintroduces the bare flag fails this
-# test the same way it would fail against the real binary, instead of
-# a stub silently succeeding regardless of what it was actually handed.
-cat > "$SYNTH_LAUNCH_STUB_BIN/agy" <<'STUB'
-#!/usr/bin/env bash
-name="$(basename "$0")"
-args=("$@")
-: > "$SYNTH_LAUNCH_RECORD_DIR/$name.argv"
-for a in "${args[@]}"; do printf '%s\n' "$a" >> "$SYNTH_LAUNCH_RECORD_DIR/$name.argv"; done
-printf '%s' "${HOME:-}" > "$SYNTH_LAUNCH_RECORD_DIR/$name.env-home"
-if [ "${#args[@]}" -gt 0 ] && { [ "${args[-1]}" = "-p" ] || [ "${args[-1]}" = "--print" ]; }; then
-  echo "flag needs an argument: ${args[-1]}" >&2
-  exit 2
-fi
-cat > "$SYNTH_LAUNCH_RECORD_DIR/$name.stdin"
-echo "===PR-REVIEW-BY-MULTI-AGENTS-BEGIN==="
-echo "stub $name synthesis ran"
-echo "===PR-REVIEW-BY-MULTI-AGENTS-END==="
-exit 0
-STUB
-chmod +x "$SYNTH_LAUNCH_STUB_BIN/agy"
-
-export PATH="$SYNTH_LAUNCH_STUB_BIN:$saved_path"
-export SYNTH_LAUNCH_RECORD_DIR
-assert_cli_stub_only "$PATH" "$SYNTH_LAUNCH_STUB_BIN" claude codex opencode agy
-
-# ---- claude：--allowedTools 的值是空字串，--disallowedTools 涵蓋
-# Edit/Write/NotebookEdit，prompt 確實透過 stdin 完整送達 ----
-SYNTH_LAUNCH_LOG_CLAUDE="$SYNTH_LAUNCH_ROOT/claude.synthesis.log"
-printf 'synthesis prompt for claude\n' > "$SYNTH_LAUNCH_ROOT/claude.prompt"
-synth_launch_pid_claude="$(launch_synthesis claude "$SYNTH_LAUNCH_ROOT" "$SYNTH_LAUNCH_LOG_CLAUDE" < "$SYNTH_LAUNCH_ROOT/claude.prompt")"
-
-i=0
-until [ -f "$SYNTH_LAUNCH_ROOT/.synthesis-exit-$synth_launch_pid_claude" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$SYNTH_LAUNCH_ROOT/.synthesis-exit-$synth_launch_pid_claude" ] && pass "launch_synthesis 寫出 exit 檔" || bad "launch_synthesis 未寫出 exit 檔"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$SYNTH_LAUNCH_ROOT/.synthesis-exit-$synth_launch_pid_claude" 2>/dev/null)" = "0" ] && pass "launch_synthesis exit=0" || bad "launch_synthesis exit 不是 0"
-
-synth_launch_claude_argv="$(cat "$SYNTH_LAUNCH_RECORD_DIR/claude.argv" 2>/dev/null)"
-case "$synth_launch_claude_argv" in
-  *'--allowedTools'*) pass "launch_synthesis claude 有 --allowedTools" ;;
-  *) bad "launch_synthesis claude 缺 --allowedTools" ;;
-esac
-# --allowedTools 的值本身是空字串，是獨立的一個 argv 項；找出緊接在
-# --allowedTools 那一行之後的下一行，確認它是空行。
-synth_launch_claude_allowedtools_value="$(awk '/^--allowedTools$/{getline; print; exit}' "$SYNTH_LAUNCH_RECORD_DIR/claude.argv")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$synth_launch_claude_allowedtools_value" ] && pass "launch_synthesis claude 的 --allowedTools 值為空字串" || bad "launch_synthesis claude 的 --allowedTools 值不是空字串: [$synth_launch_claude_allowedtools_value]"
-# disallowedTools 的值本身也是獨立一個 argv 項：找出緊接在
-# --disallowedTools 之後的那一行，逐字比對，確認四項都在（Edit、Write、
-# NotebookEdit、WebFetch）且額外加上 Bash 整個工具整體停用——這一項比
-# 已移除的無頭 reviewer launcher 的 claude 分支更嚴：該分支當年的說明
-# 記載了實測結論，dontAsk 的「唯讀 Bash 一律放行」例外實際上放得比字
-# 面寬，curl 打得通、把該指令加進黑名單也擋不住，唯一驗證有效的做法
-# 是整個停用 Bash 工具；reviewer 做不到是因為審查契約釘死要跑
-# git diff，合流沒有這個限制，所以理當走到底。
-synth_launch_claude_disallowed_value="$(awk '/^--disallowedTools$/{getline; print; exit}' "$SYNTH_LAUNCH_RECORD_DIR/claude.argv")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$synth_launch_claude_disallowed_value" = "Edit Write NotebookEdit WebFetch Bash" ] \
-  && pass "launch_synthesis claude 停用 Edit/Write/NotebookEdit/WebFetch/Bash" \
-  || bad "launch_synthesis claude 的 --disallowedTools 值不對: [$synth_launch_claude_disallowed_value]"
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-diff -q "$SYNTH_LAUNCH_ROOT/claude.prompt" "$SYNTH_LAUNCH_RECORD_DIR/claude.stdin" >/dev/null 2>&1 \
-  && pass "launch_synthesis 透過 stdin 完整收到 prompt" || bad "launch_synthesis 未透過 stdin 收到完整 prompt"
-
-# ---- agy：獨立的 HOME，且 permissions.allow 是空陣列（比 reviewer 版
-# 本的 agy home 更嚴——reviewer 還留了 command(git diff) 這一條），而且
-# 命令列不能帶裸的 -p/--print（真正的 agy 二進位會以「flag needs an
-# argument」拒絕、結束碼 2）——這一條的 exit=0 斷言就是先前那個 Critical
-# 問題本來該被抓到卻沒抓到的地方：舊的樁完全忽略命令列參數，不管給它
-# 什麼都回 0，現在改用會真正檢查最後一個參數的樁（見上面 agy 樁的定
-# 義），才會在裸 -p 重新出現時讓這裡失敗。----
-SYNTH_LAUNCH_LOG_AGY="$SYNTH_LAUNCH_ROOT/agy.synthesis.log"
-printf 'synthesis prompt for agy\n' > "$SYNTH_LAUNCH_ROOT/agy.prompt"
-synth_launch_pid_agy="$(launch_synthesis agy "$SYNTH_LAUNCH_ROOT" "$SYNTH_LAUNCH_LOG_AGY" < "$SYNTH_LAUNCH_ROOT/agy.prompt")"
-i=0
-until [ -f "$SYNTH_LAUNCH_ROOT/.synthesis-exit-$synth_launch_pid_agy" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$SYNTH_LAUNCH_ROOT/.synthesis-exit-$synth_launch_pid_agy" ] && pass "launch_synthesis agy 寫出 exit 檔" || bad "launch_synthesis agy 未寫出 exit 檔"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$SYNTH_LAUNCH_ROOT/.synthesis-exit-$synth_launch_pid_agy" 2>/dev/null)" = "0" ] && pass "launch_synthesis agy exit=0（未帶裸 -p）" || bad "launch_synthesis agy exit 不是 0：agy 分支很可能又帶了裸的 -p/--print"
-
-synth_launch_agy_last_arg="$(tail -n 1 "$SYNTH_LAUNCH_RECORD_DIR/agy.argv" 2>/dev/null)"
-if [ "$synth_launch_agy_last_arg" = "-p" ] || [ "$synth_launch_agy_last_arg" = "--print" ]; then
-  bad "launch_synthesis agy 的命令列仍帶裸的 -p/--print"
-else
-  pass "launch_synthesis agy 的命令列不帶裸的 -p/--print"
-fi
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-diff -q "$SYNTH_LAUNCH_ROOT/agy.prompt" "$SYNTH_LAUNCH_RECORD_DIR/agy.stdin" >/dev/null 2>&1 \
-  && pass "launch_synthesis agy 透過 stdin 完整收到 prompt" || bad "launch_synthesis agy 未透過 stdin 收到完整 prompt"
-
-# launch_reviewer_interactive's own agy branch carries
-# --dangerously-skip-permissions (see that function's own docstring for
-# why); this branch must NOT -- _select_synthesis_cli prefers agy for the
-# synthesis pass specifically because headless mode's own default-deny,
-# with an empty permission allow list, closes its shell/network surface,
-# and that flag would remove exactly that property (see
-# launch_reviewer_interactive's own agy-branch comment).
-case "$(cat "$SYNTH_LAUNCH_RECORD_DIR/agy.argv" 2>/dev/null)" in
-  *'--dangerously-skip-permissions'*) bad "launch_synthesis agy 的命令列不該帶 --dangerously-skip-permissions（那是 reviewer 分支的旗標）" ;;
-  *) pass "launch_synthesis agy 的命令列不帶 --dangerously-skip-permissions" ;;
-esac
-
-AGY_SYNTH_HOME="$SYNTH_LAUNCH_ROOT/agy-synthesis-home"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -d "$AGY_SYNTH_HOME" ] && pass "launch_synthesis agy 建立獨立 HOME" || bad "launch_synthesis agy 未建立獨立 HOME"
-agy_allow="$(jq -r '.permissions.allow | length' "$AGY_SYNTH_HOME/.gemini/antigravity-cli/settings.json" 2>/dev/null)" || agy_allow=""
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$agy_allow" = "0" ] && pass "launch_synthesis agy 的 permissions.allow 是空陣列" || bad "launch_synthesis agy 的 permissions.allow 不是空陣列: $agy_allow"
-agy_home_recorded="$(cat "$SYNTH_LAUNCH_RECORD_DIR/agy.env-home" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$agy_home_recorded" = "$AGY_SYNTH_HOME" ] && pass "launch_synthesis agy 把 HOME 指到獨立目錄" || bad "launch_synthesis agy 的 HOME 不對: $agy_home_recorded"
-
-# ---- opencode：合流專用的權限設定檔把 edit 與 bash 整個工具都設成
-# deny，不是 reviewer 版本那份只擋列名 bash 樣式的黑名單 ----
-SYNTH_LAUNCH_LOG_OPENCODE="$SYNTH_LAUNCH_ROOT/opencode.synthesis.log"
-printf 'synthesis prompt for opencode\n' > "$SYNTH_LAUNCH_ROOT/opencode.prompt"
-synth_launch_pid_opencode="$(launch_synthesis opencode "$SYNTH_LAUNCH_ROOT" "$SYNTH_LAUNCH_LOG_OPENCODE" < "$SYNTH_LAUNCH_ROOT/opencode.prompt")"
-i=0
-until [ -f "$SYNTH_LAUNCH_ROOT/.synthesis-exit-$synth_launch_pid_opencode" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$SYNTH_LAUNCH_ROOT/.synthesis-exit-$synth_launch_pid_opencode" 2>/dev/null)" = "0" ] && pass "launch_synthesis opencode exit=0" || bad "launch_synthesis opencode exit 不是 0"
-
-OPENCODE_SYNTH_CONFIG="$SYNTH_LAUNCH_ROOT/opencode-synthesis-permission.json"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$OPENCODE_SYNTH_CONFIG" ] && pass "launch_synthesis opencode 寫出權限設定檔" || bad "launch_synthesis opencode 未寫出權限設定檔"
-opencode_synth_edit="$(jq -r '.permission.edit' "$OPENCODE_SYNTH_CONFIG" 2>/dev/null)" || opencode_synth_edit=""
-opencode_synth_bash="$(jq -r '.permission.bash' "$OPENCODE_SYNTH_CONFIG" 2>/dev/null)" || opencode_synth_bash=""
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$opencode_synth_edit" = "deny" ] && pass "launch_synthesis opencode 的 edit 整個工具設為 deny" || bad "launch_synthesis opencode 的 edit 不是整個工具 deny: $opencode_synth_edit"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$opencode_synth_bash" = "deny" ] && pass "launch_synthesis opencode 的 bash 整個工具設為 deny" || bad "launch_synthesis opencode 的 bash 不是整個工具 deny，仍是 reviewer 那份黑名單: $opencode_synth_bash"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-jq empty "$OPENCODE_SYNTH_CONFIG" >/dev/null 2>&1 && pass "launch_synthesis opencode 的權限設定檔是合法 JSON" || bad "launch_synthesis opencode 的權限設定檔不是合法 JSON"
-
-# ---- 未知 CLI 回傳非零 ----
-if launch_synthesis bogus-cli "$SYNTH_LAUNCH_ROOT" "$SYNTH_LAUNCH_ROOT/bogus.log" < /dev/null >/dev/null 2>&1; then
-  bad "launch_synthesis 未知 CLI 應失敗"
-else
-  pass "launch_synthesis 未知 CLI 回傳非零"
-fi
-
-# ---- 「最容易被踩到的坑」之一：cmd_launch() 對 logs_dir 下的 chmod -R a-w
-# 是在每個 reviewer 都已啟動之後才施加的，合流是在那之後才啟動的新行
-# 程，若合流的 log 落在 logs_dir 底下就會直接開不出新檔。這裡直接重現
-# 「base_dir 可寫、其 logs 子目錄唯讀」這個前提，確認 launch_synthesis
-# 把 log 放在 base_dir 這一層時仍能正常寫出。----
-SYNTH_RO_ROOT="$T/synth-launch-readonly-fixture"
-mkdir -p "$SYNTH_RO_ROOT/logs"
-chmod -R a-w "$SYNTH_RO_ROOT/logs"
-printf 'p' > "$SYNTH_RO_ROOT/ro.prompt"
-SYNTH_RO_LOG="$SYNTH_RO_ROOT/synthesis.log"
-if synth_ro_pid="$(launch_synthesis claude "$SYNTH_RO_ROOT" "$SYNTH_RO_LOG" < "$SYNTH_RO_ROOT/ro.prompt")"; then
-  i=0
-  until [ -f "$SYNTH_RO_ROOT/.synthesis-exit-$synth_ro_pid" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ -s "$SYNTH_RO_LOG" ] && pass "launch_synthesis 的 log 放在 base_dir，不受唯讀的 logs_dir 影響" || bad "launch_synthesis 的 log 未成功寫出"
-else
-  bad "launch_synthesis 在 logs_dir 唯讀情境下應仍能啟動"
-fi
-chmod -R u+w "$SYNTH_RO_ROOT/logs" 2>/dev/null || true
-
-export PATH="$saved_path"
-
-# ==============================================================
-# _record_synthesis_result
-#
-# Write the exit file and log directly, no real process needed --
-# covering ready/withheld/no-content, the synthesis:<cli> cli-field tag,
-# worktree_status=n/a, and the echo-guard marker.
-# ==============================================================
-
-RSYN_SUMMARY="$T/record-synth-summary.txt"
-: > "$RSYN_SUMMARY"
-
-RSYN_READY_ROOT="$T/record-synth-ready"
-mkdir -p "$RSYN_READY_ROOT"
-cat > "$RSYN_READY_ROOT/synthesis.log" <<'LOG'
-===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===
-這是合流後的完整內容
-===PR-REVIEW-BY-MULTI-AGENTS-END===
-LOG
-printf '0' > "$RSYN_READY_ROOT/.synthesis-exit-77001"
-_record_synthesis_result 77001 claude "$RSYN_READY_ROOT/synthesis.log" "$RSYN_READY_ROOT" "$RSYN_SUMMARY"
-RSYN_L1="$(sed -n 1p "$RSYN_SUMMARY")"
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE '^cli=[^ ]+ pid=[0-9]+ exit=[^ ]+ ended_at=[^ ]+ worktree_status=[^ ]+ content_status=[^ ]+ content_file=' <<<"$RSYN_L1" \
-  && pass "_record_synthesis_result 七欄位" || bad "_record_synthesis_result 七欄位不對: $RSYN_L1"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'cli=synthesis:claude' <<<"$RSYN_L1" && pass "_record_synthesis_result 的 cli 欄為 synthesis:claude" || bad "_record_synthesis_result 的 cli 欄不對: $RSYN_L1"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'worktree_status=n/a' <<<"$RSYN_L1" && pass "_record_synthesis_result 的 worktree_status 為 n/a" || bad "_record_synthesis_result 的 worktree_status 不對"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'content_status=ready' <<<"$RSYN_L1" && pass "_record_synthesis_result exit=0 時 content_status=ready" || bad "_record_synthesis_result exit=0 時 content_status 不對"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(head -1 "$RSYN_READY_ROOT/.comment-body-synthesis.md")" = '<!-- pr-review-by-multi-agents -->' ] \
-  && pass "_record_synthesis_result 內容檔第一行是回音室標記" || bad "_record_synthesis_result 內容檔缺回音室標記"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF '這是合流後的完整內容' "$RSYN_READY_ROOT/.comment-body-synthesis.md" \
-  && pass "_record_synthesis_result 內容檔保留合流內容" || bad "_record_synthesis_result 內容檔遺失合流內容"
-
-RSYN_WITHHELD_ROOT="$T/record-synth-withheld"
-mkdir -p "$RSYN_WITHHELD_ROOT"
-cat > "$RSYN_WITHHELD_ROOT/synthesis.log" <<'LOG'
-===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===
-合流跑到一半失敗
-===PR-REVIEW-BY-MULTI-AGENTS-END===
-LOG
-printf '1' > "$RSYN_WITHHELD_ROOT/.synthesis-exit-77002"
-_record_synthesis_result 77002 codex "$RSYN_WITHHELD_ROOT/synthesis.log" "$RSYN_WITHHELD_ROOT" "$RSYN_SUMMARY"
-RSYN_L2="$(sed -n 2p "$RSYN_SUMMARY")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'cli=synthesis:codex' <<<"$RSYN_L2" && pass "_record_synthesis_result 的 cli 欄保留實際執行合流的 CLI 名稱" || bad "_record_synthesis_result 的 cli 欄未保留實際 CLI"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'content_status=withheld' <<<"$RSYN_L2" && pass "_record_synthesis_result exit 非零時 content_status=withheld" || bad "_record_synthesis_result exit 非零時 content_status 不對"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$RSYN_WITHHELD_ROOT/.comment-body-synthesis.md" ] && pass "_record_synthesis_result withheld 仍保留內容檔" || bad "_record_synthesis_result withheld 遺失內容檔"
-
-RSYN_NOCONTENT_ROOT="$T/record-synth-nocontent"
-mkdir -p "$RSYN_NOCONTENT_ROOT"
-printf 'CLI 崩潰，沒有標記\n' > "$RSYN_NOCONTENT_ROOT/synthesis.log"
-printf '0' > "$RSYN_NOCONTENT_ROOT/.synthesis-exit-77003"
-_record_synthesis_result 77003 opencode "$RSYN_NOCONTENT_ROOT/synthesis.log" "$RSYN_NOCONTENT_ROOT" "$RSYN_SUMMARY"
-RSYN_L3="$(sed -n 3p "$RSYN_SUMMARY")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'content_status=no-content' <<<"$RSYN_L3" && pass "_record_synthesis_result 標記缺失時 content_status=no-content" || bad "_record_synthesis_result 標記缺失時 content_status 不對"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE 'content_file=$' <<<"$RSYN_L3" && pass "_record_synthesis_result no-content 時 content_file 留空" || bad "_record_synthesis_result no-content 時 content_file 未留空"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$RSYN_NOCONTENT_ROOT/.comment-body-synthesis.md" ] && pass "_record_synthesis_result no-content 不寫內容檔" || bad "_record_synthesis_result no-content 卻寫了內容檔"
-
-# ==============================================================
-# _record_synthesis_result -- 追加寫入失敗不得中止流程（本次全檔掃描找到
-# 的同型缺陷，與 _record_reviewer_result_interactive 那段是同一個理由：
-# 兩者都在 spawn_supervisor_interactive 自己那個會繼承 errexit 的真正
-# `( ... )` 子殼層裡被裸呼叫，見該段測試自己對這個差異的完整說明，這裡
-# 不重複）。
-# ------------------------------------------------------------
-
-RSYN_APPENDFAIL_ROOT="$T/record-synth-append-fail"
-mkdir -p "$RSYN_APPENDFAIL_ROOT"
-cat > "$RSYN_APPENDFAIL_ROOT/synthesis.log" <<'LOG'
-===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===
-一段合流內容
-===PR-REVIEW-BY-MULTI-AGENTS-END===
-LOG
-printf '0' > "$RSYN_APPENDFAIL_ROOT/.synthesis-exit-77004"
-RSYN_APPENDFAIL_SUMMARY="$RSYN_APPENDFAIL_ROOT/summary.txt"
-: > "$RSYN_APPENDFAIL_SUMMARY"
-chmod a-w "$RSYN_APPENDFAIL_SUMMARY"
-
-RSYN_APPENDFAIL_STDERR="$T/record-synth-append-fail-stderr.log"
-# 裸呼叫 -- 理由同上一段。修正前這一行本身會讓整支測試檔案從這裡當場
-# 中止。
-_record_synthesis_result 77004 claude "$RSYN_APPENDFAIL_ROOT/synthesis.log" "$RSYN_APPENDFAIL_ROOT" "$RSYN_APPENDFAIL_SUMMARY" 2>"$RSYN_APPENDFAIL_STDERR"
-pass record-synthesis-result-append-failure-does-not-abort
-
-chmod u+w "$RSYN_APPENDFAIL_SUMMARY" 2>/dev/null || true
-
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$RSYN_APPENDFAIL_SUMMARY" ] && pass "_record_synthesis_result 摘要行追加失敗時不留下任何一行" || bad "_record_synthesis_result 摘要行追加失敗時仍留下內容: $(cat "$RSYN_APPENDFAIL_SUMMARY" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$RSYN_APPENDFAIL_ROOT/.comment-body-synthesis.md" ] && pass "_record_synthesis_result 摘要行追加失敗不影響已經寫成功的內容檔" || bad "_record_synthesis_result 內容檔未寫出"
 
 # ==============================================================
 # spawn_supervisor_interactive -- 合流的完整接線（互動模式）
@@ -5325,9 +4675,9 @@ SPWSYNI_SUMMARY="$SPWSYNI_ROOT/summary.txt"
 (cd "$SPWSYNI_ROOT/work" && spawn_supervisor_interactive "$SPWSYNI_WT" "$SPWSYNI_SUMMARY" claude agy codex)
 
 i=0
-until { [ -f "$SPWSYNI_SUMMARY" ] && [ "$(wc -l < "$SPWSYNI_SUMMARY")" -eq 4 ]; } || [ "$i" -ge 200 ]; do sleep 0.1; i=$((i + 1)); done
+until { [ -f "$SPWSYNI_SUMMARY" ] && [ "$(wc -l < "$SPWSYNI_SUMMARY")" -eq 3 ]; } || [ "$i" -ge 200 ]; do sleep 0.1; i=$((i + 1)); done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$SPWSYNI_SUMMARY" ] && [ "$(wc -l < "$SPWSYNI_SUMMARY")" -eq 4 ] && pass "spawn_supervisor_interactive 三個 reviewer（兩個 ready）後多寫一行合流" || bad "spawn_supervisor_interactive 未寫出合流那一行: $(cat "$SPWSYNI_SUMMARY" 2>/dev/null)"
+[ -f "$SPWSYNI_SUMMARY" ] && [ "$(wc -l < "$SPWSYNI_SUMMARY")" -eq 3 ] && pass "spawn_supervisor_interactive 三個 reviewer 完成且無合流" || bad "spawn_supervisor_interactive 未收斂為三個 reviewer 行: $(cat "$SPWSYNI_SUMMARY" 2>/dev/null)"
 
 SPWSYNI_L1="$(sed -n 1p "$SPWSYNI_SUMMARY")"
 case "$SPWSYNI_L1" in
@@ -5368,45 +4718,16 @@ esac
   && pass "spawn_supervisor_interactive codex（withheld）逐則張貼內容檔第一行仍是回音室標記" \
   || bad "spawn_supervisor_interactive codex（withheld）逐則張貼內容檔缺回音室標記"
 
-SPWSYNI_L4="$(sed -n 4p "$SPWSYNI_SUMMARY")"
-case "$SPWSYNI_L4" in
-  'cli=synthesis:claude '*) pass "spawn_supervisor_interactive 合流那一行的 cli 欄以 synthesis:claude 開頭" ;;
-  *) bad "spawn_supervisor_interactive 合流那一行的 cli 欄不對: $SPWSYNI_L4" ;;
-esac
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'worktree_status=n/a' <<<"$SPWSYNI_L4" && pass "spawn_supervisor_interactive 合流那一行 worktree_status=n/a" || bad "spawn_supervisor_interactive 合流那一行 worktree_status 不對"
+! grep -q 'cli=synthesis:' "$SPWSYNI_SUMMARY" 2>/dev/null && pass "spawn_supervisor_interactive 無合流摘要行" || bad "spawn_supervisor_interactive 仍有合流摘要行"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'content_status=ready' <<<"$SPWSYNI_L4" && pass "spawn_supervisor_interactive 合流那一行 content_status=ready" || bad "spawn_supervisor_interactive 合流那一行 content_status 不對: $SPWSYNI_L4"
-
+[ ! -e "$SPWSYNI_ROOT/synthesis.log" ] && pass "spawn_supervisor_interactive 未產生合流 log" || bad "spawn_supervisor_interactive 仍產生了合流 log"
+i=0
+until [ ! -e "$SPWSYNI_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$SPWSYNI_ROOT/synthesis.log" ] && pass "spawn_supervisor_interactive 把合流 log 放在 base_dir" || bad "spawn_supervisor_interactive 未在 base_dir 寫出合流 log"
+[ ! -e "$SPWSYNI_WT" ] && pass "spawn_supervisor_interactive 完成後 worktree 已移除" || bad "spawn_supervisor_interactive 完成後 worktree 仍在"
 
-# 合流實際收到的 prompt（透過 stub 把 stdin 原樣回顯進 synthesis.log）
-# 涵蓋契約組出的名單（含 codex 這個真的被派出、卻沒有標記可信賴內容的
-# 那一項）與兩份 ready review 全文。
-SPWSYNI_SYNTH_LOG_CONTENT="$(cat "$SPWSYNI_ROOT/synthesis.log" 2>/dev/null)"
-case "$SPWSYNI_SYNTH_LOG_CONTENT" in
-  *'claude review body'*) pass "合流（互動）log 內含 claude 那份 review 全文" ;;
-  *) bad "合流（互動）log 缺 claude 那份 review 全文" ;;
-esac
-case "$SPWSYNI_SYNTH_LOG_CONTENT" in
-  *'agy review body'*) pass "合流（互動）log 內含 agy 那份 review 全文" ;;
-  *) bad "合流（互動）log 缺 agy 那份 review 全文" ;;
-esac
-case "$SPWSYNI_SYNTH_LOG_CONTENT" in
-  *'codex review body'*) bad "合流（互動）log 誤含 codex 這份不可信的 review 全文" ;;
-  *) pass "合流（互動）log 排除 codex 這份不可信的 review 全文" ;;
-esac
-case "$SPWSYNI_SYNTH_LOG_CONTENT" in
-  *'codex-e2e-model'*) pass "合流（互動）log 內含名單中不可信的 codex 項" ;;
-  *) bad "合流（互動）log 缺名單中的 codex 項" ;;
-esac
-case "$SPWSYNI_SYNTH_LOG_CONTENT" in
-  *'CLI 名稱：claude'*) pass "合流（互動）log 揭露執行合流本身的 CLI 名稱" ;;
-  *) bad "合流（互動）log 未揭露執行合流本身的 CLI 名稱" ;;
-esac
-
-# --- ready_count < 2：只有一個 ready reviewer 時不觸發合流（互動模式） ---
+# --- 只有一個 reviewer 時正常收斂且無合流（互動模式） ---
 SPWSYNI1_ROOT="$T/spawn-supervisor-interactive-single-ready-fixture"
 SPWSYNI1_WT="$(_make_worktree_fixture "$SPWSYNI1_ROOT")"
 mkdir -p "$SPWSYNI1_ROOT/reviewers/claude/workdir"
@@ -5418,14 +4739,12 @@ SPWSYNI1_SUMMARY="$SPWSYNI1_ROOT/summary.txt"
 
 i=0
 until [ ! -e "$SPWSYNI1_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# 額外靜候片刻，理由與無頭模式的同一斷言相同：確認的是「合流不會被觸
-# 發」，不是「合流還沒來得及跑完」。
 sleep 1
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(wc -l < "$SPWSYNI1_SUMMARY")" -eq 1 ] && pass "spawn_supervisor_interactive 只有一個 ready reviewer 時不多寫合流那一行" || bad "spawn_supervisor_interactive 在只有一個 ready reviewer 時仍寫出合流那一行: $(cat "$SPWSYNI1_SUMMARY" 2>/dev/null)"
+[ "$(wc -l < "$SPWSYNI1_SUMMARY")" -eq 1 ] && pass "spawn_supervisor_interactive 只有一個 reviewer 時不多寫合流那一行" || bad "spawn_supervisor_interactive 在只有一個 reviewer 時仍寫出多餘行: $(cat "$SPWSYNI1_SUMMARY" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$SPWSYNI1_ROOT/synthesis.log" ] && pass "spawn_supervisor_interactive 只有一個 ready reviewer 時不啟動合流行程" || bad "spawn_supervisor_interactive 只有一個 ready reviewer 時仍啟動了合流行程"
+[ ! -e "$SPWSYNI1_ROOT/synthesis.log" ] && pass "spawn_supervisor_interactive 只有一個 reviewer 時不啟動合流行程" || bad "spawn_supervisor_interactive 只有一個 reviewer 時仍啟動了合流行程"
 
 # ==============================================================
 # spawn_supervisor_interactive -- 標記出現前持續等待，出現後才記錄
@@ -6964,11 +6283,19 @@ done
 
 RUNE2E_SUMMARY_FILE="$RUNE2E_BASE_DIR/summary.txt"
 i=0
-until { [ -f "$RUNE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$RUNE2E_SUMMARY_FILE")" -eq 3 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+until { [ -f "$RUNE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$RUNE2E_SUMMARY_FILE")" -eq 2 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$RUNE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$RUNE2E_SUMMARY_FILE")" -eq 3 ] \
-  && pass "cmd_run 背景監督行程正常收斂（2 個 reviewer + 1 個 synthesis）" \
+[ -f "$RUNE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$RUNE2E_SUMMARY_FILE")" -eq 2 ] \
+  && pass "cmd_run 背景監督行程正常收斂（2 個 reviewer 完成且無合流）" \
   || bad "cmd_run 背景監督行程未收斂: $(cat "$RUNE2E_SUMMARY_FILE" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+! grep -q 'cli=synthesis:' "$RUNE2E_SUMMARY_FILE" 2>/dev/null \
+  && pass "cmd_run summary 無合流摘要行" \
+  || bad "cmd_run summary 仍含有合流摘要行: $(cat "$RUNE2E_SUMMARY_FILE" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$RUNE2E_BASE_DIR/synthesis.log" ] \
+  && pass "cmd_run 無合流 log" \
+  || bad "cmd_run 仍產生了合流 log: $RUNE2E_BASE_DIR/synthesis.log"
 
 RUNE2E_WORKTREE_DIR="$RUNE2E_BASE_DIR/worktree"
 i=0
