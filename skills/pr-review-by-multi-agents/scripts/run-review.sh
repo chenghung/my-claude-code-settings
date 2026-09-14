@@ -1602,6 +1602,8 @@ _write_claude_home_interactive() {
   jq -n --arg cwd "$reviewer_workdir" \
     '{hasCompletedOnboarding: true, projects: {($cwd): {hasTrustDialogAccepted: true}}}' \
     > "$dir/.claude.json" || return 1
+  mkdir -p "$dir/.config" || return 1
+  ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
 
@@ -1623,6 +1625,8 @@ _write_codex_home_interactive() {
   ln -sf "$HOME/.codex/auth.json" "$dir/.codex/auth.json" || return 1
   printf '[projects."%s"]\ntrust_level = "trusted"\n' "$reviewer_workdir" \
     > "$dir/.codex/config.toml" || return 1
+  mkdir -p "$dir/.config" || return 1
+  ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
 
@@ -1639,6 +1643,8 @@ _write_codex_home_interactive() {
 _write_opencode_home_interactive() {
   local dir="$1"
   mkdir -p "$dir" || return 1
+  mkdir -p "$dir/.config" || return 1
+  ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
 
@@ -1830,6 +1836,9 @@ _write_agy_home_interactive() {
 
   jq -n '{onboardingComplete: true}' \
     > "$dir/.gemini/antigravity-cli/cache/onboarding.json" || return 1
+
+  mkdir -p "$dir/.config" || return 1
+  ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
 
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
