@@ -4521,7 +4521,7 @@ grep -qF "本次執行目錄：$PS_ROOT" <<<"$PS_OUT" && pass print-summary-show
 # ---- 契約含三項新規定 ----
 mkdir -p "$T/materials-empty" "$T/wt"
 contract="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
-for kw in "失敗情境" "高風險變更" "信心" "<details>"; do
+for kw in "失敗情境" "高風險變更" "信心"; do
   if grep -q "$kw" "$contract"; then
     pass "契約含關鍵段落: $kw"
   else
@@ -6977,5 +6977,45 @@ until [ ! -e "$RUNE2E_WORKTREE_DIR" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i 
 [ ! -e "$RUNE2E_WORKTREE_DIR" ] && pass "cmd_run 完成後 worktree 已移除" || bad "cmd_run 完成後 worktree 仍在"
 
 rm -f "$STUB_BIN/herdr"
+
+# ------------------------------------------------------------
+# reviewer-contract: direct comment, negative boundaries, multi-aspect subagents, unfolded output
+# ------------------------------------------------------------
+test_reviewer_contract_direct_comment_and_boundaries() {
+  local contract="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
+  
+  # 驗證授權 gh pr comment
+  if ! grep -q 'gh pr comment' "$contract"; then
+    bad "reviewer-contract missing gh pr comment authorization"
+    return
+  fi
+
+  # 驗證嚴格禁止 gh pr edit 與 gh issue edit
+  if ! grep -q 'gh pr edit' "$contract" || ! grep -q 'gh issue edit' "$contract"; then
+    bad "reviewer-contract missing prohibition for gh pr edit / gh issue edit"
+    return
+  fi
+
+  # 驗證自我揭露聲明要求
+  if ! grep -q '未經人類審核' "$contract"; then
+    bad "reviewer-contract missing unreviewed by human disclosure requirement"
+    return
+  fi
+
+  # 驗證多面向審查與 subagent 調度規範
+  if ! grep -q '安全性' "$contract" || ! grep -q 'subagent' "$contract"; then
+    bad "reviewer-contract missing multi-aspect / subagent review guidance"
+    return
+  fi
+
+  # 驗證平鋪呈現且無折疊區要求（確保無 details summary）
+  if grep -q '<details>' "$contract"; then
+    bad "reviewer-contract still contains <details> folding section"
+    return
+  fi
+
+  pass "reviewer-contract updated with direct comment, negative boundaries, and unfolded format"
+}
+test_reviewer_contract_direct_comment_and_boundaries
 
 exit $fail
