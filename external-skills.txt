@@ -44,6 +44,10 @@ mattpocock/skills@handoff
 mattpocock/skills@resolving-merge-conflicts
 mattpocock/skills@triage
 humanlayer/skills@show-me
+deanpeters/product-manager-skills@incoming-request-advisor
+deanpeters/product-manager-skills@user-story-mapping
+deanpeters/product-manager-skills@storyboard
+https://github.com/jwynia/agent-skills/tree/main/skills/tech/development/architecture/requirements-analysis
 
 # Dependencies of three entries above, not wanted for their own sake. grill-me's
 # whole body is "Run a /grilling session"; grill-with-docs adds "using the
