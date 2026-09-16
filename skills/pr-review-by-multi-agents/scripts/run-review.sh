@@ -1489,9 +1489,11 @@ _write_agy_home() {
 # enforcement for the run: opencode still starts, with no error anywhere,
 # but without OPENCODE_CONFIG it reads no deny list, so the bash-command
 # denials that config exists to enforce -- version-control writes, every
-# state-changing `gh` subcommand, common exfiltration commands
-# (curl/wget/nc), and permission/privilege-escalation commands
-# (chmod/sudo) -- all silently go unblocked. A future pass that slims this
+# state-changing `gh` subcommand other than `gh pr comment` (already
+# allowed on purpose; see _write_opencode_permission_config_interactive's
+# own docstring), common exfiltration commands (curl/wget/nc), and
+# permission/privilege-escalation commands (chmod/sudo) -- all silently
+# go unblocked. A future pass that slims this
 # list down to "only user-environment variables" must not remove
 # OPENCODE_CONFIG on that reasoning; it was never a user-environment
 # variable to begin with.
@@ -1614,36 +1616,96 @@ _write_codex_home_interactive() {
 # _write_opencode_home_interactive <dir>
 #
 # Builds an isolated HOME directory for one opencode reviewer process
-# running in interactive mode. opencode needs no named credential symlink
-# to reach a state where it can accept the review prompt -- it falls back
-# to its own built-in free model ("Big Pickle") -- so the only thing this
-# function writes is .zshrc, via _write_env_scrubbing_zshrc, a redundant,
-# idempotent backup of cmd_prepare's own earlier call (see
-# _write_claude_home_interactive's docstring for why that file matters and
-# which call is the one actually protecting the pane).
+# running in interactive mode. opencode keeps its own state under four
+# directories rooted at $HOME -- confirmed against `opencode debug paths`
+# on a real binary -- and this function symlinks all four in as a set:
+# .config/opencode, .cache/opencode, .local/share/opencode, and
+# .local/state/opencode. All four have to be linked together; no smaller
+# subset reaches the same result, each measured against a real
+# interactive launch:
+#   - none linked (the prior behavior): only 7 models available, all free
+#     tier, plus 24MB pulled over the network and 63MB rebuilt under
+#     .config/opencode within 90 seconds of TUI startup.
+#   - cache/share/state linked but not config: the model list recovers to
+#     96, but the run still pulls 21MB, still rebuilds the same 63MB (it
+#     lives under .config, the one directory left unlinked), and the
+#     user's own configured default model still fails to resolve.
+#   - all four linked: 96 models, under 1MB pulled in the same 90-second
+#     window, nothing rebuilt, and the default model resolves to the
+#     value the user actually set in their own config -- so unlike
+#     claude's/codex's single named credentials file (see
+#     _write_claude_home_interactive's and _write_codex_home_interactive's
+#     docstrings), opencode needs no credential symlink of its own once
+#     these four directories are linked in; whatever it needs to
+#     authenticate already lives inside them.
+#
+# Each of the four is only linked when it already exists under the real
+# $HOME, the same existence-guarded-symlink pattern
+# _write_agy_home_interactive uses for its own six credential files: on a
+# machine where opencode is installed but has never actually run, none of
+# these four directories exist yet, and an unconditional `ln -sf` would
+# still succeed, planting a dangling symlink in the isolated HOME that
+# points nowhere. That would leave opencode worse off than before this
+# function linked anything in at all -- the prior behavior only cost a
+# re-download; a dangling symlink risks opencode failing to start.
+# Skipping the link when the source is missing instead leaves that path
+# unlinked, so opencode creates it fresh inside the isolated HOME exactly
+# as it did before this function existed.
+#
+# The separately-written OPENCODE_CONFIG permission file (see
+# _write_opencode_permission_config_interactive) still applies with
+# .config/opencode linked in: confirmed empirically that opencode merges
+# OPENCODE_CONFIG into the config directory's own config rather than
+# replacing it, so the resolved config keeps both the user's model
+# settings and this script's permission deny rules. Also writes .zshrc,
+# via _write_env_scrubbing_zshrc, a redundant, idempotent backup of
+# cmd_prepare's own earlier call (see _write_claude_home_interactive's
+# docstring for why that file matters and which call is the one actually
+# protecting the pane).
 _write_opencode_home_interactive() {
-  local dir="$1"
+  local dir="$1" rel
+
   mkdir -p "$dir" || return 1
   mkdir -p "$dir/.config" || return 1
   ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
+
+  for rel in .config/opencode .cache/opencode .local/share/opencode \
+             .local/state/opencode; do
+    mkdir -p "$dir/$(dirname "$rel")" || return 1
+    if [ -e "$HOME/$rel" ]; then
+      ln -sf "$HOME/$rel" "$dir/$rel" || return 1
+    fi
+  done
+
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
 
 # _write_opencode_permission_config_interactive <path>
 #
 # Same deny list as the now-removed headless config writer (see below for
-# the rationale behind every entry), minus the
-# top-level `"edit": "deny"` line. That line exists in the headless config
-# to close off the one write path this skill's headless reviewer never
-# needs (it prints its review to stdout instead); this interactive
-# reviewer's whole job, by contrast, is writing its review to
-# <reviewer_workdir>/review.md, so leaving `edit` denied here would block
-# the one write this reviewer actually has to make -- an interactive
-# opencode review would run to completion and report success while
-# producing nothing to read back. Every other entry -- the bash deny list
-# covering git add/commit/push/fetch/checkout/reset/rebase/merge/rm/branch
-# -D, rm/mv/chmod, sudo, curl/wget/nc, and every state-changing `gh`
-# subcommand -- is unrelated to file writes and stays exactly as-is.
+# the rationale behind every entry), minus two entries: the top-level
+# `"edit": "deny"` line and the `"gh pr comment*": "deny"` line under
+# bash. The `edit` line exists in the headless config to close off the
+# one write path this skill's headless reviewer never needs (it prints
+# its review to stdout instead); this interactive reviewer's whole job,
+# by contrast, is writing its review to <reviewer_workdir>/review.md, so
+# leaving `edit` denied here would block the one write this reviewer
+# actually has to make -- an interactive opencode review would run to
+# completion and report success while producing nothing to read back.
+# The `gh pr comment*` line is denied in the headless config for the same
+# reason -- that reviewer never posts anything itself -- but the review
+# contract (see references/reviewer-contract.md's "GitHub 互動邊界 / 授權操作
+# （正面清單）") makes `gh pr comment "<PR>" --body-file "<review.md>"` this
+# interactive reviewer's one contractually authorized state change, and
+# opencode's own `--auto` flag (see launch_reviewer_interactive's own
+# opencode branch) auto-approves any permission request not explicitly
+# denied -- so leaving this entry in place silently blocked the one
+# action the contract requires: the review reached review.md but never
+# reached the PR. Every other entry -- the bash deny list covering git
+# add/commit/push/fetch/checkout/reset/rebase/merge/rm/branch -D,
+# rm/mv/chmod, sudo, curl/wget/nc, and every other state-changing `gh`
+# subcommand -- is unrelated to either of those two writes and stays
+# exactly as-is.
 #
 # Relocated from that now-removed headless config writer's own docstring
 # ahead of its removal, since it is the rationale the paragraph above
@@ -1708,7 +1770,6 @@ _write_opencode_permission_config_interactive() {
       "gh pr merge*": "deny",
       "gh pr close*": "deny",
       "gh pr reopen*": "deny",
-      "gh pr comment*": "deny",
       "gh pr create*": "deny",
       "gh pr ready*": "deny",
       "gh pr checkout*": "deny",

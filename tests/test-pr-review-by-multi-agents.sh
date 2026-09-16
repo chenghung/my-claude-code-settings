@@ -2263,9 +2263,15 @@ case "$lri_opencode_permission_content" in
 esac
 
 # GitHub 命令列工具的狀態變更子命令
+#
+# gh pr comment* 是這份清單裡唯一刻意不擋的一條，不是漏抄：契約授權
+# reviewer 自己執行 gh pr comment 把 review 貼上 PR（見
+# _write_opencode_permission_config_interactive 自己的文件），擋著它會
+# 讓 opencode 的 --auto 把 review 寫進 review.md 後再也貼不出去。斷言方
+# 向因此與這裡其餘每一條相反：確認清單裡沒有這一條，而不是有。
 case "$lri_opencode_permission_content" in
-  *'"gh pr comment*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-pr-comment ;;
-  *) bad launch-reviewer-interactive-opencode-permission-config-denies-pr-comment ;;
+  *'"gh pr comment*": "deny"'*) bad "launch-reviewer-interactive-opencode-permission-config-allows-pr-comment: reviewer would be unable to post its review" ;;
+  *) pass launch-reviewer-interactive-opencode-permission-config-allows-pr-comment ;;
 esac
 case "$lri_opencode_permission_content" in
   *'"gh issue edit*": "deny"'*) pass launch-reviewer-interactive-opencode-permission-config-denies-issue-edit ;;
@@ -4517,13 +4523,19 @@ grep -qF "$PS_ROOT/summary.txt" <<<"$PS_OUT" && pass print-summary-shows-summary
 grep -qF "本次執行目錄：$PS_ROOT" <<<"$PS_OUT" && pass print-summary-shows-run-dir || bad print-summary-shows-run-dir
 
 # ==============================================================
-# 審查契約強化：失敗情境、高風險變更、信心等級、摺疊區
+# 審查契約強化：失敗情境、高風險變更提示、信心等級、摺疊區
 # ==============================================================
 
 # ---- 契約含三項新規定 ----
 mkdir -p "$T/materials-empty" "$T/wt"
 contract="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
-for kw in "失敗情境" "高風險變更" "信心"; do
+# 契約重寫（351 -> 195 行）刻意把原本名為「高風險變更清單」、且要求逐類
+# 交代結論的那一節，降格成一段提示性散文並刪除逐類交代義務——那項義務
+# 正是「review 全是樣板、幾乎零回饋」的成因之一，是核准過的設計決定，不是
+# 回歸。概念本身仍在，只是不再以「高風險變更」這個詞出現，改用該段落自己
+# 的錨點字串「特別值得看」比對，同時保留這段一開始就有的「別漏掉關鍵段落」
+# 意圖。
+for kw in "失敗情境" "特別值得看" "信心"; do
   if grep -q "$kw" "$contract"; then
     pass "契約含關鍵段落: $kw"
   else
@@ -4554,8 +4566,14 @@ else
   prompt_rc=$?
   prompt_out=""
 fi
-if grep -q "高風險變更" <<<"$prompt_out"; then
-  pass "build_prompt 嵌入了高風險變更清單"
+# 用契約末尾的結束標記 `===PR-REVIEW-BY-MULTI-AGENTS-END===` 當嵌入的代理
+# 指標，不用內容措辭（原本是「高風險變更」）：build_prompt 只是把
+# reviewer-contract.md 全文 cat 進 prompt，任何一句內容用詞都可能在下一次
+# 措辭調整時消失，但這個結束標記是 run-review.sh 自己的完成判斷機制依賴的
+# 結構性錨點（_extract_review_content / _extract_reviewer_output 都用它
+# 界定內容邊界），契約只要還完整嵌入就必然帶著它，不受內容改寫影響。
+if grep -qF '===PR-REVIEW-BY-MULTI-AGENTS-END===' <<<"$prompt_out"; then
+  pass "build_prompt 嵌入了契約全文（含結束標記）"
 else
   bad "build_prompt 未嵌入契約新內容（exit=$prompt_rc, stderr: $(cat "$BUILD_PROMPT_STDERR" 2>/dev/null)）"
 fi
@@ -6450,8 +6468,12 @@ test_skill_md_direct_comment_workflow() {
     return
   fi
 
-  # 驗證自主診斷多面向 / subagents 審查
-  if ! grep -q 'subagent' "$skill_file" || ! grep -q '多面向' "$skill_file"; then
+  # 驗證自主診斷審查面向 / subagents 審查。契約重寫把全篇「審查軸」統一
+  # 改成「審查面向」，SKILL.md 跟著同一次用語統一，「多面向」這個詞本來就
+  # 不是原本的用語、只是巧合能命中，現在同一份重寫也把它改掉了；改比對
+  # SKILL.md 實際採用的「審查面向」，不是放寬斷言，是換一個真的存在的
+  # 代表詞。
+  if ! grep -q 'subagent' "$skill_file" || ! grep -q '審查面向' "$skill_file"; then
     bad "SKILL.md missing multi-aspect / subagents description"
     return
   fi
