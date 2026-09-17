@@ -63,7 +63,9 @@
       "Skill(planning-with-files:*)",
       "mcp__codegraph__*"
     ],
-    "deny": [],
+    "deny": [
+      "AskUserQuestion"
+    ],
     "defaultMode": "auto"
   },
   "model": "opus[1m]",
