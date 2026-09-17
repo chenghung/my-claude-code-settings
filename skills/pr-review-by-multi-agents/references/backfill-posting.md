@@ -12,7 +12,7 @@
 
 ## 貼哪一則
 
-讀該執行目錄的 `summary.txt`，把 `content_status` 為 `ready` 而還沒貼的貼掉。**補貼同樣照單則規則走**，不是把所有 `ready` 一次倒上去：先看合流那一行，是 `ready` 就只補它一則；那一次派出兩個以上平台而沒有那一行、或它是 `withheld`、`no-content`，才改補各平台 `ready` 的原始 review，並同樣說明彙整失敗。那一次本來就只派一個平台時，補的是它自己那則未經交叉比對的原始 review，不說成彙整失敗。
+讀該執行目錄的 `summary.txt`，把 `content_status` 為 `ready` 而還沒貼的那幾則貼掉，**一個 reviewer 一則、各自獨立**，與主線每個 reviewer 自己貼一則是同一個形狀。缺幾則就補幾則，**不要對使用者說成任何形式的「彙整失敗」**——這個流程沒有彙整那一步，沒發生過的事不要拿來解釋。其餘幾種 `content_status` 不補：`withheld` 與 `no-content` 本來就沒有可信的內容檔，`posted-no-output` 那一則是靠 PR 上已經存在的 comment 才記出來的，補等於貼第二次。
 
 ## 貼之前先去重
 

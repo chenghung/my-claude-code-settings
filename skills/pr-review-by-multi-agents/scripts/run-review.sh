@@ -190,26 +190,57 @@ readonly RUN_DIR_STALE_GRACE_SECONDS=600
 
 # REVIEWER_CONFIRM_BUDGET_SECONDS: the total wall-clock time
 # _confirm_reviewers_working (see its own docstring) may spend confirming
-# that every just-dispatched reviewer actually reached agent_status=working,
-# across every reviewer combined -- not a per-reviewer allowance repeated
-# for each one. Deliberately a shared budget rather than "N reviewers times
-# a per-reviewer timeout": with four platforms, a per-reviewer timeout would
-# let a run where every single one is genuinely stuck (not a hypothetical --
-# this is exactly the failure mode this whole task exists to catch) cost 4x
-# this value before `launch` ever returns, and `launch` returning promptly
-# is a property SKILL.md's own polling design already depends on (see
-# spawn_supervisor_interactive's own docstring). A reasoned bound, not a
-# measured one, the same caveat RUN_DIR_STALE_GRACE_SECONDS above already
-# carries: there is no real binary run timed against a real stuck-at-dialog
-# reviewer to clock this against, only the three herdr `agent wait` facts
-# _confirm_reviewers_working's own docstring cites as independently
-# confirmed against herdr 0.8.2. 60 seconds is chosen to be short enough
-# that a run where every reviewer is genuinely stuck still returns `launch`
-# well inside a human's patience for a single command, while staying long
-# enough to also cover this function's own resend loop for codex/opencode/
-# agy (see its own docstring and REVIEWER_PROMPT_RESEND_LIMIT's) -- every
-# `agent wait` call inside that loop, including the ones between resends,
-# draws from this same shared budget, not a fresh allowance of its own.
+# that a single just-dispatched reviewer actually reached
+# agent_status=working -- a per-reviewer allowance. Every reviewer this run
+# dispatches gets its own full one; one reviewer's own turn never shrinks
+# what a later reviewer's own turn gets.
+#
+# THIS WAS A SHARED, ACROSS-ALL-REVIEWERS-COMBINED BUDGET UNTIL A REAL RUN
+# OVERTURNED THAT: the original design backed a single deadline computed
+# once before _confirm_reviewers_working's own per-cli loop even started,
+# deliberately, so that four platforms all genuinely stuck at once would
+# still cost this function only one budget's worth of wall clock rather
+# than 4x it. A real end-to-end run against a real PR reproduced exactly
+# why that reasoning does not survive contact with a real dispatch: claude
+# confirmed instantly, opencode then alone burned what was left of the
+# shared budget waiting, and agy inherited none of it left at all --
+# marked unconfirmed with `herdr agent wait` never once invoked for it (no
+# stderr line for agy anywhere in that run's own log is what proved "never
+# queried", not an inference). Both opencode and agy were in fact healthy
+# and working normally at that moment; print_summary's own unconfirmed
+# message ("尚未進入審查中，可能停在權限核准對話框上") fired for both
+# anyway -- a false alarm, and one that also erodes that same message's
+# own ability to flag a genuinely stuck reviewer, since a reader can no
+# longer tell the two cases apart. An earlier cli's own speed has nothing
+# to do with whether a later, unrelated cli is healthy, so this budget no
+# longer lets one decide the other's confirmation window at all.
+#
+# Every dispatched reviewer now gets this exact value as its own full
+# allowance (see _confirm_reviewers_working's own docstring for how a cli
+# that may resend -- codex/opencode/agy -- further divides its own
+# allowance across every attempt it may use, so a resend still gets a real
+# observation window instead of whatever was left of a shared deadline).
+# The cost this reverses: a run where every single dispatched reviewer is
+# genuinely stuck now costs up to N times this value (N = how many
+# reviewers this run dispatched, at most 4) before `launch` returns, not
+# the one shared budget's worth the original design capped it at --
+# `launch` returning promptly is still a property SKILL.md's own polling
+# design depends on (see spawn_supervisor_interactive's own docstring),
+# and this is the tradeoff accepted to stop a fast or already-confirmed
+# reviewer from silently starving a slower, but equally healthy, one.
+#
+# A reasoned bound, not a measured one, the same caveat
+# RUN_DIR_STALE_GRACE_SECONDS above already carries: there is no real
+# binary run timed against a real stuck-at-dialog reviewer to clock this
+# against, only the three herdr `agent wait` facts _confirm_reviewers_
+# working's own docstring cites as independently confirmed against herdr
+# 0.8.2, plus the one real incident above, which measured the shared-pool
+# design's own failure, not this replacement's own ceiling. 60 seconds per
+# reviewer is chosen to be short enough that even the worst case (every
+# dispatched reviewer genuinely stuck) still returns `launch` well inside a
+# human's patience for a single command, while staying long enough to also
+# cover this function's own resend loop for codex/opencode/agy (see its
+# own docstring and REVIEWER_PROMPT_RESEND_LIMIT's).
 readonly REVIEWER_CONFIRM_BUDGET_SECONDS=60
 
 # REVIEWER_STALLED_THRESHOLD_SECONDS: how long cmd_wait (see its own
@@ -255,12 +286,96 @@ readonly REVIEWER_STALLED_THRESHOLD_SECONDS=300
 # is not evidence for any particular retry spacing; what both probes do
 # establish is that one resend was enough. Capping at 2 gives one resend
 # of margin beyond that observed minimum without turning this into an
-# unbounded loop --
-# REVIEWER_CONFIRM_BUDGET_SECONDS's own shared deadline is the actual hard
-# backstop regardless of this count, since every `agent wait` call inside
-# the retry loop (including the ones between resends) still draws from
-# that same budget.
+# unbounded loop -- REVIEWER_CONFIRM_BUDGET_SECONDS's own per-reviewer
+# allowance is the actual hard backstop on total time spent regardless of
+# this count: that allowance is split evenly across every attempt this
+# count allows (one initial wait plus up to this many resend-then-wait
+# pairs -- see _confirm_reviewers_working's own docstring for the split),
+# so raising this constant divides the same per-reviewer allowance into
+# more, shorter attempts rather than adding time on top of it.
 readonly REVIEWER_PROMPT_RESEND_LIMIT=2
+
+# ORPHAN_COMMENT_CHECK_INTERVAL_SECONDS: how often spawn_supervisor_
+# interactive's own pending loop (see that function's own docstring) is
+# willing to ask GitHub whether a still-pending cli (no review.md yet) has
+# already posted its comment anyway -- the recovery path defect-D's own
+# incident motivated: a reviewer whose review.md never appeared, but which
+# had already posted a complete review comment, left its cli in `pending`
+# forever with nothing ever checking GitHub for it. That check needs a
+# `gh pr view` round trip per cli it covers, and the pending loop's own
+# `sleep 1` cadence means checking on every single pass would fire that
+# round trip roughly once a second, per still-pending cli, for as long as
+# any cli in the run stays pending -- unbounded, and for the overwhelmingly
+# common case (a reviewer that simply hasn't finished yet) it would never
+# find anything, making almost all of those calls pure waste against
+# GitHub's own rate limit. A reasoned bound, not a measured one, the same
+# caveat RUN_DIR_STALE_GRACE_SECONDS and REVIEWER_CONFIRM_BUDGET_SECONDS
+# above both already carry: there is no real binary run timed against a
+# reproduction of the exact incident to clock this against. 60 seconds
+# keeps the worst case at four `gh pr view` calls a minute (one per
+# possible cli) while still converging within roughly a minute of the
+# comment actually landing, not the "found nearly two hours later" this
+# constant exists to shrink.
+readonly ORPHAN_COMMENT_CHECK_INTERVAL_SECONDS=60
+
+# No HERDR_AGENT_START_TIMEOUT_MS here any more: this constant existed
+# briefly, pinning `herdr agent start`'s own --timeout to the binary's
+# documented max (300000ms), and was removed once a real end-to-end run
+# measured what that ceiling actually cost claude specifically. See
+# launch_reviewer_interactive's own "READINESS-WAIT TIMEOUT" docstring
+# section for the measurement, the timestamps, and why none of the four
+# clis' own `agent start` calls pass --timeout at all any more.
+
+# PANE_CLOSE_RETRY_INTERVAL_SECONDS: how often spawn_supervisor_interactive's
+# own pending loop (see that function's own docstring) re-attempts closing a
+# cli's pane once its review.md is already ready, but its comment is not yet
+# confirmed posted. This exists to close a race this file's own two pieces
+# of documentation, read together, already establish -- not one measured
+# against a live reviewer, which no one has done (see this same paragraph's
+# own closing sentence for what that measurement would actually need). The
+# reviewer contract's own 發布 step orders a reviewer's work as write
+# review.md (with its own end marker) -> read it back and verify -> only
+# then call `gh pr comment` -- contract text, read directly. Before this
+# retry mechanism existed, the pending loop confirmed exactly once, the
+# instant it first saw a complete review.md, then dropped that cli with no
+# second chance -- this file's own prior source, read directly (see
+# spawn_supervisor_interactive's own docstring for the current shape this
+# replaced). Reading those two facts together implies the single confirm
+# attempt used to land before the reviewer's own `gh pr comment` call had
+# necessarily even started, not merely before it returned -- which is the
+# failure this retry mechanism exists to fix. What that inference does NOT
+# establish: how often this actually happened against real reviewers, or
+# how wide the real timing gap is. Measuring that would mean clocking three
+# timestamps on one live reviewer's own pane while it runs -- when this
+# script's own confirm attempt fires, when that reviewer's own `gh pr
+# comment` call starts, and when it returns -- and no one has done that.
+# A reasoned bound, not a measured one, the same caveat every other
+# *_SECONDS constant above already carries: 5 seconds is short enough that
+# a comment landing a few seconds after review.md completes (the ordinary
+# case per the contract's own ordering) is caught within one or two
+# retries, while staying well above "once a second", which would turn this
+# into the same kind of gh-rate-limit concern ORPHAN_COMMENT_CHECK_INTERVAL_
+# SECONDS's own docstring already explains for a structurally similar
+# check.
+readonly PANE_CLOSE_RETRY_INTERVAL_SECONDS=5
+
+# PANE_CLOSE_CONFIRM_DEADLINE_SECONDS: how long, from the moment a cli's
+# review.md is first found ready, spawn_supervisor_interactive keeps
+# retrying that cli's pane close (see PANE_CLOSE_RETRY_INTERVAL_SECONDS's
+# own docstring for the race this whole retry mechanism exists for) before
+# giving up and leaving that pane open for a human to look at. A reasoned
+# bound, not a measured one: two minutes is generous margin over the
+# ordinary case (a file readback, a self-check against the reviewer
+# contract's own 輸出前自查 list, and one `gh pr comment` network call --
+# normally single-digit seconds total) while still being short enough,
+# relative to a whole run's own multi-minute timescale, that a reviewer
+# whose own `gh pr comment` call genuinely failed (and per the contract's
+# own 發布 step, is never retried on the reviewer's own side) does not
+# leave this script silently retrying for the rest of the run. Giving up
+# never discards anything: the pane simply stays open, and
+# <base_dir>/.pane-close-status records why (see this file's own "reason="
+# convention for that status file).
+readonly PANE_CLOSE_CONFIRM_DEADLINE_SECONDS=120
 
 # _fetch_pr_material <owner> <repo> <number> <out_file> <raw_body_file>
 #
@@ -1542,7 +1657,22 @@ ZRC
 # running in *interactive* (herdr-driven) mode -- a separate function from
 # _write_agy_home-style headless setup, not a variant of any existing
 # claude helper (this skill had none before this function). Only the
-# credentials file is symlinked in; the user's real ~/.claude.json
+# credentials file is symlinked in, and from
+# ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json -- not a bare
+# $HOME/.claude/.credentials.json -- the same CLAUDE_CONFIG_DIR-first,
+# $HOME/.claude-fallback rule resolve_model's own claude branch already
+# applies to settings.json (see that function's own docstring). A machine
+# managing claude auth through a CLAUDE_CONFIG_DIR-pointed profile (e.g. a
+# clauth-style setup) can leave a stale $HOME/.claude/.credentials.json
+# behind with nothing left updating it. The user's own report, from testing
+# this directly on exactly such a machine before this change was made, not
+# a verification this script's own author (this session) repeated
+# independently: a reviewer pane built against the bare $HOME/.claude path
+# came up showing claude's own "Login expired"/"Not logged in" screen and
+# never reached agent_status=working, so spawn_supervisor_interactive polled
+# a review.md that was never going to be written; same isolated-home
+# construction and launch flags, only the credentials source swapped, and
+# the pane logged in cleanly. The user's real ~/.claude.json
 # (roughly 116KB, carrying real project history) is never linked in
 # wholesale. Instead a minimal .claude.json is written by hand with just
 # the two things claude's interactive startup checks: hasCompletedOnboarding,
@@ -1557,10 +1687,20 @@ ZRC
 # A/B against claude 2.1.259, same isolated home, same workdir, everything
 # else identical: the top-level form left `herdr agent start` returning
 # agent_not_ready with the pane stopped on claude's own "Quick safety
-# check" trust dialog; the .projects form started cleanly. Because
-# launch_reviewer_interactive treats a failed `agent start` as fatal, that
-# shape did not degrade to a slow reviewer -- it failed cmd_launch outright
-# for the one platform present in every menu option this skill offers.
+# check" trust dialog; the .projects form started cleanly. At the time this
+# A/B was run, launch_reviewer_interactive treated any failed `agent start`
+# as unconditionally fatal, so that shape did not degrade to a slow
+# reviewer -- it failed cmd_launch outright for the one platform present in
+# every menu option this skill offers. That is no longer the whole story:
+# launch_reviewer_interactive's own later recovery step (see its own
+# docstring) would today check whether herdr already lists an agent in
+# that pane before failing outright -- a pane stuck on this exact trust
+# dialog is still present there (herdr detected *something*, just not
+# readiness), so it would be treated as started rather than an outright
+# cmd_launch failure, and left for _confirm_reviewers_working's own later
+# wait to catch it stuck and report it unconfirmed instead. The two
+# findings do not conflict: this section is still about which JSON shape
+# `hasTrustDialogAccepted` needs, not about how a stuck pane is reported.
 # Re-verify this key's shape against a real binary if claude's own config
 # layout ever moves again; nothing in this script can detect the drift. Also
 # writes .zshrc via _write_env_scrubbing_zshrc (see that function's own
@@ -1581,7 +1721,7 @@ ZRC
 _write_claude_home_interactive() {
   local dir="$1" reviewer_workdir="$2"
   mkdir -p "$dir/.claude" || return 1
-  ln -sf "$HOME/.claude/.credentials.json" "$dir/.claude/.credentials.json" || return 1
+  ln -sf "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json" "$dir/.claude/.credentials.json" || return 1
   jq -n --arg cwd "$reviewer_workdir" \
     '{hasCompletedOnboarding: true, projects: {($cwd): {hasTrustDialogAccepted: true}}}' \
     > "$dir/.claude.json" || return 1
@@ -1933,6 +2073,49 @@ _derive_agent_name() {
   printf '%s-%s\n' "$cli_name" "${digest:0:12}"
 }
 
+# _herdr_agent_present_in_pane <pane_id>
+#
+# Returns 0 when herdr's own `agent list` shows any agent registered
+# against <pane_id> at all -- in any agent_status, not only working -- and
+# returns 0 (the same, conservative answer) on every kind of doubt too:
+# `herdr agent list` itself failing, its JSON not parsing, or the parsed
+# count not coming back as a clean digit string. Returns 1 only on a clean,
+# positive, zero-count result -- herdr ran, answered, and named no agent at
+# all for this pane id.
+#
+# This is deliberately biased toward "present": the caller
+# (launch_reviewer_interactive, see its own docstring on the incident this
+# exists for) uses a 1 here as license to report a genuine dispatch
+# failure, which its own caller (cmd_launch) then treats as license to run
+# _dispatch_failed_cleanup -- and that function deletes the shared
+# worktree_dir every dispatched reviewer, this one included, reads code
+# from. Wrongly returning 1 for a pane that does have a live reviewer in it
+# reproduces exactly the failure defect E exists to close; wrongly
+# returning 0 for a pane that is genuinely empty only costs one avoidable
+# dispatch failure being treated as a false recovery, which
+# _confirm_reviewers_working's own later, independent working/blocked wait
+# still has a real chance to catch and report as unconfirmed. The two
+# mistakes are not symmetric in cost, so this function is not written to
+# be symmetric in how it handles doubt.
+#
+# Reuses `herdr agent list`'s own JSON shape and the same
+# `select(.pane_id == $p)` matching _wait_agent_states already established
+# (see that function's own docstring on why pane id, not agent name or
+# name prefix, is the only safe match key across concurrently-running
+# reviews on the same machine) -- not a second, differently-shaped query.
+_herdr_agent_present_in_pane() {
+  local pane_id="$1"
+  local list_json count
+
+  list_json="$(herdr agent list 2>/dev/null)" || return 0
+  count="$(printf '%s' "$list_json" | jq -r --arg p "$pane_id" \
+    '[.result.agents[]? | select(.pane_id == $p)] | length' 2>/dev/null)" || return 0
+  case "$count" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ "$count" -gt 0 ]
+}
+
 # launch_reviewer_interactive <cli> <pane_id> <worktree_dir> <reviewer_workdir> <reviewer_home> <prompt_file>
 #
 # Starts one reviewer CLI, under the least-privilege rationale documented
@@ -2019,6 +2202,70 @@ _derive_agent_name() {
 # but purely as a safety net (see its own docstring) -- there is no second
 # prompt for it to ever need resending.
 #
+# READINESS-WAIT TIMEOUT: NOT SPECIFIED, AND WHY THAT REVERSED A DECISION
+#
+# None of the four cmd=(...) branches below passes `agent start` its own
+# --timeout flag any more. An earlier version of this function did --
+# HERDR_AGENT_START_TIMEOUT_MS, a constant that no longer exists, pinned
+# to 300000 (five minutes), the largest value `herdr agent start --help`
+# itself documents that flag as accepting. The reasoning at the time was
+# that raising the ceiling "costs nothing for a fast-starting cli, only
+# helps a slow cold start", since the flag only bounds a wait that returns
+# early the moment herdr detects readiness. Measured, not assumed, against
+# a real end-to-end run of this script's own fixed script dispatching
+# claude, opencode, and agy against a real PR: that reasoning is half
+# right and half wrong, and the wrong half is claude specifically, not an
+# edge case of it. Method: reading each reviewer's own dispatch-completion
+# file's creation timestamp out of the run directory afterward, alongside
+# cmd_prepare's own .prepared-at. Prepare completed 17:07:14; claude's own
+# dispatch completed 17:12:15 (four minutes fifty-nine seconds later --
+# the full ceiling then in effect, to the second); opencode's completed
+# 17:12:18 (three seconds after claude); agy's completed 17:12:22 (four
+# seconds after opencode).
+#
+# Why claude alone pays the whole ceiling, every single dispatch, not
+# occasionally: its own one-shot launch (see "ONE-SHOT LAUNCH: CLAUDE
+# ONLY" above) means the reviewer starts acting on its prompt -- reading
+# the contract, starting the diff -- in the same instant the pane exists,
+# so it is never sitting at the TTY-idle, input-accepting state herdr's
+# own readiness wait is looking for. There is no length of ceiling that
+# fixes this: claude will not become idle sooner because more time is
+# available, so herdr's own wait can only ever run out and report a
+# timeout for it, regardless of what the ceiling is set to -- exactly the
+# "failure" _herdr_agent_present_in_pane's own recovery check exists to
+# see through (see this function's own code below). codex, opencode, and
+# agy are not exposed to this at all: their own two-step launch (see "WHY
+# CODEX/OPENCODE/AGY STAY TWO-STEP" above) starts them with no prompt in
+# `agent start`'s own argv, so the pane sits idle waiting for input
+# immediately, and herdr's own readiness wait succeeds within a few
+# seconds regardless of what ceiling is available to it -- the 3-and-4-
+# second figures measured above are consistent with that, not with the
+# ceiling mattering to them either way.
+#
+# So: "costs nothing for a fast-starting cli" still holds for codex,
+# opencode, and agy -- their own measured dispatch time never came close
+# to even the old default, ceiling or no ceiling -- but "only helps a slow
+# cold start" was the wrong frame for claude. Claude is not slow the way a
+# genuinely struggling cold start would be; it is *structurally* never
+# going to report ready to herdr at all, so a longer ceiling does not
+# raise its odds of succeeding before running out -- there is nothing
+# for it to succeed at -- it only lengthens how long every single claude
+# dispatch waits before reaching the one outcome (timeout, then the
+# recovery check) it was always going to reach. Five minutes of that per
+# run bought nothing at all.
+#
+# The new default -- not specifying --timeout, so `herdr agent start`
+# applies its own (30000ms per that same --help text) -- is not a guess:
+# the original incident that motivated _herdr_agent_present_in_pane's own
+# recovery check in the first place (see that function's own docstring)
+# happened under exactly this configuration, no --timeout flag at all, and
+# herdr had already registered that agent by the time its own default
+# wait ran out -- the recovery check's own precondition was already
+# satisfied well inside the default, in the one real incident on record.
+# A longer ceiling was never shown to make that registration happen any
+# sooner or any more reliably for any of the four clis; it only made the
+# already-decided outcome, for claude, take longer to reach.
+#
 # No `herdr pane read` call is made by this function, for any cli, and
 # none should be reintroduced (see "WHY CODEX/OPENCODE/AGY STAY TWO-STEP"
 # above for why it would not even help): reading a pane's own rendered
@@ -2047,7 +2294,12 @@ _derive_agent_name() {
 # formula is a fixed decision, not something this function or its caller
 # may invent a different one for) -- so a caller can read that back
 # without re-deriving the formula itself. Prints nothing and returns
-# non-zero on any failure below.
+# non-zero on any failure below -- with one narrow exception now: `herdr
+# agent start` itself returning nonzero no longer returns non-zero from
+# this function on its own. See this function's own code just past the
+# four cmd=(...) branches below for why (a real incident, not a
+# hypothetical) and _herdr_agent_present_in_pane's own docstring for the
+# check that decides which of the two outcomes this actually is.
 #
 # The one flag difference that mattered most versus the now-removed
 # headless launcher's claude branch: that branch disallowed Edit/Write/
@@ -2373,10 +2625,38 @@ launch_reviewer_interactive() {
       ;;
   esac
 
-  "${cmd[@]}" || {
-    printf 'launch_reviewer_interactive: herdr failed to start %s in pane %s\n' "$cli_name" "$pane_id" >&2
-    return 1
-  }
+  # A nonzero exit here used to be unconditionally fatal. It no longer is
+  # -- see this function's own docstring paragraph on the incident this
+  # recovery step responds to (a claude pane that "failed to start" by
+  # this exact code path went on to post a complete, valid PR review from
+  # that same pane, roughly nine minutes after this script had already
+  # declared the dispatch a failure and _dispatch_failed_cleanup had
+  # already deleted the worktree that pane was still reading from).
+  # `herdr agent start --help` itself documents --timeout as bounding
+  # "interactive readiness", not process liveness: a nonzero exit proves
+  # herdr's own readiness wait did not confirm readiness in time, which is
+  # a narrower claim than "nothing is running in $pane_id". Before this
+  # return 1 (which cmd_launch's own caller treats as license to run
+  # _dispatch_failed_cleanup, deleting the shared worktree this pane may
+  # still be reading from), check whether herdr itself already knows about
+  # an agent in this exact pane -- present in any state (including
+  # blocked), not just working: a reviewer stuck on a permission dialog is
+  # still a live process a worktree deletion could disrupt, and telling
+  # "stuck" apart from "genuinely working" is not this check's job -- that
+  # distinction is what cmd_launch's own later _confirm_reviewers_working
+  # step already exists to make (see that function's own docstring), by
+  # actually waiting for a working/blocked state rather than merely
+  # noticing presence. This check answers a narrower, prior question:
+  # is there anything here to protect from deletion at all.
+  if ! "${cmd[@]}"; then
+    if _herdr_agent_present_in_pane "$pane_id"; then
+      printf 'launch_reviewer_interactive: herdr agent start reported failure for %s in pane %s, but herdr already lists an agent there -- treating as started, not as a dispatch failure\n' \
+        "$cli_name" "$pane_id" >&2
+    else
+      printf 'launch_reviewer_interactive: herdr failed to start %s in pane %s\n' "$cli_name" "$pane_id" >&2
+      return 1
+    fi
+  fi
 
   # Checked explicitly, as its own `if`, rather than trusting `wc -c`'s own
   # exit status through a bare `var="$(wc -c < "$prompt_file")"` assignment:
@@ -2531,12 +2811,19 @@ _extract_reviewer_output() {
 #                                      <output_file> <summary_file>
 #
 # Same summary-line shape and the same worktree-tamper check as the now-
-# removed headless recorder this superseded -- content_status is one of
-# "ready" (markers paired, content extracted, worktree state unchanged,
-# safe to post), "withheld" (content extracted but not safe to post; see
-# below for what makes it unsafe here), or "no-content" (the markers were
-# missing, out of order, or empty, so no content file is written and
-# content_file is left empty) -- but reads the reviewer's review from
+# removed headless recorder this superseded -- content_status, as THIS
+# function writes it, is one of "ready" (markers paired, content extracted,
+# worktree state unchanged, safe to post), "withheld" (content extracted
+# but not safe to post; see below for what makes it unsafe here), or
+# "no-content" (the markers were missing, out of order, or empty, so no
+# content file is written and content_file is left empty). A fourth value,
+# "posted-no-output", also appears in the same summary_file but is never
+# written by this function -- see _record_orphan_reviewer_result_interactive's
+# own docstring for the reviewer-posted-but-no-review.md case that value
+# covers, and spawn_supervisor_interactive's own pending loop for which of
+# the two recorder functions runs for a given cli in a given poll pass.
+#
+# Reads the reviewer's review from
 # <output_file> via _extract_reviewer_output instead of from a captured
 # log via _extract_review_content, and is keyed by cli name rather than
 # PID -- see launch_reviewer_interactive's own docstring for why the
@@ -2606,6 +2893,499 @@ _record_reviewer_result_interactive() {
     >> "$summary_file" || true
 }
 
+# _record_orphan_reviewer_result_interactive <cli_name> <base_dir> \
+#                                             <worktree_dir> <comment_body> \
+#                                             <summary_file>
+#
+# The defect-D counterpart to _record_reviewer_result_interactive above,
+# for a reviewer whose review.md never appeared at all but which
+# spawn_supervisor_interactive's own pending loop has already independently
+# confirmed did post a comment to the PR (via
+# _confirm_pr_comment_posted_by_marker_interactive, called by that loop
+# before this function is ever reached -- see that function's own
+# docstring for what "confirmed" means there). <comment_body> is that
+# already-matched comment's own full text, handed down from the caller
+# rather than re-fetched here, so this function makes no `gh` call of its
+# own at all.
+#
+# content_status is always the fixed value "posted-no-output" -- never
+# "ready", so this line can never satisfy spawn_supervisor_interactive's
+# own `content_status=ready` gate for the _confirm_pr_comment_posted_
+# interactive (content-mode) close path, and a reader scanning summary.txt
+# can tell this case apart from an ordinary completed review at a glance,
+# per this task's own requirement that the two must not read as the same
+# thing. worktree_status is still computed the normal way (before/after
+# _git_status_snapshot comparison against .git-status-before-<cli_name>)
+# and still printed, for the same audit-trail reason every other summary
+# line carries it, but it does not gate anything here the way it gates
+# ready-vs-withheld above: the content this case cares about was already
+# posted independently by the reviewer itself, not assembled by this
+# script from worktree state, so there is nothing left for a tampered
+# worktree to invalidate on this path.
+#
+# content_file is written here the same way _record_reviewer_result_
+# interactive's own is -- <base_dir>/.comment-body-<cli_name>.md -- but
+# holds <comment_body> verbatim, not ECHO_GUARD_MARKER-plus-content
+# reassembled the other function's own way: <comment_body> already starts
+# with that marker (this function's only caller confirmed exactly that
+# before calling it), so re-adding it here would duplicate it.
+_record_orphan_reviewer_result_interactive() {
+  local cli_name="$1" base_dir="$2" worktree_dir="$3" comment_body="$4" summary_file="$5"
+  local before after status content_file
+
+  before="$(cat "$base_dir/.git-status-before-$cli_name" 2>/dev/null)" || before=""
+  after="$(_git_status_snapshot "$worktree_dir")"
+  [ "$before" = "$after" ] && status="ok" || status="invalidated"
+
+  content_file="$base_dir/.comment-body-$cli_name.md"
+  printf '%s' "$comment_body" > "$content_file" || true
+
+  printf 'cli=%s pid=%s exit=%s ended_at=%s worktree_status=%s content_status=%s content_file=%s\n' \
+    "$cli_name" "n/a" "n/a" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$status" "posted-no-output" "$content_file" \
+    >> "$summary_file" || true
+}
+
+# _confirm_pr_comment_posted_interactive <owner> <repo> <number> <output_file>
+#
+# Returns 0 when some comment already posted on <owner>/<repo>#<number> is,
+# once trailing newlines are stripped from both sides, byte-for-byte
+# identical to <output_file>'s own full content; 1 otherwise, including
+# when `gh` itself fails, returns no comments, or returns JSON this can't
+# read -- every one of those reads as "cannot confirm", never as "confirmed
+# absent", because the caller's whole reason for calling this is deciding
+# whether it is safe to close a pane, and the safe default on any doubt is
+# not closing it.
+#
+# Exact-content match, not "does some comment merely start with
+# ECHO_GUARD_MARKER": this run's own review.md is not the only thing that
+# marker can appear on the front of -- a prior run against the same PR
+# posts a comment with the same marker too, and with several reviewers
+# dispatched in the same run, several *other* comments on this exact PR
+# also start with it. The reviewer contract's own 揭露聲明 section commits
+# every review to naming its own producing CLI in its opening disclosure
+# (see build_prompt's own coordinates block, "產出這則 review 的 CLI
+# 名稱"), so two different reviewers' own review.md content is never the
+# same string -- exact match is what turns that fact into a way to tell
+# this cli's own comment apart from a sibling reviewer's, not merely from
+# an unrelated human comment. gh pr comment --body-file posts <output_file>
+# verbatim (see reviewer-contract.md's own 發布 step) -- untouched by this
+# script -- so comparing the file directly against a fetched comment body
+# is comparing the same bytes on both sides, not a reconstruction of them:
+# see _record_reviewer_result_interactive's own content_file, built by
+# re-assembling ECHO_GUARD_MARKER plus extracted content, which is a
+# separate, NOT byte-identical rendering kept only for local audit and
+# deliberately not what this function reads.
+#
+# No comparison against the authenticated gh user's own login: this file's
+# own existing echo-guard convention (_fetch_pr_material's own `own_echo`,
+# see that function's own docstring) already filters this skill's past
+# output by marker-prefixed content alone, never by comment author, and
+# this function follows that same established, already-relied-upon
+# mechanism rather than adding a second, differently-shaped one.
+#
+# Reads comments back one index at a time (.comments[$idx].body via a
+# separate jq call per comment) rather than joining every body into one
+# delimited stream with a single jq call: a comment body is itself
+# multi-line markdown a caller could paste anything into, so any character
+# or escape sequence picked as an inter-body delimiter is something a
+# comment body could still collide with -- and the one delimiter an
+# earlier version of this function tried, jq's own NUL-codepoint string
+# escape, does not even survive to jq's raw output verbatim (confirmed
+# against a real jq 1.8.2: `-j` silently drops it, splicing every body in
+# the array together with nothing between them at all, not even the escape
+# sequence). One jq call per comment needs no delimiter, because each
+# call's entire stdout, under `-r`, already is exactly one body. This is
+# not a real cost here -- a PR carries at most a handful of comments, not
+# thousands.
+_confirm_pr_comment_posted_interactive() {
+  local owner="$1" repo="$2" number="$3" output_file="$4"
+  local file_content json count idx body matched=1
+
+  file_content="$(cat "$output_file" 2>/dev/null)" || file_content=""
+  [ -n "$file_content" ] || return 1
+
+  json="$(gh pr view "$number" --repo "$owner/$repo" --json comments 2>/dev/null)" || json=""
+  [ -n "$json" ] || return 1
+
+  count="$(printf '%s' "$json" | jq -r '.comments | length' 2>/dev/null)" || count=""
+  case "$count" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  idx=0
+  while [ "$idx" -lt "$count" ]; do
+    # Strips trailing newlines from $body the same way $(cat ...) already
+    # stripped them from $file_content above -- command substitution trims
+    # ALL trailing newlines from captured output regardless of source
+    # (including jq -r's own trailing newline), so both sides end up
+    # normalized the same way without hand-rolling a trim.
+    body="$(printf '%s' "$json" | jq -r --argjson i "$idx" '.comments[$i].body' 2>/dev/null)" || body=""
+    if [ "$body" = "$file_content" ]; then
+      matched=0
+      break
+    fi
+    idx=$((idx + 1))
+  done
+
+  return "$matched"
+}
+
+# _confirm_pr_comment_posted_by_marker_interactive <owner> <repo> <number> <cli> <base_dir>
+#
+# <base_dir> is new, and closes a real regression this function shipped
+# with: with no time bound at all, this function matched ANY comment on
+# the PR meeting the marker+name test below, including one a PRIOR run
+# against the very same PR already posted -- a marker and a cli name are
+# both identical across separate runs, so nothing here told them apart.
+# _confirm_pr_comment_posted_interactive's own content-mode path is safe
+# from this by construction (its own docstring already says so: a prior
+# run's comment fails its exact byte-for-byte match against THIS run's own
+# review.md, since the two reviews are different text) -- this marker-mode
+# path has no such built-in difference to lean on, since the two runs'
+# disclosure bullets can read identically. Observed for real, not
+# hypothetical: re-verifying this function against a real PR that already
+# had three prior-run comments sitting on it (one per cli, all satisfying
+# the marker+name test below) made every still-pending cli in a fresh run
+# match instantly against those stale comments, get recorded posted-no-
+# output, and have its pane closed -- while genuinely still reviewing.
+#
+# The fix: a candidate comment must also have been created at or after
+# <base_dir>/.prepared-at (written once by cmd_prepare, before this run
+# ever dispatches a reviewer -- see that write's own docstring), read the
+# same way _run_dir_within_stale_grace already reads it. Comparison is
+# done entirely in UTC epoch seconds, not by string-comparing two
+# differently-shaped timestamps: gh's own `comments[].createdAt` field was
+# checked against a real PR before writing this (not assumed from the
+# field name) and comes back as `2026-09-17T01:08:48Z` -- ISO 8601, UTC,
+# `Z` suffix -- which `date -u -d` on this file's own GNU-coreutils floor
+# (already relied on elsewhere, see _extract_review_content's own
+# docstring on GNU sed) converts to the same epoch-seconds representation
+# .prepared-at is already written in, so the two numbers being compared
+# are units of the same thing, not two clocks assumed to agree. A missing
+# or unparsable .prepared-at, or a comment whose own createdAt fails to
+# parse, is "cannot confirm" (return 1 for the former; skip that one
+# candidate and keep looking for the latter) -- the same direction every
+# other doubt in this function already resolves toward.
+#
+# The defect-D counterpart to _confirm_pr_comment_posted_interactive above,
+# for the case that function cannot handle at all: a reviewer that posted
+# its comment but never wrote review.md, so there is no local file left to
+# do an exact byte comparison against (confirmed as a real, observed
+# incident, not a hypothetical -- a claude pane posted a complete review
+# nine minutes after this script had already declared its own dispatch
+# failed and deleted the worktree it was reading from; review.md never
+# existed for that run at any point). Prints the matched comment's own
+# full body and returns 0 when found; prints nothing and returns 1
+# otherwise, on the same "any doubt reads as not confirmed" terms
+# _confirm_pr_comment_posted_interactive's own docstring already commits
+# to -- a `gh` failure or unparseable JSON here is "cannot confirm", never
+# "confirmed absent".
+#
+# What "found" means without a local file to compare against: a comment
+# whose first line, leading whitespace stripped, is ECHO_GUARD_MARKER
+# verbatim (the same own_echo convention _fetch_pr_material's own
+# docstring already establishes), AND whose disclosure block -- see the
+# awk extraction below for exactly what that spans -- names <cli>, without
+# also naming any of the other three known cli names (claude/codex/
+# opencode/agy) in a way this function cannot tell apart from <cli>'s own
+# claim.
+#
+# The disclosure block's own boundaries were wrong in an earlier version
+# of this function and are pinned to real data here, not to a guess: three
+# real comments this skill posted (one each for claude, opencode, agy),
+# fetched read-only from a real PR and inspected byte-for-byte (`cat -A`,
+# no CR anywhere), all take the shape marker-line, then an optional blank
+# line, then a `## 揭露聲明` heading, then a blank line, then the four
+# bullets the reviewer contract's own 揭露聲明 section requires (one of
+# them naming the CLI), then either a `---` rule or the next `##` heading
+# starting the following section. "Skip line 1, read until the first
+# blank line" -- what this function used to do -- stops after the heading
+# alone in every one of those three real samples (the heading's very next
+# line is blank), never reaching the bullet that actually names the CLI;
+# for the one sample whose own line 2 is itself blank, that same old rule
+# returned an empty string before any comparison could even happen. All
+# three real comments failed this function under the old rule; all three
+# pass under the one below. The awk script skips line 1, skips any blank
+# lines before real content starts (covers the "line 2 is itself blank"
+# sample), then reads through -- blank lines included -- until either a
+# `---` rule or a second `#`-heading (the first `#`-heading encountered,
+# if any, is treated as the disclosure's own and does not itself stop the
+# scan). A disclosure section with no heading, or with an interior
+# structure that does not match any of the three real samples this was
+# built from, is not proven to be handled correctly -- re-verify against
+# a real sample if one like that ever surfaces.
+#
+# That range is wider than the old one, which raises the exact risk the
+# old version's own narrower range was structured to avoid: an ordinary
+# review body can legitimately mention another reviewer platform by name
+# in running prose (a finding comparing behavior across CLIs, for
+# instance), and a wider scanned range gives that more room to happen
+# inside the range this function trusts. The fix is not a wider blind
+# spot, it is a narrower search inside the wider range: this function
+# first looks, inside the disclosure block, for the one line containing
+# the literal substring "Reviewer Agent" -- the exact label text the
+# reviewer contract's own 揭露聲明 section itself uses for this bullet,
+# and the exact text all three real samples happened to render verbatim,
+# independently, for three different CLIs -- and if that line exists,
+# every check below (both <cli>'s own name and the other-cli conflict
+# check) runs against that ONE line, not the whole block. A finding two
+# bullets later that happens to name another platform is outside that
+# one line and cannot trigger a false conflict, and cannot falsely supply
+# <cli>'s own name either. Only when no such line exists at all -- a
+# reviewer that phrased this bullet without that exact label -- does this
+# fall back to scanning the whole disclosure block, at the same residual
+# risk the old, narrower-range version already accepted and documented
+# below; that fallback is what keeps a differently-worded disclosure from
+# being rejected outright rather than merely checked less precisely.
+#
+# The name/conflict check itself is unchanged in shape: a substring check,
+# not a word-boundary one, on whichever text (the one line, or the whole
+# block on fallback) was selected above -- deliberately: the one-sided
+# cost of a false "other cli mentioned" match is landing back on "not
+# confirmed" (the same safe-by-default direction every guard in this
+# chain already fails toward), not a wrongly-closed pane, so the extra
+# complexity a word-boundary regex would add is not bought by anything
+# here. What a plain substring match on <cli> itself could get wrong in
+# the other direction -- attributing a comment to a cli whose name merely
+# appears as a substring of unrelated prose -- is accepted as a residual
+# risk, not eliminated, and is smaller now than it was before this fix:
+# narrowed to one line when that line exists, same short-disclosure-block
+# risk as before when it does not. Re-assess if this is ever observed to
+# misfire in practice.
+#
+# No author-based check here either, for the same reason
+# _confirm_pr_comment_posted_interactive's own docstring already gives:
+# this file's existing echo-guard convention filters by marker-prefixed
+# content alone, never by comment author, and this function follows that
+# same established mechanism.
+_confirm_pr_comment_posted_by_marker_interactive() {
+  local owner="$1" repo="$2" number="$3" cli="$4" base_dir="$5"
+  local prepared_at json count idx body first_line created_at comment_epoch
+  local disclosure agent_line search_text other conflict
+  local matched=1 matched_body=""
+
+  # See this function's own docstring for why this is read before anything
+  # else, and why missing/unparsable is a hard "cannot confirm" rather
+  # than a fall-through to the old, unbounded behavior.
+  [ -s "$base_dir/.prepared-at" ] || return 1
+  prepared_at="$(cat "$base_dir/.prepared-at" 2>/dev/null)" || return 1
+  [[ "$prepared_at" =~ ^[0-9]+$ ]] || return 1
+
+  json="$(gh pr view "$number" --repo "$owner/$repo" --json comments 2>/dev/null)" || json=""
+  [ -n "$json" ] || return 1
+
+  count="$(printf '%s' "$json" | jq -r '.comments | length' 2>/dev/null)" || count=""
+  case "$count" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  idx=0
+  while [ "$idx" -lt "$count" ]; do
+    body="$(printf '%s' "$json" | jq -r --argjson i "$idx" '.comments[$i].body' 2>/dev/null)" || body=""
+    created_at="$(printf '%s' "$json" | jq -r --argjson i "$idx" '.comments[$i].createdAt' 2>/dev/null)" || created_at=""
+    idx=$((idx + 1))
+    [ -n "$body" ] || continue
+
+    first_line="$(printf '%s\n' "$body" | sed -n '1{s/^[ \t\r]*//;p}')"
+    [ "$first_line" = "$ECHO_GUARD_MARKER" ] || continue
+
+    # Skip a comment older than this run's own .prepared-at -- see this
+    # function's own docstring for the regression this closes (a prior
+    # run's own comment, same marker, same cli name, otherwise
+    # indistinguishable from this run's). `date -u -d` on a value gh did
+    # not actually return (a failed jq extraction, or a comment shape this
+    # was never verified against) is "cannot parse", not "epoch zero" --
+    # guarded the same way every other parse in this function is.
+    comment_epoch="$(date -u -d "$created_at" +%s 2>/dev/null)" || comment_epoch=""
+    case "$comment_epoch" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    (( comment_epoch >= prepared_at )) || continue
+
+    # See this function's own docstring for what real data this extraction
+    # is pinned to and why. `started` skips line 1 (the marker) and any
+    # blank lines before real content begins; the first `#`-heading found
+    # after that is treated as the disclosure's own and does not stop the
+    # scan, but a `---` rule or a SECOND `#`-heading does.
+    disclosure="$(printf '%s\n' "$body" | awk '
+      NR==1 { next }
+      started==0 && /^[[:space:]]*$/ { next }
+      started==0 { started=1 }
+      /^#/ {
+        if (seen_heading==1) { exit }
+        seen_heading=1
+      }
+      /^---[[:space:]]*$/ { exit }
+      { print }
+    ')"
+    [ -n "$disclosure" ] || continue
+
+    # Narrow to the "Reviewer Agent" bullet line when the disclosure block
+    # has one (see this function's own docstring); fall back to the whole
+    # block otherwise so a differently-worded disclosure is checked less
+    # precisely, not rejected outright.
+    agent_line="$(printf '%s\n' "$disclosure" | grep -m1 'Reviewer Agent')" || agent_line=""
+    if [ -n "$agent_line" ]; then
+      search_text="$agent_line"
+    else
+      search_text="$disclosure"
+    fi
+
+    case "$search_text" in
+      *"$cli"*) ;;
+      *) continue ;;
+    esac
+
+    conflict=0
+    for other in claude codex opencode agy; do
+      [ "$other" = "$cli" ] && continue
+      case "$search_text" in
+        *"$other"*) conflict=1; break ;;
+      esac
+    done
+    [ "$conflict" -eq 0 ] || continue
+
+    matched=0
+    matched_body="$body"
+    break
+  done
+
+  [ "$matched" -eq 0 ] || return 1
+  printf '%s' "$matched_body"
+}
+
+# _close_reviewer_pane_interactive <cli> <base_dir> <confirm_mode> [<output_file>]
+#
+# Closes the herdr pane a finished, trustworthy reviewer ran in, once and
+# only once every guard below has cleared -- called only for a cli whose
+# summary line this same poll pass just wrote as content_status=ready (via
+# <confirm_mode> "content", <output_file> required) or content_status=
+# posted-no-output (via <confirm_mode> "marker", <output_file> ignored --
+# see spawn_supervisor_interactive's own pending loop and
+# _record_orphan_reviewer_result_interactive's own docstring for the
+# defect-D scenario this second mode exists for: a reviewer whose review.md
+# never appeared, but which is independently confirmed via a matching PR
+# comment). A cli that is withheld, no-content, or still pending never
+# reaches this function at all, which is what keeps a reviewer whose only
+# record of a failure lives on its own pane's screen from ever having that
+# screen closed out from under it.
+#
+# <confirm_mode> selects which function guard 4 below calls to answer "did
+# this cli's own review actually land on the PR" -- "content" calls
+# _confirm_pr_comment_posted_interactive (exact byte-for-byte match against
+# <output_file>, the strongest signal available when review.md exists);
+# "marker" calls _confirm_pr_comment_posted_by_marker_interactive (the
+# disclosure-paragraph heuristic, the only signal available when it does
+# not). Always re-run here, even when the caller already ran the same
+# check moments ago to decide whether to call this function at all (see
+# spawn_supervisor_interactive's own pending loop): this function does not
+# trust a caller's own say-so for the one guard that actually authorizes
+# closing a pane, the same reason guards 1-3 below are not skipped either.
+#
+# Guards 1-3 all degrade the same way on failure, and this has not changed:
+# append one line to <base_dir>/.pane-close-status recording which cli and
+# why, then `return 0` without closing anything -- none of the three is
+# something a retry could ever fix (a missing pane id, this run's own pane,
+# a missing PR url are all static facts about this run, not transient
+# state), so there is nothing to gain by leaving them retryable.
+#
+# Guard 4 is where "content" and "marker" now genuinely diverge, and this
+# IS new: "marker" mode still degrades exactly the way guards 1-3 do (write
+# `reason=comment-not-confirmed`, `return 0`) -- unchanged, and deliberately
+# not touched by the retry mechanism described below, because the marker
+# path already only ever runs once its own caller (spawn_supervisor_
+# interactive's own orphan-detection branch, see that function's own
+# docstring) has independently confirmed the comment already exists on
+# GitHub; there is no race left for it to retry around. "content" mode's
+# own guard 4 failure is the one guard in this whole function that no
+# longer writes anything or returns 0 on its own -- it returns 1, and
+# leaves the write (eventual success, or a timed-out give-up) to
+# spawn_supervisor_interactive's own retry loop instead. That split exists
+# to close a race the reviewer contract's own ordering and this file's own
+# prior single-attempt shape, read together, imply -- see PANE_CLOSE_RETRY_
+# INTERVAL_SECONDS's own docstring for that reasoning in full, and for what
+# it is NOT: no one has clocked a live reviewer's own `gh pr comment` call
+# against this script's own confirm attempt, so how often the single
+# attempt this guard used to make actually lost that race is not
+# established, only that the two documented orderings mean it could always
+# lose it. See PANE_CLOSE_RETRY_INTERVAL_SECONDS's and PANE_CLOSE_CONFIRM_
+# DEADLINE_SECONDS's own docstrings, and spawn_supervisor_interactive's
+# own, for the retry/give-up mechanism this return value now drives; this
+# function itself has no notion of "how many times" or "since when" -- it
+# answers only "closed just now, yes or no", exactly as before.
+#
+# Only once all four guards hold (immediately for 1-3, on whichever
+# attempt guard 4 finally passes for "content", or on the caller's own
+# single pre-confirmed attempt for "marker") does this call `herdr pane
+# close`. That call's own failure (herdr rejects it, the pane is already
+# gone some other way) is recorded the same way guards 1-3 are and never
+# escalated: every other reviewer's own summary line and this function's
+# own status-file append for a *different* cli must not be put at risk by
+# one cli's own close failing, and this function's caller must keep
+# running regardless so the worktree removal spawn_supervisor_interactive
+# performs is never blocked on any cli's own pane-close outcome (see that
+# function's own docstring for how it now keeps those two independent).
+_close_reviewer_pane_interactive() {
+  local cli="$1" base_dir="$2" confirm_mode="$3" output_file="${4:-}"
+  local pane_id pr_url pr_info owner repo number close_result confirmed=1
+  local status_file="$base_dir/.pane-close-status"
+
+  pane_id="$(cat "$base_dir/.pane-$cli" 2>/dev/null)" || pane_id=""
+  if [ -z "$pane_id" ]; then
+    printf 'cli=%s pane_closed=no reason=no-pane-id\n' "$cli" >> "$status_file" || true
+    return 0
+  fi
+
+  if [ "$pane_id" = "${HERDR_PANE_ID:-}" ] || [ "$pane_id" = "${HERDR_TAB_ID:-}" ]; then
+    printf 'cli=%s pane_closed=no reason=refused-own-pane\n' "$cli" >> "$status_file" || true
+    return 0
+  fi
+
+  pr_url="$(cat "$base_dir/.pr-url" 2>/dev/null)" || pr_url=""
+  if [ -z "$pr_url" ] || ! pr_info="$(parse_pr_url "$pr_url")"; then
+    printf 'cli=%s pane_closed=no reason=pr-identity-unavailable\n' "$cli" >> "$status_file" || true
+    return 0
+  fi
+  read -r owner repo number <<< "$pr_info"
+
+  case "$confirm_mode" in
+    content) _confirm_pr_comment_posted_interactive "$owner" "$repo" "$number" "$output_file" >/dev/null && confirmed=0 ;;
+    marker)  _confirm_pr_comment_posted_by_marker_interactive "$owner" "$repo" "$number" "$cli" "$base_dir" >/dev/null && confirmed=0 ;;
+    *)
+      printf 'cli=%s pane_closed=no reason=unknown-confirm-mode:%s\n' "$cli" "$confirm_mode" >> "$status_file" || true
+      return 0
+      ;;
+  esac
+  if [ "$confirmed" -ne 0 ]; then
+    # "marker" is unchanged: this is its own terminal outcome, written and
+    # returned exactly as guards 1-3 above. "content" is not: see this
+    # function's own docstring on the race this return-1-and-write-nothing
+    # shape exists to let spawn_supervisor_interactive's own retry loop
+    # close, instead of this function silently making guard 4 the one
+    # single-shot check in a chain that is otherwise retried freely.
+    if [ "$confirm_mode" = marker ]; then
+      printf 'cli=%s pane_closed=no reason=comment-not-confirmed\n' "$cli" >> "$status_file" || true
+      return 0
+    fi
+    return 1
+  fi
+
+  # Sanitized through `tr` before it ever reaches the status file: herdr's
+  # own error text is not guaranteed single-line, and a stray embedded
+  # newline there would split one logical entry into two physical lines in
+  # a file every other entry treats as one-line-per-cli. `set -o pipefail`
+  # (part of this file's own `set -euo pipefail`) keeps herdr's own exit
+  # status, not tr's, deciding which branch below runs: tr practically
+  # never fails, so herdr remains the rightmost command this pipeline could
+  # fail on.
+  if close_result="$(herdr pane close "$pane_id" 2>&1 | tr '\n' ' ')"; then
+    printf 'cli=%s pane_closed=yes\n' "$cli" >> "$status_file" || true
+  else
+    printf 'cli=%s pane_closed=no reason=herdr-close-failed:%s\n' "$cli" "$close_result" >> "$status_file" || true
+  fi
+  return 0
+}
+
 # spawn_supervisor_interactive <worktree_dir> <summary_file> <cli>...
 #
 # Same backgrounding shape, same .supervisor.pid heartbeat file, same
@@ -2621,22 +3401,111 @@ _record_reviewer_result_interactive() {
 # terminated review out of that cli's fixed output file,
 # <base_dir>/reviewers/<cli>/workdir/review.md. As soon as it can, that cli
 # is handed to _record_reviewer_result_interactive and dropped from the
-# pending set; a cli whose file is missing, empty, or not yet ending in the
-# marker line simply stays pending and is checked again next pass.
+# pending set.
 #
-# This loop calls no `herdr` command at all, and does not attempt to judge
+# A cli whose file is missing, empty, or not yet ending in the marker line
+# no longer simply stays pending without any further check the way it used
+# to. That used to be a real gap (defect D, not a hypothetical): a reviewer
+# that posts its comment before ever writing a marker-terminated review.md
+# -- observed for real, see _confirm_pr_comment_posted_by_marker_
+# interactive's own docstring for the incident -- left its cli in `pending`
+# forever, which meant this whole loop, and therefore the worktree removal
+# below it, never ran; a supervisor for exactly that incident was still
+# spinning an hour and a half after it should have converged. Every pass
+# now also asks (throttled to once every ORPHAN_COMMENT_CHECK_INTERVAL_
+# SECONDS, see that constant's own docstring for why not every single
+# pass) whether a still-pending cli's comment has already landed on the PR
+# anyway, via _confirm_pr_comment_posted_by_marker_interactive. A match
+# hands that cli to _record_orphan_reviewer_result_interactive instead of
+# _record_reviewer_result_interactive (see the former's own docstring for
+# why they are two different functions, not one with a flag) and drops it
+# from pending the same way a real review.md would have. A cli with
+# genuinely nothing posted yet simply keeps finding no match and stays
+# pending, unaffected -- this is what keeps a reviewer that is still
+# working, not stuck, from ever being treated as done early (see this
+# function's own two callers' shared docstring context on that boundary).
+#
+# "This loop calls no herdr command at all" used to be true of this whole
+# function; it no longer is, on two separate paths now. Once a cli's own
+# summary line lands as content_status=posted-no-output (the orphan path
+# just described), this loop hands that cli to _close_reviewer_pane_
+# interactive in "marker" mode directly, inline, once -- that path's own
+# caller (this loop's own orphan-detection branch above) has already
+# confirmed the comment exists on GitHub before ever reaching this call, so
+# there is no race left here to retry around (see _close_reviewer_pane_
+# interactive's own docstring on why "marker" mode is deliberately left a
+# single-shot, terminal call).
+#
+# content_status=ready (the review.md path) is different, and is the
+# retry mechanism described next. A cli landing at content_status=ready
+# is NOT handed to _close_reviewer_pane_interactive here at all any more --
+# it is enqueued (own first-ready timestamp recorded) into this subshell's
+# own awaiting_close set, checked once per pass alongside -- not blocking,
+# and not blocked by -- the pending/orphan work above. Why: read together,
+# two pieces of this file's own documentation -- not a timing measurement
+# against a live reviewer, which no one has made (see PANE_CLOSE_RETRY_
+# INTERVAL_SECONDS's own docstring for the full account of what such a
+# measurement would need and why it has not been done) -- already imply a
+# race. The reviewer contract's own ordering is write review.md complete ->
+# read it back and self-check -> only then call `gh pr comment`; this loop,
+# before this retry mechanism existed, confirmed exactly once, the instant
+# review.md was first seen complete, then dropped that cli with no second
+# chance. Those two orderings together mean that single confirm attempt
+# could land before the reviewer's own `gh pr comment` call had even
+# started, not only before it returned -- which is the race this retry
+# mechanism now closes; how often it actually did, in real runs, is not
+# something either fact establishes on its own. Every pass, each cli in
+# awaiting_close whose
+# own PANE_CLOSE_RETRY_INTERVAL_SECONDS cooldown (see that constant's own
+# docstring for why not every single pass, the same gh-request-volume
+# reasoning ORPHAN_COMMENT_CHECK_INTERVAL_SECONDS's own docstring already
+# gives) has elapsed gets one more _close_reviewer_pane_interactive
+# "content"-mode attempt. A cli whose own PANE_CLOSE_CONFIRM_DEADLINE_
+# SECONDS has elapsed since it first became ready, still without a
+# confirmed comment, is given up on: one line recording that -- distinct
+# from _close_reviewer_pane_interactive's own "comment-not-confirmed"
+# reason, so a human reading .pane-close-status can tell "still checking
+# when the run ended" apart from "checked repeatedly, timed out" -- is
+# written directly here (not by that function, which for "content" mode
+# now writes nothing on an unconfirmed attempt -- see its own docstring),
+# and that cli leaves awaiting_close for good, pane left open.
+#
+# What this loop still does not do, unchanged: it does not attempt to judge
 # whether a reviewer is stuck at a permission/approval dialog, has stalled
 # without ever starting, or will simply never finish -- detecting `blocked`
 # and enforcing a deadline are both explicitly left to the calling agent's
-# own wait loop (a later task), not to this shell subprocess. A consequence
-# worth being explicit about: this loop has no timeout of its own, so a
-# reviewer that never writes a marker-terminated review.md leaves its cli
-# in `pending` forever, and this subshell (and therefore the worktree
-# removal below it) never runs. This mirrors the
-# same lack of a timeout in the now-removed headless supervisor, which
-# also polled indefinitely, via `kill -0`, until every PID it was given
-# had exited -- this is simply the same "no timeout of its own" property
-# applied to a file-marker check instead of a process-liveness check.
+# own wait loop (a later task), not to this shell subprocess (the
+# PANE_CLOSE_CONFIRM_DEADLINE_SECONDS deadline just described is a
+# different thing: it bounds how long a pane stays open waiting on a
+# comment that may already exist or may never come, not whether the
+# reviewer itself is judged stuck). A consequence worth being explicit
+# about: the review.md/orphan-detection half of this loop has no timeout of
+# its own, so a reviewer that never writes a marker-terminated review.md
+# AND never posts a comment either leaves its cli in `pending` forever,
+# which leaves worktree removal (see below) never reached either -- even
+# though every OTHER cli this run dispatched still gets recorded the
+# moment it individually becomes ready or is confirmed posted. This
+# mirrors the same lack of a timeout in the now-removed headless
+# supervisor, which also polled indefinitely, via `kill -0`, until every
+# PID it was given had exited -- this is simply the same "no timeout of
+# its own" property applied to a file-marker (and now also PR-comment)
+# check instead of a process-liveness check.
+#
+# Worktree removal itself is deliberately NOT the last thing this
+# function's own subshell does any more, and does not wait for
+# awaiting_close to drain: it fires exactly once, the moment `pending`
+# itself is empty (guarded by worktree_removed below so a later pass,
+# still draining awaiting_close, cannot re-trigger it), and the subshell
+# then keeps looping -- polling only awaiting_close, review.md/orphan
+# detection having nothing left to do -- until awaiting_close is empty
+# too. This is the direct fix for a real failure mode the retry mechanism
+# above would otherwise have reintroduced: if worktree removal waited for
+# every cli's own pane-close to resolve, one cli stuck retrying for the
+# full PANE_CLOSE_CONFIRM_DEADLINE_SECONDS would hold the worktree (and
+# therefore this whole run's own visible completion) hostage for that
+# entire window, for a concern -- whether a pane gets tidied up -- that has
+# nothing to do with whether the review itself is done and safe to clean
+# up after.
 #
 # Same `> "$base_dir/.supervisor.log" 2>&1` redirect on this function's own
 # `(...)&`, and for the same reason: holding the caller's inherited
@@ -2677,29 +3546,137 @@ spawn_supervisor_interactive() {
 
     local -a pending=("${clis[@]}") still=()
     local cli output_file
-    while [ "${#pending[@]}" -gt 0 ]; do
-      still=()
-      for cli in "${pending[@]}"; do
-        output_file="$base_dir/reviewers/$cli/workdir/review.md"
-        if _extract_reviewer_output "$output_file" >/dev/null 2>&1; then
-          _record_reviewer_result_interactive "$cli" "$base_dir" "$worktree_dir" "$output_file" "$summary_file"
-        else
-          still+=("$cli")
-        fi
-      done
-      pending=("${still[@]+"${still[@]}"}")
-      [ "${#pending[@]}" -eq 0 ] || sleep 1
-    done
+    # Orphan-check throttle state (see ORPHAN_COMMENT_CHECK_INTERVAL_
+    # SECONDS's own docstring): next_orphan_check_at starts at 0, i.e.
+    # already due, so the very first pass still gets one chance to catch a
+    # comment that landed before this supervisor even started polling.
+    # owner/repo/number are re-derived from .pr-url once per throttled
+    # window, not once per pending cli, since every pending cli in the
+    # same pass is checked against the same PR.
+    local next_orphan_check_at=0 now_epoch pr_url pr_info
+    local owner="" repo="" number="" orphan_ready=0 orphan_body
+    # Pane-close retry state for content-mode clis only -- see this
+    # function's own docstring on the race this closes and
+    # PANE_CLOSE_RETRY_INTERVAL_SECONDS/PANE_CLOSE_CONFIRM_DEADLINE_SECONDS
+    # for the cadence and cap. close_ready_at and close_next_retry_at are
+    # associative, keyed by cli name; a cli is only ever a key in either
+    # while it is also present in awaiting_close, so a missing key always
+    # means "not currently awaiting a close", never "awaiting but unset".
+    local -a awaiting_close=()
+    local -A close_ready_at=() close_next_retry_at=()
+    # worktree_removed guards the one-time removal below so a later pass,
+    # still draining awaiting_close after `pending` has already emptied
+    # out, cannot trigger a second `git worktree remove` against a
+    # directory the first pass already removed.
+    local worktree_removed=0 repo_path
+    while [ "${#pending[@]}" -gt 0 ] || [ "${#awaiting_close[@]}" -gt 0 ]; do
+      now_epoch="$(date +%s)"
 
-    # Undo main()'s `chmod -R a-w` before removing -- `git worktree
-    # remove` needs write access to actually delete the tree.
-    local repo_path
-    chmod -R u+w "$worktree_dir" 2>/dev/null || true
-    if repo_path="$(cat "$base_dir/.repo-path" 2>/dev/null)" && [ -n "$repo_path" ]; then
-      git -C "$repo_path" worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
-    else
-      git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
-    fi
+      if [ "${#pending[@]}" -gt 0 ]; then
+        still=()
+        orphan_ready=0
+        if [ "$now_epoch" -ge "$next_orphan_check_at" ]; then
+          next_orphan_check_at=$((now_epoch + ORPHAN_COMMENT_CHECK_INTERVAL_SECONDS))
+          pr_url="$(cat "$base_dir/.pr-url" 2>/dev/null)" || pr_url=""
+          if [ -n "$pr_url" ] && pr_info="$(parse_pr_url "$pr_url")"; then
+            read -r owner repo number <<< "$pr_info"
+            orphan_ready=1
+          fi
+        fi
+
+        for cli in "${pending[@]}"; do
+          output_file="$base_dir/reviewers/$cli/workdir/review.md"
+          if _extract_reviewer_output "$output_file" >/dev/null 2>&1; then
+            _record_reviewer_result_interactive "$cli" "$base_dir" "$worktree_dir" "$output_file" "$summary_file"
+            # Gated on content_status=ready specifically, not on having
+            # reached this branch at all: the call just above can also
+            # record withheld (worktree tampered) for this same cli, and a
+            # withheld cli must never enter awaiting_close (see this
+            # function's own docstring). Read back from summary_file
+            # rather than from any return value of the call above, because
+            # that function's own contract is "never abort, degrade
+            # silently" and it does not hand content_status back any other
+            # way -- the line it just appended for this exact cli is what
+            # this reads. Enqueued into awaiting_close, not closed here
+            # directly any more -- see this function's own docstring for
+            # the race, inferred from this file's own documented facts
+            # rather than measured, that the single attempt this line once
+            # made was exposed to.
+            if grep -q "^cli=$cli .*content_status=ready " "$summary_file" 2>/dev/null; then
+              awaiting_close+=("$cli")
+              close_ready_at["$cli"]="$now_epoch"
+              close_next_retry_at["$cli"]=0
+            fi
+          elif [ "$orphan_ready" -eq 1 ] \
+            && orphan_body="$(_confirm_pr_comment_posted_by_marker_interactive "$owner" "$repo" "$number" "$cli" "$base_dir")"; then
+            # defect D: no review.md, but a PR comment already confirmed
+            # this cli's own review is posted -- see _record_orphan_
+            # reviewer_result_interactive's own docstring for why this is
+            # a separate recorder, not a branch inside _record_reviewer_
+            # result_interactive above. Closed inline, once, unlike the
+            # content-mode path above: this branch only ever runs after
+            # independently confirming the comment already exists, so
+            # there is no race left here for a retry to close (see
+            # _close_reviewer_pane_interactive's own docstring on why
+            # "marker" mode stays single-shot).
+            _record_orphan_reviewer_result_interactive "$cli" "$base_dir" "$worktree_dir" "$orphan_body" "$summary_file"
+            _close_reviewer_pane_interactive "$cli" "$base_dir" marker || true
+          else
+            still+=("$cli")
+          fi
+        done
+        pending=("${still[@]+"${still[@]}"}")
+      fi
+
+      # Worktree removal: fires exactly once, the moment `pending` is
+      # empty, regardless of whether awaiting_close still has entries --
+      # see this function's own docstring for why this must not wait on
+      # any cli's own pane-close outcome. Undoes main()'s `chmod -R a-w`
+      # first -- `git worktree remove` needs write access to actually
+      # delete the tree.
+      if [ "${#pending[@]}" -eq 0 ] && [ "$worktree_removed" -eq 0 ]; then
+        worktree_removed=1
+        chmod -R u+w "$worktree_dir" 2>/dev/null || true
+        if repo_path="$(cat "$base_dir/.repo-path" 2>/dev/null)" && [ -n "$repo_path" ]; then
+          git -C "$repo_path" worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+        else
+          git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+        fi
+      fi
+
+      if [ "${#awaiting_close[@]}" -gt 0 ]; then
+        still=()
+        for cli in "${awaiting_close[@]}"; do
+          if [ "$now_epoch" -lt "${close_next_retry_at[$cli]:-0}" ]; then
+            still+=("$cli")
+            continue
+          fi
+          output_file="$base_dir/reviewers/$cli/workdir/review.md"
+          if _close_reviewer_pane_interactive "$cli" "$base_dir" content "$output_file"; then
+            # Terminal either way: closed (pane_closed=yes), or one of
+            # guards 1-3 already wrote its own terminal reason (see
+            # _close_reviewer_pane_interactive's own docstring -- those
+            # three are static facts about this run, never worth
+            # retrying). Not re-added to still, so it drops out of
+            # awaiting_close here.
+            continue
+          fi
+          # Not confirmed yet -- _close_reviewer_pane_interactive's own
+          # "content"-mode guard-4 failure returns 1 and writes nothing
+          # (see its own docstring), leaving this loop to decide between
+          # "retry later" and "give up" for this cli.
+          if (( now_epoch - ${close_ready_at[$cli]:-$now_epoch} >= PANE_CLOSE_CONFIRM_DEADLINE_SECONDS )); then
+            printf 'cli=%s pane_closed=no reason=confirm-timed-out\n' "$cli" >> "$base_dir/.pane-close-status" || true
+            continue
+          fi
+          close_next_retry_at["$cli"]=$((now_epoch + PANE_CLOSE_RETRY_INTERVAL_SECONDS))
+          still+=("$cli")
+        done
+        awaiting_close=("${still[@]+"${still[@]}"}")
+      fi
+
+      { [ "${#pending[@]}" -eq 0 ] && [ "${#awaiting_close[@]}" -eq 0 ]; } || sleep 1
+    done
   ) > "$base_dir/.supervisor.log" 2>&1 &
   disown
 }
@@ -3136,6 +4113,25 @@ cmd_prepare() {
 
   pr_url="https://github.com/$owner/$repo/pull/$number"
 
+  # .pr-url records this run's own PR, for spawn_supervisor_interactive's
+  # own pane-closing step (see that function's own docstring): confirming a
+  # reviewer's comment actually landed on the PR before closing that
+  # reviewer's pane needs owner/repo/number to call `gh pr view` with, and
+  # spawn_supervisor_interactive runs from inside cmd_launch -- a separate
+  # process invocation from this one, with no other way to recover the PR
+  # this run is even about. parse_pr_url already accepts exactly this URL
+  # shape and hands back "<owner> <repo> <number>", so the reader re-uses
+  # that parser instead of this file gaining a second place that assembles
+  # or re-derives the same three fields. Same explicit-check-and-exit-1
+  # treatment as .repo-path just above, for the same reason (see the
+  # comment on .prepared-at's own write further up): a failure here must
+  # not be allowed to depend on set -e implicitly propagating out of
+  # cmd_run's `prepare_out="$(cmd_prepare "$@")"` command substitution.
+  printf '%s\n' "$pr_url" > "$base_dir/.pr-url" || {
+    printf 'run-review.sh: failed to write %s\n' "$base_dir/.pr-url" >&2
+    exit 1
+  }
+
   for cli in "${all_reviewers[@]}"; do
     # reviewer_workdir is this reviewer's own pane working directory
     # (herdr's --cwd target, and where its review.md output file lands);
@@ -3358,22 +4354,44 @@ cmd_prepare() {
 # <budget_seconds> is a parameter, not a direct read of
 # REVIEWER_CONFIRM_BUDGET_SECONDS (cmd_launch's own call site below passes
 # that constant in) -- letting this function's own tests exercise the
-# shared-budget behavior documented on that constant (confirming one slow
-# reviewer visibly shrinks the next one's own --timeout, and that a
-# reviewer past an exhausted budget is marked unconfirmed without herdr
-# ever being invoked for it at all) on a small, fast, deterministic value
-# instead of the real 60 seconds.
+# per-reviewer budget behavior documented on that constant (confirming an
+# earlier reviewer's own slowness never shrinks a later reviewer's own
+# --timeout, and that every dispatched reviewer is actually queried at
+# least once even when an earlier one in the same call never reaches
+# working at all) on a small, fast, deterministic value instead of the
+# real 60 seconds.
 #
-# The budget itself is spent as one wall-clock deadline computed once up
-# front, not a fresh per-reviewer allowance: each `agent wait` call's own
-# --timeout argument, including every retry's own call after a resend for
-# codex/opencode/agy, is whatever is left of that shared deadline at the
-# moment it runs, and a check whose turn comes up after the deadline has
-# already passed never invokes herdr at all -- it is marked unconfirmed on
-# the spot. This is the mechanism REVIEWER_CONFIRM_BUDGET_SECONDS's own
-# docstring is about: four reviewers that are all genuinely stuck, even
-# accounting for resends, cost this function at most that one shared
-# budget.
+# WAS SPENT AS ONE SHARED WALL-CLOCK DEADLINE ACROSS EVERY REVIEWER IN THIS
+# CALL; A REAL RUN OVERTURNED THAT (see REVIEWER_CONFIRM_BUDGET_SECONDS's
+# own docstring for the full incident): under the old design, a single
+# deadline was computed once before the per-cli loop below even started,
+# so each `agent wait` call's own --timeout argument, for every cli and
+# every retry after a resend, was whatever was left of that one shared
+# deadline at the moment it ran -- a cli whose turn came up after an
+# earlier cli had already exhausted it never invoked herdr at all. Now each
+# cli gets its own allowance, derived fresh from <budget_seconds> at the
+# start of its own turn in the loop below, with no dependency on what any
+# earlier cli in this same call consumed.
+#
+# That per-cli allowance is itself divided across every attempt a given cli
+# may use -- one initial `agent wait` plus, for codex/opencode/agy, up to
+# REVIEWER_PROMPT_RESEND_LIMIT more after a resend -- into equal, fixed-
+# size windows (<budget_seconds> * 1000 / attempt count, milliseconds),
+# rather than letting one attempt spend the whole allowance and leave a
+# resend with nothing left to wait on: the same real run above also found a
+# resend that fired but was left with zero observation time under the old
+# shared-deadline math, marked unconfirmed with no chance to see whether it
+# had actually taken effect (opencode, in that run, went on to finish
+# roughly 20 minutes after the other two dispatched clis, with only one PR
+# comment ever posted -- no duplicate). claude never resends (see below),
+# so its one attempt gets the whole per-cli allowance. This holds both
+# hard boundaries this fix must respect: no attempt, resend included, is
+# ever handed a zero-length window (a resend is observed, not fire-and-
+# forget), and no single cli can spend more than roughly its own
+# <budget_seconds> total across every attempt it uses (a stuck cli cannot
+# hog this function indefinitely) -- see REVIEWER_CONFIRM_BUDGET_SECONDS's
+# own docstring for what this costs in aggregate across every reviewer this
+# call confirms.
 #
 # Resending, for codex/opencode/agy only (see REVIEWER_PROMPT_RESEND_LIMIT's
 # own docstring for the cap and its own reasoning): on a failed
@@ -3383,13 +4401,14 @@ cmd_prepare() {
 # function's own caller loop never had a reason to hand prompt paths over
 # until this resend path needed them -- and resubmits it via the same
 # `herdr agent prompt` call launch_reviewer_interactive's own first attempt
-# used, then loops back to `agent wait` again. logs_dir is chmod -R a-w by
-# the time this function runs (see cmd_launch's own dispatch loop), but
-# that only removes write permission; reading a prompt file back out of it
-# here is unaffected. A resend attempt that itself fails (the prompt file
-# can no longer be read, or `agent prompt` itself errors) stops the retry
-# loop immediately rather than trying further resends against what is
-# likely a deeper problem than a dropped prompt.
+# used, then loops back to `agent wait` again, at that same fixed per-
+# attempt window computed for this cli (see the paragraph above). logs_dir
+# is chmod -R a-w by the time this function runs (see cmd_launch's own
+# dispatch loop), but that only removes write permission; reading a prompt
+# file back out of it here is unaffected. A resend attempt that itself
+# fails (the prompt file can no longer be read, or `agent prompt` itself
+# errors) stops the retry loop immediately rather than trying further
+# resends against what is likely a deeper problem than a dropped prompt.
 #
 # Never fails, regardless of how many (or which) reviewers this confirms,
 # or how many times a given one gets resent to: an unconfirmed reviewer
@@ -3415,7 +4434,7 @@ _confirm_reviewers_working() {
   local base_dir="$1" budget_seconds="$2"
   shift 2
   local status_file="$base_dir/.reviewer-confirm-status"
-  local pair cli pane_id deadline now remaining_ms json rc error_code
+  local pair cli pane_id max_attempts attempt_timeout_ms json rc error_code
   local resends_done prompt_file prompt_text
 
   # A failure to even create this file is reported and skipped, not
@@ -3429,8 +4448,6 @@ _confirm_reviewers_working() {
       "$status_file" >&2
     return 0
   fi
-
-  deadline=$(( $(date +%s) + budget_seconds ))
 
   # Every `>> "$status_file"` append below carries its own `|| true`. This
   # was previously missing, and the comment that used to sit here claimed
@@ -3477,18 +4494,36 @@ _confirm_reviewers_working() {
     pane_id="${pair#*:}"
     resends_done=0
 
-    while :; do
-      now="$(date +%s)"
-      # * 1000: --timeout below is milliseconds, not seconds -- see this
-      # function's own docstring, fourth `agent wait` fact, for the
-      # --help text and the real-binary timing probe this is confirmed
-      # against.
-      remaining_ms=$(( (deadline - now) * 1000 ))
-      if (( remaining_ms <= 0 )); then
-        printf '%s unconfirmed\n' "$cli" >> "$status_file" || true
-        break
-      fi
+    # This cli's own allowance is <budget_seconds>, independent of what any
+    # earlier cli in this same loop already spent (see
+    # REVIEWER_CONFIRM_BUDGET_SECONDS's own docstring for the real-run
+    # incident that overturned the previous shared-deadline design).
+    # codex/opencode/agy may spend that allowance across more than one
+    # `agent wait` call (the resend loop below), so it is split evenly
+    # across every attempt this cli may use -- one initial wait plus up to
+    # REVIEWER_PROMPT_RESEND_LIMIT resend-then-wait pairs -- rather than
+    # letting the first attempt consume the whole thing and leave a resend
+    # with nothing left to wait on. claude never resends (see this
+    # function's own docstring), so its one and only attempt gets the full
+    # allowance. Fixed per attempt, not a shrinking deadline: every
+    # `agent wait` call for a given cli, resends included, gets this exact
+    # same --timeout value.
+    case "$cli" in
+      codex|opencode|agy) max_attempts=$((REVIEWER_PROMPT_RESEND_LIMIT + 1)) ;;
+      *) max_attempts=1 ;;
+    esac
+    # * 1000: --timeout below is milliseconds, not seconds -- see this
+    # function's own docstring, fourth `agent wait` fact, for the
+    # --help text and the real-binary timing probe this is confirmed
+    # against.
+    attempt_timeout_ms=$(( (budget_seconds * 1000) / max_attempts ))
 
+    if (( attempt_timeout_ms <= 0 )); then
+      printf '%s unconfirmed\n' "$cli" >> "$status_file" || true
+      continue
+    fi
+
+    while :; do
       # `if json="$(...)"; then` -- the same set -e exemption
       # launch_reviewer_interactive's own docstring already documents for
       # its own `if [ ... ]` guards: a function call, or here a command
@@ -3500,7 +4535,7 @@ _confirm_reviewers_working() {
       # bash sets $? on entry to an else branch to the condition's own
       # exit status, and any command run before capturing it (even a plain
       # assignment) would overwrite that value.
-      if json="$(herdr agent wait "$pane_id" --until working --timeout "$remaining_ms" 2>/dev/null)"; then
+      if json="$(herdr agent wait "$pane_id" --until working --timeout "$attempt_timeout_ms" 2>/dev/null)"; then
         printf '%s working\n' "$cli" >> "$status_file" || true
         break
       else
@@ -3514,8 +4549,8 @@ _confirm_reviewers_working() {
         # load-bearing" failure mode for a structurally identical gap.
         error_code="$(printf '%s' "$json" | jq -r '.error.code // "unknown"' 2>/dev/null)" || error_code=""
         error_code="${error_code:-unknown}"
-        printf '_confirm_reviewers_working: %s in pane %s did not reach agent_status=working within its share of the %ss confirmation budget (herdr agent wait exit %d, error code: %s)\n' \
-          "$cli" "$pane_id" "$budget_seconds" "$rc" "$error_code" >&2
+        printf '_confirm_reviewers_working: %s in pane %s did not reach agent_status=working within the %dms timeout for this attempt (herdr agent wait exit %d, error code: %s)\n' \
+          "$cli" "$pane_id" "$attempt_timeout_ms" "$rc" "$error_code" >&2
 
         # Resend only for the three clis whose first `agent prompt` call
         # can be silently dropped (see this function's own docstring) --
@@ -3754,8 +4789,8 @@ cmd_launch() {
   # _confirm_reviewers_working's own docstring for why. Budget passed in
   # explicitly rather than read directly from REVIEWER_CONFIRM_BUDGET_
   # SECONDS inside that function, so its own tests can exercise the
-  # shared-budget behavior on a small, fast value (see that constant's own
-  # docstring).
+  # per-reviewer budget behavior on a small, fast value (see that
+  # constant's own docstring).
   _confirm_reviewers_working "$base_dir" "$REVIEWER_CONFIRM_BUDGET_SECONDS" \
     "${dispatched_agents[@]+"${dispatched_agents[@]}"}"
 
@@ -4306,14 +5341,39 @@ _wait_agent_states() {
 # OPENCODE_CONFIG) at two separate call sites instead of one: once before
 # `tab create` for cli #0, and again in this loop for the rest. Chosen
 # instead: every selected cli, including the first, gets its own freshly
-# split pane below, and the tab's root pane is simply left idle. A second
-# copy of the --env assembly is exactly the kind of drift this file
-# already has direct evidence against (see _write_env_scrubbing_zshrc's
-# own docstring on what a missed/diverged copy of environment-setup logic
-# costs here) -- one unused pane is a cheaper price than a second place
-# for that logic to go stale in, especially given the trap above: a bug
-# that only affects the two-line-shorter tab-create copy would silently
-# strip isolation from whichever cli happens to be first.
+# split pane below, exactly as the loop already did before this paragraph's
+# own next revision (see immediately below). A second copy of the --env
+# assembly is exactly the kind of drift this file already has direct
+# evidence against (see _write_env_scrubbing_zshrc's own docstring on what
+# a missed/diverged copy of environment-setup logic costs here) -- keeping
+# a single --env assembly site is worth more than the one pane the
+# alternative would have saved.
+#
+# root_pane itself is no longer left idle for the rest of the run, the way
+# it used to be. Once every selected cli has its own freshly split pane
+# (the loop below has returned), this function closes root_pane with
+# `herdr pane close`. Leaving it idle forever meant every single run of
+# this skill left behind one visibly empty pane with nothing in it and
+# nothing ever going to run there; closing it here removes that without
+# reopening the drift risk the paragraph above rejects, because by close
+# time every cli's own pane already has its own final env/cwd from its own
+# split call -- there is nothing left depending on root_pane's own
+# `tab create`-time --env (or lack of one). The close is deliberately
+# best-effort, not folded into this function's own herdr-call-failure
+# convention of `printf ... >&2; return 1` used above for `tab create` and
+# `pane split`: every reviewer pane the loop already produced is real and
+# already correct by the time this runs, so a failed close (herdr
+# rejecting it, root_pane already gone some other way) prints a warning to
+# stderr and lets the function return success with one extra idle pane
+# left over -- it must never throw away N already-built, already-correct
+# reviewer panes over a cosmetic leftover the two callers of this function
+# (cmd_run) would otherwise have no way to recover from short of starting
+# the whole run over. The claim that the tab and every other pane in it
+# survive root_pane's own close untouched, and that no reviewer agent
+# already running in another pane of the same tab is affected, is the
+# user's own report of testing this directly against a real herdr session
+# before this change was made -- not a verification this script's own
+# author (this session) repeated independently.
 #
 # Split ratio: this is what actually stops the area from decaying, not
 # which pane_id gets passed as the split target. Every split below hands
@@ -4329,9 +5389,49 @@ _wait_agent_states() {
 # The only thing that stops the decay is computing each split's ratio
 # from how many equal shares are left: every split below carves off
 # exactly 1/(number of selected clis + 1) of the ORIGINAL tab area, so
-# the N reviewer panes and the tab's own root_pane (which, per the
-# disposition above, never becomes a cli's own pane) all end up the same
-# size no matter how many clis were selected or in what order.
+# the N reviewer panes and the tab's own root_pane all end up the same
+# size, no matter how many clis were selected or in what order, as the
+# loop below returns.
+#
+# That N+1-way equal split is this function's own intermediate state, not
+# its final on-screen layout any more. The root-pane close described above
+# runs after the loop returns, and an earlier version of this paragraph
+# inferred -- from how a binary split ordinarily undoes itself, the space
+# returning to the one sibling that split produced -- that root_pane's own
+# freed share would go entirely to the first selected cli's own pane,
+# doubling it while the rest stayed unchanged. The user's own measurement
+# overturned that inference: every reviewer pane changed size, not one.
+#
+# Measured, not inferred, and this paragraph now reports the measurement
+# itself, not a guess about what it would show: the user built a tab
+# matching this function's own N=3 shape and ratios exactly -- root split
+# down keeping 0.25 for itself, the resulting pane split right keeping
+# 0.6667, that pane split down keeping 0.5, the same three-cli sequence
+# this function's own loop below produces -- and read back each pane's own
+# visible row count with herdr, before and after closing root_pane. Before:
+# root_pane 7 rows, the three reviewer panes 11, 23, and 10 rows. After
+# root_pane closed: those same three panes read 15, 32, and 15 rows. All
+# three grew; none stayed at its pre-close row count. The freed space is
+# redistributed across the whole remaining layout, not handed to a single
+# neighbor -- the opposite of what the binary-split reasoning above
+# predicted.
+#
+# What this measurement does NOT establish: whether the N reviewer panes
+# end up the same overall size (area, not row count alone) once root_pane
+# is gone. herdr's own single-pane query returns row count only, no column
+# width, and its own layout query does not take a pane id as an argument
+# -- neither gives a way to read a pane's actual width back, so this was
+# not, and with these two subcommands alone cannot be, checked. The row-
+# count shape observed (one pane reading noticeably taller than the other
+# two, which read the same as each other) is consistent with the split
+# ratios already dividing the tab into equal-area thirds and the close
+# simply re-scaling that same layout to fill the tab evenly -- but that
+# reading is drawn from row counts alone, not measured, and stays
+# unverified; confirming it would need each pane's own real width
+# alongside its row count, which is exactly what these subcommands cannot
+# supply. Re-verify with whatever herdr subcommand (if any) reports pane
+# width if this specific question -- equal or not, not merely "everyone
+# grew" -- ever becomes load-bearing for anything beyond cosmetics.
 #
 # root_pane is special-cased for exactly one split (i == 0) because it is
 # the one pane here that can never keep playing "whatever's still
@@ -4343,7 +5443,13 @@ _wait_agent_states() {
 # the rest away in one piece to the first cli's pane, which then plays
 # root_pane's old role -- the shrinking "everything not yet decided"
 # pane -- for every remaining split (reservoir_pane below). This is the
-# one place the split target actually changes, and it changes once.
+# one place the split target actually changes, and it changes once. That
+# final 1/(N+1) share is itself only intermediate now too: it is what
+# root_pane holds until this function's own closing step, above, closes
+# it -- not "hands it to the first cli's pane" the way an earlier version
+# of this sentence claimed; the user's own measurement (see the split-
+# ratio paragraph above) found the freed space redistributed across every
+# remaining reviewer pane, not handed to any single one of them.
 #
 # Alternating split direction (down/right by loop position) is the
 # unrelated, pre-existing half of this: it stops a run of same-direction
@@ -4414,6 +5520,18 @@ _build_reviewer_panes() {
     printf 'pane_id_%s=%s\n' "$cli" "$pane_id"
     i=$((i + 1))
   done
+
+  # Close the now-superfluous root pane -- see this function's own
+  # docstring ("Root pane disposition") for why this runs only now, after
+  # every reviewer pane already exists with its own final env/cwd, and why
+  # a failure here is a warning, not a `return 1`: every pane the loop
+  # above built is already real and already correct, and this script has
+  # no way to hand them back if this function aborted here instead.
+  local close_result
+  if ! close_result="$(herdr pane close "$root_pane" 2>&1)"; then
+    printf '_build_reviewer_panes: WARNING: failed to close the tab root pane %s: %s\n' \
+      "$root_pane" "$close_result" >&2
+  fi
 }
 
 # cmd_run <same flags as cmd_prepare>

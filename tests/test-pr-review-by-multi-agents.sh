@@ -102,6 +102,17 @@ pr)
         printf '{"title":"stub-pr-title","body":"stub-pr-body","comments":[],"reviews":[]}'
         exit 0
         ;;
+      *' --json comments '*)
+        # _confirm_pr_comment_posted_interactive's call: gh pr view NUMBER
+        # --repo OWNER/REPO --json comments. Defaults to no comments at all
+        # (the "cannot confirm" case every _close_reviewer_pane_interactive
+        # test that does not care about this axis should land on).
+        [ "${GH_STUB_COMMENTS_OK:-1}" = "1" ] || exit 1
+        gh_stub_comments_json="${GH_STUB_COMMENTS_JSON:-}"
+        [ -n "$gh_stub_comments_json" ] || gh_stub_comments_json='{"comments":[]}'
+        printf '%s' "$gh_stub_comments_json"
+        exit 0
+        ;;
     esac
     # check_prerequisites' PR-existence call: gh pr view NUMBER --repo OWNER/REPO
     [ "${GH_STUB_PR_EXISTS:-1}" = "1" ] && exit 0 || exit 1
@@ -1552,17 +1563,48 @@ _write_agy_home "$agy_home2" || bad "_write_agy_home 第二次呼叫回傳非零
 claude_home_i="$T/claude-home-interactive"
 reviewer_workdir_i="$T/claude-workdir-interactive"
 mkdir -p "$reviewer_workdir_i"
-if _write_claude_home_interactive "$claude_home_i" "$reviewer_workdir_i"; then
+# CLAUDE_CONFIG_DIR= (set-but-empty), not a bare call: this test process
+# itself may have CLAUDE_CONFIG_DIR set in its own ambient environment
+# (e.g. a clauth-style profile setup), and this block's own assertion right
+# below tests the *fallback* path specifically -- the same reason the
+# corresponding real bug only ever showed up on a machine where
+# $HOME/.claude/.credentials.json and the profile's own live credentials
+# had already diverged. `:-`'s own semantics treat "set but empty" the same
+# as "unset", so this forces the fallback branch deterministically without
+# permanently touching this script's own exported CLAUDE_CONFIG_DIR (the
+# empty value applies only to this one command, same idiom as the existing
+# `GH_CONFIG_DIR="$custom_cfg" _write_claude_home_interactive` call further
+# down this file).
+if CLAUDE_CONFIG_DIR='' _write_claude_home_interactive "$claude_home_i" "$reviewer_workdir_i"; then
   pass "_write_claude_home_interactive 回傳成功"
 else
   bad "_write_claude_home_interactive 回傳非零"
 fi
 
+# 未設定 CLAUDE_CONFIG_DIR 時退回 $HOME/.claude -- 見上面 CLAUDE_CONFIG_DIR=
+# 這道呼叫本身的說明。
 if [ -L "$claude_home_i/.claude/.credentials.json" ] \
   && [ "$(readlink "$claude_home_i/.claude/.credentials.json")" = "$HOME/.claude/.credentials.json" ]; then
-  pass "_write_claude_home_interactive 的 credentials 符號連結指向正確目標"
+  pass "_write_claude_home_interactive 未設定 CLAUDE_CONFIG_DIR 時 credentials 符號連結退回 \$HOME/.claude"
 else
   bad "_write_claude_home_interactive 的 credentials 符號連結不正確"
+fi
+
+# CLAUDE_CONFIG_DIR 有設定時憑證來源要跟著它走，不是恆用 $HOME/.claude --
+# 這正是這次修的缺陷本身：一台用 CLAUDE_CONFIG_DIR 管理 claude 憑證的機器
+# 上，$HOME/.claude/.credentials.json 是條沒人維護的殘留檔，使用者回報已經
+# 過期，讓 reviewer pane 起來就是登出狀態。resolve_model 的 claude 分支處理
+# settings.json 時已經是 ${CLAUDE_CONFIG_DIR:-$HOME/.claude} 這個慣用寫
+# 法，這裡對齊它。
+claude_home_cfgdir="$T/claude-home-interactive-cfgdir"
+claude_custom_cfg="$T/claude-custom-config-dir"
+mkdir -p "$claude_custom_cfg"
+if CLAUDE_CONFIG_DIR="$claude_custom_cfg" _write_claude_home_interactive "$claude_home_cfgdir" "$reviewer_workdir_i" \
+  && [ -L "$claude_home_cfgdir/.claude/.credentials.json" ] \
+  && [ "$(readlink "$claude_home_cfgdir/.claude/.credentials.json")" = "$claude_custom_cfg/.credentials.json" ]; then
+  pass "_write_claude_home_interactive 設定 CLAUDE_CONFIG_DIR 時 credentials 符號連結改指向它"
+else
+  bad "_write_claude_home_interactive 未依 CLAUDE_CONFIG_DIR 調整 credentials 符號連結: $(readlink "$claude_home_cfgdir/.claude/.credentials.json" 2>/dev/null)"
 fi
 
 ccj="$claude_home_i/.claude.json"
@@ -2455,6 +2497,199 @@ export PATH="$saved_path"
 rm -f "$STUB_BIN/herdr"
 
 # ==============================================================
+# _herdr_agent_present_in_pane / launch_reviewer_interactive -- 缺陷 E：
+# herdr agent start 回報失敗，但 agent 其實已經起來了
+#
+# 一支獨立的 herdr 替身，不沿用上面 LRI 那一支：這裡只需要 agent start /
+# agent list 兩個子指令，agent list 的回應內容要能逐案控制。
+# ==============================================================
+
+LRIRECOVER_ROOT="$T/launch-reviewer-interactive-recovery-fixture"
+LRIRECOVER_WT="$(_make_worktree_fixture "$LRIRECOVER_ROOT")"
+LRIRECOVER_RECORD_DIR="$LRIRECOVER_ROOT/records"
+mkdir -p "$LRIRECOVER_RECORD_DIR"
+
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HERDR_RECORD_DIR/all-calls.log"
+case "${1:-}" in
+agent)
+  case "${2:-}" in
+  start)
+    kind=""
+    pane_id=""
+    prev=""
+    for a in "$@"; do
+      if [ "$prev" = "--kind" ]; then kind="$a"; fi
+      if [ "$prev" = "--pane" ]; then pane_id="$a"; fi
+      prev="$a"
+    done
+    record="$HERDR_RECORD_DIR/agent-start.$kind.argv"
+    : > "$record"
+    for a in "$@"; do printf '%s\n' "$a" >> "$record"; done
+    if [ "${HERDR_STUB_START_OK:-1}" = "1" ]; then exit 0; else exit 1; fi
+    ;;
+  prompt)
+    target="$3"
+    text="${4:-}"
+    printf '%s' "$text" > "$HERDR_RECORD_DIR/agent-prompt.$target.text"
+    if [ "${HERDR_STUB_PROMPT_OK:-1}" = "1" ]; then exit 0; else exit 1; fi
+    ;;
+  list)
+    list_json="${LRIRECOVER_AGENT_LIST_JSON:-}"
+    [ -n "$list_json" ] || list_json='{"result":{"agents":[]}}'
+    printf '%s' "$list_json"
+    exit 0
+    ;;
+  esac
+  ;;
+esac
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+
+export PATH="$STUB_BIN:$saved_path"
+export HERDR_RECORD_DIR="$LRIRECOVER_RECORD_DIR"
+assert_cli_stub_only "$PATH" "$STUB_BIN" herdr
+
+# ---- _herdr_agent_present_in_pane 本身 ----
+
+export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"w9:p9","agent_status":"blocked"}]}}'
+if _herdr_agent_present_in_pane "w9:p9"; then
+  pass "_herdr_agent_present_in_pane pane 出現在 agent list 時回傳 0（不論狀態，這裡是 blocked）"
+else
+  bad "_herdr_agent_present_in_pane 未偵測到 agent list 裡確實存在的 pane"
+fi
+if _herdr_agent_present_in_pane "w9:p-not-there"; then
+  bad "_herdr_agent_present_in_pane 對 agent list 裡確實不存在的 pane 仍回傳 0"
+else
+  pass "_herdr_agent_present_in_pane 對乾淨、明確的零筆結果回傳 1（pane 確實不存在）"
+fi
+
+# herdr 本身失敗：視為「無法確認」，保守回傳 0（寧可多留、不可誤刪）。用一
+# 支獨立、任何呼叫都直接失敗的替身，不是把 herdr 從 PATH 上整個拿掉 --
+# 拿掉後名稱會直接穿透到 $saved_path 上真正的 herdr 二進位，變成對它送出
+# 真正的請求（assert_cli_stub_only 自己的docstring記載的正是這種洩漏）。
+LRIRECOVER_FAIL_BIN="$T/herdr-always-fails-bin"
+mkdir -p "$LRIRECOVER_FAIL_BIN"
+cat > "$LRIRECOVER_FAIL_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$LRIRECOVER_FAIL_BIN/herdr"
+assert_cli_stub_only "$LRIRECOVER_FAIL_BIN:$saved_path" "$LRIRECOVER_FAIL_BIN" herdr
+if PATH="$LRIRECOVER_FAIL_BIN:$saved_path" _herdr_agent_present_in_pane "w9:p9"; then
+  pass "_herdr_agent_present_in_pane herdr 指令本身失敗時保守回傳 0"
+else
+  bad "_herdr_agent_present_in_pane herdr 指令本身失敗時仍回傳 1"
+fi
+
+# ---- launch_reviewer_interactive：agent start 回報失敗，但 agent list 顯示
+# 這一格確實有 agent -- 不得直接判定為派送失敗 ----
+
+LRIRECOVER_HOME="$LRIRECOVER_ROOT/home-codex"
+LRIRECOVER_WORKDIR="$LRIRECOVER_ROOT/workdir-codex"
+mkdir -p "$LRIRECOVER_WORKDIR"
+LRIRECOVER_PROMPT="$LRIRECOVER_ROOT/codex.prompt"
+printf 'codex review prompt\n' > "$LRIRECOVER_PROMPT"
+
+export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"w9:pRecover","agent_status":"working"}]}}'
+if HERDR_STUB_START_OK=0 launch_reviewer_interactive codex "w9:pRecover" "$LRIRECOVER_WT" \
+  "$LRIRECOVER_WORKDIR" "$LRIRECOVER_HOME" "$LRIRECOVER_PROMPT" >/dev/null 2>"$LRIRECOVER_ROOT/recover.err"; then
+  pass "launch_reviewer_interactive agent start 回報失敗但 pane 裡確實有 agent 時仍回傳成功"
+else
+  bad "launch_reviewer_interactive 未從 agent start 失敗但 pane 存活的情境復原: $(cat "$LRIRECOVER_ROOT/recover.err")"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q 'treating as started' "$LRIRECOVER_ROOT/recover.err" \
+  && pass "launch_reviewer_interactive 復原時印出的訊息如實反映『視為已啟動』，不是與事實相反的失敗訊息" \
+  || bad "launch_reviewer_interactive 復原時的訊息不正確: $(cat "$LRIRECOVER_ROOT/recover.err")"
+# codex 是兩段式：agent start 復原之後仍要照常送出第二段 agent prompt。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$LRIRECOVER_RECORD_DIR/agent-prompt.w9:pRecover.text" ] \
+  && pass "launch_reviewer_interactive 復原後仍對 codex 送出第二段 agent prompt" \
+  || bad "launch_reviewer_interactive 復原後未對 codex 送出 agent prompt"
+# .git-status-before-codex 仍要照常寫出，同一個復原路徑必須走完剩下的正常流程。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$LRIRECOVER_ROOT/.git-status-before-codex" ] \
+  && pass "launch_reviewer_interactive 復原後仍寫出 .git-status-before-codex" \
+  || bad "launch_reviewer_interactive 復原後未寫出 .git-status-before-codex"
+
+# ---- 對照組：agent start 回報失敗，agent list 也確實查無這格 pane -- 這才
+# 是真正的派送失敗，既有行為不變 ----
+
+LRIRECOVER_HOME2="$LRIRECOVER_ROOT/home-codex2"
+LRIRECOVER_WORKDIR2="$LRIRECOVER_ROOT/workdir-codex2"
+mkdir -p "$LRIRECOVER_WORKDIR2"
+export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":[]}}'
+if HERDR_STUB_START_OK=0 launch_reviewer_interactive codex "w9:pGenuineFail" "$LRIRECOVER_WT" \
+  "$LRIRECOVER_WORKDIR2" "$LRIRECOVER_HOME2" "$LRIRECOVER_PROMPT" >/dev/null 2>"$LRIRECOVER_ROOT/genuine-fail.err"; then
+  bad "launch_reviewer_interactive agent list 確實查無這格 pane 時不應回傳成功"
+else
+  pass "launch_reviewer_interactive agent list 確實查無這格 pane 時仍照既有行為回傳失敗"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q 'herdr failed to start' "$LRIRECOVER_ROOT/genuine-fail.err" \
+  && pass "launch_reviewer_interactive 真正派送失敗時訊息維持既有措辭" \
+  || bad "launch_reviewer_interactive 真正派送失敗時的訊息不對: $(cat "$LRIRECOVER_ROOT/genuine-fail.err")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$LRIRECOVER_RECORD_DIR/agent-prompt.w9:pGenuineFail.text" ] \
+  && pass "launch_reviewer_interactive 真正派送失敗時不會送出 agent prompt" \
+  || bad "launch_reviewer_interactive 真正派送失敗時仍送出了 agent prompt"
+
+# ---- --timeout 旗標：四種 cli 的 agent start 呼叫現在都不該帶這個旗標
+# -- 缺陷 E 的回歸：端對端對真實 PR 實跑，claude 的 agent start 每次都吃
+# 滿當時設定的上限（實測時間戳：前置作業完成 17:07:14、claude 派送完成
+# 17:12:15，整整晚了 4 分 59 秒；opencode 17:12:18、agy 17:12:22，各自只
+# 晚 3、4 秒），因為 claude 走一次性啟動、起來當下就開始工作，herdr 的就
+# 緒等待永遠等不到它回到可接受輸入的狀態，不管時限給多長都一樣只會吃滿。
+# 真正讓派送活下來的是 _herdr_agent_present_in_pane 那道實況查核，不是
+# 更長的等待；而那道查核的前提（herdr 已把 agent 登記進去）在原始事故的
+# 預設時限下就已經成立。因此改回不指定 --timeout、讓 herdr 用自己的預
+# 設值，見 launch_reviewer_interactive 自己 docstring 的「READINESS-WAIT
+# TIMEOUT」那一節。----
+
+LRIRECOVER_HOME3="$LRIRECOVER_ROOT/home-claude3"
+LRIRECOVER_WORKDIR3="$LRIRECOVER_ROOT/workdir-claude3"
+mkdir -p "$LRIRECOVER_WORKDIR3"
+export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":[]}}'
+HERDR_STUB_START_OK=1 launch_reviewer_interactive claude "w9:pTimeout" "$LRIRECOVER_WT" \
+  "$LRIRECOVER_WORKDIR3" "$LRIRECOVER_HOME3" "$LRIRECOVER_PROMPT" >/dev/null 2>&1 || true
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.claude.argv" \
+  && pass "launch_reviewer_interactive claude 的 agent start 不再帶 --timeout" \
+  || bad "launch_reviewer_interactive claude 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.claude.argv" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.codex.argv" \
+  && pass "launch_reviewer_interactive codex 的 agent start 不再帶 --timeout" \
+  || bad "launch_reviewer_interactive codex 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.codex.argv" 2>/dev/null)"
+
+LRIRECOVER_HOME4="$LRIRECOVER_ROOT/home-opencode4"
+LRIRECOVER_WORKDIR4="$LRIRECOVER_ROOT/workdir-opencode4"
+mkdir -p "$LRIRECOVER_WORKDIR4"
+HERDR_STUB_START_OK=1 launch_reviewer_interactive opencode "w9:pTimeout2" "$LRIRECOVER_WT" \
+  "$LRIRECOVER_WORKDIR4" "$LRIRECOVER_HOME4" "$LRIRECOVER_PROMPT" >/dev/null 2>&1 || true
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.opencode.argv" \
+  && pass "launch_reviewer_interactive opencode 的 agent start 不再帶 --timeout" \
+  || bad "launch_reviewer_interactive opencode 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.opencode.argv" 2>/dev/null)"
+
+LRIRECOVER_HOME5="$LRIRECOVER_ROOT/home-agy5"
+LRIRECOVER_WORKDIR5="$LRIRECOVER_ROOT/workdir-agy5"
+LRIRECOVER_WT5="$LRIRECOVER_WT"
+mkdir -p "$LRIRECOVER_WORKDIR5"
+HERDR_STUB_START_OK=1 launch_reviewer_interactive agy "w9:pTimeout3" "$LRIRECOVER_WT5" \
+  "$LRIRECOVER_WORKDIR5" "$LRIRECOVER_HOME5" "$LRIRECOVER_PROMPT" >/dev/null 2>&1 || true
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.agy.argv" \
+  && pass "launch_reviewer_interactive agy 的 agent start 不再帶 --timeout" \
+  || bad "launch_reviewer_interactive agy 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.agy.argv" 2>/dev/null)"
+
+unset HERDR_RECORD_DIR LRIRECOVER_AGENT_LIST_JSON
+export PATH="$saved_path"
+rm -f "$STUB_BIN/herdr"
+
+# ==============================================================
 # _reap_stale_run_dirs
 #
 # A dead PID for the "stale" sibling is obtained by actually starting and
@@ -2897,8 +3132,10 @@ confirm_stdout_only="$(_confirm_reviewers_working "$CONFIRM_MIX" 60 "claude:pane
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -z "$confirm_stdout_only" ] && pass confirm-reviewers-working-prints-nothing-to-stdout || bad "confirm-reviewers-working-prints-nothing-to-stdout: $confirm_stdout_only"
 
-# --- 共用預算：不是每格各自獨立算一次逾時 -- 前一格花掉的時間必須讓下
-# 一格拿到的 --timeout 縮水，而不是每格都收到滿額的預算值 ---
+# --- 每一格各自獨立算一次逾時（本回合要修的缺陷）：前一格花掉多少真實
+# 時間，不會讓下一格拿到的 --timeout 縮水 -- pane-fast 拿到的值必須等於
+# 「它自己的預算，除以它自己可能用到的嘗試次數」算出來的固定值，跟
+# pane-slow 花了多久完全無關，不是只驗證「有沒有比某個寬鬆門檻小」---
 
 CONFIRM_BUDGET="$T/confirm-budget"
 mkdir -p "$CONFIRM_BUDGET"
@@ -2910,17 +3147,27 @@ rm -f "$CONFIRM_RECORD_DIR/agent-wait-sleep.pane-fast"
 _confirm_reviewers_working "$CONFIRM_BUDGET" 5 "claude:pane-slow" "codex:pane-fast" 2>/dev/null
 
 confirm_budget_pane_fast_timeout="$(cat "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-fast" 2>/dev/null)"
-# pane-slow 吃掉了 3 秒中的一大部分（5 秒預算裡的 3 秒），所以 pane-fast
-# 拿到的 --timeout 應明顯小於「各自獨立拿滿 5000ms」會給出的值 -- 4000
-# 這個門檻留了充分的排程誤差空間，同時仍遠低於 5000。
+# pane-slow（claude，5 秒預算、只有一次機會，不會重送）真的花了 3 秒才
+# 回報逾時，但 pane-fast（codex）拿到的 --timeout 是它自己的 5 秒預算除
+# 以它自己的嘗試次數（1 次原始 + REVIEWER_PROMPT_RESEND_LIMIT 次重送機
+# 會）算出來的固定值，和 pane-slow 花了多久無關。
+confirm_budget_expected_fast_ms=$(( (5 * 1000) / (REVIEWER_PROMPT_RESEND_LIMIT + 1) ))
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$confirm_budget_pane_fast_timeout" ] && [ "$confirm_budget_pane_fast_timeout" -gt 0 ] && [ "$confirm_budget_pane_fast_timeout" -lt 4000 ] \
-  && pass confirm-reviewers-working-shares-budget-not-per-reviewer \
-  || bad "confirm-reviewers-working-shares-budget-not-per-reviewer: pane-fast 拿到 ${confirm_budget_pane_fast_timeout:-<空>}ms"
+[ "$confirm_budget_pane_fast_timeout" = "$confirm_budget_expected_fast_ms" ] \
+  && pass confirm-reviewers-working-gives-each-reviewer-its-own-independent-budget \
+  || bad "confirm-reviewers-working-gives-each-reviewer-its-own-independent-budget: pane-fast 拿到 ${confirm_budget_pane_fast_timeout:-<空>}ms，預期 ${confirm_budget_expected_fast_ms}ms"
 
-# --- 預算耗盡：輪到的那一格如果此時剩餘預算已經 <=0，這個函式必須連
-# herdr 都不呼叫，直接記為 unconfirmed -- 不是呼叫了、只是給一個很小的
-# --timeout ---
+# --- 迴歸重現（本回合要修的缺陷，使用者端對端實跑量到的正是這個）：
+# 前面的家吃光自己的預算導致逾時，不得讓排在後面的家連確認機會都沒有 --
+# 真實情況是 claude 秒確認、opencode 把剩下的共用預算等到耗盡、agy 輪到
+# 時剩餘預算已經是 0，完全沒有被查詢過（stderr 裡連一行 agy 的訊息都沒
+# 有，這就是「從未查詢」的直接證據，不是推論）。這裡用兩家做最小重現：
+# claude（pane-slow2）先花掉遠超過整個 1 秒預算的時間（sleep 2 秒）才回
+# 報逾時，codex（pane-after）緊接在後。修正前，舊的共用倒數式預算在
+# claude 那 2 秒真實流逝後已經歸零，codex 會直接被判 unconfirmed，herdr
+# agent wait 連叫都沒叫過（agent-wait-timeout-ms.pane-after 這個樁記錄檔
+# 完全不會被寫出來）；修正後，codex 拿到自己完整、獨立的一份預算，herdr
+# 真的被呼叫、也真的查到 working。---
 
 CONFIRM_EXHAUST="$T/confirm-exhaust"
 mkdir -p "$CONFIRM_EXHAUST"
@@ -2928,13 +3175,20 @@ printf 'timeout' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-slow2"
 printf '2' > "$CONFIRM_RECORD_DIR/agent-wait-sleep.pane-slow2"
 rm -f "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-after"
 rm -f "$CONFIRM_RECORD_DIR/agent-wait-sleep.pane-after"
+rm -f "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-after"
 
 _confirm_reviewers_working "$CONFIRM_EXHAUST" 1 "claude:pane-slow2" "codex:pane-after" 2>/dev/null
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-after" ] && pass confirm-reviewers-working-skips-herdr-call-after-budget-exhausted || bad confirm-reviewers-working-skips-herdr-call-after-budget-exhausted
+[ -f "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-after" ] && pass confirm-reviewers-working-later-reviewer-still-queried-after-earlier-one-exhausts-its-own-budget || bad confirm-reviewers-working-later-reviewer-still-queried-after-earlier-one-exhausts-its-own-budget
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(awk '$1=="codex"{print $2}' "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-marks-unconfirmed-after-budget-exhausted || bad "confirm-reviewers-working-marks-unconfirmed-after-budget-exhausted: $(cat "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"
+[ "$(awk '$1=="codex"{print $2}' "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = working ] && pass confirm-reviewers-working-later-reviewer-not-starved-by-earlier-slow-one || bad "confirm-reviewers-working-later-reviewer-not-starved-by-earlier-slow-one: $(cat "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"
+
+# claude 自己那一格是真的逾時（1 秒預算、只有一次機會，stub 固定回報
+# timeout），修正後仍然正確記為 unconfirmed -- 證明這個修正沒有連帶讓
+# 「真的卡住」的偵測跟著失效。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(awk '$1=="claude"{print $2}' "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-still-flags-a-genuinely-stuck-reviewer || bad "confirm-reviewers-working-still-flags-a-genuinely-stuck-reviewer: $(cat "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"
 
 # --- 重送：codex/opencode/agy 這三家第一次 agent wait 沒確認到，這個函式
 # 要重送同一份 prompt 檔的內容，再重新確認一次 -- 這裡直接讓重送生效
@@ -2973,6 +3227,17 @@ _confirm_reviewers_working "$CONFIRM_RESEND_EXHAUST" 60 "opencode:pane-resend-ex
 [ "$(awk '$1=="opencode"{print $2}' "$CONFIRM_RESEND_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-marks-unconfirmed-after-resend-limit-exhausted || bad "confirm-reviewers-working-marks-unconfirmed-after-resend-limit-exhausted: $(cat "$CONFIRM_RESEND_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-exhaust" 2>/dev/null)" = "$REVIEWER_PROMPT_RESEND_LIMIT" ] && pass confirm-reviewers-working-resends-exactly-up-to-the-limit || bad "confirm-reviewers-working-resends-exactly-up-to-the-limit: $(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-exhaust" 2>/dev/null), 應為 $REVIEWER_PROMPT_RESEND_LIMIT"
+
+# --- 重送不得變成送完就當作沒事發生（本回合要修的另一個缺陷）：最後一
+# 次重送之後那次 agent wait，拿到的 --timeout 必須是這一格自己預算切分
+# 出來的完整固定值，而不是被前面幾次嘗試拖到只剩下接近 0 的殘餘時間 --
+# 修正前，舊的共用倒數式預算會讓最後一次重送後的那次 agent wait 幾乎沒
+# 有觀察時間就被判定 unconfirmed。---
+confirm_resend_expected_ms=$(( (60 * 1000) / (REVIEWER_PROMPT_RESEND_LIMIT + 1) ))
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-resend-exhaust" 2>/dev/null)" = "$confirm_resend_expected_ms" ] \
+  && pass confirm-reviewers-working-resend-gets-a-real-observation-window \
+  || bad "confirm-reviewers-working-resend-gets-a-real-observation-window: $(cat "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-resend-exhaust" 2>/dev/null)ms，預期 ${confirm_resend_expected_ms}ms"
 
 # --- claude 絕不重送:第一次 agent wait 沒確認到就直接記為 unconfirmed,
 # 不曾呼叫 agent prompt -- 它整個啟動已經在 launch_reviewer_interactive
@@ -5027,6 +5292,818 @@ until [ ! -e "$SVIPID_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); don
 export PATH="$saved_path"
 
 # ==============================================================
+# _confirm_pr_comment_posted_interactive / _close_reviewer_pane_interactive
+# -- 缺陷 C：reviewer 完成並貼上 PR 之後，它那一格 pane 要被關掉，但只有
+# 在確認過那則 comment 真的已經貼上 PR 之後才關。
+#
+# gh 沿用檔案最上方那支全域替身（已補上 --json comments 分支，見那裡的
+# 說明）；這裡另外補一支只需要回應 pane close 的 herdr 替身。
+# assert_cli_stub_only 兩個名字都要驗——_confirm_pr_comment_posted_
+# interactive 只呼叫 gh，_close_reviewer_pane_interactive 自己另外呼叫
+# herdr，兩者合起來才是這個區段實際會執行到的外部指令全集，任一個沒
+# 裝替身都會直接穿透到系統 PATH 上真正的二進位。
+# ==============================================================
+
+CLOSEPANE_ROOT="$T/close-reviewer-pane-fixture"
+mkdir -p "$CLOSEPANE_ROOT"
+
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HERDR_RECORD_DIR/closepane.calls"
+case "$1 $2" in
+  "pane close")
+    [ "${HERDR_STUB_CLOSE_OK:-1}" = "1" ] || { printf 'stub: close refused\n' >&2; exit 1; }
+    printf '{"result":{}}\n'
+    exit 0
+    ;;
+  *) printf '{"result":{}}\n' ;;
+esac
+STUB
+chmod +x "$STUB_BIN/herdr"
+export HERDR_RECORD_DIR="$CLOSEPANE_ROOT"
+export PATH="$STUB_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$STUB_BIN" gh herdr
+
+# ---- _confirm_pr_comment_posted_interactive 本身 ----
+
+CPCP_OUTPUT="$CLOSEPANE_ROOT/cpcp-output.md"
+printf '<!-- pr-review-by-multi-agents -->\nclaude review body\n' > "$CPCP_OUTPUT"
+
+# 內容比對成功：某則 comment 的 body 與輸出檔完全一致（JSON 字串裡的
+# \n 經 jq 解碼後就是輸出檔本身那個換行；結尾換行的差異兩邊都靠
+# $(...) 去除，見該函式自己文件的說明）。
+if GH_STUB_COMMENTS_JSON='{"comments":[{"body":"unrelated comment"},{"body":"<!-- pr-review-by-multi-agents -->\nclaude review body\n"}]}' \
+  _confirm_pr_comment_posted_interactive acme widgets 7 "$CPCP_OUTPUT"; then
+  pass "_confirm_pr_comment_posted_interactive 內容完全相符時回傳 0"
+else
+  bad "_confirm_pr_comment_posted_interactive 內容相符時卻回傳非零"
+fi
+
+# 內容比對失敗：PR 上有 comment，但沒有一則與這份輸出檔相符（例如同一
+# 個 PR 上另一個 reviewer 自己的 comment）。
+if GH_STUB_COMMENTS_JSON='{"comments":[{"body":"<!-- pr-review-by-multi-agents -->\nsome other reviewer review body\n"}]}' \
+  _confirm_pr_comment_posted_interactive acme widgets 7 "$CPCP_OUTPUT"; then
+  bad "_confirm_pr_comment_posted_interactive 沒有相符 comment 時仍回傳 0"
+else
+  pass "_confirm_pr_comment_posted_interactive 沒有相符 comment 時回傳非零"
+fi
+
+# gh 本身失敗：視為「無法確認」，不是「確認為不存在」。
+if GH_STUB_COMMENTS_OK=0 _confirm_pr_comment_posted_interactive acme widgets 7 "$CPCP_OUTPUT"; then
+  bad "_confirm_pr_comment_posted_interactive gh 失敗時仍回傳 0"
+else
+  pass "_confirm_pr_comment_posted_interactive gh 失敗時回傳非零（視為無法確認，不是確認為不存在）"
+fi
+
+# ---- _close_reviewer_pane_interactive：guard 1，缺 .pane-<cli> ----
+
+: > "$CLOSEPANE_ROOT/closepane.calls"
+: > "$CLOSEPANE_ROOT/.pane-close-status"
+_close_reviewer_pane_interactive claude "$CLOSEPANE_ROOT" content "$CPCP_OUTPUT"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF 'cli=claude pane_closed=no reason=no-pane-id' "$CLOSEPANE_ROOT/.pane-close-status" \
+  && pass "_close_reviewer_pane_interactive 缺 .pane-<cli> 時記錄 reason=no-pane-id" \
+  || bad "_close_reviewer_pane_interactive 缺 .pane-<cli> 時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$CLOSEPANE_ROOT/closepane.calls" ] && pass "_close_reviewer_pane_interactive 缺 .pane-<cli> 時完全沒呼叫 herdr" \
+  || bad "_close_reviewer_pane_interactive 缺 .pane-<cli> 時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+
+printf 'w1:p1\n' > "$CLOSEPANE_ROOT/.pane-claude"
+printf 'https://github.com/acme/widgets/pull/7\n' > "$CLOSEPANE_ROOT/.pr-url"
+
+# ---- guard 2a：pane id 等於編排端自己的 HERDR_PANE_ID，絕不可關 ----
+
+: > "$CLOSEPANE_ROOT/closepane.calls"
+: > "$CLOSEPANE_ROOT/.pane-close-status"
+HERDR_PANE_ID=w1:p1 _close_reviewer_pane_interactive claude "$CLOSEPANE_ROOT" content "$CPCP_OUTPUT"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF 'cli=claude pane_closed=no reason=refused-own-pane' "$CLOSEPANE_ROOT/.pane-close-status" \
+  && pass "_close_reviewer_pane_interactive pane id 等於 HERDR_PANE_ID 時拒絕並記錄 reason=refused-own-pane" \
+  || bad "_close_reviewer_pane_interactive pane id 等於 HERDR_PANE_ID 時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$CLOSEPANE_ROOT/closepane.calls" ] && pass "_close_reviewer_pane_interactive pane id 等於 HERDR_PANE_ID 時完全沒呼叫 herdr" \
+  || bad "_close_reviewer_pane_interactive pane id 等於 HERDR_PANE_ID 時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+
+# ---- guard 2b：pane id 等於編排端自己的 HERDR_TAB_ID，同樣不可關 ----
+
+: > "$CLOSEPANE_ROOT/closepane.calls"
+: > "$CLOSEPANE_ROOT/.pane-close-status"
+HERDR_TAB_ID=w1:p1 _close_reviewer_pane_interactive claude "$CLOSEPANE_ROOT" content "$CPCP_OUTPUT"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF 'cli=claude pane_closed=no reason=refused-own-pane' "$CLOSEPANE_ROOT/.pane-close-status" \
+  && pass "_close_reviewer_pane_interactive pane id 等於 HERDR_TAB_ID 時拒絕並記錄 reason=refused-own-pane" \
+  || bad "_close_reviewer_pane_interactive pane id 等於 HERDR_TAB_ID 時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$CLOSEPANE_ROOT/closepane.calls" ] && pass "_close_reviewer_pane_interactive pane id 等於 HERDR_TAB_ID 時完全沒呼叫 herdr" \
+  || bad "_close_reviewer_pane_interactive pane id 等於 HERDR_TAB_ID 時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+
+# ---- guard 3：缺 .pr-url，視同這個 base_dir 早於這個功能，不關 ----
+
+: > "$CLOSEPANE_ROOT/closepane.calls"
+: > "$CLOSEPANE_ROOT/.pane-close-status"
+rm -f "$CLOSEPANE_ROOT/.pr-url"
+_close_reviewer_pane_interactive claude "$CLOSEPANE_ROOT" content "$CPCP_OUTPUT"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF 'cli=claude pane_closed=no reason=pr-identity-unavailable' "$CLOSEPANE_ROOT/.pane-close-status" \
+  && pass "_close_reviewer_pane_interactive 缺 .pr-url 時記錄 reason=pr-identity-unavailable" \
+  || bad "_close_reviewer_pane_interactive 缺 .pr-url 時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$CLOSEPANE_ROOT/closepane.calls" ] && pass "_close_reviewer_pane_interactive 缺 .pr-url 時完全沒呼叫 herdr" \
+  || bad "_close_reviewer_pane_interactive 缺 .pr-url 時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+printf 'https://github.com/acme/widgets/pull/7\n' > "$CLOSEPANE_ROOT/.pr-url"
+
+# ---- guard 4，content 模式：comment 確認不到（gh 沒有回傳相符的
+# comment）-- 缺陷 C 的競態回歸修正：content 模式下這個結果不再是終局，
+# 這裡不寫狀態檔、直接回傳非零，把「還要不要重試」交給
+# spawn_supervisor_interactive 自己的重試迴圈決定（見該函式與
+# spawn_supervisor_interactive 自己 docstring 的說明）。marker 模式沒有
+# 這個競態、維持舊行為，見再下面那組獨立驗證。----
+
+: > "$CLOSEPANE_ROOT/closepane.calls"
+: > "$CLOSEPANE_ROOT/.pane-close-status"
+if GH_STUB_COMMENTS_JSON='{"comments":[]}' _close_reviewer_pane_interactive claude "$CLOSEPANE_ROOT" content "$CPCP_OUTPUT"; then
+  bad "_close_reviewer_pane_interactive content 模式 comment 確認不到時仍回傳 0"
+else
+  pass "_close_reviewer_pane_interactive content 模式 comment 確認不到時回傳非零（交給呼叫端重試）"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$CLOSEPANE_ROOT/.pane-close-status" ] && pass "_close_reviewer_pane_interactive content 模式 comment 確認不到時不寫狀態檔（留給呼叫端決定終局寫法）" \
+  || bad "_close_reviewer_pane_interactive content 模式 comment 確認不到時仍寫了狀態檔: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$CLOSEPANE_ROOT/closepane.calls" ] && pass "_close_reviewer_pane_interactive comment 確認不到時完全沒呼叫 herdr" \
+  || bad "_close_reviewer_pane_interactive comment 確認不到時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+
+# ---- guard 4，marker 模式：comment 確認不到時維持舊行為不變 -- 寫狀態
+# 檔、回傳 0（見 _close_reviewer_pane_interactive 自己 docstring：marker
+# 模式的呼叫端已經先在 PR 上查到過 comment 才會走到這裡，沒有競態，不需
+# 要、也不應該被這次的重試機制影響）----
+
+: > "$CLOSEPANE_ROOT/closepane.calls"
+: > "$CLOSEPANE_ROOT/.pane-close-status"
+if GH_STUB_COMMENTS_JSON='{"comments":[]}' _close_reviewer_pane_interactive claude "$CLOSEPANE_ROOT" marker; then
+  pass "_close_reviewer_pane_interactive marker 模式 comment 確認不到時仍回傳 0（未受這次修正影響）"
+else
+  bad "_close_reviewer_pane_interactive marker 模式 comment 確認不到時回傳非零（不應該被 content 模式的修正波及）"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF 'cli=claude pane_closed=no reason=comment-not-confirmed' "$CLOSEPANE_ROOT/.pane-close-status" \
+  && pass "_close_reviewer_pane_interactive marker 模式 comment 確認不到時仍照舊寫下 reason=comment-not-confirmed" \
+  || bad "_close_reviewer_pane_interactive marker 模式 comment 確認不到時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+
+# ---- 全部條件成立：真的關閉，且關的正是 .pane-claude 記錄的那個 pane id ----
+
+: > "$CLOSEPANE_ROOT/closepane.calls"
+: > "$CLOSEPANE_ROOT/.pane-close-status"
+GH_STUB_COMMENTS_JSON='{"comments":[{"body":"<!-- pr-review-by-multi-agents -->\nclaude review body\n"}]}' \
+  _close_reviewer_pane_interactive claude "$CLOSEPANE_ROOT" content "$CPCP_OUTPUT"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF 'cli=claude pane_closed=yes' "$CLOSEPANE_ROOT/.pane-close-status" \
+  && pass "_close_reviewer_pane_interactive 全部條件成立時記錄 pane_closed=yes" \
+  || bad "_close_reviewer_pane_interactive 全部條件成立時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF 'pane close w1:p1' "$CLOSEPANE_ROOT/closepane.calls" \
+  && pass "_close_reviewer_pane_interactive 真的呼叫了 herdr pane close，目標正是 .pane-claude 記錄的 pane id" \
+  || bad "_close_reviewer_pane_interactive 未正確呼叫 herdr pane close: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+
+# ---- herdr 拒絕關閉：記錄失敗原因，函式仍以結束碼 0 收尾（不得中止呼叫端）----
+
+: > "$CLOSEPANE_ROOT/closepane.calls"
+: > "$CLOSEPANE_ROOT/.pane-close-status"
+if HERDR_STUB_CLOSE_OK=0 GH_STUB_COMMENTS_JSON='{"comments":[{"body":"<!-- pr-review-by-multi-agents -->\nclaude review body\n"}]}' \
+  _close_reviewer_pane_interactive claude "$CLOSEPANE_ROOT" content "$CPCP_OUTPUT"; then
+  pass "_close_reviewer_pane_interactive herdr 關閉失敗時仍以結束碼 0 收尾"
+else
+  bad "_close_reviewer_pane_interactive herdr 關閉失敗時整個函式跟著失敗（結束碼非 0）"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'cli=claude pane_closed=no reason=herdr-close-failed:' "$CLOSEPANE_ROOT/.pane-close-status" \
+  && pass "_close_reviewer_pane_interactive herdr 關閉失敗時記錄 reason=herdr-close-failed" \
+  || bad "_close_reviewer_pane_interactive herdr 關閉失敗時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+
+unset HERDR_RECORD_DIR
+export PATH="$saved_path"
+
+# ==============================================================
+# spawn_supervisor_interactive -- 缺陷 C 的競態回歸：review.md 已經完整，
+# 但 reviewer 讀回核對、呼叫 gh 張貼都還沒完成時，第一次確認理所當然落
+# 空；幾秒後 comment 真的貼出來，重試必須把 pane 關掉，不能因為第一次
+# 沒中就永遠放棄，也不能讓還沒確認完的 pane 拖住 worktree 的移除。
+#
+# gh 的替身這裡不沿用 $STUB_BIN 那支全域的（它讀 GH_STUB_COMMENTS_JSON
+# 這個環境變數，而環境變數在背景子殼層 fork 出去的當下就已經定格，測試
+# 稍後在前景行程裡再改這個變數，已經在跑的背景監督行程看不到）。改用一
+# 支獨立的替身，從一個檔案路徑讀取 comments JSON -- 檔案內容可以在背景
+# 監督行程已經在跑的情況下，由這個測試自己稍後覆寫，模擬「comment 幾秒
+# 後才真的出現」，背景那邊下一次重試會重新讀到新內容。
+# ==============================================================
+
+RACEE2E_ROOT="$T/pane-close-race-supervisor-fixture"
+RACEE2E_WT="$(_make_worktree_fixture "$RACEE2E_ROOT")"
+mkdir -p "$RACEE2E_ROOT/reviewers/claude/workdir"
+printf 'claude claude-e2e-model dispatched\n' > "$RACEE2E_ROOT/.roster"
+printf 'https://github.com/acme/widgets/pull/7\n' > "$RACEE2E_ROOT/.pr-url"
+printf 'w5:pClaude\n' > "$RACEE2E_ROOT/.pane-claude"
+printf '%s\n' "$(_git_status_snapshot "$RACEE2E_WT")" > "$RACEE2E_ROOT/.git-status-before-claude"
+# review.md 從一開始就完整 -- 這個測試驗的是確認端的競態，不是輸出檔本
+# 身出現得早或晚（那是缺陷 D 的範圍）。
+printf '<!-- pr-review-by-multi-agents -->\nclaude race review body\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' \
+  > "$RACEE2E_ROOT/reviewers/claude/workdir/review.md"
+
+RACEE2E_STUB_BIN="$T/pane-close-race-stub-bin"
+mkdir -p "$RACEE2E_STUB_BIN"
+cat > "$RACEE2E_STUB_BIN/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+pr)
+  if [ "${2:-}" = "view" ]; then
+    case " $* " in
+      *' --json comments '*)
+        cat "$RACEE2E_COMMENTS_FILE"
+        exit 0
+        ;;
+    esac
+  fi
+  exit 1
+  ;;
+esac
+exit 1
+STUB
+chmod +x "$RACEE2E_STUB_BIN/gh"
+cat > "$RACEE2E_STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HERDR_RECORD_DIR/race-e2e.calls"
+case "$1 $2" in
+  "pane close") printf '{"result":{}}\n'; exit 0 ;;
+  *) printf '{"result":{}}\n' ;;
+esac
+STUB
+chmod +x "$RACEE2E_STUB_BIN/herdr"
+export HERDR_RECORD_DIR="$RACEE2E_ROOT"
+: > "$RACEE2E_ROOT/race-e2e.calls"
+export PATH="$RACEE2E_STUB_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$RACEE2E_STUB_BIN" gh herdr
+
+RACEE2E_COMMENTS_FILE="$RACEE2E_ROOT/comments.json"
+printf '%s' '{"comments":[]}' > "$RACEE2E_COMMENTS_FILE"
+export RACEE2E_COMMENTS_FILE
+
+RACEE2E_SUMMARY="$RACEE2E_ROOT/summary.txt"
+(cd "$RACEE2E_ROOT/work" && spawn_supervisor_interactive "$RACEE2E_WT" "$RACEE2E_SUMMARY" claude)
+
+# 摘要行不能被競態拖慢：review.md 一開始就完整，這裡應該幾乎立刻就寫出
+# 摘要行，即使 comment 那一邊完全還沒出現。
+i=0
+until grep -q '^cli=claude ' "$RACEE2E_SUMMARY" 2>/dev/null || [ "$i" -ge 50 ]; do sleep 0.1; i=$((i + 1)); done
+RACEE2E_SUMMARY_LINE="$(grep '^cli=claude ' "$RACEE2E_SUMMARY" 2>/dev/null)"
+case "$RACEE2E_SUMMARY_LINE" in
+  'cli=claude pid=n/a exit=n/a '*' content_status=ready '*) pass "spawn_supervisor_interactive 缺陷 C 競態：摘要行不被關 pane 的重試拖慢，立刻寫出 ready" ;;
+  *) bad "spawn_supervisor_interactive 缺陷 C 競態：摘要行不正確或太慢: $RACEE2E_SUMMARY_LINE" ;;
+esac
+
+# 這時 comment 還沒出現：pane 不該被關 -- 第一次確認理所當然落空，
+# .pane-close-status 甚至不該有任何一行（content 模式落空不寫狀態檔，
+# 見 _close_reviewer_pane_interactive 自己的說明，這正是這次修正要做到
+# 的：不把「還沒確認到」寫成終局）。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$RACEE2E_ROOT/.pane-close-status" ] && pass "spawn_supervisor_interactive 缺陷 C 競態：comment 還沒出現時 pane 未被關、也還沒寫下任何終局狀態" \
+  || bad "spawn_supervisor_interactive 缺陷 C 競態：comment 還沒出現就已經寫下狀態: $(cat "$RACEE2E_ROOT/.pane-close-status" 2>/dev/null)"
+
+# worktree 的移除不能被卡住的 pane-close 重試無限期推遲：這裡 pending 早
+# 就空了（review.md 一開始就完整），worktree 應該已經被移除，即使 pane
+# 還沒確認到、還在重試。
+i=0
+until [ ! -e "$RACEE2E_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$RACEE2E_WT" ] && pass "spawn_supervisor_interactive 缺陷 C 競態：worktree 在 pane 還沒確認完畢時就已經移除，未被關 pane 重試卡住" \
+  || bad "spawn_supervisor_interactive 缺陷 C 競態：worktree 被還沒確認完畢的 pane-close 重試卡住，未移除"
+
+# 模擬 reviewer 幾秒後真的把 comment 貼上去：只改檔案內容，背景監督行程
+# 下一次重試時會重新讀到。
+printf '%s' '{"comments":[{"body":"<!-- pr-review-by-multi-agents -->\nclaude race review body\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n"}]}' \
+  > "$RACEE2E_COMMENTS_FILE"
+
+i=0
+until grep -q '^cli=claude pane_closed=yes' "$RACEE2E_ROOT/.pane-close-status" 2>/dev/null || [ "$i" -ge 200 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF 'cli=claude pane_closed=yes' "$RACEE2E_ROOT/.pane-close-status" 2>/dev/null \
+  && pass "spawn_supervisor_interactive 缺陷 C 競態：comment 出現後重試把 pane 關掉" \
+  || bad "spawn_supervisor_interactive 缺陷 C 競態：comment 出現後仍未關閉 pane: $(cat "$RACEE2E_ROOT/.pane-close-status" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF 'pane close w5:pClaude' "$RACEE2E_ROOT/race-e2e.calls" 2>/dev/null \
+  && pass "spawn_supervisor_interactive 缺陷 C 競態：真的呼叫了 herdr pane close" \
+  || bad "spawn_supervisor_interactive 缺陷 C 競態：未正確呼叫 herdr pane close: $(cat "$RACEE2E_ROOT/race-e2e.calls" 2>/dev/null)"
+
+unset HERDR_RECORD_DIR RACEE2E_COMMENTS_FILE
+export PATH="$saved_path"
+
+# ==============================================================
+# spawn_supervisor_interactive -- 缺陷 C 完整接線：只有 content_status=
+# ready 的 cli 才會被送進關 pane 流程，withheld 的 cli 完全不會被嘗試
+# 關閉（連 .pane-close-status 都不該有它的記錄，不只是記成「沒關」而
+# 已 -- 見 _close_reviewer_pane_interactive 自己 docstring 對這個分野
+# 的說明）。claude 的 git 狀態前後一致 -> ready -> 確認 comment 存在
+# -> 真的被關閉；codex 刻意不寫 .git-status-before-codex，同一招
+# SPWSYNI 那組合流接線測試已經用過的手法，讓它落在 invalidated ->
+# withheld。
+# ==============================================================
+
+CLOSEE2E_ROOT="$T/close-reviewer-pane-supervisor-fixture"
+CLOSEE2E_WT="$(_make_worktree_fixture "$CLOSEE2E_ROOT")"
+mkdir -p "$CLOSEE2E_ROOT/reviewers/claude/workdir" "$CLOSEE2E_ROOT/reviewers/codex/workdir"
+
+printf 'claude claude-e2e-model dispatched\ncodex codex-e2e-model dispatched\n' > "$CLOSEE2E_ROOT/.roster"
+printf 'https://github.com/acme/widgets/pull/7\n' > "$CLOSEE2E_ROOT/.pr-url"
+printf 'w2:pC\n' > "$CLOSEE2E_ROOT/.pane-claude"
+printf 'w2:pX\n' > "$CLOSEE2E_ROOT/.pane-codex"
+
+printf '<!-- pr-review-by-multi-agents -->\nclaude e2e review\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' \
+  > "$CLOSEE2E_ROOT/reviewers/claude/workdir/review.md"
+printf '<!-- pr-review-by-multi-agents -->\ncodex e2e review\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' \
+  > "$CLOSEE2E_ROOT/reviewers/codex/workdir/review.md"
+printf '%s\n' "$(_git_status_snapshot "$CLOSEE2E_WT")" > "$CLOSEE2E_ROOT/.git-status-before-claude"
+# .git-status-before-codex 刻意不寫，見上面文件說明。
+
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HERDR_RECORD_DIR/closepane-e2e.calls"
+case "$1 $2" in
+  "pane close") printf '{"result":{}}\n'; exit 0 ;;
+  *) printf '{"result":{}}\n' ;;
+esac
+STUB
+chmod +x "$STUB_BIN/herdr"
+export HERDR_RECORD_DIR="$CLOSEE2E_ROOT"
+: > "$CLOSEE2E_ROOT/closepane-e2e.calls"
+export PATH="$STUB_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$STUB_BIN" gh herdr
+
+# spawn_supervisor_interactive is a shell function sourced into this same
+# process (not a subcommand of $RUN_SH) -- called the same direct way every
+# other spawn_supervisor_interactive fixture in this file does. Its own
+# internal `(...)  & disown` background subshell inherits whatever is
+# exported in THIS shell at call time, which is why GH_STUB_COMMENTS_JSON
+# is exported here rather than prefixed onto the call: a prefix assignment
+# only scopes to a single simple command, not to the `( ... )` compound
+# command spawn_supervisor_interactive is invoked through below.
+# The stubbed "already posted" comment body has to match review.md's own
+# FULL content, end marker included -- gh pr comment --body-file posts the
+# file verbatim (see _confirm_pr_comment_posted_interactive's own
+# docstring), and _close_reviewer_pane_interactive reads output_file
+# (review.md itself) unmodified, not the end-marker-stripped content
+# _extract_reviewer_output produces for other callers.
+export GH_STUB_COMMENTS_JSON='{"comments":[{"body":"<!-- pr-review-by-multi-agents -->\nclaude e2e review\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n"}]}'
+CLOSEE2E_SUMMARY="$CLOSEE2E_ROOT/summary.txt"
+(cd "$CLOSEE2E_ROOT/work" && spawn_supervisor_interactive "$CLOSEE2E_WT" "$CLOSEE2E_SUMMARY" claude codex)
+
+i=0
+until { [ -f "$CLOSEE2E_SUMMARY" ] && [ "$(wc -l < "$CLOSEE2E_SUMMARY")" -eq 2 ]; } || [ "$i" -ge 200 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$CLOSEE2E_SUMMARY" ] && [ "$(wc -l < "$CLOSEE2E_SUMMARY")" -eq 2 ] \
+  && pass "spawn_supervisor_interactive 缺陷 C 情境兩個 reviewer 都收斂" \
+  || bad "spawn_supervisor_interactive 缺陷 C 情境未收斂: $(cat "$CLOSEE2E_SUMMARY" 2>/dev/null)"
+
+i=0
+until [ -s "$CLOSEE2E_ROOT/.pane-close-status" ] || [ "$i" -ge 50 ]; do sleep 0.1; i=$((i + 1)); done
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF 'cli=claude pane_closed=yes' "$CLOSEE2E_ROOT/.pane-close-status" 2>/dev/null \
+  && pass "spawn_supervisor_interactive content_status=ready 的 claude 被正確關閉" \
+  || bad "spawn_supervisor_interactive content_status=ready 的 claude 未被關閉: $(cat "$CLOSEE2E_ROOT/.pane-close-status" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+! grep -q '^cli=codex ' "$CLOSEE2E_ROOT/.pane-close-status" 2>/dev/null \
+  && pass "spawn_supervisor_interactive content_status=withheld 的 codex 連嘗試都沒有被記錄" \
+  || bad "spawn_supervisor_interactive content_status=withheld 的 codex 不該出現在 .pane-close-status: $(cat "$CLOSEE2E_ROOT/.pane-close-status" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+! grep -q 'pane close w2:pX' "$CLOSEE2E_ROOT/closepane-e2e.calls" 2>/dev/null \
+  && pass "spawn_supervisor_interactive 從未對 codex 的 pane 呼叫 herdr pane close" \
+  || bad "spawn_supervisor_interactive 對 withheld 的 codex 呼叫了 herdr pane close: $(cat "$CLOSEE2E_ROOT/closepane-e2e.calls" 2>/dev/null)"
+
+i=0
+until [ ! -e "$CLOSEE2E_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$CLOSEE2E_WT" ] && pass "spawn_supervisor_interactive 缺陷 C 情境完成後 worktree 仍照常移除" \
+  || bad "spawn_supervisor_interactive 缺陷 C 情境完成後 worktree 未移除"
+
+unset HERDR_RECORD_DIR GH_STUB_COMMENTS_JSON
+export PATH="$saved_path"
+
+# ==============================================================
+# _confirm_pr_comment_posted_by_marker_interactive /
+# _record_orphan_reviewer_result_interactive -- 缺陷 D：reviewer 貼了 PR，
+# 卻沒有寫出輸出檔
+#
+# gh 沿用檔案最上方的全域替身；這裡不需要 herdr。上一段（缺陷 C 整合測試）
+# 收尾時把 PATH 還原成了 $saved_path（不含 $STUB_BIN），這裡必須自己重新
+# 把 $STUB_BIN 接回 PATH 最前面，否則 gh 會直接穿透到系統上真正的 gh 二進
+# 位 -- 這正是 assert_cli_stub_only 存在的理由。
+# ==============================================================
+
+export PATH="$STUB_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$STUB_BIN" gh
+
+CPBM_ROOT="$T/confirm-pr-comment-by-marker-fixture"
+mkdir -p "$CPBM_ROOT"
+# .prepared-at is now a hard input to _confirm_pr_comment_posted_by_marker_
+# interactive (see its own docstring on the regression this closes -- a
+# prior run's own leftover comment, same marker, same cli name,
+# indistinguishable from this run's without a time bound). Fixed reference
+# instant so every "should match" comment below can be dated a few minutes
+# after it, and the one "stale" test further down a few minutes before it.
+CPBM_PREPARED_AT="$(date -u -d '2026-09-01T00:00:00Z' +%s)"
+printf '%s\n' "$CPBM_PREPARED_AT" > "$CPBM_ROOT/.prepared-at"
+CPBM_AFTER='2026-09-01T00:10:00Z'
+CPBM_BEFORE='2026-08-31T23:50:00Z'
+
+# 三個樁 body 的形狀直接取自真實資料 -- 對 OnrampLab/voice-fusion-backend
+# PR 1079 上三則這個 skill 真的貼出的 comment 讀 cat -A 核對過位元組（行尾
+# 皆為單純 LF，無 CR）之後，各自對映成這裡的合成內容，涵蓋這三種真實出現
+# 過的形狀：(A) 標記行後直接接 `## 揭露聲明` 標題、空一行、才是
+# Reviewer Agent 那條列點；(B) 標記行後先是一個空行，才接標題；(C)
+# Reviewer Agent 那條列點裡，cli 名稱包在反引號裡、後面還跟著括號說明。
+# 舊版函式（假設段落緊接第 1 行、且中間沒有空行）對這三則真實 comment 全
+# 部判斷失敗，正是促成這次修正的直接證據。
+CPBM_BODY_A='<!-- pr-review-by-multi-agents -->
+## 揭露聲明
+
+- **Reviewer Agent**：agy
+- **使用模型**：gemini-3.8-flash-high
+- **免責聲明**：本審查結果全數由 AI 自動分析產生，**未經人類審核**。
+- **審查面向**：安全性、正確性與邏輯、效能與資源。
+
+---
+
+## 審查範圍交代
+
+本次審查依據完整變更集合進行。'
+
+CPBM_BODY_B='<!-- pr-review-by-multi-agents -->
+
+## 揭露聲明
+
+- **Reviewer Agent**：opencode
+- **使用模型**：opencode-go/glm-5.2
+- **免責聲明**：本審查結果全數由 AI 自動分析產生，未經人類審核
+- **本次實際審過的審查面向**：安全性、正確性與邏輯
+
+## 審查範圍交代
+
+本次審查依據完整變更集合進行。'
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks below are literal markdown code-span syntax from the real sample, not command substitution
+CPBM_BODY_C='<!-- pr-review-by-multi-agents -->
+## 揭露聲明
+
+- **Reviewer Agent**：`claude`（Claude Code CLI）
+- **使用模型**：座標資訊給定值為 `unknown-model`
+- **免責聲明**：本審查結果全數由 AI 自動分析產生，**未經人類審核**。
+- **本次實際審過的審查面向**：安全性、正確性與邏輯
+
+---
+
+## 審查範圍交代
+
+本次審查依據完整變更集合進行。'
+
+# 相符 (A)：標記行後直接接標題、空一行才是 Reviewer Agent 列點；建立時間
+# 晚於 .prepared-at。
+CPBM_JSON_A="$(jq -n --arg b "$CPBM_BODY_A" --arg c "$CPBM_AFTER" '{comments: [{body: $b, createdAt: $c}]}')"
+if CPBM_OUT_A="$(GH_STUB_COMMENTS_JSON="$CPBM_JSON_A" \
+  _confirm_pr_comment_posted_by_marker_interactive acme widgets 7 agy "$CPBM_ROOT")"; then
+  pass "_confirm_pr_comment_posted_by_marker_interactive 真實形狀 (A，標題緊接標記行) 時回傳 0"
+else
+  bad "_confirm_pr_comment_posted_by_marker_interactive 真實形狀 (A) 時仍回傳非零"
+fi
+case "$CPBM_OUT_A" in
+  *'Reviewer Agent'*'agy'*) pass "_confirm_pr_comment_posted_by_marker_interactive 形狀 (A) 印出相符 comment 的完整內文" ;;
+  *) bad "_confirm_pr_comment_posted_by_marker_interactive 形狀 (A) 未印出相符 comment 的內文: $CPBM_OUT_A" ;;
+esac
+
+# 相符 (B)：標記行後第 2 行本身就是空行，第 3 行才是標題；建立時間晚於
+# .prepared-at。
+CPBM_JSON_B="$(jq -n --arg b "$CPBM_BODY_B" --arg c "$CPBM_AFTER" '{comments: [{body: $b, createdAt: $c}]}')"
+if GH_STUB_COMMENTS_JSON="$CPBM_JSON_B" \
+  _confirm_pr_comment_posted_by_marker_interactive acme widgets 7 opencode "$CPBM_ROOT" >/dev/null; then
+  pass "_confirm_pr_comment_posted_by_marker_interactive 真實形狀 (B，第 2 行是空行) 時回傳 0"
+else
+  bad "_confirm_pr_comment_posted_by_marker_interactive 真實形狀 (B) 時仍回傳非零（舊版在這個形狀下連空字串都取不到）"
+fi
+
+# 相符 (C)：cli 名稱包在反引號裡，後面還跟著括號說明文字；建立時間晚於
+# .prepared-at。
+CPBM_JSON_C="$(jq -n --arg b "$CPBM_BODY_C" --arg c "$CPBM_AFTER" '{comments: [{body: $b, createdAt: $c}]}')"
+if GH_STUB_COMMENTS_JSON="$CPBM_JSON_C" \
+  _confirm_pr_comment_posted_by_marker_interactive acme widgets 7 claude "$CPBM_ROOT" >/dev/null; then
+  pass "_confirm_pr_comment_posted_by_marker_interactive 真實形狀 (C，名稱包反引號加括號說明) 時回傳 0"
+else
+  bad "_confirm_pr_comment_posted_by_marker_interactive 真實形狀 (C) 時仍回傳非零"
+fi
+
+# ---- 缺陷 D 的回歸：時間界線 ----
+#
+# 同一則形狀 (A) 的 comment，只把建立時間換成早於 .prepared-at -- 模擬同
+# 一個 PR 上前一次執行留下的舊 comment，標記與 cli 名稱都相同，唯一能分
+# 辨的就是時間。這正是實測回報的那個回歸：舊版沒有任何時間界線，這裡若
+# 又回傳 0 就代表回歸重現了。
+CPBM_JSON_STALE="$(jq -n --arg b "$CPBM_BODY_A" --arg c "$CPBM_BEFORE" '{comments: [{body: $b, createdAt: $c}]}')"
+if GH_STUB_COMMENTS_JSON="$CPBM_JSON_STALE" \
+  _confirm_pr_comment_posted_by_marker_interactive acme widgets 7 agy "$CPBM_ROOT" >/dev/null; then
+  bad "_confirm_pr_comment_posted_by_marker_interactive 早於 .prepared-at 的舊 comment 仍被當成這一次的（回歸重現）"
+else
+  pass "_confirm_pr_comment_posted_by_marker_interactive 早於 .prepared-at 的舊 comment 正確判定為不屬於這一次執行"
+fi
+
+# 缺 .prepared-at：視為「無法確認」，不是退回舊版的無時間界線行為。
+CPBM_NOPREP_ROOT="$T/confirm-pr-comment-by-marker-no-prepared-at"
+mkdir -p "$CPBM_NOPREP_ROOT"
+if GH_STUB_COMMENTS_JSON="$CPBM_JSON_A" \
+  _confirm_pr_comment_posted_by_marker_interactive acme widgets 7 agy "$CPBM_NOPREP_ROOT" >/dev/null; then
+  bad "_confirm_pr_comment_posted_by_marker_interactive 缺 .prepared-at 時仍回傳 0"
+else
+  pass "_confirm_pr_comment_posted_by_marker_interactive 缺 .prepared-at 時回傳非零（不退回無時間界線的舊行為）"
+fi
+
+# 不相符：PR 上沒有任何一則 comment 的第一行是回音室標記。
+if GH_STUB_COMMENTS_JSON='{"comments":[{"body":"some unrelated human comment","createdAt":"2026-09-01T00:10:00Z"}]}' \
+  _confirm_pr_comment_posted_by_marker_interactive acme widgets 7 codex "$CPBM_ROOT" >/dev/null; then
+  bad "_confirm_pr_comment_posted_by_marker_interactive 沒有回音室標記時仍回傳 0"
+else
+  pass "_confirm_pr_comment_posted_by_marker_interactive 沒有回音室標記時回傳非零"
+fi
+
+# 不相符：有回音室標記、真實形狀的揭露段落，但點名的是別的 cli（拿形狀 A
+# 的樁、cli 名稱換成 agy，卻向函式要求比對 codex）。
+if GH_STUB_COMMENTS_JSON="$CPBM_JSON_A" \
+  _confirm_pr_comment_posted_by_marker_interactive acme widgets 7 codex "$CPBM_ROOT" >/dev/null; then
+  bad "_confirm_pr_comment_posted_by_marker_interactive 揭露段落點名別的 cli 時仍回傳 0"
+else
+  pass "_confirm_pr_comment_posted_by_marker_interactive 揭露段落點名別的 cli 時回傳非零（不誤認成自己的）"
+fi
+
+# 不相符（模糊）：Reviewer Agent 那一行本身同時點名目標 cli 與另一個已知
+# cli 名稱，視為無法排除混淆，不採信 -- 真實形狀（標題、空行）之下驗證，
+# 不是舊版那種扁平形狀。
+CPBM_BODY_AMBIG='<!-- pr-review-by-multi-agents -->
+## 揭露聲明
+
+- **Reviewer Agent**：codex (not claude)
+- **使用模型**：some-model
+
+---
+
+## 審查範圍交代
+
+本次審查依據完整變更集合進行。'
+CPBM_JSON_AMBIG="$(jq -n --arg b "$CPBM_BODY_AMBIG" --arg c "$CPBM_AFTER" '{comments: [{body: $b, createdAt: $c}]}')"
+if GH_STUB_COMMENTS_JSON="$CPBM_JSON_AMBIG" \
+  _confirm_pr_comment_posted_by_marker_interactive acme widgets 7 codex "$CPBM_ROOT" >/dev/null; then
+  bad "_confirm_pr_comment_posted_by_marker_interactive Reviewer Agent 那一行同時點名兩個 cli 時仍回傳 0"
+else
+  pass "_confirm_pr_comment_posted_by_marker_interactive Reviewer Agent 那一行同時點名兩個 cli 時回傳非零（模糊不採信）"
+fi
+
+# 範圍放寬後的迴歸驗證：揭露段落之外（審查範圍交代段落）提到另一個已知
+# cli 名稱，不得因此誤判成衝突 -- Reviewer Agent 那一行本身只點名一個
+# cli，narrow-to-that-line 的設計應該讓後面提到別的 cli 名稱不受影響。
+CPBM_BODY_OUTSIDE='<!-- pr-review-by-multi-agents -->
+## 揭露聲明
+
+- **Reviewer Agent**：agy
+- **使用模型**：some-model
+
+---
+
+## 審查範圍交代
+
+本次審查與 codex 產出的結果交叉比對過，結論一致。'
+CPBM_JSON_OUTSIDE="$(jq -n --arg b "$CPBM_BODY_OUTSIDE" --arg c "$CPBM_AFTER" '{comments: [{body: $b, createdAt: $c}]}')"
+if GH_STUB_COMMENTS_JSON="$CPBM_JSON_OUTSIDE" \
+  _confirm_pr_comment_posted_by_marker_interactive acme widgets 7 agy "$CPBM_ROOT" >/dev/null; then
+  pass "_confirm_pr_comment_posted_by_marker_interactive 揭露段落之外提到別的 cli 名稱不影響判定（narrow-to-line 生效）"
+else
+  bad "_confirm_pr_comment_posted_by_marker_interactive 揭露段落之外提到別的 cli 名稱時被誤判成衝突"
+fi
+
+# gh 本身失敗：視為「無法確認」。
+if GH_STUB_COMMENTS_OK=0 _confirm_pr_comment_posted_by_marker_interactive acme widgets 7 codex "$CPBM_ROOT" >/dev/null; then
+  bad "_confirm_pr_comment_posted_by_marker_interactive gh 失敗時仍回傳 0"
+else
+  pass "_confirm_pr_comment_posted_by_marker_interactive gh 失敗時回傳非零（視為無法確認）"
+fi
+
+# ---- _record_orphan_reviewer_result_interactive 本身 ----
+
+RORI_ROOT="$T/record-orphan-reviewer-result-fixture"
+RORI_WT="$(_make_worktree_fixture "$RORI_ROOT")"
+printf '%s\n' "$(_git_status_snapshot "$RORI_WT")" > "$RORI_ROOT/.git-status-before-codex"
+RORI_SUMMARY="$RORI_ROOT/summary.txt"
+: > "$RORI_SUMMARY"
+RORI_BODY='<!-- pr-review-by-multi-agents -->
+Reviewer Agent: codex
+已在 PR 上貼出'
+_record_orphan_reviewer_result_interactive codex "$RORI_ROOT" "$RORI_WT" "$RORI_BODY" "$RORI_SUMMARY"
+RORI_LINE="$(cat "$RORI_SUMMARY")"
+case "$RORI_LINE" in
+  'cli=codex pid=n/a exit=n/a '*' content_status=posted-no-output '*) pass "_record_orphan_reviewer_result_interactive 寫出 content_status=posted-no-output 的摘要行" ;;
+  *) bad "_record_orphan_reviewer_result_interactive 摘要行不正確: $RORI_LINE" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$RORI_ROOT/.comment-body-codex.md")" = "$RORI_BODY" ] \
+  && pass "_record_orphan_reviewer_result_interactive 內容檔存的是傳入的 comment body 原樣，不再加一次標記" \
+  || bad "_record_orphan_reviewer_result_interactive 內容檔內容不正確: $(cat "$RORI_ROOT/.comment-body-codex.md")"
+
+# ==============================================================
+# spawn_supervisor_interactive -- 缺陷 D 完整接線：review.md 從未出現，但
+# PR 上已經有一則可歸屬的 comment，仍要收斂；還在工作中、PR 上什麼都還沒
+# 有的 reviewer 不能被誤判成已完成。
+# ==============================================================
+
+ORPHANE2E_ROOT="$T/orphan-reviewer-supervisor-fixture"
+ORPHANE2E_WT="$(_make_worktree_fixture "$ORPHANE2E_ROOT")"
+mkdir -p "$ORPHANE2E_ROOT/reviewers/codex/workdir" "$ORPHANE2E_ROOT/reviewers/opencode/workdir"
+printf 'codex codex-e2e-model dispatched\nopencode opencode-e2e-model dispatched\n' > "$ORPHANE2E_ROOT/.roster"
+printf 'https://github.com/acme/widgets/pull/7\n' > "$ORPHANE2E_ROOT/.pr-url"
+printf 'w3:pCodex\n' > "$ORPHANE2E_ROOT/.pane-codex"
+printf 'w3:pOpencode\n' > "$ORPHANE2E_ROOT/.pane-opencode"
+printf '%s\n' "$(_git_status_snapshot "$ORPHANE2E_WT")" > "$ORPHANE2E_ROOT/.git-status-before-codex"
+printf '%s\n' "$(_git_status_snapshot "$ORPHANE2E_WT")" > "$ORPHANE2E_ROOT/.git-status-before-opencode"
+# codex 的 review.md 從頭到尾不寫；opencode 的也先不寫，稍後才補上，模擬
+# 「還在工作中」。
+# .prepared-at 是 _confirm_pr_comment_posted_by_marker_interactive 現在的
+# 硬性輸入（見其自己 docstring 記載的回歸：前一次執行留在同一個 PR 上的
+# 舊 comment，標記與 cli 名稱都相同，沒有時間界線就會被誤判成這一次的）。
+date -u -d '2026-09-01T00:00:00Z' +%s > "$ORPHANE2E_ROOT/.prepared-at"
+
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HERDR_RECORD_DIR/orphan-e2e.calls"
+case "$1 $2" in
+  "pane close") printf '{"result":{}}\n'; exit 0 ;;
+  *) printf '{"result":{}}\n' ;;
+esac
+STUB
+chmod +x "$STUB_BIN/herdr"
+export HERDR_RECORD_DIR="$ORPHANE2E_ROOT"
+: > "$ORPHANE2E_ROOT/orphan-e2e.calls"
+export PATH="$STUB_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$STUB_BIN" gh herdr
+
+# codex 已經在 PR 上貼出（揭露段落點名 codex，不點名其他 cli）；opencode
+# 完全沒有出現在這份 comments 清單裡，模擬它還在工作中、PR 上什麼都還沒有。
+# body 形狀取真實資料觀察到的「標記行後第 2 行本身是空行、第 3 行才是
+# `## 揭露聲明` 標題」那個變體（見 CPBM_BODY_B 自己的說明），不是憑空
+# 假設的扁平形狀。
+ORPHANE2E_CODEX_BODY='<!-- pr-review-by-multi-agents -->
+
+## 揭露聲明
+
+- **Reviewer Agent**：codex
+- **使用模型**：codex-e2e-model
+- **免責聲明**：本審查結果全數由 AI 自動分析產生，未經人類審核
+
+## 審查範圍交代
+
+本次審查依據完整變更集合進行。'
+# 建立時間晚於上面寫入的 .prepared-at -- 屬於這一次派送之後才貼出的
+# comment，應該被判定為這一次的。
+ORPHANE2E_CODEX_JSON="$(jq -n --arg b "$ORPHANE2E_CODEX_BODY" --arg c '2026-09-01T00:10:00Z' '{comments: [{body: $b, createdAt: $c}]}')"
+export GH_STUB_COMMENTS_JSON="$ORPHANE2E_CODEX_JSON"
+ORPHANE2E_SUMMARY="$ORPHANE2E_ROOT/summary.txt"
+(cd "$ORPHANE2E_ROOT/work" && spawn_supervisor_interactive "$ORPHANE2E_WT" "$ORPHANE2E_SUMMARY" codex opencode)
+
+# codex 這一格：沒有 review.md，但應該很快就因為已經確認貼出而收斂。
+i=0
+until grep -q '^cli=codex ' "$ORPHANE2E_SUMMARY" 2>/dev/null || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+ORPHANE2E_CODEX_LINE="$(grep '^cli=codex ' "$ORPHANE2E_SUMMARY" 2>/dev/null)"
+case "$ORPHANE2E_CODEX_LINE" in
+  'cli=codex pid=n/a exit=n/a '*' content_status=posted-no-output '*) pass "spawn_supervisor_interactive 缺陷 D：codex 從未寫出 review.md 仍靠 PR comment 收斂為 posted-no-output" ;;
+  *) bad "spawn_supervisor_interactive 缺陷 D：codex 這一行不對: $ORPHANE2E_CODEX_LINE" ;;
+esac
+i=0
+until grep -q '^cli=codex pane_closed=yes' "$ORPHANE2E_ROOT/.pane-close-status" 2>/dev/null || [ "$i" -ge 50 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF 'cli=codex pane_closed=yes' "$ORPHANE2E_ROOT/.pane-close-status" 2>/dev/null \
+  && pass "spawn_supervisor_interactive 缺陷 D：codex 的 pane 依既有確認流程被關閉" \
+  || bad "spawn_supervisor_interactive 缺陷 D：codex 的 pane 未被關閉: $(cat "$ORPHANE2E_ROOT/.pane-close-status" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF 'pane close w3:pCodex' "$ORPHANE2E_ROOT/orphan-e2e.calls" 2>/dev/null \
+  && pass "spawn_supervisor_interactive 缺陷 D：真的呼叫了 herdr pane close，目標是 codex 自己的 pane" \
+  || bad "spawn_supervisor_interactive 缺陷 D：未正確呼叫 herdr pane close: $(cat "$ORPHANE2E_ROOT/orphan-e2e.calls" 2>/dev/null)"
+
+# opencode 這一格：此時仍應該還在 pending，尚未被記錄 -- 不得因為 codex
+# 已經確認貼出，就連帶把還在工作中的 opencode 也判成完成。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+! grep -q '^cli=opencode ' "$ORPHANE2E_SUMMARY" 2>/dev/null \
+  && pass "spawn_supervisor_interactive 缺陷 D：仍在工作中、PR 上還沒有 comment 的 opencode 沒有被誤判為已完成" \
+  || bad "spawn_supervisor_interactive 缺陷 D：opencode 被誤判為已完成: $(cat "$ORPHANE2E_SUMMARY" 2>/dev/null)"
+
+# 現在才讓 opencode 依正常路徑（寫出帶結束標記的 review.md）完成，讓背景
+# 監督行程真正收斂，避免留下一個永遠輪詢的孤兒行程。
+printf '<!-- pr-review-by-multi-agents -->\nopencode review body\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' \
+  > "$ORPHANE2E_ROOT/reviewers/opencode/workdir/review.md"
+
+i=0
+until { [ -f "$ORPHANE2E_SUMMARY" ] && [ "$(wc -l < "$ORPHANE2E_SUMMARY")" -eq 2 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+ORPHANE2E_OPENCODE_LINE="$(grep '^cli=opencode ' "$ORPHANE2E_SUMMARY" 2>/dev/null)"
+case "$ORPHANE2E_OPENCODE_LINE" in
+  'cli=opencode pid=n/a exit=n/a '*' content_status=ready '*) pass "spawn_supervisor_interactive 缺陷 D：opencode 之後補上 review.md 時走的是正常 ready 路徑，不是 orphan 路徑" ;;
+  *) bad "spawn_supervisor_interactive 缺陷 D：opencode 補上 review.md 後這一行不對: $ORPHANE2E_OPENCODE_LINE" ;;
+esac
+
+i=0
+until [ ! -e "$ORPHANE2E_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$ORPHANE2E_WT" ] && pass "spawn_supervisor_interactive 缺陷 D 情境完成後 worktree 仍照常移除" \
+  || bad "spawn_supervisor_interactive 缺陷 D 情境完成後 worktree 未移除"
+
+# ==============================================================
+# spawn_supervisor_interactive -- 缺陷 D 的回歸重現與修正驗證：PR 上只有
+# 前一次執行留下的舊 comment（標記、cli 名稱都相符，建立時間早於這一次
+# 的 .prepared-at），不得被孤兒偵測誤判成這一次已完成而關閉 pane -- 這正
+# 是實測回報的那個崩潰情境（三個 cli 全部被誤判、worktree 被提前移除、
+# 沒有任何一份 review 產出）的最小重現。agy 全程沒有 review.md；PR 上只
+# 有一則舊 comment。
+# ==============================================================
+
+STALEE2E_ROOT="$T/stale-orphan-comment-supervisor-fixture"
+STALEE2E_WT="$(_make_worktree_fixture "$STALEE2E_ROOT")"
+mkdir -p "$STALEE2E_ROOT/reviewers/agy/workdir"
+printf 'agy agy-e2e-model dispatched\n' > "$STALEE2E_ROOT/.roster"
+printf 'https://github.com/acme/widgets/pull/7\n' > "$STALEE2E_ROOT/.pr-url"
+printf 'w4:pAgy\n' > "$STALEE2E_ROOT/.pane-agy"
+printf '%s\n' "$(_git_status_snapshot "$STALEE2E_WT")" > "$STALEE2E_ROOT/.git-status-before-agy"
+date -u -d '2026-09-01T00:00:00Z' +%s > "$STALEE2E_ROOT/.prepared-at"
+
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HERDR_RECORD_DIR/stale-e2e.calls"
+case "$1 $2" in
+  "pane close") printf '{"result":{}}\n'; exit 0 ;;
+  *) printf '{"result":{}}\n' ;;
+esac
+STUB
+chmod +x "$STUB_BIN/herdr"
+export HERDR_RECORD_DIR="$STALEE2E_ROOT"
+: > "$STALEE2E_ROOT/stale-e2e.calls"
+export PATH="$STUB_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$STUB_BIN" gh herdr
+
+STALEE2E_BODY='<!-- pr-review-by-multi-agents -->
+## 揭露聲明
+
+- **Reviewer Agent**：agy
+- **使用模型**：gemini-3.8-flash-high
+- **免責聲明**：本審查結果全數由 AI 自動分析產生，未經人類審核
+
+---
+
+## 審查範圍交代
+
+本次審查依據完整變更集合進行。'
+# 建立時間早於 .prepared-at -- 前一次執行留下的舊 comment。
+STALEE2E_JSON="$(jq -n --arg b "$STALEE2E_BODY" --arg c '2026-08-31T23:50:00Z' '{comments: [{body: $b, createdAt: $c}]}')"
+export GH_STUB_COMMENTS_JSON="$STALEE2E_JSON"
+
+STALEE2E_SUMMARY="$STALEE2E_ROOT/summary.txt"
+(cd "$STALEE2E_ROOT/work" && spawn_supervisor_interactive "$STALEE2E_WT" "$STALEE2E_SUMMARY" agy)
+
+# 孤兒偵測的第一次檢查在第一輪就會發生（節流窗口從 0 起算，見
+# ORPHAN_COMMENT_CHECK_INTERVAL_SECONDS 自己的 docstring），所以這裡只
+# 需要短暫等待，不必等滿整個 60 秒節流窗口。
+sleep 2
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$STALEE2E_SUMMARY" ] && pass "spawn_supervisor_interactive 缺陷 D 回歸：只有舊 comment 時 agy 不被記錄為已完成" \
+  || bad "spawn_supervisor_interactive 缺陷 D 回歸重現：agy 被誤判為已完成: $(cat "$STALEE2E_SUMMARY" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$STALEE2E_ROOT/.pane-close-status" ] && pass "spawn_supervisor_interactive 缺陷 D 回歸：agy 的 pane 沒有被嘗試關閉" \
+  || bad "spawn_supervisor_interactive 缺陷 D 回歸重現：agy 的 pane 被關閉了: $(cat "$STALEE2E_ROOT/.pane-close-status" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -e "$STALEE2E_WT" ] && pass "spawn_supervisor_interactive 缺陷 D 回歸：worktree 沒有被提前移除" \
+  || bad "spawn_supervisor_interactive 缺陷 D 回歸重現：worktree 被提前移除了"
+
+# 現在才讓 agy 依正常路徑（寫出帶結束標記的 review.md）完成，讓背景監督
+# 行程真正收斂，避免留下一個永遠輪詢的孤兒行程。
+printf '<!-- pr-review-by-multi-agents -->\nagy stale-regression review body\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' \
+  > "$STALEE2E_ROOT/reviewers/agy/workdir/review.md"
+
+i=0
+until [ -s "$STALEE2E_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+STALEE2E_LINE="$(cat "$STALEE2E_SUMMARY" 2>/dev/null)"
+case "$STALEE2E_LINE" in
+  'cli=agy pid=n/a exit=n/a '*' content_status=ready '*) pass "spawn_supervisor_interactive 缺陷 D 回歸：agy 之後補上 review.md 時走正常 ready 路徑，不是被舊 comment 誤判" ;;
+  *) bad "spawn_supervisor_interactive 缺陷 D 回歸：agy 補上 review.md 後這一行不對: $STALEE2E_LINE" ;;
+esac
+
+i=0
+until [ ! -e "$STALEE2E_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$STALEE2E_WT" ] && pass "spawn_supervisor_interactive 缺陷 D 回歸情境完成後 worktree 仍照常移除" \
+  || bad "spawn_supervisor_interactive 缺陷 D 回歸情境完成後 worktree 未移除"
+
+unset HERDR_RECORD_DIR GH_STUB_COMMENTS_JSON
+export PATH="$saved_path"
+
+# ==============================================================
 # cmd_cleanup
 #
 # 收尾程序原本寫在規則層、由編排端逐步執行，其中包含編排端自己照公式
@@ -5794,11 +6871,11 @@ case "$(cat "$PANES_ROOT/panes.out")" in
   *) bad "_build_reviewer_panes 未印出 tab_id: $(cat "$PANES_ROOT/panes.out")" ;;
 esac
 
-# ---- 決定二的迴歸斷言：root pane 留著不用，每個 cli（含第一個）都各自
-# pane split 出一格 -- 見 _build_reviewer_panes 自己 docstring 的取捨
-# 說明。兩個 cli 都要有自己的 pane_id，且都不等於 tab create 回傳的 root
-# pane id（wT:p1）：等於它就代表某個 cli 誤用了 root pane 本身，而不是
-# 切出來的新 pane。----
+# ---- 決定二的迴歸斷言：每個 cli（含第一個）都各自 pane split 出一格，
+# 不會有任何一個誤用 tab create 回傳的 root pane 本身 -- 見
+# _build_reviewer_panes 自己 docstring 的取捨說明。兩個 cli 都要有自己的
+# pane_id，且都不等於 root pane id（wT:p1）：等於它就代表某個 cli 誤用了
+# root pane 本身，而不是切出來的新 pane。----
 panes_claude_pane_id="$(sed -n 's/^pane_id_claude=//p' "$PANES_ROOT/panes.out")"
 panes_agy_pane_id="$(sed -n 's/^pane_id_agy=//p' "$PANES_ROOT/panes.out")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -5816,6 +6893,65 @@ panes_agy_pane_id="$(sed -n 's/^pane_id_agy=//p' "$PANES_ROOT/panes.out")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$panes_claude_pane_id" != "$panes_agy_pane_id" ] && pass "_build_reviewer_panes claude 與 agy 拿到不同的 pane" \
   || bad "_build_reviewer_panes claude 與 agy 拿到相同的 pane: $panes_claude_pane_id"
+
+# ---- 缺陷 B 的迴歸斷言：所有 pane 都切完之後，root pane 本身要被關掉，
+# 不再像決定二那樣永遠留著閒置 -- 見 _build_reviewer_panes 自己 docstring
+# 「Root pane disposition」那段對這個決定的完整說明。關閉呼叫要晚於全部
+# 兩次 pane split（不能提早關，提早關會讓還沒切完的 cli 沒有 root pane 可
+# 切），且關閉目標就是 tab create 回傳的 root pane id 本身，不是任何一個
+# cli 自己的 pane。----
+panes_calls_all="$(cat "$PANES_ROOT/panes.calls")"
+case "$panes_calls_all" in
+  *'pane close wT:p1'*) pass "_build_reviewer_panes 全部切完後關閉了 root pane（wT:p1）" ;;
+  *) bad "_build_reviewer_panes 未關閉 root pane: $panes_calls_all" ;;
+esac
+panes_close_line_no="$(grep -n -F 'pane close wT:p1' "$PANES_ROOT/panes.calls" | cut -d: -f1)"
+panes_last_split_line_no="$(grep -n '^pane split ' "$PANES_ROOT/panes.calls" | tail -1 | cut -d: -f1)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$panes_close_line_no" ] && [ -n "$panes_last_split_line_no" ] \
+  && [ "$panes_close_line_no" -gt "$panes_last_split_line_no" ] \
+  && pass "_build_reviewer_panes 關閉 root pane 的呼叫晚於最後一次 pane split" \
+  || bad "_build_reviewer_panes 關閉 root pane 的呼叫沒有排在所有 pane split 之後: close=$panes_close_line_no last_split=$panes_last_split_line_no"
+
+# ---- 缺陷 B：關閉 root pane 失敗時是警告、不是中止 -- 見
+# _build_reviewer_panes 自己 docstring 對這個取捨的說明：這時候兩個 cli
+# 自己的 pane 都已經真的切出來了，一格關不掉的閒置 pane 不該讓呼叫端把
+# 這兩格已經備妥的 pane 整個丟棄。用一支對 "pane close" 直接回傳失敗、其
+# 餘行為不變的樁二進位重跑一次，確認函式仍以結束碼 0 收尾，且兩個 cli 的
+# pane_id 仍然正確印出。----
+PANES_CLOSE_FAIL_STUB="$T/panes-close-fail-bin"
+mkdir -p "$PANES_CLOSE_FAIL_STUB"
+cat > "$PANES_CLOSE_FAIL_STUB/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HERDR_RECORD_DIR/panes-closefail.calls"
+case "$1 $2" in
+  "tab create") printf '{"result":{"tab":{"tab_id":"wCF:t1"},"root_pane":{"pane_id":"wCF:p1"}}}\n' ;;
+  "pane split") printf '{"result":{"pane":{"pane_id":"wCF:p%s"}}}\n' "$RANDOM" ;;
+  "pane close") printf 'stub: close refused\n' >&2; exit 1 ;;
+  *) printf '{"result":{}}\n' ;;
+esac
+STUB
+chmod +x "$PANES_CLOSE_FAIL_STUB/herdr"
+export HERDR_RECORD_DIR="$PANES_ROOT"
+: > "$PANES_ROOT/panes-closefail.calls"
+assert_cli_stub_only "$PANES_CLOSE_FAIL_STUB:$saved_path" "$PANES_CLOSE_FAIL_STUB" herdr
+if PATH="$PANES_CLOSE_FAIL_STUB:$saved_path" HERDR_WORKSPACE_ID=wCF \
+  _build_reviewer_panes "$PANES_ROOT" claude agy > "$PANES_ROOT/panes-closefail.out" 2>"$PANES_ROOT/panes-closefail.err"; then
+  pass "_build_reviewer_panes root pane 關閉失敗時仍以結束碼 0 收尾"
+else
+  bad "_build_reviewer_panes root pane 關閉失敗時整個函式跟著失敗（結束碼非 0）"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q '^pane_id_claude=wCF:p' "$PANES_ROOT/panes-closefail.out" && grep -q '^pane_id_agy=wCF:p' "$PANES_ROOT/panes-closefail.out" \
+  && pass "_build_reviewer_panes root pane 關閉失敗時兩個 cli 的 pane_id 仍正確印出" \
+  || bad "_build_reviewer_panes root pane 關閉失敗時漏印了 pane_id: $(cat "$PANES_ROOT/panes-closefail.out")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q 'WARNING' "$PANES_ROOT/panes-closefail.err" \
+  && pass "_build_reviewer_panes root pane 關閉失敗時印出警告訊息" \
+  || bad "_build_reviewer_panes root pane 關閉失敗時沒有任何警告訊息: $(cat "$PANES_ROOT/panes-closefail.err")"
+# HERDR_RECORD_DIR 不在這裡 unset：下面「決定一」那組測試仍要用同一個變數
+# 讓 $PANES_STUB/herdr 把呼叫記進 panes.calls，這個函式仍沿用它從本區塊
+# 一開始（PANES_STUB 那段）就設好的值。真正的 unset 留在本區塊最下面。
 
 # ---- 決定一的迴歸斷言：面積不再逐次減半 -- 見 _build_reviewer_panes 自
 # 己 docstring 對這個 bug 的說明。派滿四個 cli，逐一比對四次 pane split
