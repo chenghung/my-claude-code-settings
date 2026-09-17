@@ -204,14 +204,23 @@ hat_json_string() {
 # 席視為 1（第一個號碼）。鎖檔路徑必須與 hat_json_set 對同一個檔案用
 # 的路徑一致（`<file>.lock`），理由見檔頭「序號配發」一節。
 hat_allocate_seq() {
-  local registry_root="$1" team_json lock_file lock_fd tmp seq new_seq
+  local registry_root="$1" team_json lock_file lock_fd lock_timeout tmp seq new_seq
 
   team_json="$registry_root/team.json"
   lock_file="${team_json}.lock"
 
   lock_fd=""
   exec {lock_fd}>"$lock_file"
-  flock -x "$lock_fd"
+  # ---- 線上故障修正：等鎖要有逾時上限 ----
+  # 這是 worker 上行取號的唯一入口，掛住的後果是那個 worker 從此完全
+  # 不再回報，而且是靜默的。做法與 hat_json_set 一致：見
+  # lib/common.sh 的 hat_lock_timeout_seconds，同樣要接住它在指令替換
+  # 子殼裡的結束碼，否則驗證失敗只會讓 lock_timeout 變空字串，被
+  # flock 誤判成別的錯誤。
+  lock_timeout="$(hat_lock_timeout_seconds)" || exit "$?"
+  if ! flock -x -w "$lock_timeout" "$lock_fd"; then
+    hat_die 5 "report.sh: 等鎖逾時（${lock_timeout}s），取號失敗：$lock_file"
+  fi
 
   seq="$(jq -r '.next_seq // 1' "$team_json" 2>/dev/null)" || seq=""
   case "$seq" in
@@ -361,7 +370,7 @@ else
     hat_json_set "$inbox_file" '.delivery' '"blocked"'
     # 不能只把結束碼留在 0：完全靜默會讓 worker 以為 orchestrator 已經
     # 看到了，見檔頭「投遞失敗不是本腳本的失敗，但不能完全靜默」一節。
-    printf '已記錄、投遞延後：orchestrator 目前收不到，看門狗會另行重試投遞\n'
+    printf '已記錄、投遞延後：orchestrator 目前卡在核准框，看門狗會在它離開 blocked 後自動重投，但沒有任何機制會讓它自己離開，需要有人去處理那個框\n'
   fi
 fi
 

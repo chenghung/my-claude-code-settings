@@ -19,6 +19,82 @@
 # true，並在所有離開路徑（成功、blocked、其他 herdr 拒絕、語法錯誤）
 # 都放掉，不留任何一條會讓旗標卡在 true 的路徑。
 #
+# ---- 線上故障修正：自動推進計數的歸零時機 ----
+# 看門狗（watchdog.sh）的自動推進計數（.auto_push_count）原本在 worker
+# 回報 delivered 時歸零，這正是一個 livelock 的成因（worker 在
+# delivered 關卡靜止是契約要求的正常狀態，卻被推進、推滿上限又被逼著
+# 再回報一次 delivered，這一報又把計數歸零、重新開始推，見 watchdog.sh
+# 檔頭「計數重置」一節）。正確的歸零時機只有一個：orchestrator 真的送
+# 出了一則下行。lib/common.sh 欄位白名單那一節的寫入端分邊約定是「計
+# 數類欄位由 watchdog.sh 維護」，本腳本不能直接去動 .auto_push_count；
+# 因此本腳本成功送出下行時只寫它自己擁有的新欄位 .last_delivered_at
+# （時間戳），watchdog.sh 讀到這個欄位跟自己的水位線不同時才去動自己
+# 擁有的計數（見該腳本 hat_wd_apply_delivery_reset 的說明），維持寫入
+# 端欄位集合不重疊這個約定。
+#
+# ---- 交付關卡的復工：.stage 是 delivered 時，成功送出下行要撥回
+#      running（線上故障修正新增）----
+# watchdog.sh 的三項照看（自動推進、停滯偵測、達上限升級）只在 .stage
+# 是 running 時進行（見該檔檔頭「.stage 守衛」一節）；worker 回報
+# delivered 之後，.stage 被交付流程設成 delivered，讓這三項照看安靜下
+# 來——這是設計要的，worker 在這個關卡靜止不動是契約要求的正常狀態，
+# 不是卡住。但沒有任何腳本會在 review 回饋進來、orchestrator 要它復工
+# 時把 .stage 撥回 running：唯一的寫入端是 set-worker-field.sh，撥回
+# 這件事需要 orchestrator 自己記得多下一個指令，一旦忘記，這個因為
+# review 回饋被叫回去做事的 worker 會永遠停在 delivered，三項照看全部
+# 關閉、靜默停住不會有任何人知道——這正是 .stage 守衛本身要消滅的失效
+# 形狀，被守衛自己重新製造了一次。
+#
+# 修法：本腳本認定要送一則下行給某個 worker、且該 worker 當下的
+# .stage 剛好是 delivered 時，就撥回 running——判準是「發出」，不是
+# 「送達」：成功送達（rc=0）與進了待補送佇列（結束碼 7，對象卡在核准
+# 框）都算數，讓復工變成機制、不依賴 orchestrator 記得多呼叫一支腳
+# 本；語意上「orchestrator 決定要給這個 worker 新指令」就等於它該重
+# 新開始做事，這件事在訊息進佇列的那一刻就已經成立，不因為還沒送到
+# 而不成立。.stage 是 closing／closed 時不動它——那兩個關卡各自有自
+# 己的收尾流程，本腳本不介入；.stage 是 running 或欄位不存在時本來
+# 就不必動，維持現狀即可。lib/common.sh 欄位白名單一節把 .stage 分
+# 配給「orchestrator 端腳本」，本腳本正是其中之一，這裡的寫入不破壞
+# 分邊約定。
+#
+# ---- 為什麼判準不是送達：漂移處置第 3 步會直接撞到這條路徑 ----
+# 初版判準是送達（只在 rc=0 撥回），理由是結束碼 7 只代表訊息進了待
+# 補送佇列，還沒有人真的收到，撥回關卡似乎言之過早。但這個判準漏接
+# 一個明文預期會發生的情境：漂移處置第 3 步要求對每個受影響的 worker
+# 逐一叫停，而收件方卡在核准框正是本腳本結束碼 7 設計要處理的狀況；
+# 若只在送達時撥回，一個只被這種被擋下的訊息「叫回」、之後再也沒有
+# 下一次直接送達的 worker，會在看門狗補投成功之後仍然被排除在三項照
+# 看之外——原地重建了這一節開頭要修的那個洞，只是換了個更窄的觸發路
+# 徑。改成「發出即撥回」之後，這個殘餘缺口不再存在，也不需要讓
+# watchdog.sh 在補投成功時額外去撥動 .stage（那會替它新增一個原本只
+# 分配給 orchestrator 端腳本的欄位，重演這整條故障鏈的成因）。
+#
+# 兩個路徑各自呼叫同一個判斷（見下方 hat_resume_stage_on_issue），不
+# 是各自重寫一份：復工的判斷邏輯只有一份，兩個呼叫點各自決定「這一輪
+# 算不算發出」即可。語法錯誤（rc=2）與其他真正的拒絕（rc=6）不呼叫
+# ——那兩者根本沒有一則真的要送給這個 worker 的訊息在路上，.stage 維
+# 持原狀。
+#
+# ---- 叫停不是復工：--kind halt 不撥回關卡（獨立審查抓到的問題）----
+# 上面「發出即撥回」的判準原本沒有排除 --kind halt：叫停一個 .stage
+# 是 delivered 的 worker 一樣會被撥回 running，重新進入看門狗三項照看
+# 的範圍。後果是漂移處置第 3 步逐一送出叫停之後，那個 worker 停手回
+# 報、轉成閒置，看門狗會在下一個輪詢間隔開始送「繼續」，推滿上限又升
+# 級——系統一邊叫它停手、一邊叫它繼續，正是「發出即撥回」原本要消滅的
+# 失效形狀，換了個觸發路徑重新出現。一個剛被叫停的 worker 停著不動是
+# 正確狀態，跟交付後待命同一個性質：它欠的是 orchestrator 的下一個新
+# 指令，不是一句「繼續」；之後 orchestrator 真的送出新任務或新目標，
+# 那一則的 --kind 不是 halt，才會撥回。
+#
+# 識別「這一則是叫停」的唯一依據是呼叫端帶 --kind halt：本腳本不會從
+# --text 的文字內容猜測意圖，那會是本腳本自己發明一種文件沒有要求、
+# 呼叫端不保證會帶的識別方式。--kind 已經是白名單裡的合法值、也已經
+# 在 .pending_resend 記錄裡被當成訊息種類標記使用，是腳本層現成、只
+# 差沒被用來影響行為的欄位。這表示呼叫端（含 SKILL.md 漂移處置第 3 步
+# 的範例指令）必須明確帶 --kind halt 才能讓這個修法生效，不帶就會沿用
+# 預設值 instruct、被判定成一般下行、照舊撥回 running——這個相依性回
+# 報在任務報告，不由本腳本自行放寬判準去嘗試涵蓋沒帶這個旗標的呼叫。
+#
 # ---- 一律不握手 ----
 # 收件的 worker 多半還在做事，對做事中的對象沒有任何短握手可用：已實
 # 測帶著等待選項對一個做事中的 agent 送出，會在十秒後逾時、結束碼 1，
@@ -134,6 +210,21 @@ hat_json_string() {
   jq -Rn --arg v "$1" '$v'
 }
 
+# hat_resume_stage_on_issue <worker_file> <kind>
+# 見檔頭「交付關卡的復工」與「叫停不是復工」兩節：<worker_file> 的
+# .stage 剛好是 delivered 時撥回 running。兩個呼叫點共用同一份判斷
+# （成功送達的 rc=0 分支、進待補送佇列的 agent_blocked 分支），判準都
+# 是「這一輪認定要發出一則下行給這個 worker」，不是「送達」——但
+# <kind> 是 halt 時例外，整段不動 .stage：叫停不是復工。
+hat_resume_stage_on_issue() {
+  local worker_file="$1" kind="$2" current_stage
+  [ "$kind" = "halt" ] && return 0
+  current_stage="$(jq -r '.stage // empty' "$worker_file")"
+  if [ "$current_stage" = "delivered" ]; then
+    hat_json_set "$worker_file" '.stage' "$(hat_json_string running)"
+  fi
+}
+
 to="" text="" text_file="" reply_to="" kind="instruct"
 have_to=0 have_text=0 have_text_file=0
 
@@ -207,6 +298,25 @@ if [ -n "$reply_to" ]; then
     hat_die 5 "instruct.sh: --reply-to 指名的 inbox 記錄不存在：$inbox_file"
   fi
 
+  # ---- 獨立審查抓到的問題：--reply-to 必須指向一筆還沒被回覆的定案請
+  #      求，不是隨便一筆同名檔案 ----
+  # 看門狗升級落的 inbox 記錄（token=fyi）跟真正的 need-you 定案請求
+  # 檔名形狀完全一樣（都是 <序號>-<worker>.json），單靠檔案存不存在擋
+  # 不住把升級的序號當成 --reply-to 送進來——那一筆一樣會通過檢查、以
+  # 結束碼 0 成功，但被標成已處理的是升級記錄本身，真正該回覆的
+  # need-you 永遠停在未處理，watchdog.sh 的豁免與 shutdown-worker.sh
+  # 的關閉檢查都繼續卡住，而且全程沒有任何錯誤訊息。已經被回覆過的
+  # need-you（.processed_at 不再是 null）同理排除，避免序號打錯打到舊
+  # 的一筆、或同一筆被回覆兩次。結束碼沿用上面幾行同一個 5（registry
+  # 缺漏或內容不合法）：目標記錄存在，但內容不符合這次操作要求的形
+  # 狀，跟「檔案根本不存在」是同一類問題，不是呼叫端的參數格式錯誤
+  # （2）也不是 herdr 拒絕（6）。
+  reply_target_token="$(jq -r '.token // empty' "$inbox_file")"
+  reply_target_processed="$(jq -r '.processed_at' "$inbox_file")"
+  if [ "$reply_target_token" != "need-you" ] || [ "$reply_target_processed" != "null" ]; then
+    hat_die 5 "instruct.sh: --reply-to 指名的記錄不是一筆還沒被回覆的定案請求（token=$reply_target_token processed_at=$reply_target_processed）：$inbox_file"
+  fi
+
   reply_dir="$registry_root/replies/$to"
   mkdir -p "$reply_dir"
   reply_file="$reply_dir/$reply_to.json"
@@ -232,6 +342,14 @@ else
 fi
 
 if [ "$rc" -eq 0 ]; then
+  # ---- 成功送出下行：寫 .last_delivered_at（見檔頭「線上故障修正：
+  #      自動推進計數的歸零時機」一節）----
+  hat_json_set "$worker_file" '.last_delivered_at' "$(hat_json_string "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+
+  # ---- 交付關卡的復工：見檔頭「交付關卡的復工」與「叫停不是復工」
+  #      兩節 ----
+  hat_resume_stage_on_issue "$worker_file" "$kind"
+
   hat_json_set "$worker_file" '.held' 'false'
   exit 0
 fi
@@ -250,8 +368,14 @@ if [ "$error_code" = "agent_blocked" ]; then
   # ---- agent_blocked：進待補送清單，不是失敗（見檔頭「blocked 是待補
   #      送」與「.pending_resend 有兩個寫入端」兩節）----
   hat_append_pending_resend "$worker_file" "$text" "$kind"
+
+  # ---- 交付關卡的復工：見檔頭「交付關卡的復工」「為什麼判準不是送
+  #      達」與「叫停不是復工」三節——進待補送佇列也算「發出」，一併撥
+  #      回，但 --kind halt 例外 ----
+  hat_resume_stage_on_issue "$worker_file" "$kind"
+
   hat_json_set "$worker_file" '.held' 'false'
-  printf '已記錄、待補送：worker %s 目前卡在核准框，看門狗會在解除後補投\n' "$to"
+  printf '已記錄、待補送：worker %s 目前卡在核准框，看門狗會在它離開 blocked 後自動補投，但沒有任何機制會讓它自己離開，需要你去處理那個框（讀畫面判讀後呼叫 press-approval.sh）\n' "$to"
   exit 7
 fi
 

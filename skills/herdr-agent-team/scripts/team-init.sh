@@ -29,21 +29,58 @@
 # 這一步不是只做一次：herdr 文件明講名稱會在 agent 結束、被釋放、或被
 # 取代時清空，所以中斷恢復時可能要重新命名。因此整支腳本（含自我命
 # 名）在有沒有帶 --recover 的兩種情況下走的是同一套主流程，--recover
-# 只是在主流程之外，另外多做兩件事：
+# 只是在主流程之外，另外多做三件事：
 #
 #   - 把所有 workers/*.json 裡留在 true 的持有旗標收回成 false：這面
 #     旗標卡在 true 的 worker 會被 watchdog 永久跳過自動推進，且不會
 #     有任何錯誤訊息（規格 §13）。
+#   - 把所有 worker 記錄的升級閂鎖一併收回：見下方「升級閂鎖收回」一
+#     節。
 #   - 在 stdout 逐行印出還有待補送的 worker
-#     （pending-resend worker=<名稱> count=<筆數>）。
+#     （pending-resend worker=<名稱> count=<筆數>），純粹告知積壓量。
 #
-# ---- 順序警告：--recover 只收回旗標，絕對不自行補送 ----
-# 補送必須排在重掛 watchdog 之前、收回旗標之後，由 orchestrator 依這裡
-# 印出的清單逐一呼叫 instruct.sh。順序顛倒的話，補送設下的新旗標會被
-# watchdog 補發事件的處理流程當成「上一輪沒收回的殘留」而收掉。本腳本
-# 因此只讀 pending_resend 算筆數、只印出清單，不呼叫任何會送出訊息的
-# herdr 指令，也不清空或改寫 pending_resend 本身——那份清單要留給呼叫
-# 端逐一消化。
+# ---- --recover 只收回旗標與閂鎖，絕對不自行補送 ----
+# instruct.sh 對 .pending_resend 只會追加、從不移除；移除的唯一呼叫端
+# 是 watchdog.sh 的補投（見該檔「投遞重試與待補送補投」一節 b)）。排空
+# 完全交給看門狗自己做：worker 離開 blocked 之後，看門狗逐筆補投，成
+# 功一筆就移除一筆，不需要 orchestrator 手動介入——若在這裡或呼叫端手
+# 動呼叫 instruct.sh 補送，看門狗掛上之後還會再補投同一筆，收件方會收
+# 到重複下行；收件方若還卡在 blocked，手動補送反而會再追加一筆重複進
+# 佇列，讓積壓變多。本腳本因此只讀 pending_resend 算筆數、印出清單告
+# 知積壓量，不呼叫任何會送出訊息的 herdr 指令，也不清空或改寫
+# pending_resend 本身。
+#
+# 排空的前提是收件方要先離開 blocked，而沒有任何機制會讓它自己離開：
+# 核准框要有人去處理（讀畫面判讀、呼叫 press-approval.sh），不去處理
+# 那個框，積壓就會一直卡著、全程靜默。
+#
+# ---- 升級閂鎖收回：跨 orchestrator 重啟不得殘留（線上故障修正新增）
+#      ----
+# .escalation_active／.escalation_last_at（見 lib/common.sh 欄位白名單
+# 一節、watchdog.sh「升級去重」一節）讓同一個升級條件只在剛成立的那一
+# 輪送出一次，之後最多每隔 AGENT_TEAM_ESCALATION_REPEAT_SECONDS 秒重
+# 提一次；它保護的是 orchestrator 的 context 不被同一句話洗版。但
+# orchestrator session 重啟正好就是 context 被清空的那一刻——閂鎖記的
+# 東西在那一刻已經沒有保護對象了：一個在重啟前就卡著、條件仍然成立的
+# worker，會因為閂鎖還記著「剛發過」，最長要再等一個重提間隔（預設
+# 1800 秒）才會重新提醒，新的 session 對一個仍卡住的 worker 最長沉默
+# 半小時。
+#
+# 修法：--recover 一併把所有 worker 記錄的 .escalation_active 清成
+# null（跟 watchdog.sh 的 hat_wd_escalation_clear 同一種清法，但不能
+# 直接呼叫那個函式——watchdog.sh 檔尾是無界輪詢迴圈的頂層程式碼，被
+# source 進來會立刻執行，不能把它當函式庫用），讓重掛看門狗之後，仍
+# 然成立的條件能立刻重新升級一次，不被上一個 session 留下的閂鎖壓
+# 抑。不動 .escalation_last_at：一旦 .escalation_active 被清空，
+# hat_wd_escalate_once 比對「目前條件跟閂鎖記的是否相同」這一步就已
+# 經是假，後面看 .escalation_last_at 算經過時間的分支根本不會執行
+# 到，不需要一併清。
+#
+# 這是 .escalation_active／.escalation_last_at 欄位白名單分配表的例
+# 外：正常運作時只有 watchdog.sh 寫，本腳本的 --recover 是唯一的例
+# 外。理由跟 .held 已有的先例相同——中斷恢復的當下，上一個 session 的
+# watchdog.sh 行程已經不在，不存在兩個寫入端同時活著互相覆蓋的競態。
+# 已同步更新 lib/common.sh 欄位白名單一節的分配表註解。
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -96,7 +133,7 @@ hat_json_set "$registry_root/team.json" '.orchestrator_pane' "\"$pane_id\""
 hat_json_set "$registry_root/team.json" '.team_home' "\"$team_home\""
 
 if [ "$recover" -eq 1 ]; then
-  # ---- 收回殘留持有旗標＋回報待補送清單，不自行補送 ----
+  # ---- 收回殘留持有旗標＋升級閂鎖，回報待補送清單，不自行補送 ----
   # .held 的正常值就包含 false（不是缺漏的訊號）；hat_json_get 已能正
   # 確區分「欄位缺漏」（5 結束）與「值合法地是 false」（正常回傳該
   # 值），直接用它讀取即可，不必繞去自己呼叫 jq。
@@ -106,6 +143,15 @@ if [ "$recover" -eq 1 ]; then
     held="$(hat_json_get "$worker_file" '.held')"
     if [ "$held" = "true" ]; then
       hat_json_set "$worker_file" '.held' 'false'
+    fi
+
+    # ---- 升級閂鎖收回（見檔頭「升級閂鎖收回」一節）----
+    # .escalation_active 缺席（從未升級過，或上一輪已經清過）時是安全
+    # 的無動作，不多寫一次；用 jq 直接讀（不是 hat_json_get）是因為缺
+    # 席在這裡是正常狀態，不是 registry 壞了。
+    escalation_active="$(jq -r '.escalation_active // empty' "$worker_file")"
+    if [ -n "$escalation_active" ]; then
+      hat_json_set "$worker_file" '.escalation_active' 'null'
     fi
 
     # pending_resend 的筆數用純 jq 算：hat_json_get 只回傳單一純量或
