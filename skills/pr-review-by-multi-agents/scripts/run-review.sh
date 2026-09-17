@@ -190,26 +190,57 @@ readonly RUN_DIR_STALE_GRACE_SECONDS=600
 
 # REVIEWER_CONFIRM_BUDGET_SECONDS: the total wall-clock time
 # _confirm_reviewers_working (see its own docstring) may spend confirming
-# that every just-dispatched reviewer actually reached agent_status=working,
-# across every reviewer combined -- not a per-reviewer allowance repeated
-# for each one. Deliberately a shared budget rather than "N reviewers times
-# a per-reviewer timeout": with four platforms, a per-reviewer timeout would
-# let a run where every single one is genuinely stuck (not a hypothetical --
-# this is exactly the failure mode this whole task exists to catch) cost 4x
-# this value before `launch` ever returns, and `launch` returning promptly
-# is a property SKILL.md's own polling design already depends on (see
-# spawn_supervisor_interactive's own docstring). A reasoned bound, not a
-# measured one, the same caveat RUN_DIR_STALE_GRACE_SECONDS above already
-# carries: there is no real binary run timed against a real stuck-at-dialog
-# reviewer to clock this against, only the three herdr `agent wait` facts
-# _confirm_reviewers_working's own docstring cites as independently
-# confirmed against herdr 0.8.2. 60 seconds is chosen to be short enough
-# that a run where every reviewer is genuinely stuck still returns `launch`
-# well inside a human's patience for a single command, while staying long
-# enough to also cover this function's own resend loop for codex/opencode/
-# agy (see its own docstring and REVIEWER_PROMPT_RESEND_LIMIT's) -- every
-# `agent wait` call inside that loop, including the ones between resends,
-# draws from this same shared budget, not a fresh allowance of its own.
+# that a single just-dispatched reviewer actually reached
+# agent_status=working -- a per-reviewer allowance. Every reviewer this run
+# dispatches gets its own full one; one reviewer's own turn never shrinks
+# what a later reviewer's own turn gets.
+#
+# THIS WAS A SHARED, ACROSS-ALL-REVIEWERS-COMBINED BUDGET UNTIL A REAL RUN
+# OVERTURNED THAT: the original design backed a single deadline computed
+# once before _confirm_reviewers_working's own per-cli loop even started,
+# deliberately, so that four platforms all genuinely stuck at once would
+# still cost this function only one budget's worth of wall clock rather
+# than 4x it. A real end-to-end run against a real PR reproduced exactly
+# why that reasoning does not survive contact with a real dispatch: claude
+# confirmed instantly, opencode then alone burned what was left of the
+# shared budget waiting, and agy inherited none of it left at all --
+# marked unconfirmed with `herdr agent wait` never once invoked for it (no
+# stderr line for agy anywhere in that run's own log is what proved "never
+# queried", not an inference). Both opencode and agy were in fact healthy
+# and working normally at that moment; print_summary's own unconfirmed
+# message ("尚未進入審查中，可能停在權限核准對話框上") fired for both
+# anyway -- a false alarm, and one that also erodes that same message's
+# own ability to flag a genuinely stuck reviewer, since a reader can no
+# longer tell the two cases apart. An earlier cli's own speed has nothing
+# to do with whether a later, unrelated cli is healthy, so this budget no
+# longer lets one decide the other's confirmation window at all.
+#
+# Every dispatched reviewer now gets this exact value as its own full
+# allowance (see _confirm_reviewers_working's own docstring for how a cli
+# that may resend -- codex/opencode/agy -- further divides its own
+# allowance across every attempt it may use, so a resend still gets a real
+# observation window instead of whatever was left of a shared deadline).
+# The cost this reverses: a run where every single dispatched reviewer is
+# genuinely stuck now costs up to N times this value (N = how many
+# reviewers this run dispatched, at most 4) before `launch` returns, not
+# the one shared budget's worth the original design capped it at --
+# `launch` returning promptly is still a property SKILL.md's own polling
+# design depends on (see spawn_supervisor_interactive's own docstring),
+# and this is the tradeoff accepted to stop a fast or already-confirmed
+# reviewer from silently starving a slower, but equally healthy, one.
+#
+# A reasoned bound, not a measured one, the same caveat
+# RUN_DIR_STALE_GRACE_SECONDS above already carries: there is no real
+# binary run timed against a real stuck-at-dialog reviewer to clock this
+# against, only the three herdr `agent wait` facts _confirm_reviewers_
+# working's own docstring cites as independently confirmed against herdr
+# 0.8.2, plus the one real incident above, which measured the shared-pool
+# design's own failure, not this replacement's own ceiling. 60 seconds per
+# reviewer is chosen to be short enough that even the worst case (every
+# dispatched reviewer genuinely stuck) still returns `launch` well inside a
+# human's patience for a single command, while staying long enough to also
+# cover this function's own resend loop for codex/opencode/agy (see its
+# own docstring and REVIEWER_PROMPT_RESEND_LIMIT's).
 readonly REVIEWER_CONFIRM_BUDGET_SECONDS=60
 
 # REVIEWER_STALLED_THRESHOLD_SECONDS: how long cmd_wait (see its own
@@ -255,11 +286,13 @@ readonly REVIEWER_STALLED_THRESHOLD_SECONDS=300
 # is not evidence for any particular retry spacing; what both probes do
 # establish is that one resend was enough. Capping at 2 gives one resend
 # of margin beyond that observed minimum without turning this into an
-# unbounded loop --
-# REVIEWER_CONFIRM_BUDGET_SECONDS's own shared deadline is the actual hard
-# backstop regardless of this count, since every `agent wait` call inside
-# the retry loop (including the ones between resends) still draws from
-# that same budget.
+# unbounded loop -- REVIEWER_CONFIRM_BUDGET_SECONDS's own per-reviewer
+# allowance is the actual hard backstop on total time spent regardless of
+# this count: that allowance is split evenly across every attempt this
+# count allows (one initial wait plus up to this many resend-then-wait
+# pairs -- see _confirm_reviewers_working's own docstring for the split),
+# so raising this constant divides the same per-reviewer allowance into
+# more, shorter attempts rather than adding time on top of it.
 readonly REVIEWER_PROMPT_RESEND_LIMIT=2
 
 # ORPHAN_COMMENT_CHECK_INTERVAL_SECONDS: how often spawn_supervisor_
@@ -4321,22 +4354,44 @@ cmd_prepare() {
 # <budget_seconds> is a parameter, not a direct read of
 # REVIEWER_CONFIRM_BUDGET_SECONDS (cmd_launch's own call site below passes
 # that constant in) -- letting this function's own tests exercise the
-# shared-budget behavior documented on that constant (confirming one slow
-# reviewer visibly shrinks the next one's own --timeout, and that a
-# reviewer past an exhausted budget is marked unconfirmed without herdr
-# ever being invoked for it at all) on a small, fast, deterministic value
-# instead of the real 60 seconds.
+# per-reviewer budget behavior documented on that constant (confirming an
+# earlier reviewer's own slowness never shrinks a later reviewer's own
+# --timeout, and that every dispatched reviewer is actually queried at
+# least once even when an earlier one in the same call never reaches
+# working at all) on a small, fast, deterministic value instead of the
+# real 60 seconds.
 #
-# The budget itself is spent as one wall-clock deadline computed once up
-# front, not a fresh per-reviewer allowance: each `agent wait` call's own
-# --timeout argument, including every retry's own call after a resend for
-# codex/opencode/agy, is whatever is left of that shared deadline at the
-# moment it runs, and a check whose turn comes up after the deadline has
-# already passed never invokes herdr at all -- it is marked unconfirmed on
-# the spot. This is the mechanism REVIEWER_CONFIRM_BUDGET_SECONDS's own
-# docstring is about: four reviewers that are all genuinely stuck, even
-# accounting for resends, cost this function at most that one shared
-# budget.
+# WAS SPENT AS ONE SHARED WALL-CLOCK DEADLINE ACROSS EVERY REVIEWER IN THIS
+# CALL; A REAL RUN OVERTURNED THAT (see REVIEWER_CONFIRM_BUDGET_SECONDS's
+# own docstring for the full incident): under the old design, a single
+# deadline was computed once before the per-cli loop below even started,
+# so each `agent wait` call's own --timeout argument, for every cli and
+# every retry after a resend, was whatever was left of that one shared
+# deadline at the moment it ran -- a cli whose turn came up after an
+# earlier cli had already exhausted it never invoked herdr at all. Now each
+# cli gets its own allowance, derived fresh from <budget_seconds> at the
+# start of its own turn in the loop below, with no dependency on what any
+# earlier cli in this same call consumed.
+#
+# That per-cli allowance is itself divided across every attempt a given cli
+# may use -- one initial `agent wait` plus, for codex/opencode/agy, up to
+# REVIEWER_PROMPT_RESEND_LIMIT more after a resend -- into equal, fixed-
+# size windows (<budget_seconds> * 1000 / attempt count, milliseconds),
+# rather than letting one attempt spend the whole allowance and leave a
+# resend with nothing left to wait on: the same real run above also found a
+# resend that fired but was left with zero observation time under the old
+# shared-deadline math, marked unconfirmed with no chance to see whether it
+# had actually taken effect (opencode, in that run, went on to finish
+# roughly 20 minutes after the other two dispatched clis, with only one PR
+# comment ever posted -- no duplicate). claude never resends (see below),
+# so its one attempt gets the whole per-cli allowance. This holds both
+# hard boundaries this fix must respect: no attempt, resend included, is
+# ever handed a zero-length window (a resend is observed, not fire-and-
+# forget), and no single cli can spend more than roughly its own
+# <budget_seconds> total across every attempt it uses (a stuck cli cannot
+# hog this function indefinitely) -- see REVIEWER_CONFIRM_BUDGET_SECONDS's
+# own docstring for what this costs in aggregate across every reviewer this
+# call confirms.
 #
 # Resending, for codex/opencode/agy only (see REVIEWER_PROMPT_RESEND_LIMIT's
 # own docstring for the cap and its own reasoning): on a failed
@@ -4346,13 +4401,14 @@ cmd_prepare() {
 # function's own caller loop never had a reason to hand prompt paths over
 # until this resend path needed them -- and resubmits it via the same
 # `herdr agent prompt` call launch_reviewer_interactive's own first attempt
-# used, then loops back to `agent wait` again. logs_dir is chmod -R a-w by
-# the time this function runs (see cmd_launch's own dispatch loop), but
-# that only removes write permission; reading a prompt file back out of it
-# here is unaffected. A resend attempt that itself fails (the prompt file
-# can no longer be read, or `agent prompt` itself errors) stops the retry
-# loop immediately rather than trying further resends against what is
-# likely a deeper problem than a dropped prompt.
+# used, then loops back to `agent wait` again, at that same fixed per-
+# attempt window computed for this cli (see the paragraph above). logs_dir
+# is chmod -R a-w by the time this function runs (see cmd_launch's own
+# dispatch loop), but that only removes write permission; reading a prompt
+# file back out of it here is unaffected. A resend attempt that itself
+# fails (the prompt file can no longer be read, or `agent prompt` itself
+# errors) stops the retry loop immediately rather than trying further
+# resends against what is likely a deeper problem than a dropped prompt.
 #
 # Never fails, regardless of how many (or which) reviewers this confirms,
 # or how many times a given one gets resent to: an unconfirmed reviewer
@@ -4378,7 +4434,7 @@ _confirm_reviewers_working() {
   local base_dir="$1" budget_seconds="$2"
   shift 2
   local status_file="$base_dir/.reviewer-confirm-status"
-  local pair cli pane_id deadline now remaining_ms json rc error_code
+  local pair cli pane_id max_attempts attempt_timeout_ms json rc error_code
   local resends_done prompt_file prompt_text
 
   # A failure to even create this file is reported and skipped, not
@@ -4392,8 +4448,6 @@ _confirm_reviewers_working() {
       "$status_file" >&2
     return 0
   fi
-
-  deadline=$(( $(date +%s) + budget_seconds ))
 
   # Every `>> "$status_file"` append below carries its own `|| true`. This
   # was previously missing, and the comment that used to sit here claimed
@@ -4440,18 +4494,36 @@ _confirm_reviewers_working() {
     pane_id="${pair#*:}"
     resends_done=0
 
-    while :; do
-      now="$(date +%s)"
-      # * 1000: --timeout below is milliseconds, not seconds -- see this
-      # function's own docstring, fourth `agent wait` fact, for the
-      # --help text and the real-binary timing probe this is confirmed
-      # against.
-      remaining_ms=$(( (deadline - now) * 1000 ))
-      if (( remaining_ms <= 0 )); then
-        printf '%s unconfirmed\n' "$cli" >> "$status_file" || true
-        break
-      fi
+    # This cli's own allowance is <budget_seconds>, independent of what any
+    # earlier cli in this same loop already spent (see
+    # REVIEWER_CONFIRM_BUDGET_SECONDS's own docstring for the real-run
+    # incident that overturned the previous shared-deadline design).
+    # codex/opencode/agy may spend that allowance across more than one
+    # `agent wait` call (the resend loop below), so it is split evenly
+    # across every attempt this cli may use -- one initial wait plus up to
+    # REVIEWER_PROMPT_RESEND_LIMIT resend-then-wait pairs -- rather than
+    # letting the first attempt consume the whole thing and leave a resend
+    # with nothing left to wait on. claude never resends (see this
+    # function's own docstring), so its one and only attempt gets the full
+    # allowance. Fixed per attempt, not a shrinking deadline: every
+    # `agent wait` call for a given cli, resends included, gets this exact
+    # same --timeout value.
+    case "$cli" in
+      codex|opencode|agy) max_attempts=$((REVIEWER_PROMPT_RESEND_LIMIT + 1)) ;;
+      *) max_attempts=1 ;;
+    esac
+    # * 1000: --timeout below is milliseconds, not seconds -- see this
+    # function's own docstring, fourth `agent wait` fact, for the
+    # --help text and the real-binary timing probe this is confirmed
+    # against.
+    attempt_timeout_ms=$(( (budget_seconds * 1000) / max_attempts ))
 
+    if (( attempt_timeout_ms <= 0 )); then
+      printf '%s unconfirmed\n' "$cli" >> "$status_file" || true
+      continue
+    fi
+
+    while :; do
       # `if json="$(...)"; then` -- the same set -e exemption
       # launch_reviewer_interactive's own docstring already documents for
       # its own `if [ ... ]` guards: a function call, or here a command
@@ -4463,7 +4535,7 @@ _confirm_reviewers_working() {
       # bash sets $? on entry to an else branch to the condition's own
       # exit status, and any command run before capturing it (even a plain
       # assignment) would overwrite that value.
-      if json="$(herdr agent wait "$pane_id" --until working --timeout "$remaining_ms" 2>/dev/null)"; then
+      if json="$(herdr agent wait "$pane_id" --until working --timeout "$attempt_timeout_ms" 2>/dev/null)"; then
         printf '%s working\n' "$cli" >> "$status_file" || true
         break
       else
@@ -4477,8 +4549,8 @@ _confirm_reviewers_working() {
         # load-bearing" failure mode for a structurally identical gap.
         error_code="$(printf '%s' "$json" | jq -r '.error.code // "unknown"' 2>/dev/null)" || error_code=""
         error_code="${error_code:-unknown}"
-        printf '_confirm_reviewers_working: %s in pane %s did not reach agent_status=working within its share of the %ss confirmation budget (herdr agent wait exit %d, error code: %s)\n' \
-          "$cli" "$pane_id" "$budget_seconds" "$rc" "$error_code" >&2
+        printf '_confirm_reviewers_working: %s in pane %s did not reach agent_status=working within the %dms timeout for this attempt (herdr agent wait exit %d, error code: %s)\n' \
+          "$cli" "$pane_id" "$attempt_timeout_ms" "$rc" "$error_code" >&2
 
         # Resend only for the three clis whose first `agent prompt` call
         # can be silently dropped (see this function's own docstring) --
@@ -4717,8 +4789,8 @@ cmd_launch() {
   # _confirm_reviewers_working's own docstring for why. Budget passed in
   # explicitly rather than read directly from REVIEWER_CONFIRM_BUDGET_
   # SECONDS inside that function, so its own tests can exercise the
-  # shared-budget behavior on a small, fast value (see that constant's own
-  # docstring).
+  # per-reviewer budget behavior on a small, fast value (see that
+  # constant's own docstring).
   _confirm_reviewers_working "$base_dir" "$REVIEWER_CONFIRM_BUDGET_SECONDS" \
     "${dispatched_agents[@]+"${dispatched_agents[@]}"}"
 

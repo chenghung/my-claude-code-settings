@@ -3132,8 +3132,10 @@ confirm_stdout_only="$(_confirm_reviewers_working "$CONFIRM_MIX" 60 "claude:pane
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -z "$confirm_stdout_only" ] && pass confirm-reviewers-working-prints-nothing-to-stdout || bad "confirm-reviewers-working-prints-nothing-to-stdout: $confirm_stdout_only"
 
-# --- 共用預算：不是每格各自獨立算一次逾時 -- 前一格花掉的時間必須讓下
-# 一格拿到的 --timeout 縮水，而不是每格都收到滿額的預算值 ---
+# --- 每一格各自獨立算一次逾時（本回合要修的缺陷）：前一格花掉多少真實
+# 時間，不會讓下一格拿到的 --timeout 縮水 -- pane-fast 拿到的值必須等於
+# 「它自己的預算，除以它自己可能用到的嘗試次數」算出來的固定值，跟
+# pane-slow 花了多久完全無關，不是只驗證「有沒有比某個寬鬆門檻小」---
 
 CONFIRM_BUDGET="$T/confirm-budget"
 mkdir -p "$CONFIRM_BUDGET"
@@ -3145,17 +3147,27 @@ rm -f "$CONFIRM_RECORD_DIR/agent-wait-sleep.pane-fast"
 _confirm_reviewers_working "$CONFIRM_BUDGET" 5 "claude:pane-slow" "codex:pane-fast" 2>/dev/null
 
 confirm_budget_pane_fast_timeout="$(cat "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-fast" 2>/dev/null)"
-# pane-slow 吃掉了 3 秒中的一大部分（5 秒預算裡的 3 秒），所以 pane-fast
-# 拿到的 --timeout 應明顯小於「各自獨立拿滿 5000ms」會給出的值 -- 4000
-# 這個門檻留了充分的排程誤差空間，同時仍遠低於 5000。
+# pane-slow（claude，5 秒預算、只有一次機會，不會重送）真的花了 3 秒才
+# 回報逾時，但 pane-fast（codex）拿到的 --timeout 是它自己的 5 秒預算除
+# 以它自己的嘗試次數（1 次原始 + REVIEWER_PROMPT_RESEND_LIMIT 次重送機
+# 會）算出來的固定值，和 pane-slow 花了多久無關。
+confirm_budget_expected_fast_ms=$(( (5 * 1000) / (REVIEWER_PROMPT_RESEND_LIMIT + 1) ))
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$confirm_budget_pane_fast_timeout" ] && [ "$confirm_budget_pane_fast_timeout" -gt 0 ] && [ "$confirm_budget_pane_fast_timeout" -lt 4000 ] \
-  && pass confirm-reviewers-working-shares-budget-not-per-reviewer \
-  || bad "confirm-reviewers-working-shares-budget-not-per-reviewer: pane-fast 拿到 ${confirm_budget_pane_fast_timeout:-<空>}ms"
+[ "$confirm_budget_pane_fast_timeout" = "$confirm_budget_expected_fast_ms" ] \
+  && pass confirm-reviewers-working-gives-each-reviewer-its-own-independent-budget \
+  || bad "confirm-reviewers-working-gives-each-reviewer-its-own-independent-budget: pane-fast 拿到 ${confirm_budget_pane_fast_timeout:-<空>}ms，預期 ${confirm_budget_expected_fast_ms}ms"
 
-# --- 預算耗盡：輪到的那一格如果此時剩餘預算已經 <=0，這個函式必須連
-# herdr 都不呼叫，直接記為 unconfirmed -- 不是呼叫了、只是給一個很小的
-# --timeout ---
+# --- 迴歸重現（本回合要修的缺陷，使用者端對端實跑量到的正是這個）：
+# 前面的家吃光自己的預算導致逾時，不得讓排在後面的家連確認機會都沒有 --
+# 真實情況是 claude 秒確認、opencode 把剩下的共用預算等到耗盡、agy 輪到
+# 時剩餘預算已經是 0，完全沒有被查詢過（stderr 裡連一行 agy 的訊息都沒
+# 有，這就是「從未查詢」的直接證據，不是推論）。這裡用兩家做最小重現：
+# claude（pane-slow2）先花掉遠超過整個 1 秒預算的時間（sleep 2 秒）才回
+# 報逾時，codex（pane-after）緊接在後。修正前，舊的共用倒數式預算在
+# claude 那 2 秒真實流逝後已經歸零，codex 會直接被判 unconfirmed，herdr
+# agent wait 連叫都沒叫過（agent-wait-timeout-ms.pane-after 這個樁記錄檔
+# 完全不會被寫出來）；修正後，codex 拿到自己完整、獨立的一份預算，herdr
+# 真的被呼叫、也真的查到 working。---
 
 CONFIRM_EXHAUST="$T/confirm-exhaust"
 mkdir -p "$CONFIRM_EXHAUST"
@@ -3163,13 +3175,20 @@ printf 'timeout' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-slow2"
 printf '2' > "$CONFIRM_RECORD_DIR/agent-wait-sleep.pane-slow2"
 rm -f "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-after"
 rm -f "$CONFIRM_RECORD_DIR/agent-wait-sleep.pane-after"
+rm -f "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-after"
 
 _confirm_reviewers_working "$CONFIRM_EXHAUST" 1 "claude:pane-slow2" "codex:pane-after" 2>/dev/null
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-after" ] && pass confirm-reviewers-working-skips-herdr-call-after-budget-exhausted || bad confirm-reviewers-working-skips-herdr-call-after-budget-exhausted
+[ -f "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-after" ] && pass confirm-reviewers-working-later-reviewer-still-queried-after-earlier-one-exhausts-its-own-budget || bad confirm-reviewers-working-later-reviewer-still-queried-after-earlier-one-exhausts-its-own-budget
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(awk '$1=="codex"{print $2}' "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-marks-unconfirmed-after-budget-exhausted || bad "confirm-reviewers-working-marks-unconfirmed-after-budget-exhausted: $(cat "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"
+[ "$(awk '$1=="codex"{print $2}' "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = working ] && pass confirm-reviewers-working-later-reviewer-not-starved-by-earlier-slow-one || bad "confirm-reviewers-working-later-reviewer-not-starved-by-earlier-slow-one: $(cat "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"
+
+# claude 自己那一格是真的逾時（1 秒預算、只有一次機會，stub 固定回報
+# timeout），修正後仍然正確記為 unconfirmed -- 證明這個修正沒有連帶讓
+# 「真的卡住」的偵測跟著失效。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(awk '$1=="claude"{print $2}' "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-still-flags-a-genuinely-stuck-reviewer || bad "confirm-reviewers-working-still-flags-a-genuinely-stuck-reviewer: $(cat "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"
 
 # --- 重送：codex/opencode/agy 這三家第一次 agent wait 沒確認到，這個函式
 # 要重送同一份 prompt 檔的內容，再重新確認一次 -- 這裡直接讓重送生效
@@ -3208,6 +3227,17 @@ _confirm_reviewers_working "$CONFIRM_RESEND_EXHAUST" 60 "opencode:pane-resend-ex
 [ "$(awk '$1=="opencode"{print $2}' "$CONFIRM_RESEND_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-marks-unconfirmed-after-resend-limit-exhausted || bad "confirm-reviewers-working-marks-unconfirmed-after-resend-limit-exhausted: $(cat "$CONFIRM_RESEND_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-exhaust" 2>/dev/null)" = "$REVIEWER_PROMPT_RESEND_LIMIT" ] && pass confirm-reviewers-working-resends-exactly-up-to-the-limit || bad "confirm-reviewers-working-resends-exactly-up-to-the-limit: $(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-exhaust" 2>/dev/null), 應為 $REVIEWER_PROMPT_RESEND_LIMIT"
+
+# --- 重送不得變成送完就當作沒事發生（本回合要修的另一個缺陷）：最後一
+# 次重送之後那次 agent wait，拿到的 --timeout 必須是這一格自己預算切分
+# 出來的完整固定值，而不是被前面幾次嘗試拖到只剩下接近 0 的殘餘時間 --
+# 修正前，舊的共用倒數式預算會讓最後一次重送後的那次 agent wait 幾乎沒
+# 有觀察時間就被判定 unconfirmed。---
+confirm_resend_expected_ms=$(( (60 * 1000) / (REVIEWER_PROMPT_RESEND_LIMIT + 1) ))
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-resend-exhaust" 2>/dev/null)" = "$confirm_resend_expected_ms" ] \
+  && pass confirm-reviewers-working-resend-gets-a-real-observation-window \
+  || bad "confirm-reviewers-working-resend-gets-a-real-observation-window: $(cat "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-resend-exhaust" 2>/dev/null)ms，預期 ${confirm_resend_expected_ms}ms"
 
 # --- claude 絕不重送:第一次 agent wait 沒確認到就直接記為 unconfirmed,
 # 不曾呼叫 agent prompt -- 它整個啟動已經在 launch_reviewer_interactive
