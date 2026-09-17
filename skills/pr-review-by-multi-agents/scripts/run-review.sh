@@ -285,25 +285,13 @@ readonly REVIEWER_PROMPT_RESEND_LIMIT=2
 # constant exists to shrink.
 readonly ORPHAN_COMMENT_CHECK_INTERVAL_SECONDS=60
 
-# HERDR_AGENT_START_TIMEOUT_MS: the value launch_reviewer_interactive passes
-# as `herdr agent start`'s own --timeout flag (see that function's own
-# docstring for the recovery path this backs up). Confirmed against the
-# real binary, not assumed from any doc: `herdr agent start --help` states
-# "--timeout <MS>  Wait for interactive readiness (default: 30000; max:
-# 300000)" -- the unit is milliseconds, and 300000 (five minutes) is the
-# largest value the binary itself will accept, not an arbitrary round
-# number. Set to that max deliberately: this call already blocks
-# synchronously as part of dispatch regardless of the timeout ceiling
-# (a fast-starting reviewer returns as soon as herdr detects it ready, long
-# before any ceiling is reached), so raising the ceiling costs nothing in
-# the common case and only helps the slow-cold-start case the recovery
-# path below exists for. The default (30000ms) is what the incident this
-# whole task's own defect-E fix responds to ran under; whether that default
-# was the actual cause of that specific incident's own readiness-timeout
-# is not established here -- only that the max the binary allows is a
-# strictly more generous ceiling than the default at no measured cost, so
-# there is no reason to keep the caller pinned to the shorter one.
-readonly HERDR_AGENT_START_TIMEOUT_MS=300000
+# No HERDR_AGENT_START_TIMEOUT_MS here any more: this constant existed
+# briefly, pinning `herdr agent start`'s own --timeout to the binary's
+# documented max (300000ms), and was removed once a real end-to-end run
+# measured what that ceiling actually cost claude specifically. See
+# launch_reviewer_interactive's own "READINESS-WAIT TIMEOUT" docstring
+# section for the measurement, the timestamps, and why none of the four
+# clis' own `agent start` calls pass --timeout at all any more.
 
 # PANE_CLOSE_RETRY_INTERVAL_SECONDS: how often spawn_supervisor_interactive's
 # own pending loop (see that function's own docstring) re-attempts closing a
@@ -2181,6 +2169,70 @@ _herdr_agent_present_in_pane() {
 # but purely as a safety net (see its own docstring) -- there is no second
 # prompt for it to ever need resending.
 #
+# READINESS-WAIT TIMEOUT: NOT SPECIFIED, AND WHY THAT REVERSED A DECISION
+#
+# None of the four cmd=(...) branches below passes `agent start` its own
+# --timeout flag any more. An earlier version of this function did --
+# HERDR_AGENT_START_TIMEOUT_MS, a constant that no longer exists, pinned
+# to 300000 (five minutes), the largest value `herdr agent start --help`
+# itself documents that flag as accepting. The reasoning at the time was
+# that raising the ceiling "costs nothing for a fast-starting cli, only
+# helps a slow cold start", since the flag only bounds a wait that returns
+# early the moment herdr detects readiness. Measured, not assumed, against
+# a real end-to-end run of this script's own fixed script dispatching
+# claude, opencode, and agy against a real PR: that reasoning is half
+# right and half wrong, and the wrong half is claude specifically, not an
+# edge case of it. Method: reading each reviewer's own dispatch-completion
+# file's creation timestamp out of the run directory afterward, alongside
+# cmd_prepare's own .prepared-at. Prepare completed 17:07:14; claude's own
+# dispatch completed 17:12:15 (four minutes fifty-nine seconds later --
+# the full ceiling then in effect, to the second); opencode's completed
+# 17:12:18 (three seconds after claude); agy's completed 17:12:22 (four
+# seconds after opencode).
+#
+# Why claude alone pays the whole ceiling, every single dispatch, not
+# occasionally: its own one-shot launch (see "ONE-SHOT LAUNCH: CLAUDE
+# ONLY" above) means the reviewer starts acting on its prompt -- reading
+# the contract, starting the diff -- in the same instant the pane exists,
+# so it is never sitting at the TTY-idle, input-accepting state herdr's
+# own readiness wait is looking for. There is no length of ceiling that
+# fixes this: claude will not become idle sooner because more time is
+# available, so herdr's own wait can only ever run out and report a
+# timeout for it, regardless of what the ceiling is set to -- exactly the
+# "failure" _herdr_agent_present_in_pane's own recovery check exists to
+# see through (see this function's own code below). codex, opencode, and
+# agy are not exposed to this at all: their own two-step launch (see "WHY
+# CODEX/OPENCODE/AGY STAY TWO-STEP" above) starts them with no prompt in
+# `agent start`'s own argv, so the pane sits idle waiting for input
+# immediately, and herdr's own readiness wait succeeds within a few
+# seconds regardless of what ceiling is available to it -- the 3-and-4-
+# second figures measured above are consistent with that, not with the
+# ceiling mattering to them either way.
+#
+# So: "costs nothing for a fast-starting cli" still holds for codex,
+# opencode, and agy -- their own measured dispatch time never came close
+# to even the old default, ceiling or no ceiling -- but "only helps a slow
+# cold start" was the wrong frame for claude. Claude is not slow the way a
+# genuinely struggling cold start would be; it is *structurally* never
+# going to report ready to herdr at all, so a longer ceiling does not
+# raise its odds of succeeding before running out -- there is nothing
+# for it to succeed at -- it only lengthens how long every single claude
+# dispatch waits before reaching the one outcome (timeout, then the
+# recovery check) it was always going to reach. Five minutes of that per
+# run bought nothing at all.
+#
+# The new default -- not specifying --timeout, so `herdr agent start`
+# applies its own (30000ms per that same --help text) -- is not a guess:
+# the original incident that motivated _herdr_agent_present_in_pane's own
+# recovery check in the first place (see that function's own docstring)
+# happened under exactly this configuration, no --timeout flag at all, and
+# herdr had already registered that agent by the time its own default
+# wait ran out -- the recovery check's own precondition was already
+# satisfied well inside the default, in the one real incident on record.
+# A longer ceiling was never shown to make that registration happen any
+# sooner or any more reliably for any of the four clis; it only made the
+# already-decided outcome, for claude, take longer to reach.
+#
 # No `herdr pane read` call is made by this function, for any cli, and
 # none should be reintroduced (see "WHY CODEX/OPENCODE/AGY STAY TWO-STEP"
 # above for why it would not even help): reading a pane's own rendered
@@ -2476,13 +2528,11 @@ launch_reviewer_interactive() {
       # `agent prompt` call. The actual review contract still arrives via
       # --append-system-prompt-file just below, unaffected by any of this.
       cmd=(herdr agent start "$agent_name" --kind claude --pane "$pane_id" \
-        --timeout "$HERDR_AGENT_START_TIMEOUT_MS" \
         -- --permission-mode auto --disallowedTools "WebFetch" \
         --append-system-prompt-file "$prompt_file" "開始")
       ;;
     codex)
       cmd=(herdr agent start "$agent_name" --kind codex --pane "$pane_id" \
-        --timeout "$HERDR_AGENT_START_TIMEOUT_MS" \
         -- -C "$reviewer_workdir")
       ;;
     opencode)
@@ -2492,7 +2542,6 @@ launch_reviewer_interactive() {
       # --dangerously-skip-permissions). High-risk shell commands remain
       # blocked by OPENCODE_CONFIG (opencode-permission.json).
       cmd=(herdr agent start "$agent_name" --kind opencode --pane "$pane_id" \
-        --timeout "$HERDR_AGENT_START_TIMEOUT_MS" \
         -- --auto "$reviewer_workdir")
       ;;
     agy)
@@ -2538,7 +2587,6 @@ launch_reviewer_interactive() {
       # as a deliberate, user-directed tradeoff, not one independently
       # verified safe the way those two findings were.
       cmd=(herdr agent start "$agent_name" --kind agy --pane "$pane_id" \
-        --timeout "$HERDR_AGENT_START_TIMEOUT_MS" \
         -- --add-dir "$reviewer_workdir" --model gemini-3.8-flash-high \
         --dangerously-skip-permissions)
       ;;

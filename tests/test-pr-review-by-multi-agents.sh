@@ -2637,10 +2637,17 @@ grep -q 'herdr failed to start' "$LRIRECOVER_ROOT/genuine-fail.err" \
   && pass "launch_reviewer_interactive 真正派送失敗時不會送出 agent prompt" \
   || bad "launch_reviewer_interactive 真正派送失敗時仍送出了 agent prompt"
 
-# ---- --timeout 旗標：四種 cli 的 agent start 呼叫都要帶上，且值就是
-# HERDR_AGENT_START_TIMEOUT_MS 這個常數本身（實測過 herdr 二進位本身的
-# --help：單位是毫秒，300000 是二進位本身允許的上限，見該常數自己的
-# docstring）----
+# ---- --timeout 旗標：四種 cli 的 agent start 呼叫現在都不該帶這個旗標
+# -- 缺陷 E 的回歸：端對端對真實 PR 實跑，claude 的 agent start 每次都吃
+# 滿當時設定的上限（實測時間戳：前置作業完成 17:07:14、claude 派送完成
+# 17:12:15，整整晚了 4 分 59 秒；opencode 17:12:18、agy 17:12:22，各自只
+# 晚 3、4 秒），因為 claude 走一次性啟動、起來當下就開始工作，herdr 的就
+# 緒等待永遠等不到它回到可接受輸入的狀態，不管時限給多長都一樣只會吃滿。
+# 真正讓派送活下來的是 _herdr_agent_present_in_pane 那道實況查核，不是
+# 更長的等待；而那道查核的前提（herdr 已把 agent 登記進去）在原始事故的
+# 預設時限下就已經成立。因此改回不指定 --timeout、讓 herdr 用自己的預
+# 設值，見 launch_reviewer_interactive 自己 docstring 的「READINESS-WAIT
+# TIMEOUT」那一節。----
 
 LRIRECOVER_HOME3="$LRIRECOVER_ROOT/home-claude3"
 LRIRECOVER_WORKDIR3="$LRIRECOVER_ROOT/workdir-claude3"
@@ -2649,13 +2656,13 @@ export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":[]}}'
 HERDR_STUB_START_OK=1 launch_reviewer_interactive claude "w9:pTimeout" "$LRIRECOVER_WT" \
   "$LRIRECOVER_WORKDIR3" "$LRIRECOVER_HOME3" "$LRIRECOVER_PROMPT" >/dev/null 2>&1 || true
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF "$HERDR_AGENT_START_TIMEOUT_MS" "$LRIRECOVER_RECORD_DIR/agent-start.claude.argv" \
-  && pass "launch_reviewer_interactive claude 的 agent start 帶上 --timeout $HERDR_AGENT_START_TIMEOUT_MS" \
-  || bad "launch_reviewer_interactive claude 的 agent start 未帶上正確的 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.claude.argv" 2>/dev/null)"
+! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.claude.argv" \
+  && pass "launch_reviewer_interactive claude 的 agent start 不再帶 --timeout" \
+  || bad "launch_reviewer_interactive claude 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.claude.argv" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF "$HERDR_AGENT_START_TIMEOUT_MS" "$LRIRECOVER_RECORD_DIR/agent-start.codex.argv" \
-  && pass "launch_reviewer_interactive codex 的 agent start 帶上 --timeout $HERDR_AGENT_START_TIMEOUT_MS" \
-  || bad "launch_reviewer_interactive codex 的 agent start 未帶上正確的 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.codex.argv" 2>/dev/null)"
+! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.codex.argv" \
+  && pass "launch_reviewer_interactive codex 的 agent start 不再帶 --timeout" \
+  || bad "launch_reviewer_interactive codex 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.codex.argv" 2>/dev/null)"
 
 LRIRECOVER_HOME4="$LRIRECOVER_ROOT/home-opencode4"
 LRIRECOVER_WORKDIR4="$LRIRECOVER_ROOT/workdir-opencode4"
@@ -2663,9 +2670,9 @@ mkdir -p "$LRIRECOVER_WORKDIR4"
 HERDR_STUB_START_OK=1 launch_reviewer_interactive opencode "w9:pTimeout2" "$LRIRECOVER_WT" \
   "$LRIRECOVER_WORKDIR4" "$LRIRECOVER_HOME4" "$LRIRECOVER_PROMPT" >/dev/null 2>&1 || true
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF "$HERDR_AGENT_START_TIMEOUT_MS" "$LRIRECOVER_RECORD_DIR/agent-start.opencode.argv" \
-  && pass "launch_reviewer_interactive opencode 的 agent start 帶上 --timeout $HERDR_AGENT_START_TIMEOUT_MS" \
-  || bad "launch_reviewer_interactive opencode 的 agent start 未帶上正確的 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.opencode.argv" 2>/dev/null)"
+! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.opencode.argv" \
+  && pass "launch_reviewer_interactive opencode 的 agent start 不再帶 --timeout" \
+  || bad "launch_reviewer_interactive opencode 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.opencode.argv" 2>/dev/null)"
 
 LRIRECOVER_HOME5="$LRIRECOVER_ROOT/home-agy5"
 LRIRECOVER_WORKDIR5="$LRIRECOVER_ROOT/workdir-agy5"
@@ -2674,9 +2681,9 @@ mkdir -p "$LRIRECOVER_WORKDIR5"
 HERDR_STUB_START_OK=1 launch_reviewer_interactive agy "w9:pTimeout3" "$LRIRECOVER_WT5" \
   "$LRIRECOVER_WORKDIR5" "$LRIRECOVER_HOME5" "$LRIRECOVER_PROMPT" >/dev/null 2>&1 || true
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF "$HERDR_AGENT_START_TIMEOUT_MS" "$LRIRECOVER_RECORD_DIR/agent-start.agy.argv" \
-  && pass "launch_reviewer_interactive agy 的 agent start 帶上 --timeout $HERDR_AGENT_START_TIMEOUT_MS" \
-  || bad "launch_reviewer_interactive agy 的 agent start 未帶上正確的 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.agy.argv" 2>/dev/null)"
+! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.agy.argv" \
+  && pass "launch_reviewer_interactive agy 的 agent start 不再帶 --timeout" \
+  || bad "launch_reviewer_interactive agy 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.agy.argv" 2>/dev/null)"
 
 unset HERDR_RECORD_DIR LRIRECOVER_AGENT_LIST_JSON
 export PATH="$saved_path"
