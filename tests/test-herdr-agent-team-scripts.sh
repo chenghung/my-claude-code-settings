@@ -2189,6 +2189,140 @@ else
   bad "instruct：--kind decision 也被誤擋，得到 $(jq -r '.stage' "$REG/workers/w3n-stagetest.json")"
 fi
 
+# ===== instruct.sh：叫停不是續杯——成功送達也不寫 .last_delivered_at
+#      （本任務修正，獨立審查抓到的問題）=====
+# 見 instruct.sh 檔頭「叫停不是續杯」一節：成功送達（rc=0）分支原本無
+# 條件寫 .last_delivered_at，--kind halt 沒被排除。這個欄位是
+# watchdog.sh 判斷要不要把 .auto_push_count 歸零的唯一依據；叫停不是
+# 下發新任務，寫了它會被下一輪看門狗誤判成「orchestrator 剛送出一則
+# 新下行」，把已經逼近上限的推進預算重新續杯——疊上達上限升級之後，
+# orchestrator 每叫停一次反而多送一輪「繼續」的資格，達上限升級永遠
+# 觸發不了。構造一個已經推了 9 次、.last_delivered_at／.auto_push_
+# reset_seen_at 固定在同一個舊時間戳（模擬看門狗已經看過這次「下
+# 行」，不會再誤觸發一次歸零）的 worker，送一則成功送達的 --kind
+# halt，斷言：(1) .last_delivered_at 完全不變；(2) 接著跑一輪看門狗
+# （上限覆寫成 9），計數維持在 9、不被歸零，達上限升級如常觸發——證明
+# 這個修正真的讓後果收斂成「推到上限、升級一次」，不是只有欄位沒被寫
+# 這個表面現象。
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-haltbudget","workspace_id":"w3N","agent_status":"idle","state_change_seq":50000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-halt-no-budget-refill
+
+printf '{"pane_id":"w3N:p2","held":false,"stage":"running","auto_push_count":9,"last_delivered_at":"2020-01-01T00:00:00Z","auto_push_reset_seen_at":"2020-01-01T00:00:00Z"}' \
+  > "$REG/workers/w3n-haltbudget.json"
+last_delivered_before="$(jq -r '.last_delivered_at' "$REG/workers/w3n-haltbudget.json")"
+
+bash "$SCRIPTS/instruct.sh" --to w3n-haltbudget --text '停手' --kind halt >/dev/null 2>&1
+
+if [ "$(jq -r '.last_delivered_at' "$REG/workers/w3n-haltbudget.json")" = "$last_delivered_before" ]; then
+  pass "instruct：成功送達的 --kind halt 不寫 .last_delivered_at，推進預算不會被續杯"
+else
+  bad "instruct：--kind halt 把 .last_delivered_at 改成了 $(jq -r '.last_delivered_at' "$REG/workers/w3n-haltbudget.json")——下一輪看門狗會誤判成新下行，把推進計數重新歸零續杯"
+fi
+
+AGENT_TEAM_AUTO_PUSH_LIMIT=9 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-haltbudget.json")" = "9" ]; then
+  pass "instruct+watchdog：--kind halt 之後計數沒有被續杯歸零，仍是原本的 9"
+else
+  bad "instruct+watchdog：計數變成了 $(jq -r '.auto_push_count' "$REG/workers/w3n-haltbudget.json")，預期維持 9（若歸零，代表續杯的洞還在）"
+fi
+n_inbox_after_halt=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after_halt" -ge 1 ]; then
+  pass "instruct+watchdog：計數沒被續杯，達上限升級如常觸發，落了至少一筆 inbox 記錄"
+else
+  bad "instruct+watchdog：達上限升級沒有觸發，inbox 沒有新記錄"
+fi
+rm -f "$REG/workers/w3n-haltbudget.json"
+
+# ===== instruct.sh：.held 不會卡在 true（本任務修正，獨立審查抓到的
+#      問題）=====
+# 見 instruct.sh 檔頭「獨立審查抓到的問題：上面那句宣稱曾經被這次任務
+# 新增的兩次寫入打破，靠 EXIT trap 補回來」一節：成功送達分支在
+# .held=true 之後、.held=false 之前新增了兩次獨立加鎖的 hat_json_set
+# （寫 .last_delivered_at、撥回 .stage），任一步 hat_die 都是真正的
+# exit，會跳過緊接在後面的放旗標。這裡不猜測失敗長什麼樣子：用一支 jq
+# 樁只在被要求寫 .last_delivered_at 時失敗（其餘呼叫原樣轉給真正的
+# jq），讓成功送達分支裡第一個 hat_json_set 真的失敗，藉此驗證 EXIT
+# trap 保底真的會把旗標放掉——手法沿用 watchdog.sh「計數歸零的寫入順
+# 序」測試已經在用的同一種 jq 樁（hash -r 見「前置整理」小節同名說
+# 明）。
+printf '{"pane_id":"w3N:p2","held":false,"stage":"running"}' > "$REG/workers/w3n-heldtrap.json"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"result":{}}'; exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-held-not-stuck
+
+cat > "$STUB_BIN/jq" <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = '.last_delivered_at = $v' ]; then
+    echo "stub jq: 模擬 .last_delivered_at 寫入失敗" >&2
+    exit 1
+  fi
+done
+exec /usr/bin/jq "$@"
+STUB
+chmod +x "$STUB_BIN/jq"
+hash -r
+
+rc=0
+bash "$SCRIPTS/instruct.sh" --to w3n-heldtrap --text '測試 held 卡住' >/dev/null 2>&1 || rc=$?
+
+rm -f "$STUB_BIN/jq"
+hash -r
+
+if [ "$rc" -eq 5 ]; then
+  pass "instruct：送達分支中途（寫 .last_delivered_at）失敗時以 5 結束（前置條件確認）"
+else
+  bad "instruct：得到 rc=$rc（前置條件不成立，後面的 .held 斷言沒有意義）"
+fi
+if [ "$(jq -r '.held' "$REG/workers/w3n-heldtrap.json")" = "false" ]; then
+  pass "instruct：送達與放掉旗標之間中途失敗，.held 仍被 EXIT trap 保底放掉，不卡在 true"
+else
+  bad "instruct：.held 卡在 $(jq -r '.held' "$REG/workers/w3n-heldtrap.json")——看門狗會對這個 worker 靜默關閉自動推進，直到下一次成功 instruct 或 --recover 收回"
+fi
+rm -f "$REG/workers/w3n-heldtrap.json"
+
+# ===== instruct.sh：--reply-to 指名的 inbox 記錄若不是合法 JSON，明確
+#      以 5 結束並帶診斷訊息（本任務修正）=====
+# 見 instruct.sh 檔頭「這兩次 jq -r 明確接住失敗」一節：不依賴 jq 本身
+# 的結束碼是不是剛好等於這個專案的某個約定值，改成自己判斷失敗並印出
+# 指名檔案的訊息。
+mkdir -p "$REG/workers"
+printf '{"pane_id":"w3N:p2","held":false}' > "$REG/workers/w3n-replytobad.json"
+mkdir -p "$REG/inbox"
+printf 'not-valid-json{' > "$REG/inbox/900-w3n-replytobad.json"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"result":{}}'; exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-reply-to-malformed-json
+
+rc=0
+out="$(bash "$SCRIPTS/instruct.sh" --to w3n-replytobad --text '回覆' --reply-to 900 2>&1)" || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "instruct：--reply-to 指名的 inbox 記錄不是合法 JSON 時以 5 結束"
+else
+  bad "instruct：得到 rc=$rc（預期 5），輸出：$out"
+fi
+case "$out" in
+  *"$REG/inbox/900-w3n-replytobad.json"*) pass "instruct：--reply-to 解析失敗的訊息指名了是哪個檔案" ;;
+  *) bad "instruct：--reply-to 解析失敗的訊息沒有指名檔案：$out" ;;
+esac
+rm -f "$REG/workers/w3n-replytobad.json" "$REG/inbox/900-w3n-replytobad.json"
+
 # ===== 名稱格式驗證：hat_assert_agent_name（全域約束，press-approval.sh
 #      任務新增）=====
 # 任何要拿去組 registry 路徑的名稱都必須先驗過格式，判準是 herdr agent
@@ -4041,6 +4175,33 @@ else
   bad "watchdog：補投內容不對或沒有送出：$(cat "$HERDR_CALL_LOG")"
 fi
 
+# ===== watchdog.sh：補投成功歸零 .auto_push_count（本任務自行補上）
+#      =====
+# hat_wd_retry_pending_resend 補投成功、移除該筆之後，會直接把
+# .auto_push_count 歸零（見該函式檔頭「計數重置」一節、watchdog.sh 檔
+# 頭「計數重置」一節、lib/common.sh 欄位白名單一節皆明文宣告這個語
+# 意）。既有測試都只驗證佇列被消化，沒有任何斷言釘住歸零這一步——這一
+# 行日後若被移到「嘗試補投」之後，或整段被刪掉，沒有任何斷言會紅。這
+# 裡構造多筆待補送與非零的推進計數，讓補投全部成功，跑一輪之後斷言佇
+# 列已消化、且計數確實歸零；.held 固定成 true（比照上面 Step 7 的既有
+# 手法）讓補投之後不會緊接著再跑一次自動推進把計數又推回非零，計數才
+# 讀得出「補投這一步」單獨的效果。
+jq '.pending_resend=[{"text":"a","kind":"instruct"},{"text":"b","kind":"instruct"}] | .held=true | .auto_push_count=7' \
+  "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.pending_resend | length' "$REG/workers/w3n-backend.json")" = "0" ]; then
+  pass "watchdog：補投成功歸零計數——前提確認，佇列已消化"
+else
+  bad "watchdog：佇列沒有消化，得到 $(jq -r '.pending_resend | length' "$REG/workers/w3n-backend.json")（前置條件不成立，後面的計數斷言沒有意義）"
+fi
+if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "0" ]; then
+  pass "watchdog：hat_wd_retry_pending_resend 補投成功後把 .auto_push_count 歸零"
+else
+  bad "watchdog：補投成功後 .auto_push_count 是 $(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")，預期 0（歸零這一步可能被移除或挪到了嘗試補投之後）"
+fi
+jq '.held=false' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+
 # ---- 最終審查 Critical：旗標為真、待補送佇列為空、狀態為閒置——套件
 #      從未構造過的組合，且正是下行腳本送出下行期間的正常狀態（見
 #      hat_wd_retry_pending_resend 檔頭「最終審查 Critical」一節：舊版
@@ -4537,6 +4698,14 @@ case "$first_summary" in
   *"核准框"*"待補送佇列"*) pass "watchdog：第一輪（建立基準）就已經是帶佇列筆數的 blocked 訊息" ;;
   *) bad "watchdog：第一輪的訊息不是預期的 blocked 措辭，前置狀態不對：$first_summary" ;;
 esac
+# ---- 本任務自行補上：待補送筆數的數字本身要被釘住，不能只比對「有
+#      這幾個詞」——.pending_resend 構造了 3 筆（a／b／c），jq 取值壞
+#      掉（一律算 0 或抓錯欄位）時摘要仍會寫出一個數字、測試仍會照綠，
+#      只比對措辭抓不到這種壞法 ----
+case "$first_summary" in
+  *"有 3 筆下行卡在待補送佇列"*) pass "watchdog：第一輪 blocked 升級摘要精確帶出待補送筆數 3" ;;
+  *) bad "watchdog：第一輪 blocked 升級摘要沒有精確帶出待補送筆數 3：$first_summary" ;;
+esac
 
 sleep 2
 n_inbox_before="$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)"
@@ -4557,6 +4726,11 @@ case "$second_summary" in
   *)
     bad "watchdog：blocked 且已超過停滯門檻時，第二輪的升級訊息被換成看不出積壓量的通用訊息：$second_summary"
     ;;
+esac
+# ---- 本任務自行補上：同上，第二輪的數字也要被釘住 ----
+case "$second_summary" in
+  *"有 3 筆下行卡在待補送佇列"*) pass "watchdog：第二輪 blocked 升級摘要仍精確帶出待補送筆數 3" ;;
+  *) bad "watchdog：第二輪 blocked 升級摘要沒有精確帶出待補送筆數 3：$second_summary" ;;
 esac
 case "$second_summary" in
   *"已停滯"*)
@@ -5196,7 +5370,7 @@ fi
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=462
+HAT_EXPECTED_ASSERTIONS=473
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

@@ -478,20 +478,41 @@ hat_json_set() {
     hat_die 5 "hat_json_set: 等鎖逾時（${lock_timeout}s），拒絕在未取得鎖的情況下寫入，'$path' 未寫入：$lock_file"
   fi
 
-  tmp="$(mktemp "${file}.XXXXXX")" || hat_die 5 "hat_json_set: 無法建立暫存檔，'$path' 未寫入：$file"
+  # ---- 本任務實作 instruct.sh 的 EXIT trap 保底時實測發現的問題：拿到鎖之後的四個失敗分支都必須先關 lock_fd
+  #      才能 hat_die，不能只靠「行程反正要 exit 了」----
+  # 上面 flock 逾時那個分支不需要這麼做：那個分支根本沒拿到鎖，
+  # lock_fd 只是一個開著、沒上鎖的檔案描述符，放著不關不會擋到任何人。
+  # 但下面四個分支這裡都已經成功拿到鎖，若不主動關閉就直接 hat_die，
+  # `exit` 確實會終止整個行程、順帶關掉所有檔案描述符——但那是行程真
+  # 正結束「之後」的事；EXIT trap 是在行程結束「之前」執行的，若呼叫端
+  # 掛了一個 EXIT trap、且那個 trap 想對同一個檔案再做一次
+  # hat_json_set（例如 instruct.sh 用來保底放掉 .held 的
+  # hat_instruct_release_held），trap 執行的當下這個 fd 依然開著、依然
+  # 持有鎖——trap 裡那次新的 `exec {new_fd}>"$lock_file"; flock -x -w
+  # ...` 會對同一個檔案的鎖排隊，卻永遠排在自己前面一個沒被釋放的鎖後
+  # 面，等到逾時才放棄。已用 instruct.sh 的 held-not-stuck 測試實測重
+  # 現：不主動關閉時，trap 裡的補救寫入以「等鎖逾時（30s）」失敗，
+  # .held 依舊卡在 true——EXIT trap 保底之所以看起來沒作用，成因不在
+  # trap 本身，而是這裡的 fd 洩漏讓保底寫入自己去等一個同一行程內、永
+  # 遠不會被放開的鎖。修法是這四個分支各自在 hat_die 之前明確關閉
+  # lock_fd，讓鎖確實跟著這次失敗一起釋放，不留到行程真正結束才釋放。
+  tmp="$(mktemp "${file}.XXXXXX")" || { exec {lock_fd}>&-; hat_die 5 "hat_json_set: 無法建立暫存檔，'$path' 未寫入：$file"; }
 
   if ! jq --argjson v "$json_value" "${path} = \$v" "$file" > "$tmp"; then
     rm -f "$tmp"
+    exec {lock_fd}>&-
     hat_die 5 "hat_json_set: 寫入失敗（jq 解析未成功），'$path' 未寫入：$file"
   fi
 
   if [ ! -e "$file" ]; then
     rm -f "$tmp"
+    exec {lock_fd}>&-
     hat_die 5 "hat_json_set: 置換前重新確認，目標檔已不存在（可能已被 shutdown-worker.sh 等不可逆動作移除），拒絕置換，'$path' 未寫入：$file"
   fi
 
   if ! mv "$tmp" "$file"; then
     rm -f "$tmp"
+    exec {lock_fd}>&-
     hat_die 5 "hat_json_set: 寫入失敗（置換未成功），'$path' 未寫入：$file"
   fi
 
@@ -535,20 +556,28 @@ _hat_pending_resend_apply() {
     hat_die 5 "_hat_pending_resend_apply: 等鎖逾時（${lock_timeout}s），拒絕在未取得鎖的情況下寫入，pending_resend 未變動：${file}.lock"
   fi
 
-  tmp="$(mktemp "${file}.XXXXXX")" || hat_die 5 "_hat_pending_resend_apply: 無法建立暫存檔，pending_resend 未變動：$file"
+  # ---- 本任務實作 instruct.sh 的 EXIT trap 保底時實測發現的問題：拿到鎖之後的四個失敗分支都必須先關 lock_fd
+  #      才能 hat_die，理由見 hat_json_set 同名一節（instruct.sh 的
+  #      hat_append_pending_resend 正是這裡的呼叫端之一，也一樣要靠這
+  #      個修法才能讓它自己的 EXIT trap 保底寫入不撞上同一行程內沒放開
+  #      的鎖）----
+  tmp="$(mktemp "${file}.XXXXXX")" || { exec {lock_fd}>&-; hat_die 5 "_hat_pending_resend_apply: 無法建立暫存檔，pending_resend 未變動：$file"; }
 
   if ! jq "$@" "$filter" "$file" > "$tmp"; then
     rm -f "$tmp"
+    exec {lock_fd}>&-
     hat_die 5 "_hat_pending_resend_apply: 寫入失敗（jq 解析未成功），pending_resend 未變動：$file"
   fi
 
   if [ ! -e "$file" ]; then
     rm -f "$tmp"
+    exec {lock_fd}>&-
     hat_die 5 "_hat_pending_resend_apply: 置換前重新確認，目標檔已不存在，拒絕置換，pending_resend 未變動：$file"
   fi
 
   if ! mv "$tmp" "$file"; then
     rm -f "$tmp"
+    exec {lock_fd}>&-
     hat_die 5 "_hat_pending_resend_apply: 寫入失敗（置換未成功），pending_resend 未變動：$file"
   fi
 

@@ -74,7 +74,7 @@ worker 只有一個回報動作（`report.sh`），六個 token 固定不開放�
 | `fyi` | 會；worker 發的不需回覆，看門狗發的要處置 | **先分岔**：這一則是 `watchdog.sh` 的升級嗎（識別訊號見「看門狗的自動推進與升級」）？是的話不套漂移判準，依該節四種條件各自的處置走。不是（真的是 worker 發的）才讀摘要（見下方「上行前綴」，前綴之後才是 worker 原文），判斷是不是漂移（規格 §9 判準一：照 goal 原本的敘述做會失敗，或做出與所述不同的結果）。是則走下方「漂移處置」；不是（例如單純說一聲、或事後醒悟但不影響全局）就不必回覆，worker 會繼續做 |
 | `need-you` | 會，需要回覆 | 從即時訊息的前綴直接取出這則的 inbox 序號（見下方「上行前綴」），呼叫 `instruct.sh --to <worker> --text <定案文字> --reply-to <序號>`。這一步同時會標記那筆 inbox 記錄為已處理 |
 | `delivered` | 會 | 從即時訊息的前綴取出序號；worker 的摘要文字（前綴之後那一段）裡通常會提到交付了什麼，需要確認 locator 的精確值時，直接讀 `inbox/<序號>-<worker>.json` 的 `.locator`——`report.sh` 已把 `--locator` 存在這個欄位，序號已知之後這是唯一一筆、不必再猜。呼叫 `set-worker-field.sh --to <worker> --field stage --value delivered` 把該 worker 的關卡改成 `delivered`（腳本本身會驗證這個值必須是設計定義的生命週期關卡名稱之一）。**不呼叫 `shutdown-worker.sh`**：交付點不等於終點，review 回來要改就回到執行中 |
-| `done` | 會 | 對照該 worker 的完成判準（若先前經 `set-worker-field.sh --field completion_criteria` 寫入過，可直接讀 `workers/<name>.json` 確認內容），確認外部可查證的證據確實存在（一個檔案、一個已合併的 PR、一次測試通過的紀錄），證據齊全才呼叫 `shutdown-worker.sh --to <worker> --reason done --evidence <外部可查證的事實>`。關閉前那個 worker 的 `.stage` 不能還是 `delivered`，否則 `shutdown-worker.sh` 以結束碼 `4` 拒絕——多數情況不必特別處理，因為 `instruct.sh` 發出任何一則下行時就會把 `delivered` 撥回 `running`；只有「交付之後再也沒收過任何下行就要直接關閉」這條路徑會撞到，那時先 `set-worker-field.sh --field stage --value running` 撥回再關。證據不足就當成一則需要進一步核對的 `fyi` 處理，不直接關閉 |
+| `done` | 會 | 對照該 worker 的完成判準（若先前經 `set-worker-field.sh --field completion_criteria` 寫入過，可直接讀 `workers/<name>.json` 確認內容），確認外部可查證的證據確實存在（一個檔案、一個已合併的 PR、一次測試通過的紀錄），證據齊全才呼叫 `shutdown-worker.sh --to <worker> --reason done --evidence <外部可查證的事實>`。關閉前那個 worker 的 `.stage` 不能還是 `delivered`，否則 `shutdown-worker.sh` 以結束碼 `4` 拒絕——多數情況不必特別處理，因為 `instruct.sh` 發出任何一則下行時就會把 `delivered` 撥回 `running`（帶 `--kind halt` 的叫停除外，不撥回，理由見「漂移處置」第 3 步）；撞得到的是兩條路徑——交付之後再也沒收過任何下行就要直接關閉，或收到的最後一則是叫停——那時先 `set-worker-field.sh --field stage --value running` 撥回再關。證據不足就當成一則需要進一步核對的 `fyi` 處理，不直接關閉 |
 
 ### 上行前綴
 
@@ -145,13 +145,20 @@ orchestrator 自己：不要寫一個輪詢迴圈去等某個 worker 回應—�
   卡住去推，推滿上限又改成持續升級，逼得 worker 只好再回報一次交付——線上故障就是這個形狀，兩個都
   已經在 `delivered` 關卡的 worker 被每 20 秒（預設輪詢間隔）推一次「繼續」，然後被持續升級。要讓
   一個 `delivered` 的 worker 重新回到照看範圍，不必特地去改欄位——`instruct.sh` 送出下一則下行時就
-  會把 `.stage` 撥回 `running`。另外兩種升級不受這道守衛影響，任何關卡下都照常發出：worker 卡在核准
+  會把 `.stage` 撥回 `running`，唯一的例外是帶 `--kind halt` 的叫停，它不撥回（理由見「漂移處置」
+  第 3 步）。另外兩種升級不受這道守衛影響，任何關卡下都照常發出：worker 卡在核准
   框（`blocked`），以及你自己欠一則 `need-you` 的定案回覆超過時限。這兩件事在哪個關卡都需要人介
   入，跟該不該推無關。
-- **自動推進計數只由你的下行歸零。** 舊版是 worker 回報 `delivered` 就歸零，這是倒因為果：worker
-  回報交付代表它該休息，不是該獲得一輪新的推進預算；而這條規則正好讓上面那個迴圈成環——被推到再回
-  報一次交付，那次回報又把計數歸零，於是重新開始推。現在只有 orchestrator 真的送出一則下行給那個
-  worker 才歸零（看門狗補投成功一筆待補送也算，那同樣是你的下行終於送達）。
+- **自動推進計數只由你的下行歸零，叫停除外。** 舊版是 worker 回報 `delivered` 就歸零，這是倒因為
+  果：worker 回報交付代表它該休息，不是該獲得一輪新的推進預算；而這條規則正好讓上面那個迴圈成環
+  ——被推到再回報一次交付，那次回報又把計數歸零，於是重新開始推。現在只有一則真的送達的下行才歸零
+  （看門狗補投成功一筆待補送也算，那同樣是你的下行終於送達），而帶 `--kind halt` 的叫停即使送達
+  也不歸零。這個例外不是潔癖：叫停原本也歸零時，一個被推到上限的 worker 會讓你收到達上限升級、你
+  送一則叫停要它停手、那則叫停又把推進預算續滿，於是達上限升級永遠不會再真的觸發——你每叫停一次，
+  系統反而多給它一輪「繼續」的資格，迴圈自己養活自己。拿掉續杯之後，後果的形狀從「無限迴圈」收斂
+  成「最多推到上限、然後升級一次」。收斂不等於關掉：看門狗仍然看不出一個 worker 剛被叫停
+  （`.stage` 只記送達關卡，不記最近一則下行的種類），照樣會把閒下來的它推一把，只是推得完、也叫得
+  住了。
 - **卡在核准框的那則升級會告訴你後面積了多少。** 它的摘要一併帶出該 worker 目前有幾筆下行卡在待補
   送佇列，讓「有下行卡著」不是靜默的——筆數就是這個框後面塞了多少東西，也是該多快派調查者去判讀它
   的依據。但那是發訊當下的快照，不是持續更新的積壓計量：這則升級同樣受上面那條去重限制，條件持續
@@ -203,7 +210,10 @@ worker 自己發的 `fyi` 擠在同一個 token 底下。三個可機械判斷�
    照新的繼續做；改派——任務作廢但人還有用，用 `instruct.sh` 換一個新任務接著做；結束——這個角色不
    再需要，呼叫 `shutdown-worker.sh`（`--reason abandon` 或 `superseded`，並附交接檔；見「腳本一
    覽」的 `shutdown-worker.sh` 那一列——`abandon` 是這支腳本 `--reason` 的其中一個值，不是六個
-   token 之一）。**已交付的產物要逐一過目**：要問的不
+   token 之一）。**走「結束」之前先看關卡**：第 3 步的叫停帶了 `--kind halt`、刻意不撥回關卡，所以
+   一個在漂移發生時正停在 `delivered` 的 worker，到這一步仍然是 `delivered`，`shutdown-worker.sh`
+   會以結束碼 `4` 拒絕；出口同 `done` 那一列——先 `set-worker-field.sh --to <worker> --field stage
+   --value running` 撥回再關。**已交付的產物要逐一過目**：要問的不
    是這個產物要不要改，而是它跟新目標的落差要不要變成新的工作；出口是往前迭代，不是回頭改既成事實。
 6. **收斂測試**：重跑第 2 步同一組判準二比對，剩下的命中全部落在已通知的 role 上才算完成；還有人沒
    有處置就是沒處理完，不是「大致上都通知到了」。
@@ -259,7 +269,7 @@ orchestrator session 重啟之後，依序走六步。第 1 步與第 3 步由�
 | `team-init.sh [--recover]` | 見「啟動流程」第 1 步；帶 `--recover` 時在主流程之外多做三件事——收回殘留的持有旗標、清空升級閂鎖、印出待補送清單——對應「中斷恢復」第 1、3 步 | 印出 `orchestrator=<名稱> registry=<路徑>`；帶 `--recover` 時額外逐行印出 `pending-resend worker=<名稱> count=<筆數>`，這幾行純粹告知積壓量，沒有要你做的下游動作——排空交給看門狗，不要自己補送 |
 | `set-goal.sh --achieve <> --success <> --not-doing <> --assumption <> [--confirmed] [--changed-by <>] [--rationale <>]` | 收斂 goal 之後、每一次要覆寫 goal 時 | 四項有缺以 `2` 結束；印出 `GOAL-SUCCESS-CHANGED version=<N>` 代表這次動到「怎樣算成功」，要轉述給使用者，沒印代表沒動到那一項 |
 | `launch-worker.sh --role <> --kind <> --cwd <> --briefing-file <> [--arg <>]... [--ack-timeout <秒>]` | goal 確認之後，逐個 role 啟動 | 成功印 `worker=<名稱> pane=<id> tab=<id> ack=ok`；結束碼 `8` 是已內部重試一次仍啟動失敗，registry 記錄已移除、`--briefing-file` 的副本仍留在 `briefings/<worker>.md`；結束碼 `6` 是識別碼取不到或 herdr 拒絕（例如建 tab 那次呼叫本身被拒），沒有寫入 registry；結束碼 `2` 是 herdr 語法錯誤（呼叫端用錯，不是啟動失敗） |
-| `instruct.sh --to <> (--text <> \| --text-file <>) [--reply-to <序號>] [--kind instruct\|decision\|goal-update\|halt]` | 下行任何指令、定案、goal 傳播；回覆 `need-you` 用 `--reply-to` | 結束碼 `0` 送達；結束碼 `7` 是對方卡在核准框、這一則進了 `.pending_resend` 待補送——重送沒有意義（問題不在這則訊息），但 `watchdog.sh` 只在那個 worker 離開 `blocked` 之後才補投，而沒有任何機制會讓它自己離開：那個框要有人處理，途徑是派調查者讀畫面判讀，可以代按的才呼叫 `press-approval.sh`，屬於不該代按的那兩類就交給人類（見「派調查者的時機」）。不去處理那個框，待補送佇列就永遠排不空，而且全程靜默；結束碼 `6` 是其他真正的拒絕（目標可能已不存在）。`0` 與 `7` 都算「發出」，兩者都會把該 worker 停在 `delivered` 的 `.stage` 撥回 `running`（`closing`／`closed` 不動），看門狗的照看因此自己恢復，不必再呼叫一次 `set-worker-field.sh` |
+| `instruct.sh --to <> (--text <> \| --text-file <>) [--reply-to <序號>] [--kind instruct\|decision\|goal-update\|halt]` | 下行任何指令、定案、goal 傳播；回覆 `need-you` 用 `--reply-to` | 結束碼 `0` 送達；結束碼 `7` 是對方卡在核准框、這一則進了 `.pending_resend` 待補送——重送沒有意義（問題不在這則訊息），但 `watchdog.sh` 只在那個 worker 離開 `blocked` 之後才補投，而沒有任何機制會讓它自己離開：那個框要有人處理，途徑是派調查者讀畫面判讀，可以代按的才呼叫 `press-approval.sh`，屬於不該代按的那兩類就交給人類（見「派調查者的時機」）。不去處理那個框，待補送佇列就永遠排不空，而且全程靜默；結束碼 `6` 是其他真正的拒絕（目標可能已不存在）。`0` 與 `7` 都算「發出」，兩者都會把該 worker 停在 `delivered` 的 `.stage` 撥回 `running`，看門狗的照看因此自己恢復，不必再呼叫一次 `set-worker-field.sh`。撥回有兩個例外：`.stage` 是 `closing`／`closed` 時不動，以及帶 `--kind halt` 的叫停一律不撥回（叫停不是復工，理由見「漂移處置」第 3 步）——要關一個被叫停後仍停在 `delivered` 的 worker，得自己先撥回。`--kind halt` 另有一個與關卡無關的效果，別跟上面那條混在一起看：叫停即使送達也不寫 `.last_delivered_at`，因此不會把自動推進計數歸零（見「看門狗的自動推進與升級」）。兩件事各管一邊——關卡撥回決定這個 worker 在不在照看範圍，時間戳決定它的推進預算要不要重算 |
 | `press-approval.sh --to <> --key <> --allows <> [--rule <>] [--startup]` | worker 卡在 `blocked`、已經知道要按哪一顆鍵與放行什麼（多半來自調查者的判讀），**且那個框不屬於不該代按的兩類**（見「派調查者的時機」） | 印出 `to=<> key=<> post_press_status=<>`；結束碼 `4` 有兩種來源，讀訊息分辨：代按前重查發現已經不是 `blocked`（畫面已變，不必按了），或帶 `--startup` 時規則不在允許清單上、分不出是哪條規則——後者那個框還在，要升級給人確認，不是不必按了，兩者收手的理由完全不同；結束碼 `2` 除了一般的參數問題，還包括 `--key` 與允許清單對該規則載明的按鍵不一致，此時腳本拒絕代按而不靜默改按清單上那顆，呼叫端與清單要先對齊；結束碼 `7` 是按了但仍是 `blocked`（可能按錯鍵，或疊了另一個框，需要重新讀畫面） |
 | `shutdown-worker.sh --to <> --reason <done\|abandon\|superseded> [--evidence <>] [--handoff-file <>]` | `done` 已核對外部證據；或需要放棄／被取代（`abandon`／`superseded`，必須附交接檔） | 成功印 `to=<> reason=<> tab=<> closed`；結束碼 `4` 是四個拒絕點之一命中——它自己還有未回覆的 `need-you`、其他 worker 的 `.grants` 仍指向它（這兩個都是「有人正在等它」）、還在 `delivered` 關卡、或不屬本 workspace |
 | `set-worker-field.sh --to <> --field <stage\|completion_criteria\|delivery_point\|end_point> --value <>` | 交付點／終點／完成判準確定時；`.stage` 需要變動時（例如收到 `delivered`） | 成功印 `to=<> field=<> set`；結束碼 `2` 是欄位不在這支腳本自己那層更窄的白名單內、或 `--field stage` 的值不是 `running`／`delivered`／`closing`／`closed` 四個生命週期關卡之一；結束碼 `4` 是不屬本 workspace。座標類、計數類欄位不透過本腳本寫，各有專責寫入端（見 `lib/common.sh` 欄位白名單一節） |
