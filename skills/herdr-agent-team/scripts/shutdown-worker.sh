@@ -235,7 +235,14 @@ lock_file="${worker_file}.lock"
 #      （那等於沒鎖）----
 lock_fd=""
 exec {lock_fd}>"$lock_file"
-flock -x "$lock_fd"
+# ---- 線上故障修正：等鎖要有逾時上限，做法與 hat_json_set 一致 ----
+# 見 lib/common.sh 的 hat_lock_timeout_seconds；同樣要接住它在指令替
+# 換子殼裡的結束碼，否則驗證失敗只會讓 lock_timeout 變空字串，被
+# flock 誤判成別的錯誤。
+lock_timeout="$(hat_lock_timeout_seconds)" || exit "$?"
+if ! flock -x -w "$lock_timeout" "$lock_fd"; then
+  hat_die 5 "shutdown-worker.sh: 等鎖逾時（${lock_timeout}s）：$lock_file"
+fi
 
 # ---- 入口守衛：workspace 邊界，早於任何 herdr 呼叫 ----
 pane_id="$(hat_json_get "$worker_file" '.pane_id')"

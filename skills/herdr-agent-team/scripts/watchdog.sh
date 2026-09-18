@@ -33,14 +33,17 @@
 # 「有沒有增加」這個讀法會讓停滯偵測恆真式地失效。跟 wait-peer.sh 的
 # 死鎖防護判準是同一個成因，這裡是它的多 worker 版本。
 #
-# ---- 四個門檻值都能覆寫，而且都沒有實測依據 ----
+# ---- 五個門檻值都能覆寫，而且都沒有實測依據 ----
 # AGENT_TEAM_POLL_SECONDS（預設 20）、AGENT_TEAM_STALL_SECONDS（預設
 # 1800）、AGENT_TEAM_AUTO_PUSH_LIMIT（預設 10）、AGENT_TEAM_NEEDYOU_
 # LIMIT_SECONDS（預設 AGENT_TEAM_STALL_SECONDS 的三倍，見下方「豁免的
-# 時間上限」一節）四者皆可用同名環境變數覆寫；四個數字都是私用階段的
-# 起點，沒有任何實測依據（規格 §15 未驗清單「摘要長度上限、自動推進上
-# 限、空轉判定秒數都是估的」；三倍這個倍數是最終審查修正時拍的，同樣
-# 沒有實測依據）。
+# 時間上限」一節）、AGENT_TEAM_ESCALATION_REPEAT_SECONDS（預設同
+# AGENT_TEAM_STALL_SECONDS，見下方「升級去重」一節）五者皆可用同名環境
+# 變數覆寫；五個數字都是私用階段的起點，沒有任何實測依據（規格 §15 未
+# 驗清單「摘要長度上限、自動推進上限、空轉判定秒數都是估的」；三倍這
+# 個倍數是最終審查修正時拍的，同樣沒有實測依據；重提間隔沿用 AGENT_
+# TEAM_STALL_SECONDS 當預設值是線上故障修正時的判斷，同樣沒有實測依
+# 據）。
 #
 # ---- 停滯門檻的代價 ----
 # worker 靜默停住，最壞情況要等滿一個 AGENT_TEAM_STALL_SECONDS 週期才
@@ -50,31 +53,37 @@
 #
 # ---- 四個職責，逐一說明 ----
 #
-# 1. 自動推進：worker 狀態是 idle 或 done、沒有未回覆的 need-you、持
-#    有旗標為 false、自動推進計數未達上限 → 直接經 `hat_herdr agent
-#    prompt` 送出一則「繼續」，計數加一，orchestrator 完全不知情。不
-#    走 instruct.sh：那支腳本會設持有旗標，語意是「orchestrator 正在
-#    跟這個 worker 對話」，自動推進正是給沒有人在對話的 worker 用的，
-#    走 instruct.sh 會讓每一次自動推進都自己把自己擋掉下一輪。看門狗
-#    自己在 registry 根目錄（跟 peer-log/ 同層，不是它裡面）落一行日
-#    誌記下推進了誰。
+# 1. 自動推進：worker 狀態是 idle 或 done、`.stage` 是 running（見下方
+#    「.stage 守衛」一節）、沒有未回覆的 need-you、持有旗標為 false、
+#    自動推進計數未達上限 → 直接經 `hat_herdr agent prompt` 送出一則
+#    「繼續」，計數加一，orchestrator 完全不知情。不走 instruct.sh：那
+#    支腳本會設持有旗標，語意是「orchestrator 正在跟這個 worker 對
+#    話」，自動推進正是給沒有人在對話的 worker 用的，走 instruct.sh 會
+#    讓每一次自動推進都自己把自己擋掉下一輪。看門狗自己在 registry 根
+#    目錄（跟 peer-log/ 同層，不是它裡面）落一行日誌記下推進了誰。
 #
-#    計數重置：只在收到 delivered 或 orchestrator 送出定案回覆（inbox
-#    記錄的 .processed_at 被設值）時歸零；fyi 不歸零，因為要抓的是原
-#    地繞圈——如果任何狀態變化都能重置計數，一個不斷 working/idle 交
-#    替、每次都只送 fyi 的 worker 永遠不會被判定卡住。實作用一個水位
-#    線欄位 .auto_push_reset_seq 記錄「上一次歸零檢查已經看過的最高
-#    inbox seq」，只在看到水位線之後出現的 delivered／已處理記錄時才
-#    歸零一次，避免同一則 delivered 記錄在後續每一輪都被重複判定成
-#    「新的」而把計數重置到 0，讓上限形同虛設（見 lib/common.sh 欄位
-#    白名單一節對這個欄位的說明）。
+#    計數重置（線上故障修正重寫）：舊版看「worker 有沒有回報
+#    delivered」，但這正是 livelock 的成因——worker 在 delivered 關卡
+#    靜止是契約要求的正常狀態，卻被當成卡住而持續推進，推滿上限後
+#    worker 只好再回報一次 delivered，這一報又把計數歸零、重新開始
+#    推，形成自我維持的迴圈。正確的歸零時機只有一個：orchestrator 真
+#    的送出了一則下行。實作上，instruct.sh 成功送出下行時寫
+#    .last_delivered_at（它自己擁有的欄位）；本腳本的 hat_wd_apply_
+#    delivery_reset 讀到這個欄位跟自己的水位線 .auto_push_reset_seen_
+#    at 不同時，才歸零 .auto_push_count 並把水位線推到這個新值，避免
+#    同一次下行在後續每一輪都被重複判定成「新的」而把計數重置到 0，讓
+#    上限形同虛設（見 lib/common.sh 欄位白名單一節對這兩個欄位的說
+#    明）。hat_wd_retry_pending_resend 補投待補送佇列成功時視同一次下
+#    行送達，直接歸零 .auto_push_count（那是看門狗自己的程式碼，不透
+#    過這兩個欄位間接觸發，見該函式檔頭說明）。
 #
 # 2. 升級：自動推進計數達上限 → 投遞一則摘要給 orchestrator，不再自
 #    動推進。狀態是 blocked → 一律投遞給 orchestrator，不送任何文字下
 #    行給那個 worker 本身（文字下行會被 herdr 以 agent_blocked 拒絕，
-#    只有代按這條路，而代按需要調查者先讀畫面判讀那個框放行什麼）。
-#    狀態是 unknown → 不得自動推進（它不證明工作已完成，可能打斷正在
-#    做事的 worker），只有停滯門檻到了才升級。
+#    只有代按這條路，而代按需要調查者先讀畫面判讀那個框放行什麼），摘
+#    要一併帶出 .pending_resend 目前的筆數，讓「有下行卡著」不是靜默
+#    的。狀態是 unknown → 不得自動推進（它不證明工作已完成，可能打斷
+#    正在做事的 worker），只有停滯門檻到了才升級。
 #
 #    「投遞一則摘要給 orchestrator」實作成：在 inbox/ 落一筆記錄
 #    （token=fyi、worker=<被升級的那個 worker>），並嘗試呼叫
@@ -83,17 +92,96 @@
 #    是本腳本的失敗」一節的既有處理方式），落檔本身已經是持久記錄，
 #    不因為這次送不到就遺失。
 #
-# 3. 停滯偵測：worker 的 state_change_seq 連續超過 AGENT_TEAM_STALL_
-#    SECONDS 沒有改變、且狀態落在 idle／done／blocked／unknown 四種
-#    之一 → 升級（跟第 2 點共用同一個升級動作）。working 不在這個判斷
-#    範圍內：worker 持續做同一件事、狀態沒有轉換時，state_change_seq
-#    本來就可能長時間不動，那是正常的，不是停滯。低保真 kind（agy、
-#    opencode）必須依賴這一項：它們的 idle 不帶正向證據（herdr 規則檔
-#    對這兩種 kind 完全沒有正向 idle 規則，見 lib/common.sh
-#    hat_kind_fidelity 檔頭），「違約沒回報就停下」與「原地繞圈」只能
-#    靠停滯偵測接住，本腳本不因為 kind 是 low 保真就跳過這一項或降低
-#    門檻——目前沒有材料支持一個更精細的門檻，統一沿用同一個
-#    AGENT_TEAM_STALL_SECONDS。
+#    ---- 升級去重（線上故障修正新增）----
+#    上面這個動作原本沒有任何去重：只要觸發條件還成立，下一輪 poll 就
+#    原封不動再發一次（線上實測單一句子最高重複 56 次，時間戳間隔穩定
+#    在一個 poll 間隔）。四個升級呼叫點（豁免到期、停滯、blocked、達上
+#    限）改經 hat_wd_escalate_once 統一去重：同一個條件只在「從不成立
+#    變成成立」的那一輪送出，持續成立時最多每隔 AGENT_TEAM_ESCALATION_
+#    REPEAT_SECONDS 秒重提一次；四個呼叫點在控制流程上互斥（同一輪至
+#    多命中一個就會 `return 0`），因此只需要記「目前是哪個條件」
+#    （.escalation_active）與「上次真的送出的時間」（.escalation_
+#    last_at）兩個欄位，不需要每個條件各自一組。條件不再成立的那一輪
+#    （四個升級分支都沒有觸發）呼叫 hat_wd_escalation_clear 把
+#    .escalation_active 清成 null，讓下次重新成立時不必等重提間隔、能
+#    立刻再發——這正是「從 blocked 變成達上限屬於不同條件，必須立刻發
+#    出」這個要求的實作方式：條件名不同就等同「重新成立」。
+#
+# 3. 停滯偵測：`.stage` 是 running（見下方「.stage 守衛」一節）、且
+#    worker 的 state_change_seq 連續超過 AGENT_TEAM_STALL_SECONDS 沒有
+#    改變、且狀態落在 idle／done／unknown 三種之一 → 升級（跟第 2 點共
+#    用同一個升級動作）。blocked 不在這個 case 清單裡：它已經被 2a 項
+#    攔在前面並 `return 0`，狀態走到這裡時不可能是 blocked，見下方
+#    「修正迴圈：blocked 升級搬到停滯偵測之前」一節。working 也不在這
+#    個判斷範圍內：worker 持續做同一件事、狀態沒有轉換時，
+#    state_change_seq 本來就可能長時間不動，那是正常的，不是停滯。低
+#    保真 kind（agy、opencode）必須依賴這一項：它們的 idle 不帶正向證
+#    據（herdr 規則檔對這兩種 kind 完全沒有正向 idle 規則，見
+#    lib/common.sh hat_kind_fidelity 檔頭），「違約沒回報就停下」與
+#    「原地繞圈」只能靠停滯偵測接住，本腳本不因為 kind 是 low 保真就
+#    跳過這一項或降低門檻——目前沒有材料支持一個更精細的門檻，統一沿
+#    用同一個 AGENT_TEAM_STALL_SECONDS。
+#
+# ---- 修正迴圈：blocked 升級搬到停滯偵測之前，不再共用同一組觸發狀態
+#      ----
+# 舊版控制流程先跑第 3 項（停滯偵測），`case` 命中狀態涵蓋
+# idle／done／blocked／unknown 四種，跟第 2a 項（blocked 一律升級）各
+# 自獨立判斷、互不知道對方——但兩者共用同一個「目前是哪個條件」的去重
+# 閂鎖（.escalation_active 只記單一值，不是每個條件各自一組，見上方
+# 「升級去重」一節）。後果：一個 `.stage` 是 running、連續卡在核准框超
+# 過 AGENT_TEAM_STALL_SECONDS 的 worker，第 3 項先攔下、把條件切成
+# stall 並 `return 0`，第 2a 項的程式碼那一輪起永遠執行不到——不是偶爾
+# 搶答一次，是只要它繼續卡在 blocked，就永久由第 3 項接管。差別不只是
+# 條件名：第 2a 項的摘要帶著「目前有 N 筆下行卡在待補送佇列」，第 3 項
+# 的摘要完全沒有這個數字，只講「已停滯 Xs，狀態=blocked」——一個卡超過
+# 門檻的 worker，正是積壓最可能已經很可觀的那一個，卻在這個時間點被換
+# 成看不出積壓量的通用訊息，方向是反的：兩個條件同時成立時，該勝出的
+# 是比較具體、比較能據以行動的那一個（「卡在核准框」指名了原因也指名
+# 了處置；「已停滯」只說它沒動），不是先跑到的那一個。
+#
+# 修法：把第 2a 項移到第 3 項之前執行。第 2a 項本身不受 .stage 守衛與
+# 豁免影響，跟原本一樣對任何 stage、任何時候的 blocked 狀態一律先攔
+# 下、送出帶佇列筆數的訊息、`return 0`；第 3 項因此再也不會看到
+# status=blocked，`case` 清單拿掉這個到不了的分支，只剩 idle／
+# done／unknown 三種。
+#
+# ---- .stage 守衛（線上故障修正新增，修正迴圈第二輪擴大範圍）：只有
+#      running 才自動推進、才判停滯、才發達上限升級；三項對兩項——
+#      blocked 升級與豁免到期升級不受影響 ----
+# `.stage` 的生命週期是 running → delivered →（可回到 running）→
+# closing → closed（見 set-worker-field.sh 檔頭「.stage 的值另有一層
+# 驗證」一節）；`delivered`、`closing`、`closed` 三者是 worker 依照
+# references/worker-contract.md 的要求靜止不動的正常狀態（只在新的指
+# 示或 review 回饋進來時才動作），不是卡住。舊版第 1、3 兩項完全不看
+# `.stage`，於是把這個正常的靜止判成需要推一把，推滿上限又改成每輪升
+# 級，逼得 worker 只好再回報一次 delivered——而這一報在舊版計數重置邏
+# 輯下又把計數歸零、重新開始推，兩個各自合理的機制疊成一個自我維持的
+# livelock（時間戳完全吻合：worker 回報 delivered 後不到一分鐘，自動
+# 推進計數就從 1 重新開始）。`.stage` 欄位不存在時視同 running——
+# `launch-worker.sh` 啟動時不寫這個欄位，要等 orchestrator 呼叫
+# set-worker-field.sh 才會出現，缺席代表剛啟動、正在跑，不是已經交付。
+#
+# 修正迴圈第一輪的版本只把第 1（自動推進）、第 3（停滯偵測）兩項納入
+# 守衛，第 2b（達上限升級）當時被歸類成「既有計數已經到達門檻這個既成
+# 事實的通知」而排除在外，理由是它跟第 1 項的推進動作分開處理。這個劃
+# 分被線上實際發生的故障推翻：故障 registry 裡的 w4a-developer-1097-be
+# 當時 `.stage` 是 `delivered`、`.auto_push_count` 是 10，而它送出的
+# 「自動推進已達上限 10 次仍是 idle，改為升級」那句話在 inbox 裡重複了
+# 56 次、是全部訊息裡重複最多的一句。「已達上限」這句話的語意是「我推
+# 了 N 次它還是不動」，前提是還在推；`.stage` 一旦不是 running，這個前
+# 提就不成立，訊息指向一件不再發生的事——對 orchestrator 而言讀起來像
+# worker 卡住了，但它其實只是交付完在待命，這正是使用者原本回報的「鬼
+# 打牆」的一部分，只是升級去重（見上方「升級去重」一節）把頻率從每個
+# poll 一次降到每個重提間隔一次，沒有真正停下來。
+#
+# 修法：第 1、3、2b 三項只在 `.stage` 是 running 時進行；第 2a
+# （blocked 升級）與豁免到期升級不受這個守衛影響，任何 stage 下都照常
+# 發出——核准框卡住與定案請求沒回覆都是任何 stage 下都需要人介入的真
+# 實阻塞（前者）或 orchestrator 自己欠的回覆（後者），跟 worker 該不該
+# 被推無關。第 2b 這個分支不成立時（不論是計數真的還沒到，或是 `.stage`
+# 不是 running）都會落到 hat_wd_process_worker 既有的升級閂鎖清空點
+# （見上方「升級去重」一節），讓 worker 之後真的回到 running、又推到上
+# 限時能立刻重新發出一次，不被重提間隔壓抑。
 #
 # 4. 投遞重試與待補送補投：兩種佇列，各自的「對象」不同。
 #    a) inbox/ 裡 .delivery 是 blocked 的記錄——這些是 worker 上行時
@@ -106,9 +194,11 @@
 #       下行時那個 worker 剛好卡在核准框（見 instruct.sh 檔頭
 #       「blocked 是待補送」一節）。這裡的「對象」是那個 worker：只在
 #       這一輪觀測到它的狀態不是 blocked 時才逐筆補投，每成功一筆就
-#       呼叫 hat_remove_pending_resend 移除該筆。持有旗標跟這個佇列清
-#       不清空無關，本腳本完全不寫 .held（見 hat_wd_retry_pending_
-#       resend 檔頭「最終審查 Critical」一節）。
+#       呼叫 hat_remove_pending_resend 移除該筆，並視同一次下行送達直
+#       接歸零 .auto_push_count（見上方「計數重置」一節；這是本腳本自
+#       己的程式碼，不透過 .last_delivered_at 間接觸發）。持有旗標跟這
+#       個佇列清不清空無關，本腳本完全不寫 .held（見 hat_wd_retry_
+#       pending_resend 檔頭「最終審查 Critical」一節）。
 #
 # ---- 豁免：等待 need-you 回覆的 worker 一律豁免自動推進與停滯升級 ----
 # 有未回覆 need-you 的 worker 停著是正常的——它在等 orchestrator 決
@@ -136,6 +226,22 @@
 # state_change_seq 一直在動，那套機制永遠不會判定它停滯，因此上限到期
 # 這件事不能只靠放寬第 3 項的豁免條件，需要一條不看 state_change_seq
 # 的獨立路徑。
+#
+# ---- 豁免到期升級的摘要要帶得出序號：獨立審查抓到的問題 ----
+# 升級的處置是叫 orchestrator 補一則帶 --reply-to <序號> 的回覆，但上
+# 面這則摘要原本只有等待秒數與上限，不含序號；這則升級本身也不經
+# report.sh，沒有那個帶序號的上行前綴（見 lib/common.sh「上行前綴」一
+# 節）可以切。instruct.sh 的 --reply-to 在本次修正之前只檢查同名檔案
+# 存不存在，不驗證 token 或 processed_at，而升級自己那筆 inbox 記錄的
+# 檔名形狀跟真正的 need-you 定案請求完全一樣——結果是拿升級的序號去回
+# 覆會通過檢查、以結束碼 0 成功，被標成已處理的卻是升級記錄本身，真正
+# 該回覆的 need-you 永遠停在未處理，三條出口（自動推進、停滯偵測、
+# shutdown-worker.sh 的關閉檢查）繼續同時關上，而且全程零訊息。修法有
+# 兩處：本函式已經為了算 needyou_wait_elapsed 找出最早一筆未回覆的定
+# 案請求，順手把它的序號一併帶進摘要；instruct.sh 的 --reply-to 也補
+# 上驗證，拒絕指向非 need-you 或已處理記錄的序號（見該檔同名一節），
+# 兩處缺一不可——只修其中一處，另一處仍然會讓 orchestrator 拿錯序號或
+# 拿到序號卻被靜默接受。
 #
 # ---- 白名單欄位：任何要投遞給 orchestrator 的內容只能是本腳本自己組
 #      出來的摘要文字 ----
@@ -206,6 +312,39 @@
 # watchdog.log 這一輪有沒有多出 skip 行」。附帶一提，記錄在處理途中消
 # 失多半根本不是故障，而是一次成功的 `shutdown-worker.sh` 剛好跟這一輪
 # 重疊，用非 0 結束碼回報它本來就偏重。
+#
+# ---- 修正迴圈：hat_wd_retry_blocked_inbox 一樣要包子殼，鎖逾時給了
+#      它一條容易觸發的新路徑 ----
+# 上面這整套保護只包住了 `hat_wd_run_once` 逐一呼叫 `hat_wd_process_
+# worker` 那個點；排在那個迴圈之前的 `hat_wd_retry_blocked_inbox`（見
+# 下方同名函式與檔頭「投遞重試與待補送補投」a) 一節）完全在保護之外，
+# 而它內部逐筆把 `.delivery` 改成 `delivered` 用的正是 `hat_json_set`
+# ——一樣可能以 `hat_die 5` 結束。這條路徑在補鎖逾時之前就存在（
+# `hat_json_set` 本來就會在 mktemp／jq／mv 任一步失敗時 `hat_die 5`），
+# 只是那些成因都很罕見；這次新增的等鎖逾時給了它一條容易撞上的新路
+# 徑：只要同一輪有另一個持鎖者卡著同一份 inbox 記錄的 `.lock`，
+# `flock -x -w` 等到逾時就會觸發。而且這裡完全沒有 `hat_wd_process_
+# worker` 那層 `( ... ) || rc=$?` 子殼保護接著，`hat_die` 的 `exit 5`
+# 會直接終止整個看門狗行程——沒有 skip 記錄，watchdog.log 一行都不會
+# 留下，比一次乾淨的失敗更糟。
+#
+# 保護粒度：這次選逐筆 inbox 記錄包子殼，比照 `hat_wd_process_worker`
+# 對 worker 的粒度，不是整個 `hat_wd_retry_blocked_inbox` 呼叫包一次。
+# 理由跟上面「單一 worker 的致命失敗不得帶走整個行程」一節的三個理由
+# 同構：一、要擋的是「處理這一筆 inbox 記錄時發生致命失敗」整個類別，
+# 不是只堵今天看得到的這一次 `hat_json_set`，逐一堵明天多一個寫入就漏
+# 一個；二、這一筆一旦寫入失敗，後面沒有「跳過這一句、繼續判斷下一個
+# 欄位」的中間語意，整筆放棄最乾淨，留給下一輪重試；三、迴圈裡的狀態
+# 只有本地變數與檔案，子殼不會吞掉任何已經寫出去的部分。逐筆包還多一
+# 個好處：同一輪可能有好幾個 worker 各自一筆待重投的 blocked 記錄，包
+# 成單一大子殼會讓一筆撞上鎖逾時就連帶跳過同一輪其餘記錄；逐筆包則只
+# 丟這一筆，其餘記錄這一輪照常重投。
+#
+# 被跳過的那一筆在 watchdog.log 留一行 `skip inbox=... reason=retry_
+# blocked_failed rc=... at=...`，欄位風格沿用同一個檔案既有的 skip
+# 行；用 `inbox=<檔名>` 取代 `worker=` 當識別欄位，因為檔名本身就是
+# `<seq>-<worker>.json`，已經帶著 worker 名稱，不必為了印一次 worker
+# 名稱而多冒一次讀取失敗的風險。
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -240,6 +379,13 @@ case "$needyou_limit_seconds" in
   '' | *[!0-9]*) hat_die 2 "watchdog.sh: AGENT_TEAM_NEEDYOU_LIMIT_SECONDS 必須是純數字秒數，收到：$needyou_limit_seconds" ;;
 esac
 
+# 預設同 stall_seconds（見檔頭「升級去重」一節），一樣要求 stall_
+# seconds 已經通過上面的純數字檢查。
+escalation_repeat_seconds="${AGENT_TEAM_ESCALATION_REPEAT_SECONDS:-$stall_seconds}"
+case "$escalation_repeat_seconds" in
+  '' | *[!0-9]*) hat_die 2 "watchdog.sh: AGENT_TEAM_ESCALATION_REPEAT_SECONDS 必須是純數字秒數，收到：$escalation_repeat_seconds" ;;
+esac
+
 once=0
 if [ "$#" -eq 1 ] && [ "$1" = "--once" ]; then
   once=1
@@ -262,14 +408,27 @@ hat_json_string() {
 # fetch-and-increment，不透過 hat_json_set；鎖檔路徑必須跟
 # hat_json_set 用的同一條，否則各自序列化、彼此不排隊，等於沒鎖）。
 hat_watchdog_allocate_seq() {
-  local registry_root="$1" team_json lock_file lock_fd tmp seq new_seq
+  local registry_root="$1" team_json lock_file lock_fd lock_timeout tmp seq new_seq
 
   team_json="$registry_root/team.json"
   lock_file="${team_json}.lock"
 
   lock_fd=""
   exec {lock_fd}>"$lock_file"
-  flock -x "$lock_fd"
+  # ---- 線上故障修正：等鎖要有逾時上限 ----
+  # 這是 hat_wd_escalate 配號的唯一入口，四個升級呼叫點全部經過它；審
+  # 查發現本函式沒有套用 lib/common.sh 新增的逾時機制，而它掛住的後果
+  # 比一次乾淨的失敗更糟——掛住不是 exit，hat_wd_process_worker 外面
+  # 那層 `( ... ) || rc=$?` 子殼保護完全接不到（子殼根本不會返回），
+  # 整個長駐迴圈會凍結在這一個 worker 上，沒有 skip 記錄、沒有任何訊
+  # 息。做法與 hat_json_set 一致：見 lib/common.sh 的
+  # hat_lock_timeout_seconds，同樣要接住它在指令替換子殼裡的結束碼
+  # （見該函式呼叫端的說明），否則驗證失敗只會讓 lock_timeout 變空字
+  # 串，被 flock 誤判成別的錯誤。
+  lock_timeout="$(hat_lock_timeout_seconds)" || exit "$?"
+  if ! flock -x -w "$lock_timeout" "$lock_fd"; then
+    hat_die 5 "watchdog.sh: 等鎖逾時（${lock_timeout}s），取號失敗：$lock_file"
+  fi
 
   seq="$(jq -r '.next_seq // 1' "$team_json" 2>/dev/null)" || seq=""
   case "$seq" in
@@ -320,15 +479,26 @@ hat_wd_needyou_pending() {
 
 # hat_wd_needyou_oldest_created_at <registry_root> <worker>
 # <worker> 名下最早一筆仍未回覆（token=need-you、processed_at 仍是
-# JSON null）的定案請求，印出它的 .created_at（report.sh／本腳本一律
-# 寫成 `date -u +%Y-%m-%dT%H:%M:%SZ` 這個固定格式）；沒有這種記錄則印
-# 空字串。用途見檔頭「豁免的時間上限」一節。ISO 8601 UTC 字串照字典序
-# 排序就是時間序，直接用 `[[ < ]]` 比大小取最早一筆，不需要先各自轉成
-# epoch。
+# JSON null）的定案請求，印出「<序號>\t<.created_at>」（TAB 分隔，呼叫
+# 端用 cut -f 切欄位，同 hat_wd_lookup 的既有慣例）；.created_at 沿用
+# report.sh／本腳本一律寫成的 `date -u +%Y-%m-%dT%H:%M:%SZ` 固定格
+# 式。沒有這種記錄則兩個欄位都印空字串。用途見檔頭「豁免的時間上限」
+# 一節，以及下方呼叫端「豁免到期升級的摘要要帶得出這筆記錄的序號」的
+# 說明（獨立審查抓到的問題）。ISO 8601 UTC 字串照字典序排序就是時間
+# 序，直接用 `[[ < ]]` 比大小取最早一筆，不需要先各自轉成 epoch。
+#
+# 序號從檔名 `<序號>-<worker>.json` 取，不是從記錄內容取——inbox 記錄
+# 本身不含 .seq 欄位（seq 只在檔名與 report.sh 組的上行前綴裡出現，見
+# lib/common.sh「上行前綴」一節；但升級記錄不經 report.sh，沒有那個前
+# 綴可切，檔名才是唯一可靠的來源）。切法是取檔名裡第一個 `-` 之前的部
+# 分：seq 由 hat_allocate_seq／hat_watchdog_allocate_seq 配發，只會是
+# 十進位整數、不含連字號，即使 worker 名稱本身含連字號（如
+# w3n-backend）也不影響切法的正確性。
 hat_wd_needyou_oldest_created_at() {
-  local registry_root="$1" worker="$2" f token who processed created oldest
+  local registry_root="$1" worker="$2" f token who processed created oldest oldest_seq base
 
   oldest=""
+  oldest_seq=""
   while IFS= read -r -d '' f; do
     token="$(jq -r '.token // empty' "$f")"
     who="$(jq -r '.worker // empty' "$f")"
@@ -338,21 +508,40 @@ hat_wd_needyou_oldest_created_at() {
       [ -n "$created" ] || continue
       if [ -z "$oldest" ] || [[ "$created" < "$oldest" ]]; then
         oldest="$created"
+        base="$(basename "$f")"
+        oldest_seq="${base%%-*}"
       fi
     fi
   done < <(find "$registry_root/inbox" -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null)
 
-  printf '%s\n' "$oldest"
+  printf '%s\t%s\n' "$oldest_seq" "$oldest"
 }
 
 # hat_wd_escalate <registry_root> <orchestrator_name> <worker> <summary>
 # 見檔頭「升級」一節：落一筆 inbox 記錄（token=fyi，worker=<worker>），
 # 並 best-effort 呼叫 hat_herdr agent prompt 通知 orchestrator。
+#
+# ---- 補逾時機制時發現的既有缺陷（下面 `|| exit "$?"` 已修正，這段
+#      描述的是修正前、已被推翻的行為，不是現狀）----
+# 本函式一路都在 `( hat_wd_process_worker ... ) || rc=$?` 這個子殼裡執
+# 行，但 errexit 對「子殼裡再包一層命令替換」這件事本身已經失效（見
+# lib/common.sh「registry 寫入的失敗必須由寫入端自己接住」一節同一個
+# 成因）：若 `seq="$(hat_watchdog_allocate_seq ...)"` 這一步不自己檢查
+# 結束碼，hat_watchdog_allocate_seq 內部的 hat_die 5（含這次新增的鎖逾
+# 時）只會終止那個指令替換子殼，本函式會帶著空字串 seq 繼續往下跑、用
+# 一個缺號的檔名（`inbox/-<worker>.json`）建出殘缺記錄，而不是乾淨地
+# 讓整筆處理失敗、留下 skip 記錄。已用鎖逾時實測重現這個「不接結束
+# 碼」的版本：套用逾時但不接結束碼時，team.json 鎖逾時不再無界掛住，
+# 但也不會產生 rc=5 的 skip 記錄，watchdog.log 裡什麼都沒有——這是修正
+# 前的行為。下面這一行的 `|| exit "$?"` 接住結束碼、把它變成本函式自
+# 己的 exit，讓外層 `( hat_wd_process_worker ... ) || rc=$?` 接得到；
+# 現狀是等鎖逾時一樣會產生 rc=5 的 skip 記錄，不是本節開頭描述的那個
+# 未修正版本。
 hat_wd_escalate() {
   local registry_root="$1" orchestrator_name="$2" worker="$3" summary="$4"
   local seq inbox_file created_at rc
 
-  seq="$(hat_watchdog_allocate_seq "$registry_root")"
+  seq="$(hat_watchdog_allocate_seq "$registry_root")" || exit "$?"
   inbox_file="$registry_root/inbox/${seq}-${worker}.json"
   created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -377,45 +566,97 @@ hat_wd_escalate() {
   fi
 }
 
-# hat_wd_apply_auto_push_reset <registry_root> <worker> <worker_file>
-# 見檔頭「計數重置」一節：掃 <worker> 在 inbox/ 裡 seq 大於水位線
-# （.auto_push_reset_seq，缺席視為 0）的記錄，任何一筆 token=delivered
-# 或 .processed_at 非 null（orchestrator 送出定案回覆）就把
-# .auto_push_count 歸零；不論有沒有歸零都把水位線推到這一輪看過的最
-# 大 seq，避免同一筆記錄在下一輪被重複判定成「新的」。
-hat_wd_apply_auto_push_reset() {
-  local registry_root="$1" worker="$2" worker_file="$3"
-  local last_seen latest_seq reset_needed f who base seq token processed
+# hat_wd_escalate_once <registry_root> <orchestrator_name> <worker> \
+#   <worker_file> <condition> <repeat_seconds> <summary>
+# 見檔頭「升級去重」一節：<condition> 是四個升級呼叫點互斥的其中一個
+# 條件名（needyou_expired／stall／blocked／auto_push_limit）。跟
+# <worker_file> 的 .escalation_active 不同（含缺席，即從不成立變成成
+# 立，或换成別的條件）就視為新的一次；相同就檢查距離 .escalation_
+# last_at 是否已經超過 <repeat_seconds>，超過才重提一次，沒超過就整段
+# 跳過、不呼叫 hat_wd_escalate。條件不再成立時的清空由呼叫端另外呼叫
+# hat_wd_escalation_clear 負責，本函式不處理「沒有任何條件成立」這個
+# 情況——它只在「呼叫端已經判定 <condition> 這一輪成立」時才會被呼叫
+# 到。
+#
+# ---- 獨立審查 High：閂鎖只在升級真的落地之後才記錄 ----
+# 舊版先寫 .escalation_active／.escalation_last_at，才呼叫 hat_wd_
+# escalate；hat_wd_escalate 內部的配號與六次 hat_json_set 任一步失敗
+# 都是 hat_die 5，那時閂鎖已經先落地——後果是「升級其實沒發出去，系統
+# 卻以為發了」，下一輪會被自己的重提間隔壓抑到一個重提間隔之後。修法
+# 把呼叫順序反過來：先呼叫 hat_wd_escalate，只有它沒有中途 hat_die（也
+# 就是升級真的落地：inbox 記錄確實建立，至於 herdr 通知本身是否送達是
+# 另一回事，見 hat_wd_escalate 檔頭「best-effort」一節）才寫入這兩個閂
+# 鎖欄位。這樣失敗時（不論是新條件還是重提）閂鎖維持失敗前的原狀，下
+# 一輪能立刻重試，不會被誤記成「剛發過」。
+hat_wd_escalate_once() {
+  local registry_root="$1" orchestrator_name="$2" worker="$3" worker_file="$4"
+  local condition="$5" repeat_seconds="$6" summary="$7"
+  local active now last_at elapsed
 
-  last_seen="$(jq -r '.auto_push_reset_seq // 0' "$worker_file")"
-  latest_seq="$last_seen"
-  reset_needed=0
+  active="$(jq -r '.escalation_active // empty' "$worker_file")"
+  now="$(date +%s)"
 
-  while IFS= read -r -d '' f; do
-    who="$(jq -r '.worker // empty' "$f")"
-    [ "$who" = "$worker" ] || continue
-
-    base="$(basename "$f")"
-    seq="${base%%-*}"
-    case "$seq" in *[!0-9]*) continue ;; esac
-    [ "$seq" -gt "$last_seen" ] || continue
-
-    if [ "$seq" -gt "$latest_seq" ]; then
-      latest_seq="$seq"
+  if [ "$active" = "$condition" ]; then
+    last_at="$(jq -r '.escalation_last_at // empty' "$worker_file")"
+    if [ -n "$last_at" ]; then
+      elapsed=$((now - last_at))
+      if [ "$elapsed" -lt "$repeat_seconds" ]; then
+        return 0
+      fi
     fi
-
-    token="$(jq -r '.token // empty' "$f")"
-    processed="$(jq -r '.processed_at' "$f")"
-    if [ "$token" = "delivered" ] || [ "$processed" != "null" ]; then
-      reset_needed=1
-    fi
-  done < <(find "$registry_root/inbox" -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null)
-
-  if [ "$latest_seq" != "$last_seen" ]; then
-    hat_json_set "$worker_file" '.auto_push_reset_seq' "$latest_seq"
   fi
-  if [ "$reset_needed" -eq 1 ]; then
+
+  hat_wd_escalate "$registry_root" "$orchestrator_name" "$worker" "$summary"
+
+  if [ "$active" != "$condition" ]; then
+    hat_json_set "$worker_file" '.escalation_active' "$(hat_json_string "$condition")"
+  fi
+  hat_json_set "$worker_file" '.escalation_last_at' "$now"
+}
+
+# hat_wd_escalation_clear <worker_file>
+# 見檔頭「升級去重」一節：這一輪四個升級條件都沒有成立時由呼叫端呼
+# 叫，把 .escalation_active 清成 null，讓下次重新成立時不必等
+# AGENT_TEAM_ESCALATION_REPEAT_SECONDS、能立刻再發一次。.escalation_
+# active 本來就缺席（從未升級過，或上一輪已經清過）時是安全的無動
+# 作，不多寫一次。
+hat_wd_escalation_clear() {
+  local worker_file="$1" active
+
+  active="$(jq -r '.escalation_active // empty' "$worker_file")"
+  [ -n "$active" ] || return 0
+
+  hat_json_set "$worker_file" '.escalation_active' 'null'
+}
+
+# hat_wd_apply_delivery_reset <worker_file>
+# 見檔頭「計數重置」一節：<worker_file> 的 .last_delivered_at（
+# instruct.sh 成功送出下行時寫）跟本函式自己的水位線 .auto_push_
+# reset_seen_at 不同（含水位線缺席）時，才把 .auto_push_count 歸零並
+# 把水位線推到這個新值；.last_delivered_at 缺席（從未送過下行）時是
+# 安全的無動作。水位線的必要性同已移除的 .auto_push_reset_seq：沒有
+# 它，同一次下行會在每一輪都被重複判定成「新的」而把計數重置到 0，讓
+# 上限形同虛設。
+#
+# ---- 獨立審查 Medium：兩個寫入的順序，讓中途失敗落在安全的方向
+#      ----
+# 舊版先推進水位線、才歸零計數：中途死掉會讓水位線已經追上這次下行，
+# 但計數卡在舊值——下一輪的「.last_delivered_at 跟水位線不同」判斷不
+# 再成立，這次下行永遠不會再觸發歸零，計數可能已經在上限之上，回到
+# running 時還會多發一次本可避免的升級。修法把順序反過來：先歸零計
+# 數、才推進水位線。中途死掉時計數已經是安全值（0），水位線還沒追
+# 上，下一輪會再重做一次——頂多多一次無害的重複歸零，不會永遠錯過。
+hat_wd_apply_delivery_reset() {
+  local worker_file="$1"
+  local last_delivered seen
+
+  last_delivered="$(jq -r '.last_delivered_at // empty' "$worker_file")"
+  [ -n "$last_delivered" ] || return 0
+
+  seen="$(jq -r '.auto_push_reset_seen_at // empty' "$worker_file")"
+  if [ "$last_delivered" != "$seen" ]; then
     hat_json_set "$worker_file" '.auto_push_count' '0'
+    hat_json_set "$worker_file" '.auto_push_reset_seen_at' "$(hat_json_string "$last_delivered")"
   fi
 }
 
@@ -439,26 +680,40 @@ hat_wd_retry_blocked_inbox() {
   fi
 
   while IFS= read -r -d '' f; do
-    delivery="$(jq -r '.delivery // empty' "$f")"
-    [ "$delivery" = "blocked" ] || continue
-
-    worker="$(jq -r '.worker // empty' "$f")"
-    summary="$(jq -r '.summary // empty' "$f")"
-    [ -n "$worker" ] || continue
-
+    # 整筆包進子殼：跟 hat_wd_process_worker 對 worker 的保護同一個理
+    # 由（見檔頭「修正迴圈：hat_wd_retry_blocked_inbox 一樣要包子殼」
+    # 一節），這裡是它的 inbox 記錄版本。`hat_json_set` 一樣可能因為
+    # 鎖逾時以 hat_die 5 結束；用 exit 0 取代原本的 continue，是因為
+    # continue 在子殼裡不會作用在外層這個 while，改成讓子殼自己乾淨結
+    # 束、外層讀到 rc=0 即可。
     rc=0
-    hat_herdr agent prompt "$orchestrator_name" "$summary" >/dev/null || rc=$?
-    if [ "$rc" -eq 0 ]; then
+    (
+      delivery="$(jq -r '.delivery // empty' "$f")"
+      [ "$delivery" = "blocked" ] || exit 0
+
+      worker="$(jq -r '.worker // empty' "$f")"
+      summary="$(jq -r '.summary // empty' "$f")"
+      [ -n "$worker" ] || exit 0
+
+      hat_herdr agent prompt "$orchestrator_name" "$summary" >/dev/null || exit 0
       hat_json_set "$f" '.delivery' '"delivered"'
+    ) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf 'skip inbox=%s reason=retry_blocked_failed rc=%s at=%s\n' \
+        "$(basename "$f")" "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        >> "$registry_root/watchdog.log"
     fi
   done < <(find "$registry_root/inbox" -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null)
 }
 
 # hat_wd_retry_pending_resend <worker> <worker_file> <whitelisted>
 # 見檔頭「投遞重試與待補送補投」b) 一節：<worker> 目前不是 blocked
-# 時，逐筆嘗試補投 .pending_resend 佇列，每成功一筆就移除該筆；一旦
-# 有一筆失敗（例如又卡進 blocked），停止處理這個 worker 剩下的佇列，
-# 留給下一輪。
+# 時，逐筆嘗試補投 .pending_resend 佇列，每成功一筆就移除該筆並直接
+# 把 .auto_push_count 歸零（見檔頭「計數重置」一節：補投成功視同一次
+# 下行送達，本函式是看門狗自己的程式碼，不需要透過 .last_delivered_
+# at／.auto_push_reset_seen_at 這兩個欄位間接觸發，直接動自己擁有的
+# 欄位即可）；一旦有一筆失敗（例如又卡進 blocked），停止處理這個
+# worker 剩下的佇列，留給下一輪。
 #
 # ---- 最終審查 Critical：本函式不寫 .held，佇列清空跟持有旗標無關 ----
 # 舊版在佇列清空後無條件把 .held 寫回 false，理由是「沒清空代表還有
@@ -503,19 +758,34 @@ hat_wd_retry_pending_resend() {
     fi
 
     hat_remove_pending_resend "$worker_file"
+    hat_json_set "$worker_file" '.auto_push_count' '0'
   done
 }
 
 # hat_wd_process_worker <registry_root> <orchestrator_name> <worker> \
-#   <whitelisted> <stall_seconds> <auto_push_limit> <needyou_limit_seconds>
+#   <whitelisted> <stall_seconds> <auto_push_limit> <needyou_limit_seconds> \
+#   <escalation_repeat_seconds>
 # 對單一 worker 依序執行：4b) 待補送補投 → 讀取這一輪觀測值 → 更新
 # stamp 追蹤 → 豁免的時間上限到期就直接升級（檔頭同名一節，不看
-# status） → 3) 停滯偵測（內建豁免） → 2) blocked／達上限升級（不受豁
-# 免影響） → unknown 直接跳過 → 豁免檢查（只擋第 1 項） → 1) 自動推
-# 進。先做補投，把上一輪卡住、這一輪解除的下行儘快送出；持有旗標由下
-# 行腳本自己收放，本函式的執行順序不會改變它的值（見 hat_wd_retry_
-# pending_resend 檔頭「最終審查 Critical」一節），因此這個順序跟後面
-# 的自動推進評估互不影響，純粹是「先把積壓的事做完」。
+# status，不受 .stage 守衛影響） → 2a) blocked 升級（不受豁免與 .stage
+# 守衛影響；排在 3) 之前，見上方「修正迴圈：blocked 升級搬到停滯偵測
+# 之前」一節） → 3) 停滯偵測（內建豁免、受 .stage 守衛影響，見檔頭
+# 「.stage 守衛」一節；status 這裡不可能是 blocked，已經被 2a 攔截並
+# return） → unknown 直接跳過（順便清升級閂鎖） → held 直接跳過（順便
+# 清升級閂鎖） → 2b) 達上限升級（不受豁免影響，但受 .stage 守衛影響，
+# 見檔頭「.stage 守衛」一節） → 豁免檢查（只擋第 1 項） → 清升級閂鎖
+# → 1) 自動推進（受 .stage 守衛影響）。先做補投，把上一輪卡住、這一輪
+# 解除的下行儘快送出；持有旗標由下行腳本自己收放，本函式的執行順序不
+# 會改變它的值（見 hat_wd_retry_pending_resend 檔頭「最終審查
+# Critical」一節），因此這個順序跟後面的自動推進評估互不影響，純粹是
+# 「先把積壓的事做完」。
+#
+# ---- 升級閂鎖清空的位置：只在確定四個條件這一輪都沒有成立時 ----
+# 四個升級呼叫點都經 hat_wd_escalate_once 去重（見檔頭「升級去重」一
+# 節），呼叫端只需要在「這一輪確定沒有任何條件成立」的三個退出點呼叫
+# hat_wd_escalation_clear：unknown 直接跳過、held 直接跳過、以及 2b
+# （達上限）判定為假之後——這一點同時涵蓋後面「豁免跳過」與「送出自動
+# 推進」兩條路徑，因為兩者都已經確定 2b 不成立，不需要各自再清一次。
 #
 # ---- 修正迴圈第一輪：豁免檢查不得排在 2) 之前 ----
 # 檔頭「豁免」一節承諾「豁免範圍包含第 1、3 兩項，第 2 項的 blocked／
@@ -531,9 +801,12 @@ hat_wd_retry_pending_resend() {
 hat_wd_process_worker() {
   local registry_root="$1" orchestrator_name="$2" worker="$3" whitelisted="$4"
   local stall_seconds="$5" auto_push_limit="$6" needyou_limit_seconds="$7"
-  local worker_file pane_id line status stamp held needyou_pending
+  local escalation_repeat_seconds="$8"
+  local worker_file pane_id line status stage stamp held needyou_pending
   local last_stamp last_changed_at now elapsed auto_push_count new_count rc
-  local needyou_expired needyou_created_at needyou_created_epoch needyou_wait_elapsed
+  local needyou_expired needyou_oldest needyou_seq needyou_created_at
+  local needyou_created_epoch needyou_wait_elapsed
+  local pending_resend_count
 
   worker_file="$registry_root/workers/$worker.json"
   [ -f "$worker_file" ] || return 0
@@ -569,6 +842,10 @@ hat_wd_process_worker() {
   status="$(printf '%s' "$line" | cut -f3)"
   stamp="$(printf '%s' "$line" | cut -f4)"
   held="$(jq -r '.held // false' "$worker_file")"
+  # ---- .stage 守衛（檔頭同名一節）：缺席視同 running，launch-
+  #      worker.sh 啟動時不寫這個欄位，要等 orchestrator 呼叫
+  #      set-worker-field.sh 才會出現 ----
+  stage="$(jq -r '.stage // "running"' "$worker_file")"
   needyou_pending="$(hat_wd_needyou_pending "$registry_root" "$worker")"
 
   now="$(date +%s)"
@@ -586,8 +863,11 @@ hat_wd_process_worker() {
   #      過第 3 項的 state_change_seq 比對——等待中的 worker 可能持續轉
   #      換狀態，那套機制永遠不會判定它停滯 ----
   needyou_expired=0
+  needyou_seq=""
   if [ "$needyou_pending" = "1" ]; then
-    needyou_created_at="$(hat_wd_needyou_oldest_created_at "$registry_root" "$worker")"
+    needyou_oldest="$(hat_wd_needyou_oldest_created_at "$registry_root" "$worker")"
+    needyou_seq="$(printf '%s' "$needyou_oldest" | cut -f1)"
+    needyou_created_at="$(printf '%s' "$needyou_oldest" | cut -f2)"
     if [ -n "$needyou_created_at" ]; then
       needyou_created_epoch="$(date -d "$needyou_created_at" +%s 2>/dev/null)" || needyou_created_epoch=""
       if [ -n "$needyou_created_epoch" ]; then
@@ -599,53 +879,90 @@ hat_wd_process_worker() {
     fi
   fi
   if [ "$needyou_expired" -eq 1 ]; then
-    hat_wd_escalate "$registry_root" "$orchestrator_name" "$worker" \
-      "worker=$worker 有一則你還沒回的定案請求（need-you）已經等了 ${needyou_wait_elapsed}s（上限 ${needyou_limit_seconds}s），豁免到期，改為升級"
+    # ---- 獨立審查抓到的問題：升級的處置是叫 orchestrator 補一則帶
+    #      --reply-to <序號> 的回覆，但這個序號原本拿不到——這則升級不
+    #      經 report.sh，沒有那個帶序號的上行前綴可以切，摘要也只有等
+    #      待秒數與上限；而 instruct.sh 的 --reply-to 在本次修正之前
+    #      只檢查同名檔案存不存在，拿升級自己這筆記錄的序號去回覆會通
+    #      過檢查、以 0 結束，被標成已處理的卻是升級記錄本身，真正的
+    #      need-you 永遠停在未處理。上面已經為了算 needyou_wait_elapsed
+    #      找出這筆最早未回覆的定案請求，順手把它的序號（needyou_seq）
+    #      一併帶進摘要，讓 orchestrator 讀訊息就能直接照抄 --reply-to
+    #      的值，不必自己去猜 ----
+    hat_wd_escalate_once "$registry_root" "$orchestrator_name" "$worker" "$worker_file" \
+      "needyou_expired" "$escalation_repeat_seconds" \
+      "worker=$worker 有一則你還沒回的定案請求（need-you）已經等了 ${needyou_wait_elapsed}s（上限 ${needyou_limit_seconds}s），豁免到期，改為升級；回覆時請對 instruct.sh 帶 --reply-to $needyou_seq"
     return 0
   fi
 
-  # ---- 3：停滯偵測（見檔頭同名一節；豁免見「豁免」一節）----
-  case "$status" in
-    idle | done | blocked | unknown)
-      if [ -n "$last_changed_at" ]; then
-        elapsed=$((now - last_changed_at))
-        if [ "$elapsed" -ge "$stall_seconds" ] && [ "$needyou_pending" != "1" ]; then
-          hat_wd_escalate "$registry_root" "$orchestrator_name" "$worker" \
-            "worker=$worker 已停滯 ${elapsed}s（門檻 ${stall_seconds}s），狀態=$status，state_change_seq 沒有改變"
-          return 0
-        fi
-      fi
-      ;;
-  esac
-
-  # ---- 2a：blocked 一律升級，不受 need-you 豁免影響（見上方「修正迴
-  #      圈第一輪」一節）；不送文字下行給這個 worker ----
+  # ---- 2a：blocked 一律升級，不受 need-you 豁免與 .stage 守衛影響
+  #      （見上方「修正迴圈第一輪」與檔頭「.stage 守衛」兩節）；不送文
+  #      字下行給這個 worker；摘要一併帶出 .pending_resend 目前筆數，
+  #      讓「有下行卡著」不是靜默的（見檔頭「升級」一節）。排在 3) 停滯
+  #      偵測之前執行：兩者共用同一個去重閂鎖，先跑到的那個會讓另一個
+  #      永久執行不到，該贏的是比較具體、帶著積壓筆數的這一則，不是先
+  #      跑到的那一則（見上方「修正迴圈：blocked 升級搬到停滯偵測之
+  #      前」一節）----
   if [ "$status" = "blocked" ]; then
-    hat_wd_escalate "$registry_root" "$orchestrator_name" "$worker" \
-      "worker=$worker 卡在核准框（agent_status=blocked），文字下行會被拒絕，需要調查者讀畫面代按"
+    pending_resend_count="$(jq -r '(.pending_resend // []) | length' "$worker_file")"
+    hat_wd_escalate_once "$registry_root" "$orchestrator_name" "$worker" "$worker_file" \
+      "blocked" "$escalation_repeat_seconds" \
+      "worker=$worker 卡在核准框（agent_status=blocked），文字下行會被拒絕，需要調查者讀畫面代按；目前有 ${pending_resend_count} 筆下行卡在待補送佇列"
     return 0
   fi
 
-  # ---- unknown：不得自動推進，停滯門檻由上面的停滯偵測負責 ----
+  # ---- 3：停滯偵測（見檔頭同名一節；豁免見「豁免」一節；受 .stage 守
+  #      衛影響，見檔頭「.stage 守衛」一節，delivered／closing／closed
+  #      時整段跳過不判斷）。status 不會是 blocked：上面的 2a 已經攔截
+  #      並 return，case 因此不列 blocked（見上方「修正迴圈」一節）----
+  if [ "$stage" = "running" ]; then
+    case "$status" in
+      idle | done | unknown)
+        if [ -n "$last_changed_at" ]; then
+          elapsed=$((now - last_changed_at))
+          if [ "$elapsed" -ge "$stall_seconds" ] && [ "$needyou_pending" != "1" ]; then
+            hat_wd_escalate_once "$registry_root" "$orchestrator_name" "$worker" "$worker_file" \
+              "stall" "$escalation_repeat_seconds" \
+              "worker=$worker 已停滯 ${elapsed}s（門檻 ${stall_seconds}s），狀態=$status，state_change_seq 沒有改變"
+            return 0
+          fi
+        fi
+        ;;
+    esac
+  fi
+
+  # ---- unknown：不得自動推進，停滯門檻由上面的停滯偵測負責；這一輪
+  #      確定沒有任何升級條件成立，清掉升級閂鎖（見檔頭「升級閂鎖清空
+  #      的位置」一節）----
   if [ "$status" != "idle" ] && [ "$status" != "done" ]; then
+    hat_wd_escalation_clear "$worker_file"
     return 0
   fi
 
   if [ "$held" = "true" ]; then
+    hat_wd_escalation_clear "$worker_file"
     return 0
   fi
 
   # ---- 2b：達上限升級，同樣不受 need-you 豁免影響，因此先套用計數重
   #      置、算出目前計數，再判斷是否已達上限——這一步排在豁免檢查之
-  #      前（見上方「修正迴圈第一輪」一節）----
-  hat_wd_apply_auto_push_reset "$registry_root" "$worker" "$worker_file"
+  #      前（見上方「修正迴圈第一輪」一節）；受 .stage 守衛影響（見檔
+  #      頭「.stage 守衛」一節：worker 已經不會被推進時，「已達上限」
+  #      這句話語意失效，指向一件不再發生的事）----
+  hat_wd_apply_delivery_reset "$worker_file"
   auto_push_count="$(jq -r '.auto_push_count // 0' "$worker_file")"
 
-  if [ "$auto_push_count" -ge "$auto_push_limit" ]; then
-    hat_wd_escalate "$registry_root" "$orchestrator_name" "$worker" \
+  if [ "$stage" = "running" ] && [ "$auto_push_count" -ge "$auto_push_limit" ]; then
+    hat_wd_escalate_once "$registry_root" "$orchestrator_name" "$worker" "$worker_file" \
+      "auto_push_limit" "$escalation_repeat_seconds" \
       "worker=$worker 自動推進已達上限 ${auto_push_limit} 次仍是 $status，改為升級"
     return 0
   fi
+
+  # 到這裡表示這一輪四個升級條件都沒有成立，清掉升級閂鎖（見檔頭「升
+  # 級閂鎖清空的位置」一節）；後面的豁免跳過與自動推進兩條路徑都已經
+  # 涵蓋在內，不必各自再清一次。
+  hat_wd_escalation_clear "$worker_file"
 
   # ---- 豁免：等 need-you 回覆的 worker 不自動推進（只擋這一項，見上
   #      方「修正迴圈第一輪」一節）----
@@ -653,22 +970,27 @@ hat_wd_process_worker() {
     return 0
   fi
 
-  # ---- 1：自動推進 ----
-  rc=0
-  hat_herdr agent prompt "$worker" "繼續" >/dev/null || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    new_count=$((auto_push_count + 1))
-    hat_json_set "$worker_file" '.auto_push_count' "$new_count"
-    printf 'auto-push worker=%s count=%s at=%s\n' "$worker" "$new_count" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      >> "$registry_root/watchdog.log"
+  # ---- 1：自動推進（受 .stage 守衛影響，見檔頭同名一節：delivered／
+  #      closing／closed 時 worker 依契約靜止是正常狀態，不推）----
+  if [ "$stage" = "running" ]; then
+    rc=0
+    hat_herdr agent prompt "$worker" "繼續" >/dev/null || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      new_count=$((auto_push_count + 1))
+      hat_json_set "$worker_file" '.auto_push_count' "$new_count"
+      printf 'auto-push worker=%s count=%s at=%s\n' "$worker" "$new_count" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        >> "$registry_root/watchdog.log"
+    fi
   fi
 }
 
 # hat_wd_run_once
-# 跑一輪：一次 agent list、4a) inbox 上行重投、逐一處理每個已知
-# worker。逐筆處理包在子殼裡、失敗只跳過那一筆並記一行日誌，理由與
-# `--once` 的語意見檔頭「單一 worker 的致命失敗不得帶走整個行程」與
-# 「`--once` 與長駐模式一律同樣處理」兩節。
+# 跑一輪：一次 agent list、4a) inbox 上行重投（hat_wd_retry_blocked_
+# inbox 內部逐筆記錄包子殼）、逐一處理每個已知 worker（本函式這裡逐筆
+# worker 包子殼）。兩處都是失敗只跳過那一筆並記一行日誌，理由與
+# `--once` 的語意見檔頭「單一 worker 的致命失敗不得帶走整個行程」、
+# 「修正迴圈：hat_wd_retry_blocked_inbox 一樣要包子殼」與「`--once`
+# 與長駐模式一律同樣處理」三節。
 hat_wd_run_once() {
   local registry_root team_json orchestrator_name agents_json whitelisted worker rc
 
@@ -691,7 +1013,8 @@ hat_wd_run_once() {
     # 流（見檔頭同名一節）。
     rc=0
     ( hat_wd_process_worker "$registry_root" "$orchestrator_name" "$worker" "$whitelisted" \
-        "$stall_seconds" "$auto_push_limit" "$needyou_limit_seconds" ) || rc=$?
+        "$stall_seconds" "$auto_push_limit" "$needyou_limit_seconds" \
+        "$escalation_repeat_seconds" ) || rc=$?
     if [ "$rc" -ne 0 ]; then
       printf 'skip worker=%s reason=process_failed rc=%s at=%s\n' \
         "$worker" "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \

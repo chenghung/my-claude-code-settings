@@ -46,11 +46,19 @@ hat_require_herdr_env
 # 會因為 jq 的 `unique` 把整個陣列排序、打亂其他項目原有的順序。
 hat_grant_add() {
   local file="$1" name="$2"
-  local lock_fd tmp
+  local lock_fd lock_timeout tmp
 
   lock_fd=""
   exec {lock_fd}>"${file}.lock"
-  flock -x "$lock_fd"
+  # ---- 線上故障修正：等鎖要有逾時上限，做法與 hat_json_set 一致
+  #      ----
+  # 見 lib/common.sh 的 hat_lock_timeout_seconds；同樣要接住它在指令
+  # 替換子殼裡的結束碼，否則驗證失敗只會讓 lock_timeout 變空字串，被
+  # flock 誤判成別的錯誤。
+  lock_timeout="$(hat_lock_timeout_seconds)" || exit "$?"
+  if ! flock -x -w "$lock_timeout" "$lock_fd"; then
+    hat_die 5 "grant-peer.sh: 等鎖逾時（${lock_timeout}s），grants 未寫入：${file}.lock"
+  fi
 
   tmp="$(mktemp "${file}.XXXXXX")" || hat_die 5 "grant-peer.sh: 無法建立暫存檔，grants 未寫入：$file"
   if ! { jq --arg n "$name" \
@@ -69,11 +77,16 @@ hat_grant_add() {
 # 原本就不在清單裡是安全的無動作，不視為錯誤。
 hat_grant_remove() {
   local file="$1" name="$2"
-  local lock_fd tmp
+  local lock_fd lock_timeout tmp
 
   lock_fd=""
   exec {lock_fd}>"${file}.lock"
-  flock -x "$lock_fd"
+  # ---- 線上故障修正：等鎖要有逾時上限，做法與 hat_grant_add 一致
+  #      ----
+  lock_timeout="$(hat_lock_timeout_seconds)" || exit "$?"
+  if ! flock -x -w "$lock_timeout" "$lock_fd"; then
+    hat_die 5 "grant-peer.sh: 等鎖逾時（${lock_timeout}s），grants 未撤銷：${file}.lock"
+  fi
 
   tmp="$(mktemp "${file}.XXXXXX")" || hat_die 5 "grant-peer.sh: 無法建立暫存檔，grants 未撤銷：$file"
   if ! { jq --arg n "$name" \

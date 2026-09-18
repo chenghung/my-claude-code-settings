@@ -492,16 +492,18 @@ case "$out" in
 esac
 
 # ===== team-init.sh --recover：絕對不自行補送 =====
-# 補送必須由 orchestrator 依清單逐一呼叫 instruct.sh，順序才控制得
-# 住；順序顛倒（--recover 自己先補送）會讓補送設下的新旗標被 watchdog
-# 補發事件的處理流程當成「上一輪沒收回的殘留」而收掉。
+# instruct.sh 對 .pending_resend 只會追加、從不移除；移除的唯一呼叫端
+# 是 watchdog.sh 的補投。若 --recover 自己先補送，看門狗掛上後還會再
+# 補投同一筆，收件方會收到重複下行；收件方若還卡在 blocked，這次手動
+# 補送反而會再追加一筆重複進佇列。排空完全交給看門狗自己做，本腳本只
+# 讀清單告知積壓量。
 : > "$HERDR_CALL_LOG"
 printf '{"held":true,"pending_resend":[{"text":"goal 更新"}]}' > "$REG/workers/w3n-backend.json"
 rc=0; bash "$SCRIPTS/team-init.sh" --recover >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 0 ]; then pass "team-init --recover（第二輪）：執行以 0 結束"; else bad "team-init --recover：得到 rc=$rc"; fi
 
 if grep -q 'agent prompt' "$HERDR_CALL_LOG"; then
-  bad "recover：自行補送了（順序會失控，補送設下的旗標會被 watchdog 當殘留收掉）"
+  bad "recover：自行補送了（instruct.sh 對 pending_resend 只會追加不會移除，看門狗掛上後會重複補投同一筆）"
 else
   pass "recover：不自行補送，只回報清單"
 fi
@@ -509,6 +511,37 @@ if [ "$(jq -r '.pending_resend | length' "$REG/workers/w3n-backend.json")" = "1"
   pass "recover：待補送清單保持原樣"
 else
   bad "recover：清單被清掉了"
+fi
+
+# ===== team-init.sh --recover：升級閂鎖跨重啟不得殘留 =====
+# 見 team-init.sh 檔頭「升級閂鎖收回」一節：閂鎖保護的是 orchestrator
+# 的 context，而重啟正好是 context 被清空的那一刻，閂鎖記的東西已經沒
+# 有保護對象——不收回的話，一個重啟前就卡著、條件仍然成立的 worker，最
+# 長要再等一個 AGENT_TEAM_ESCALATION_REPEAT_SECONDS（預設 1800 秒）才
+# 會被重新提醒。
+printf '{"held":false,"escalation_active":"stall","escalation_last_at":%s}' "$(date +%s)" \
+  > "$REG/workers/w3n-escalationtest.json"
+
+rc=0; bash "$SCRIPTS/team-init.sh" --recover >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "team-init --recover：執行以 0 結束（升級閂鎖收回場景）"
+else
+  bad "team-init --recover：得到 rc=$rc"
+fi
+
+if [ "$(jq -r '.escalation_active' "$REG/workers/w3n-escalationtest.json")" = "null" ]; then
+  pass "recover：升級閂鎖 .escalation_active 收回成 null"
+else
+  bad "recover：升級閂鎖仍卡著，重掛看門狗後條件仍成立的 worker 最長要再等一個重提間隔才會被提醒"
+fi
+
+# ---- 邊界：沒有升級閂鎖的 worker 不受影響（無動作即安全）----
+printf '{"held":false}' > "$REG/workers/w3n-noescalation.json"
+rc=0; bash "$SCRIPTS/team-init.sh" --recover >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "recover：沒有升級閂鎖的 worker 也能正常跑完（無動作即安全）"
+else
+  bad "recover：得到 rc=$rc"
 fi
 
 # ===== set-goal.sh：四項必填 =====
@@ -1553,6 +1586,19 @@ case "$out" in
   *) bad "report：投遞延後卻沒有印出提示，worker 會誤以為已送達：'$out'" ;;
 esac
 
+# ---- 本任務自行補上：投遞延後提示明講看門狗自動重投的前提是 orchestrator
+#      要先離開 blocked，且沒有任何機制會讓它自己離開，需要有人去處理
+#      那個框（修正迴圈：舊訊息「看門狗會另行重試投遞」暗示不用做任何
+#      事）----
+case "$out" in
+  *"沒有任何機制"*"自己離開"*) pass "report：投遞延後提示明講沒有機制會讓它自己離開 blocked，需要人去處理" ;;
+  *) bad "report：投遞延後提示仍可能暗示不用做任何事：$out" ;;
+esac
+case "$out" in
+  *"另行重試投遞"*) bad "report：投遞延後提示還在用舊的『另行重試投遞』說法：$out" ;;
+  *) pass "report：投遞延後提示不再用舊的『另行重試投遞』說法" ;;
+esac
+
 # ---- 本任務自行補上（缺口二）：轉發給 orchestrator 的訊息帶機器可讀
 #      前綴（序號／token／發訊 worker），上層不必再靠掃 inbox 目錄猜
 #      序號。恢復成一個正常會投遞成功的樁（上一段用的是 agent_blocked
@@ -1841,6 +1887,52 @@ else
   bad "instruct：得到 rc=$rc"
 fi
 
+# ---- 本任務自行補上：--reply-to 指名的記錄必須是一筆還沒被回覆的定
+#      案請求，不是隨便一筆同名檔案（獨立審查抓到的問題：--reply-to
+#      原本只檢查檔案存不存在，不驗證 token 或 processed_at；看門狗升
+#      級落的 inbox 記錄檔名形狀完全一樣，拿升級的序號去回覆會通過檢
+#      查、以 0 結束，被標成已處理的卻是升級記錄本身，真正該回覆的
+#      need-you 永遠停在未處理，自動推進、停滯偵測與 shutdown-worker.sh
+#      的關閉都會被同一筆卡住）----
+
+# 模擬看門狗升級落的一筆 inbox 記錄：token=fyi，不是 need-you。
+printf '{"token":"fyi","worker":"w3n-backend","summary":"worker=w3n-backend 有一則你還沒回的定案請求","processed_at":null}' \
+  > "$REG/inbox/61-w3n-backend.json"
+rc=0; bash "$SCRIPTS/instruct.sh" --to w3n-backend --text '照 A 案' --reply-to 61 >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "instruct：--reply-to 指名一筆 token 不是 need-you 的記錄（例如升級的 fyi）以 5 結束"
+else
+  bad "instruct：得到 rc=$rc——拿升級的序號去回覆不該通過"
+fi
+if [ -f "$REG/replies/w3n-backend/61.json" ]; then
+  bad "instruct：驗證不過卻還是寫出了回覆檔"
+else
+  pass "instruct：驗證不過時沒有寫出回覆檔"
+fi
+if [ "$(jq -r '.processed_at' "$REG/inbox/61-w3n-backend.json")" = "null" ]; then
+  pass "instruct：驗證不過時，那筆 fyi 記錄的 processed_at 沒被改動"
+else
+  bad "instruct：驗證不過卻把 fyi 記錄標成已處理，真正該回覆的 need-you 仍然永遠是未處理"
+fi
+rm -f "$REG/inbox/61-w3n-backend.json"
+
+# 已經被回覆過的 need-you（processed_at 不是 null）也不該再被當成合法
+# 目標，避免同一筆被回覆兩次、或序號打錯打到舊的那一筆。
+printf '{"token":"need-you","worker":"w3n-backend","summary":"要不要照 A 案","processed_at":"2020-01-01T00:00:00Z"}' \
+  > "$REG/inbox/62-w3n-backend.json"
+rc=0; bash "$SCRIPTS/instruct.sh" --to w3n-backend --text '照 A 案' --reply-to 62 >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "instruct：--reply-to 指名一筆已經處理過的 need-you 記錄以 5 結束"
+else
+  bad "instruct：得到 rc=$rc——已回覆過的記錄不該再被當成合法目標"
+fi
+if [ -f "$REG/replies/w3n-backend/62.json" ]; then
+  bad "instruct：對已處理過的記錄驗證不過卻還是寫出了回覆檔"
+else
+  pass "instruct：對已處理過的記錄驗證不過時沒有寫出回覆檔"
+fi
+rm -f "$REG/inbox/62-w3n-backend.json"
+
 # ---- 本任務自行補上：agent_blocked 以外的其他 herdr 拒絕，也要放掉持
 #      有旗標，但不得進待補送清單（見 instruct.sh 檔頭「blocked 是待補
 #      送」一節：只有 agent_blocked 才是待補送，其餘拒絕是真正的失敗，
@@ -1956,6 +2048,280 @@ if [ "$final_length" -eq "$HAT_CONCURRENCY_K" ]; then
 else
   bad "instruct：pending_resend 最終長度是 $final_length，預期 $HAT_CONCURRENCY_K"
 fi
+
+# ===== instruct.sh：交付關卡的復工（.stage 是 delivered 時撥回 running）=====
+# 見 instruct.sh 檔頭「交付關卡的復工」一節：worker 因為 review 回饋被
+# 叫回去做事時，唯一能把 .stage 撥回 running 的地方就是這裡——沒有其他
+# 機制會做這件事，撥不回去的話 watchdog.sh 的三項照看（自動推進、停滯
+# 偵測、達上限升級）會永遠對它關閉。判準是「發出」不是「送達」：成功
+# 送達（rc=0）與進了待補送佇列（結束碼 7，見下方邊界測試）都撥回，只
+# 有語法錯誤（rc=2）與其他真正的拒絕（rc=6）不撥——那兩者根本沒有一則
+# 真的要送給這個 worker 的訊息在路上。
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+printf '{"result":{}}'; exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-stage-resume
+
+printf '{"pane_id":"w3N:p2","held":false,"stage":"delivered"}' > "$REG/workers/w3n-stagetest.json"
+bash "$SCRIPTS/instruct.sh" --to w3n-stagetest --text '改一下這裡' >/dev/null 2>&1
+if [ "$(jq -r '.stage' "$REG/workers/w3n-stagetest.json")" = "running" ]; then
+  pass "instruct：成功送出下行時，.stage 是 delivered 會撥回 running"
+else
+  bad "instruct：.stage 沒有撥回 running，worker 復工後 watchdog 三項照看永遠不會恢復"
+fi
+
+# ---- 邊界：closing／closed 不動，各自有自己的收尾流程 ----
+printf '{"pane_id":"w3N:p2","held":false,"stage":"closing"}' > "$REG/workers/w3n-stagetest.json"
+bash "$SCRIPTS/instruct.sh" --to w3n-stagetest --text '再等一下' >/dev/null 2>&1
+if [ "$(jq -r '.stage' "$REG/workers/w3n-stagetest.json")" = "closing" ]; then
+  pass "instruct：.stage 是 closing 時不撥回 running（有自己的收尾流程）"
+else
+  bad "instruct：.stage 被誤動了：$(jq -r '.stage' "$REG/workers/w3n-stagetest.json")"
+fi
+
+# ---- 邊界：.stage 欄位原本不存在時，成功送出不會憑空新增它 ----
+printf '{"pane_id":"w3N:p2","held":false}' > "$REG/workers/w3n-stagetest.json"
+bash "$SCRIPTS/instruct.sh" --to w3n-stagetest --text '第一次下指令' >/dev/null 2>&1
+if jq -e 'has("stage") | not' "$REG/workers/w3n-stagetest.json" >/dev/null 2>&1; then
+  pass "instruct：.stage 欄位原本不存在時，成功送出不會憑空新增它"
+else
+  bad "instruct：.stage 欄位被憑空建立成 $(jq -r '.stage' "$REG/workers/w3n-stagetest.json")"
+fi
+
+# ---- 邊界：blocked（結束碼 7，未送達）也撥回關卡——判準是「發出」不
+#      是「送達」（協調者裁決；取代本檔先前版本「blocked 不撥回」的斷
+#      言，見下方說明）----
+# 先前版本的判準是「送達」：只有 rc=0 才撥回 .stage，理由是結束碼 7
+# 只代表訊息進了待補送佇列，還沒有人真的收到。但漂移處置第 3 步（叫
+# 停受影響的 worker）明文預期會走到這條路徑——收件方卡在核准框正是
+# instruct.sh 結束碼 7 設計要處理的情境；若只在送達時撥回，一個只被
+# 這種被擋下的訊息「叫回」、之後再也沒有下一次直接送達的 worker，會
+# 在看門狗補投成功之後仍然被排除在三項照看之外，等於原地重建本節開
+# 頭要修的那個洞。正確的判準是「發出」：orchestrator 決定要送一則下
+# 行給這個 worker，就代表這個 worker 該重新開始做事了，這件事在訊息
+# 進佇列的那一刻就已經成立，不因為還沒送到而不成立。
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"agent_blocked","message":"blocked"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-stage-resume-blocked
+
+printf '{"pane_id":"w3N:p2","held":false,"stage":"delivered"}' > "$REG/workers/w3n-stagetest.json"
+rc=0; out="$(bash "$SCRIPTS/instruct.sh" --to w3n-stagetest --text '改一下這裡' 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 7 ]; then
+  pass "instruct：blocked 時以 7 結束（.stage 仍應撥回的前置條件確認）"
+else
+  bad "instruct：得到 rc=$rc（前置條件不成立，後面的關卡斷言沒有意義）"
+fi
+if [ "$(jq -r '.stage' "$REG/workers/w3n-stagetest.json")" = "running" ]; then
+  pass "instruct：blocked（待補送）時也撥回 .stage，判準是發出不是送達"
+else
+  bad "instruct：blocked 時 .stage 沒有撥回，得到 $(jq -r '.stage' "$REG/workers/w3n-stagetest.json")——漂移處置第 3 步叫停一個卡在核准框的 worker 之後，牠會永遠不被照看"
+fi
+
+# ---- 本任務自行補上：待補送提示明講看門狗自動補投的前提是對象要先離
+#      開 blocked，且沒有任何機制會讓它自己離開，需要人去處理那個框
+#      （修正迴圈：舊訊息「看門狗會在解除後補投」暗示不用做任何事）----
+case "$out" in
+  *"沒有任何機制"*"自己離開"*) pass "instruct：待補送提示明講沒有機制會讓它自己離開 blocked，需要人去處理" ;;
+  *) bad "instruct：待補送提示仍可能暗示不用做任何事：$out" ;;
+esac
+case "$out" in
+  *"在解除後補投"*) bad "instruct：待補送提示還在用舊的『解除後補投』說法：$out" ;;
+  *) pass "instruct：待補送提示不再用舊的『解除後補投』說法" ;;
+esac
+
+# ===== instruct.sh：叫停（--kind halt）不是復工（獨立審查抓到的問
+#      題）=====
+# 上面「發出即撥回」的判準原本沒有排除 --kind halt：叫停一個 .stage
+# 是 delivered 的 worker 一樣會被撥回 running，重新進入看門狗三項照
+# 看的範圍。後果是漂移處置第 3 步逐一送出叫停之後，那個 worker 停手
+# 回報、轉成閒置，看門狗會在下一個輪詢間隔開始送「繼續」——一邊叫它
+# 停手、一邊叫它繼續，正是「發出即撥回」原本要消滅的失效形狀，換了個
+# 觸發路徑重新出現。一個剛被叫停的 worker 停著不動是正確狀態，跟交付
+# 後待命同一個性質：它欠的是 orchestrator 的下一個新指令，不是一句
+# 「繼續」。
+#
+# 沿用上一段仍在生效的 agent_blocked 樁，驗證 --kind halt 進待補送佇
+# 列（rc=7）時不撥回 .stage。
+printf '{"pane_id":"w3N:p2","held":false,"stage":"delivered"}' > "$REG/workers/w3n-stagetest.json"
+rc=0
+bash "$SCRIPTS/instruct.sh" --to w3n-stagetest --text '停手，先別交付任何東西' --kind halt >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 7 ]; then
+  pass "instruct：--kind halt 進待補送佇列時仍以 7 結束（前置條件確認）"
+else
+  bad "instruct：得到 rc=$rc（前置條件不成立，後面的關卡斷言沒有意義）"
+fi
+if [ "$(jq -r '.stage' "$REG/workers/w3n-stagetest.json")" = "delivered" ]; then
+  pass "instruct：--kind halt 待補送時不撥回 .stage，叫停不是復工"
+else
+  bad "instruct：--kind halt 待補送時 .stage 被撥回成 $(jq -r '.stage' "$REG/workers/w3n-stagetest.json")——系統會反過來叫這個被叫停的 worker 繼續"
+fi
+
+# ---- 成功送達（rc=0）的 --kind halt 同樣不撥回 ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '{"result":{}}'; exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-halt-resume-success
+
+printf '{"pane_id":"w3N:p2","held":false,"stage":"delivered"}' > "$REG/workers/w3n-stagetest.json"
+bash "$SCRIPTS/instruct.sh" --to w3n-stagetest --text '停手，先別交付任何東西' --kind halt >/dev/null 2>&1
+if [ "$(jq -r '.stage' "$REG/workers/w3n-stagetest.json")" = "delivered" ]; then
+  pass "instruct：成功送達的 --kind halt 也不撥回 .stage"
+else
+  bad "instruct：成功送達的 --kind halt 把 .stage 撥回成 $(jq -r '.stage' "$REG/workers/w3n-stagetest.json")"
+fi
+
+# ---- 邊界：--kind halt 以外的種類（例如 decision）不受影響，仍照舊撥
+#      回，證明這個排除只針對 halt，不是連帶放寬了其他種類 ----
+printf '{"pane_id":"w3N:p2","held":false,"stage":"delivered"}' > "$REG/workers/w3n-stagetest.json"
+bash "$SCRIPTS/instruct.sh" --to w3n-stagetest --text '目標改了' --kind decision >/dev/null 2>&1
+if [ "$(jq -r '.stage' "$REG/workers/w3n-stagetest.json")" = "running" ]; then
+  pass "instruct：--kind decision 不受影響，仍照舊撥回 running"
+else
+  bad "instruct：--kind decision 也被誤擋，得到 $(jq -r '.stage' "$REG/workers/w3n-stagetest.json")"
+fi
+
+# ===== instruct.sh：叫停不是續杯——成功送達也不寫 .last_delivered_at
+#      （本任務修正，獨立審查抓到的問題）=====
+# 見 instruct.sh 檔頭「叫停不是續杯」一節：成功送達（rc=0）分支原本無
+# 條件寫 .last_delivered_at，--kind halt 沒被排除。這個欄位是
+# watchdog.sh 判斷要不要把 .auto_push_count 歸零的唯一依據；叫停不是
+# 下發新任務，寫了它會被下一輪看門狗誤判成「orchestrator 剛送出一則
+# 新下行」，把已經逼近上限的推進預算重新續杯——疊上達上限升級之後，
+# orchestrator 每叫停一次反而多送一輪「繼續」的資格，達上限升級永遠
+# 觸發不了。構造一個已經推了 9 次、.last_delivered_at／.auto_push_
+# reset_seen_at 固定在同一個舊時間戳（模擬看門狗已經看過這次「下
+# 行」，不會再誤觸發一次歸零）的 worker，送一則成功送達的 --kind
+# halt，斷言：(1) .last_delivered_at 完全不變；(2) 接著跑一輪看門狗
+# （上限覆寫成 9），計數維持在 9、不被歸零，達上限升級如常觸發——證明
+# 這個修正真的讓後果收斂成「推到上限、升級一次」，不是只有欄位沒被寫
+# 這個表面現象。
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-haltbudget","workspace_id":"w3N","agent_status":"idle","state_change_seq":50000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-halt-no-budget-refill
+
+printf '{"pane_id":"w3N:p2","held":false,"stage":"running","auto_push_count":9,"last_delivered_at":"2020-01-01T00:00:00Z","auto_push_reset_seen_at":"2020-01-01T00:00:00Z"}' \
+  > "$REG/workers/w3n-haltbudget.json"
+last_delivered_before="$(jq -r '.last_delivered_at' "$REG/workers/w3n-haltbudget.json")"
+
+bash "$SCRIPTS/instruct.sh" --to w3n-haltbudget --text '停手' --kind halt >/dev/null 2>&1
+
+if [ "$(jq -r '.last_delivered_at' "$REG/workers/w3n-haltbudget.json")" = "$last_delivered_before" ]; then
+  pass "instruct：成功送達的 --kind halt 不寫 .last_delivered_at，推進預算不會被續杯"
+else
+  bad "instruct：--kind halt 把 .last_delivered_at 改成了 $(jq -r '.last_delivered_at' "$REG/workers/w3n-haltbudget.json")——下一輪看門狗會誤判成新下行，把推進計數重新歸零續杯"
+fi
+
+AGENT_TEAM_AUTO_PUSH_LIMIT=9 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-haltbudget.json")" = "9" ]; then
+  pass "instruct+watchdog：--kind halt 之後計數沒有被續杯歸零，仍是原本的 9"
+else
+  bad "instruct+watchdog：計數變成了 $(jq -r '.auto_push_count' "$REG/workers/w3n-haltbudget.json")，預期維持 9（若歸零，代表續杯的洞還在）"
+fi
+n_inbox_after_halt=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after_halt" -ge 1 ]; then
+  pass "instruct+watchdog：計數沒被續杯，達上限升級如常觸發，落了至少一筆 inbox 記錄"
+else
+  bad "instruct+watchdog：達上限升級沒有觸發，inbox 沒有新記錄"
+fi
+rm -f "$REG/workers/w3n-haltbudget.json"
+
+# ===== instruct.sh：.held 不會卡在 true（本任務修正，獨立審查抓到的
+#      問題）=====
+# 見 instruct.sh 檔頭「獨立審查抓到的問題：上面那句宣稱曾經被這次任務
+# 新增的兩次寫入打破，靠 EXIT trap 補回來」一節：成功送達分支在
+# .held=true 之後、.held=false 之前新增了兩次獨立加鎖的 hat_json_set
+# （寫 .last_delivered_at、撥回 .stage），任一步 hat_die 都是真正的
+# exit，會跳過緊接在後面的放旗標。這裡不猜測失敗長什麼樣子：用一支 jq
+# 樁只在被要求寫 .last_delivered_at 時失敗（其餘呼叫原樣轉給真正的
+# jq），讓成功送達分支裡第一個 hat_json_set 真的失敗，藉此驗證 EXIT
+# trap 保底真的會把旗標放掉——手法沿用 watchdog.sh「計數歸零的寫入順
+# 序」測試已經在用的同一種 jq 樁（hash -r 見「前置整理」小節同名說
+# 明）。
+printf '{"pane_id":"w3N:p2","held":false,"stage":"running"}' > "$REG/workers/w3n-heldtrap.json"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"result":{}}'; exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-held-not-stuck
+
+cat > "$STUB_BIN/jq" <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = '.last_delivered_at = $v' ]; then
+    echo "stub jq: 模擬 .last_delivered_at 寫入失敗" >&2
+    exit 1
+  fi
+done
+exec /usr/bin/jq "$@"
+STUB
+chmod +x "$STUB_BIN/jq"
+hash -r
+
+rc=0
+bash "$SCRIPTS/instruct.sh" --to w3n-heldtrap --text '測試 held 卡住' >/dev/null 2>&1 || rc=$?
+
+rm -f "$STUB_BIN/jq"
+hash -r
+
+if [ "$rc" -eq 5 ]; then
+  pass "instruct：送達分支中途（寫 .last_delivered_at）失敗時以 5 結束（前置條件確認）"
+else
+  bad "instruct：得到 rc=$rc（前置條件不成立，後面的 .held 斷言沒有意義）"
+fi
+if [ "$(jq -r '.held' "$REG/workers/w3n-heldtrap.json")" = "false" ]; then
+  pass "instruct：送達與放掉旗標之間中途失敗，.held 仍被 EXIT trap 保底放掉，不卡在 true"
+else
+  bad "instruct：.held 卡在 $(jq -r '.held' "$REG/workers/w3n-heldtrap.json")——看門狗會對這個 worker 靜默關閉自動推進，直到下一次成功 instruct 或 --recover 收回"
+fi
+rm -f "$REG/workers/w3n-heldtrap.json"
+
+# ===== instruct.sh：--reply-to 指名的 inbox 記錄若不是合法 JSON，明確
+#      以 5 結束並帶診斷訊息（本任務修正）=====
+# 見 instruct.sh 檔頭「這兩次 jq -r 明確接住失敗」一節：不依賴 jq 本身
+# 的結束碼是不是剛好等於這個專案的某個約定值，改成自己判斷失敗並印出
+# 指名檔案的訊息。
+mkdir -p "$REG/workers"
+printf '{"pane_id":"w3N:p2","held":false}' > "$REG/workers/w3n-replytobad.json"
+mkdir -p "$REG/inbox"
+printf 'not-valid-json{' > "$REG/inbox/900-w3n-replytobad.json"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"result":{}}'; exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-reply-to-malformed-json
+
+rc=0
+out="$(bash "$SCRIPTS/instruct.sh" --to w3n-replytobad --text '回覆' --reply-to 900 2>&1)" || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "instruct：--reply-to 指名的 inbox 記錄不是合法 JSON 時以 5 結束"
+else
+  bad "instruct：得到 rc=$rc（預期 5），輸出：$out"
+fi
+case "$out" in
+  *"$REG/inbox/900-w3n-replytobad.json"*) pass "instruct：--reply-to 解析失敗的訊息指名了是哪個檔案" ;;
+  *) bad "instruct：--reply-to 解析失敗的訊息沒有指名檔案：$out" ;;
+esac
+rm -f "$REG/workers/w3n-replytobad.json" "$REG/inbox/900-w3n-replytobad.json"
 
 # ===== 名稱格式驗證：hat_assert_agent_name（全域約束，press-approval.sh
 #      任務新增）=====
@@ -3231,6 +3597,80 @@ fi
 rm -f "$STUB_BIN/jq"
 hash -r
 
+# ---- 線上故障修正：hat_json_set／_hat_pending_resend_apply 的
+#      flock -x 原本無界等待，持鎖者異常死亡時任何碰同一個檔案的呼叫
+#      端會永久卡住（見 lib/common.sh hat_lock_timeout_seconds 說
+#      明）。用一個背景行程實際持有目標檔的鎖比逾時上限久，驗證呼叫
+#      端不會無界等下去，會在逾時後以明確的失敗結束、不寫入 ----
+T_LOCK="$T/lock-timeout-unit"
+mkdir -p "$T_LOCK/workers"
+
+lock_victim="$T_LOCK/workers/lockvictim.json"
+printf '{"role":"backend"}' > "$lock_victim"
+# 背景持鎖 3 秒，遠長於下面 1 秒的逾時上限；flock 是本檔已查證位於
+# /usr/bin、跑真的完全安全的工具之一（見檔頭「樁遮蔽的結構性修法」一
+# 節），不需要樁。
+( exec 9>"${lock_victim}.lock"; flock -x 9; sleep 3 ) &
+lock_holder_pid=$!
+sleep 0.3
+lock_start="$(date +%s)"
+rc=0; out="$( ( AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 hat_json_set "$lock_victim" '.role' '"frontend"' ) 2>&1 )" || rc=$?
+lock_elapsed=$(( $(date +%s) - lock_start ))
+wait "$lock_holder_pid"
+if [ "$rc" -eq 5 ]; then
+  pass "hat_json_set：鎖被持有超過逾時上限時以 5 結束"
+else
+  bad "hat_json_set：得到 rc=$rc（預期 5），輸出：$out"
+fi
+if [ "$lock_elapsed" -lt 3 ]; then
+  pass "hat_json_set：等鎖有上限，不會等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
+else
+  bad "hat_json_set：等了 ${lock_elapsed}s，看起來仍是無界等待"
+fi
+case "$out" in
+  *"逾時"*"${lock_victim}.lock"*) pass "hat_json_set：逾時訊息指名了鎖檔與逾時" ;;
+  *) bad "hat_json_set：逾時訊息不如預期：$out" ;;
+esac
+if [ "$(jq -r '.role' "$lock_victim")" = "backend" ]; then
+  pass "hat_json_set：沒拿到鎖時不會寫入，欄位維持原值"
+else
+  bad "hat_json_set：沒拿到鎖卻寫入了，欄位變成 $(jq -r '.role' "$lock_victim")"
+fi
+
+rc=0; out="$( ( AGENT_TEAM_LOCK_TIMEOUT_SECONDS=abc hat_json_set "$lock_victim" '.role' '"frontend"' ) 2>&1 )" || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "hat_json_set：AGENT_TEAM_LOCK_TIMEOUT_SECONDS 非數字時以 2 結束"
+else
+  bad "hat_json_set：得到 rc=$rc（預期 2），輸出：$out"
+fi
+
+# ---- _hat_pending_resend_apply（經 hat_append_pending_resend）的
+#      flock -x 是另一個未套用逾時的呼叫點，同樣要驗證 ----
+pend_victim="$T_LOCK/workers/pendvictim.json"
+printf '{"pending_resend":[]}' > "$pend_victim"
+( exec 9>"${pend_victim}.lock"; flock -x 9; sleep 3 ) &
+lock_holder_pid=$!
+sleep 0.3
+lock_start="$(date +%s)"
+rc=0; out="$( ( AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 hat_append_pending_resend "$pend_victim" 'x' 'instruct' ) 2>&1 )" || rc=$?
+lock_elapsed=$(( $(date +%s) - lock_start ))
+wait "$lock_holder_pid"
+if [ "$rc" -eq 5 ]; then
+  pass "hat_append_pending_resend：鎖被持有超過逾時上限時以 5 結束"
+else
+  bad "hat_append_pending_resend：得到 rc=$rc（預期 5），輸出：$out"
+fi
+if [ "$lock_elapsed" -lt 3 ]; then
+  pass "hat_append_pending_resend：等鎖有上限，不會等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
+else
+  bad "hat_append_pending_resend：等了 ${lock_elapsed}s，看起來仍是無界等待"
+fi
+if [ "$(jq -r '.pending_resend | length' "$pend_victim")" = "0" ]; then
+  pass "hat_append_pending_resend：沒拿到鎖時不會寫入，pending_resend 維持原狀"
+else
+  bad "hat_append_pending_resend：沒拿到鎖卻寫入了：$(jq -c '.pending_resend' "$pend_victim")"
+fi
+
 # ===== team-status.sh / fetch-detail.sh（Task 12）=====
 # 本任務自行補上的前置設定：重置 w3n-backend 的 worker 記錄作為本節共
 # 同起點，不依賴前面各節（launch-worker／instruct／shutdown-worker／
@@ -3619,6 +4059,18 @@ case "$newest_summary" in
   *定案*) pass "watchdog：豁免到期升級摘要明確指出在等一則未回覆的定案請求" ;;
   *) bad "watchdog：豁免到期升級摘要沒有提到定案：$newest_summary" ;;
 esac
+
+# ---- 獨立審查抓到的問題：升級的處置是叫 orchestrator 補一則帶
+#      --reply-to <序號> 的回覆，但這則升級的摘要原本只有等待秒數與
+#      上限，不含序號；升級自己那筆 inbox 記錄的檔名形狀跟真正的
+#      need-you 記錄完全一樣，orchestrator 讀不到序號就只能用升級記錄
+#      自己的序號去填，而看門狗本來就已經為了算等待時間找出這筆記錄
+#      （seq=13，見上面 $REG/inbox/13-w3n-backend.json），摘要應該把它
+#      帶出來 ----
+case "$newest_summary" in
+  *"--reply-to 13"*) pass "watchdog：豁免到期升級摘要帶出那筆未回覆定案請求的序號，可以直接填進 --reply-to" ;;
+  *) bad "watchdog：豁免到期升級摘要沒有帶出序號，orchestrator 拿不到 --reply-to 該填的號碼：$newest_summary" ;;
+esac
 rm -f "$REG/inbox/13-w3n-backend.json"
 
 # ---- 本任務自行補上：定案請求還在上限內時不受影響，同上一段用同一個
@@ -3722,6 +4174,33 @@ if grep -q 'agent prompt w3n-backend goal 更新' "$HERDR_CALL_LOG"; then
 else
   bad "watchdog：補投內容不對或沒有送出：$(cat "$HERDR_CALL_LOG")"
 fi
+
+# ===== watchdog.sh：補投成功歸零 .auto_push_count（本任務自行補上）
+#      =====
+# hat_wd_retry_pending_resend 補投成功、移除該筆之後，會直接把
+# .auto_push_count 歸零（見該函式檔頭「計數重置」一節、watchdog.sh 檔
+# 頭「計數重置」一節、lib/common.sh 欄位白名單一節皆明文宣告這個語
+# 意）。既有測試都只驗證佇列被消化，沒有任何斷言釘住歸零這一步——這一
+# 行日後若被移到「嘗試補投」之後，或整段被刪掉，沒有任何斷言會紅。這
+# 裡構造多筆待補送與非零的推進計數，讓補投全部成功，跑一輪之後斷言佇
+# 列已消化、且計數確實歸零；.held 固定成 true（比照上面 Step 7 的既有
+# 手法）讓補投之後不會緊接著再跑一次自動推進把計數又推回非零，計數才
+# 讀得出「補投這一步」單獨的效果。
+jq '.pending_resend=[{"text":"a","kind":"instruct"},{"text":"b","kind":"instruct"}] | .held=true | .auto_push_count=7' \
+  "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.pending_resend | length' "$REG/workers/w3n-backend.json")" = "0" ]; then
+  pass "watchdog：補投成功歸零計數——前提確認，佇列已消化"
+else
+  bad "watchdog：佇列沒有消化，得到 $(jq -r '.pending_resend | length' "$REG/workers/w3n-backend.json")（前置條件不成立，後面的計數斷言沒有意義）"
+fi
+if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "0" ]; then
+  pass "watchdog：hat_wd_retry_pending_resend 補投成功後把 .auto_push_count 歸零"
+else
+  bad "watchdog：補投成功後 .auto_push_count 是 $(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")，預期 0（歸零這一步可能被移除或挪到了嘗試補投之後）"
+fi
+jq '.held=false' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
 
 # ---- 最終審查 Critical：旗標為真、待補送佇列為空、狀態為閒置——套件
 #      從未構造過的組合，且正是下行腳本送出下行期間的正常狀態（見
@@ -3832,9 +4311,18 @@ fi
 rm -f "$REG/inbox/32-w3n-backend.json"
 jq '.auto_push_count=0 | .held=false' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
 
-# ---- 本任務自行補上：計數重置——收到 delivered 之後計數歸零，且同一
-#      則 delivered 不會在下一輪重複歸零（否則自動推進上限形同虛設，
-#      見 lib/common.sh .auto_push_reset_seq 的說明）----
+# ---- 線上故障修正：計數重置改成只認 orchestrator 真的送出的下行
+#      ----
+# 舊機制看的是「worker 有沒有回報 delivered」（丟一筆 token=delivered
+# 的 inbox 記錄就會歸零）；這正是 livelock 的成因，已經拿掉（見
+# watchdog.sh 檔頭「計數重置」一節、lib/common.sh 欄位白名單一節對
+# .last_delivered_at／.auto_push_reset_seen_at 的說明）。新機制改成
+# instruct.sh 成功送出下行時寫 .last_delivered_at，watchdog.sh 讀到這
+# 個欄位變動才歸零 .auto_push_count；下面兩條斷言驗證的是舊斷言原本要
+# 防的同一個風險，只是觸發源換了：(1) 一次成功送達的下行讓計數歸零，
+# 該輪接著正常推進一次；(2) 同一次下行不會在後續每一輪重複歸零——沒有
+# 新的下行時，計數要正常往上累加，不得卡在原地（否則自動推進上限形同
+# 虛設，跟舊斷言防的是同一件事）。
 cat > "$STUB_BIN/herdr" <<STUB
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
@@ -3846,23 +4334,80 @@ printf '{"result":{}}'
 exit 0
 STUB
 chmod +x "$STUB_BIN/herdr"
-hat_assert_herdr_stubbed "$STUB_BIN" watchdog-reset-on-delivered
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-reset-on-delivery
 
-jq '.auto_push_count=3 | .held=false | .auto_push_reset_seq=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
-printf '{"token":"delivered","worker":"w3n-backend","summary":"完成了","processed_at":null,"delivery":"delivered"}' > "$REG/inbox/41-w3n-backend.json"
+jq '.auto_push_count=3 | .held=false | del(.last_delivered_at) | del(.auto_push_reset_seen_at)' \
+  "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+# orchestrator 真的送出一則下行：instruct.sh 成功送出後寫
+# .last_delivered_at（stub 對 agent prompt 一律回成功）。
+bash "$SCRIPTS/instruct.sh" --to w3n-backend --text '繼續處理' >/dev/null 2>&1
 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
 if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "1" ]; then
-  pass "watchdog：收到 delivered 後計數歸零，這一輪再推進一次變成 1"
+  pass "watchdog：收到成功下行後計數歸零，這一輪再推進一次變成 1"
 else
   bad "watchdog：計數是 $(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")，預期 1"
 fi
 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
 if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "2" ]; then
-  pass "watchdog：同一則 delivered 不會在下一輪重複歸零，計數正常累加到 2"
+  pass "watchdog：同一次下行不會在下一輪重複歸零，計數正常累加到 2"
 else
   bad "watchdog：計數是 $(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")，預期 2（若卡在 1，代表每輪都被重置，上限形同虛設）"
 fi
-rm -f "$REG/inbox/41-w3n-backend.json"
+
+# ===== watchdog.sh：計數歸零的寫入順序（獨立審查 Medium）=====
+# hat_wd_apply_delivery_reset 原本先推進水位線 .auto_push_reset_seen_
+# at、才歸零 .auto_push_count；中途死掉會讓水位線已經追上這次下行，但
+# 計數卡在舊值——下一輪的「last_delivered != seen」判斷不再成立，這次
+# 下行永遠不會再觸發歸零。這裡不驗證正常路徑（已經綠了），而是真的讓
+# 「歸零這個動作本身」失敗：用一支 jq 樁只在被要求寫 .auto_push_count
+# 時失敗，其餘呼叫原樣轉給真正的 jq。
+jq '.auto_push_count=5 | .held=false | .stage="running" | del(.last_delivered_at) | del(.auto_push_reset_seen_at)' \
+  "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+bash "$SCRIPTS/instruct.sh" --to w3n-backend --text '寫入順序測試' >/dev/null 2>&1
+last_delivered_before="$(jq -r '.last_delivered_at' "$REG/workers/w3n-backend.json")"
+
+# ---- hash -r：見「前置整理」小節同名說明，指令雜湊表不會自己感知
+#      PATH 上新增的同名檔案 ----
+cat > "$STUB_BIN/jq" <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = '.auto_push_count = $v' ]; then
+    echo "stub jq: 模擬 .auto_push_count 寫入失敗" >&2
+    exit 1
+  fi
+done
+exec /usr/bin/jq "$@"
+STUB
+chmod +x "$STUB_BIN/jq"
+hash -r
+
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+seen_after_fail="$(jq -r '.auto_push_reset_seen_at // empty' "$REG/workers/w3n-backend.json")"
+count_after_fail="$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")"
+
+rm -f "$STUB_BIN/jq"
+hash -r
+
+if [ "$seen_after_fail" != "$last_delivered_before" ]; then
+  pass "watchdog：計數歸零這一步失敗時，水位線不會被提前推進（避免這次下行永遠錯過歸零）"
+else
+  bad "watchdog：水位線在計數歸零失敗的同一輪就被推進了，這次下行以後永遠不會再被歸零（seen=$seen_after_fail last_delivered=$last_delivered_before）"
+fi
+if [ "$count_after_fail" = "5" ]; then
+  pass "watchdog：計數歸零失敗的這一輪，計數維持原值，沒有半途而廢的中間狀態"
+else
+  bad "watchdog：計數在失敗的這一輪變成了 $count_after_fail，預期維持 5"
+fi
+
+# ---- 失敗排除後（拿掉樁）重跑一輪：水位線沒追上，下一輪應該還會再試
+#      一次，計數真的歸零並接著推進一次，不會永遠卡在舊值 ----
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+count_after_retry="$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")"
+if [ "$count_after_retry" = "1" ]; then
+  pass "watchdog：失敗排除後下一輪重新歸零並推進一次，計數不會永遠卡在舊值"
+else
+  bad "watchdog：計數是 $count_after_retry，預期 1（若不是，代表水位線已經追上、這次下行永遠錯過了歸零，只是照舊值繼續累加）"
+fi
 
 # ---- 本任務自行補上、修正迴圈第一輪 High 修補：停滯偵測必須是雙
 #      worker 樁，不能只放一個 agent ----
@@ -3964,7 +4509,7 @@ else
   pass "watchdog：AGENT_TEAM_AUTO_PUSH_LIMIT 可覆寫，調到 1 之後計數 1 就改為升級"
 fi
 
-# ---- 本任務自行補上：三個門檻值非數字時以 2 結束 ----
+# ---- 本任務自行補上：四個門檻值非數字時以 2 結束 ----
 rc=0; AGENT_TEAM_POLL_SECONDS=abc bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 2 ]; then
   pass "watchdog：AGENT_TEAM_POLL_SECONDS 非數字時以 2 結束"
@@ -3983,6 +4528,14 @@ if [ "$rc" -eq 2 ]; then
 else
   bad "watchdog：得到 rc=$rc"
 fi
+# ---- 線上故障修正新增：AGENT_TEAM_ESCALATION_REPEAT_SECONDS 同樣要做
+#      純數字驗證（見 watchdog.sh 檔頭「升級去重」一節）----
+rc=0; AGENT_TEAM_ESCALATION_REPEAT_SECONDS=abc bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：AGENT_TEAM_ESCALATION_REPEAT_SECONDS 非數字時以 2 結束"
+else
+  bad "watchdog：得到 rc=$rc"
+fi
 
 # ---- 本任務自行補上：未知參數以 2 結束 ----
 rc=0; bash "$SCRIPTS/watchdog.sh" --bogus >/dev/null 2>&1 || rc=$?
@@ -3990,6 +4543,422 @@ if [ "$rc" -eq 2 ]; then
   pass "watchdog：未知參數以 2 結束"
 else
   bad "watchdog：得到 rc=$rc"
+fi
+
+# ===== watchdog.sh：升級去重（線上故障修正）=====
+# 見 watchdog.sh 檔頭「升級去重」一節：同一個條件只在「從不成立變成成
+# 立」的那一輪發出一次；持續成立時最多每隔 AGENT_TEAM_ESCALATION_
+# REPEAT_SECONDS 秒重提一次；條件換了（哪怕上一個條件剛剛才發過）要
+# 不受重提間隔壓抑、立刻發；這一輪四個條件都不成立時清空閂鎖，讓下次
+# 重新成立能立刻再發。
+printf '{"pane_id":"w3N:p2","held":false,"role":"backend","stage":"running","auto_push_count":0}' \
+  > "$REG/workers/w3n-backend.json"
+
+# ---- blocked：從不成立變成成立，立刻升級 ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"blocked","state_change_seq":30000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-escalation-dedup
+
+n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+AGENT_TEAM_ESCALATION_REPEAT_SECONDS=100 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after_first=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after_first" -gt "$n_inbox_before" ]; then
+  pass "watchdog：升級去重——條件從不成立變成成立時立刻發出"
+else
+  bad "watchdog：第一次進入 blocked 應該立刻升級，卻沒有（before=$n_inbox_before after=$n_inbox_after_first）"
+fi
+
+# ---- 持續 blocked、重提間隔還沒到：不重複發 ----
+AGENT_TEAM_ESCALATION_REPEAT_SECONDS=100 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after_second=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after_second" -eq "$n_inbox_after_first" ]; then
+  pass "watchdog：升級去重——同一個條件在重提間隔內不會重複發出"
+else
+  bad "watchdog：重提間隔內又多發了一次（after_first=$n_inbox_after_first after_second=$n_inbox_after_second）"
+fi
+
+# ---- 持續 blocked、真的超過重提間隔：重新發一次 ----
+sleep 2
+AGENT_TEAM_ESCALATION_REPEAT_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after_repeat=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after_repeat" -gt "$n_inbox_after_second" ]; then
+  pass "watchdog：升級去重——超過 AGENT_TEAM_ESCALATION_REPEAT_SECONDS 後重新提醒一次"
+else
+  bad "watchdog：超過重提間隔仍未重新升級（after_second=$n_inbox_after_second after_repeat=$n_inbox_after_repeat）"
+fi
+
+# ---- 條件換了（blocked → auto_push_limit）：不受重提間隔壓抑，立刻發
+#      ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":30001,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-escalation-dedup-switch
+
+jq '.auto_push_count=99' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+n_inbox_before_switch=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+AGENT_TEAM_ESCALATION_REPEAT_SECONDS=100 AGENT_TEAM_AUTO_PUSH_LIMIT=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after_switch=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after_switch" -gt "$n_inbox_before_switch" ]; then
+  pass "watchdog：升級去重——條件從 blocked 換成 auto_push_limit 時不受重提間隔壓抑，立刻發出"
+else
+  bad "watchdog：換了條件仍被重提間隔壓抑，沒有立刻升級（before=$n_inbox_before_switch after=$n_inbox_after_switch）"
+fi
+
+# ---- 條件不再成立：清空閂鎖 ----
+jq '.auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+AGENT_TEAM_ESCALATION_REPEAT_SECONDS=100 AGENT_TEAM_AUTO_PUSH_LIMIT=10 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.escalation_active // empty' "$REG/workers/w3n-backend.json")" = "" ]; then
+  pass "watchdog：升級去重——這一輪沒有任何條件成立時把閂鎖清空"
+else
+  bad "watchdog：閂鎖沒有清空，殘留 '$(jq -r '.escalation_active' "$REG/workers/w3n-backend.json")'"
+fi
+
+# ---- 閂鎖清空後，同一個條件重新成立能立刻再發（不受剛才 100 秒重提
+#      間隔殘留影響）----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"blocked","state_change_seq":30002,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-escalation-dedup-resume
+
+n_inbox_before_resume=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+AGENT_TEAM_ESCALATION_REPEAT_SECONDS=100 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after_resume=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after_resume" -gt "$n_inbox_before_resume" ]; then
+  pass "watchdog：升級去重——閂鎖清空後同一個條件重新成立能立刻再發"
+else
+  bad "watchdog：閂鎖清空後條件重新成立卻沒有立刻升級（before=$n_inbox_before_resume after=$n_inbox_after_resume）"
+fi
+
+# ===== watchdog.sh：blocked 升級不得被停滯偵測永久蓋掉（修正迴圈）=====
+# 見 watchdog.sh 檔頭「修正迴圈：blocked 升級搬到停滯偵測之前」一節：
+# 一個 `.stage` 是 running、連續卡在核准框超過 AGENT_TEAM_STALL_
+# SECONDS 的 worker，第 3 項（停滯偵測）的觸發狀態清單本來就包含
+# blocked；若這一項跑在第 2a 項（blocked 一律升級）之前，兩者共用同一
+# 個去重閂鎖，第 3 項會搶先把條件切成 stall 並 `return 0`，讓 2a 那一
+# 輪起永遠執行不到——摘要因此從「卡在核准框，有 N 筆積壓，需要有人去
+# 按」永久退化成看不出積壓量的「已停滯」通用訊息，而卡超過門檻的
+# worker 正是積壓最可能已經很可觀的那一個。
+#
+# state_change_seq 全程固定不動，模擬「真的卡在同一個核准框，沒有任何
+# 狀態轉換」；AGENT_TEAM_STALL_SECONDS 覆寫成 1 秒、
+# AGENT_TEAM_ESCALATION_REPEAT_SECONDS 未設時預設等於覆寫後的
+# stall_seconds（見 watchdog.sh `escalation_repeat_seconds="${AGENT_
+# TEAM_ESCALATION_REPEAT_SECONDS:-$stall_seconds}"`），中間夾一個 2 秒
+# 的真實 sleep，確保第二輪的 elapsed 同時超過兩個門檻——不論是哪一項
+# 搶到，第二輪都一定會落一筆新的升級訊息，斷言因此能直接比對「這筆新
+# 訊息是哪個措辭」，不必用推論代替。
+printf '{"pane_id":"w3N:p2","held":false,"role":"backend","stage":"running","pending_resend":[{"text":"a"},{"text":"b"},{"text":"c"}]}' \
+  > "$REG/workers/w3n-blockedstall.json"
+
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-blockedstall","workspace_id":"w3N","agent_status":"blocked","state_change_seq":40000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-blocked-vs-stall
+
+# 第一輪：建立 state_change_seq 基準，`.last_seq_changed_at` 剛寫入，
+# 停滯偵測的 elapsed 是 0，不會誤觸；blocked 升級本身不看 elapsed，這
+# 一輪會先落一筆帶佇列筆數的 blocked 訊息，供後面確認前置狀態正確。
+AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+first_seq="$(hat_last_seq_for_worker w3n-blockedstall)"
+first_summary="$(jq -r '.summary' "$REG/inbox/${first_seq}-w3n-blockedstall.json")"
+case "$first_summary" in
+  *"核准框"*"待補送佇列"*) pass "watchdog：第一輪（建立基準）就已經是帶佇列筆數的 blocked 訊息" ;;
+  *) bad "watchdog：第一輪的訊息不是預期的 blocked 措辭，前置狀態不對：$first_summary" ;;
+esac
+# ---- 本任務自行補上：待補送筆數的數字本身要被釘住，不能只比對「有
+#      這幾個詞」——.pending_resend 構造了 3 筆（a／b／c），jq 取值壞
+#      掉（一律算 0 或抓錯欄位）時摘要仍會寫出一個數字、測試仍會照綠，
+#      只比對措辭抓不到這種壞法 ----
+case "$first_summary" in
+  *"有 3 筆下行卡在待補送佇列"*) pass "watchdog：第一輪 blocked 升級摘要精確帶出待補送筆數 3" ;;
+  *) bad "watchdog：第一輪 blocked 升級摘要沒有精確帶出待補送筆數 3：$first_summary" ;;
+esac
+
+sleep 2
+n_inbox_before="$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)"
+AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after="$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)"
+if [ "$n_inbox_after" -gt "$n_inbox_before" ]; then
+  pass "watchdog：blocked 且已超過停滯門檻時，第二輪仍然落了一筆新的升級訊息"
+else
+  bad "watchdog：得到 before=$n_inbox_before after=$n_inbox_after，第二輪沒有任何新升級（前置條件不成立，後面的訊息內容斷言沒有意義）"
+fi
+
+second_seq="$(hat_last_seq_for_worker w3n-blockedstall)"
+second_summary="$(jq -r '.summary' "$REG/inbox/${second_seq}-w3n-blockedstall.json")"
+case "$second_summary" in
+  *"核准框"*"待補送佇列"*)
+    pass "watchdog：blocked 且已超過停滯門檻時，第二輪的升級訊息仍是帶佇列筆數的 blocked 訊息，沒有被停滯訊息蓋掉"
+    ;;
+  *)
+    bad "watchdog：blocked 且已超過停滯門檻時，第二輪的升級訊息被換成看不出積壓量的通用訊息：$second_summary"
+    ;;
+esac
+# ---- 本任務自行補上：同上，第二輪的數字也要被釘住 ----
+case "$second_summary" in
+  *"有 3 筆下行卡在待補送佇列"*) pass "watchdog：第二輪 blocked 升級摘要仍精確帶出待補送筆數 3" ;;
+  *) bad "watchdog：第二輪 blocked 升級摘要沒有精確帶出待補送筆數 3：$second_summary" ;;
+esac
+case "$second_summary" in
+  *"已停滯"*)
+    bad "watchdog：升級訊息裡混進了停滯偵測的措辭，代表停滯偵測搶先攔截了 blocked 的 worker：$second_summary"
+    ;;
+  *)
+    pass "watchdog：升級訊息沒有被停滯偵測的措辭取代"
+    ;;
+esac
+rm -f "$REG/workers/w3n-blockedstall.json"
+
+# ===== watchdog.sh：升級閂鎖只在真正落地後才記錄（獨立審查 High）=====
+# hat_wd_escalate_once 原本先寫 .escalation_active／.escalation_
+# last_at，才呼叫 hat_wd_escalate；hat_wd_escalate 內部的配號與六次
+# hat_json_set 任一步失敗都是 hat_die 5，那時閂鎖已經先落地——後果是
+# 「升級其實沒發出去，系統卻以為發了」，下一輪被自己的重提間隔壓抑到
+# 一個重提間隔之後。這裡不驗證正常路徑（已經綠了），而是真的讓
+# hat_wd_escalate 內部失敗：把 team.json 的 next_seq 釘死成一個已知值
+# （下面用 800），預先在 hat_watchdog_allocate_seq 會配到的那個 inbox
+# 檔案的鎖檔上，用背景行程持有 flock，讓 hat_wd_escalate 內第一次
+# hat_json_set（寫 .token）真的因為等鎖逾時而 hat_die 5，藉此讓升級動
+# 作本身失敗，而不是猜測失敗長什麼樣子。
+printf '{"pane_id":"w3N:p2","held":false,"role":"backend","stage":"running","auto_push_count":0}' \
+  > "$REG/workers/w3n-backend.json"
+jq '.next_seq=800' "$REG/team.json" > "$T/t" && mv "$T/t" "$REG/team.json"
+mkdir -p "$REG/inbox"
+expected_seq_file="$REG/inbox/800-w3n-backend.json"
+rm -f "$expected_seq_file" "${expected_seq_file}.lock"
+# 持鎖時間刻意抓得比逾時上限寬裕很多（8 秒 vs. 1 秒逾時）：watchdog.sh
+# 這一輪在真的碰到這個鎖之前，還要先走過待補送補投、需求觀測、停滯判
+# 斷等好幾步，每一步都是實際的行程呼叫，這個環境量測到的開銷不穩
+# 定，餘裕不夠時持鎖者會在還沒真的產生鎖競爭前就先放手，讓斷言退化成
+# 在驗證一個沒有競爭的空情境。
+( exec 9>"${expected_seq_file}.lock"; flock -x 9; sleep 8 ) &
+lock_holder_pid=$!
+sleep 0.3
+
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"blocked","state_change_seq":50000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-escalation-latch-ordering
+
+AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+wait "$lock_holder_pid"
+active_after_failed_escalate="$(jq -r '.escalation_active // empty' "$REG/workers/w3n-backend.json")"
+if [ "$active_after_failed_escalate" != "blocked" ]; then
+  pass "watchdog：升級動作本身失敗時，閂鎖不會被誤記成「剛發過」"
+else
+  bad "watchdog：升級明明失敗（inbox 記錄卡在鎖逾時），閂鎖卻已經記成 blocked，下一輪會被重提間隔誤壓抑"
+fi
+
+n_inbox_before_retry=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after_retry=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after_retry" -gt "$n_inbox_before_retry" ]; then
+  pass "watchdog：升級失敗排除後，下一輪能立刻重試，不會被誤記的閂鎖壓抑到一個重提間隔之後"
+else
+  bad "watchdog：下一輪仍然沒有發出升級（before=$n_inbox_before_retry after=$n_inbox_after_retry）"
+fi
+rm -f "$expected_seq_file"
+
+# ===== watchdog.sh：.stage 守衛（線上故障修正）=====
+# 見 watchdog.sh 檔頭「.stage 守衛」一節：delivered／closing／closed
+# 三個關卡時 worker 依契約靜止是正常狀態，第 1（自動推進）、第 3（停
+# 滯偵測）兩項都整段跳過；.stage 缺席視同 running；第 2 項的 blocked
+# 升級與豁免到期升級不受影響，任何 stage 下都照常發出。
+
+# ---- stage=delivered：不自動推進 ----
+printf '{"pane_id":"w3N:p2","held":false,"role":"backend","stage":"delivered","auto_push_count":0}' \
+  > "$REG/workers/w3n-backend.json"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":40000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-stage-guard-delivered
+
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+  bad "watchdog：.stage=delivered 時仍被自動推進（worker 依契約靜止的正常狀態被誤判成卡住）"
+else
+  pass "watchdog：.stage=delivered 時不自動推進"
+fi
+if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "0" ]; then
+  pass "watchdog：.stage=delivered 時自動推進計數沒有被動"
+else
+  bad "watchdog：計數變成 $(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")"
+fi
+
+# ---- stage=delivered：即使 state_change_seq 長時間不動也不判停滯 ----
+n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+sleep 2
+AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after" -eq "$n_inbox_before" ]; then
+  pass "watchdog：.stage=delivered 時即使超過停滯門檻也不升級"
+else
+  bad "watchdog：.stage=delivered 卻仍判定停滯並升級了（before=$n_inbox_before after=$n_inbox_after）"
+fi
+
+# ---- stage=closed：同樣不自動推進，不是只對 delivered 特殊處理 ----
+jq '.stage="closed" | .auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+  bad "watchdog：.stage=closed 時仍被自動推進"
+else
+  pass "watchdog：.stage=closed 時不自動推進"
+fi
+
+# ---- .stage 欄位缺席：視同 running，照常自動推進 ----
+jq 'del(.stage) | .auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+  pass "watchdog：.stage 欄位缺席時視同 running，照常自動推進"
+else
+  bad "watchdog：.stage 缺席卻沒有自動推進（launch-worker.sh 啟動時本來就不寫這個欄位，缺席不該被當成已交付）"
+fi
+
+# ---- stage=delivered 疊加 blocked：blocked 升級不受 .stage 守衛影響
+#      ----
+jq '.stage="delivered" | .auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"blocked","state_change_seq":40010,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-stage-guard-blocked
+
+n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after" -gt "$n_inbox_before" ]; then
+  pass "watchdog：.stage=delivered 時 blocked 升級不受守衛影響，照常發出"
+else
+  bad "watchdog：.stage=delivered 讓 blocked 升級也被擋住了（before=$n_inbox_before after=$n_inbox_after）"
+fi
+
+# ---- stage=delivered 疊加豁免到期：豁免到期升級不受 .stage 守衛影響
+#      ----
+jq '.stage="delivered" | .auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":40020,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-stage-guard-needyou-expired
+
+printf '{"token":"need-you","worker":"w3n-backend","processed_at":null,"created_at":"2020-01-01T00:00:00Z"}' > "$REG/inbox/91-w3n-backend.json"
+n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+AGENT_TEAM_NEEDYOU_LIMIT_SECONDS=10 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after" -gt "$n_inbox_before" ]; then
+  pass "watchdog：.stage=delivered 時豁免到期升級不受守衛影響，照常發出"
+else
+  bad "watchdog：.stage=delivered 讓豁免到期升級也被擋住了（before=$n_inbox_before after=$n_inbox_after）"
+fi
+rm -f "$REG/inbox/91-w3n-backend.json"
+
+# ---- stage=delivered 疊加達上限：達上限升級也受 .stage 守衛影響（線
+#      上故障修正：這正是線上實際發生的形狀，故障 registry 裡的
+#      w4a-developer-1097-be 當時 .stage=delivered、.auto_push_
+#      count=10，「自動推進已達上限 10 次仍是 idle，改為升級」這句話
+#      卻仍在 inbox 裡重複了 56 次、是全部訊息裡重複最多的一句——
+#      worker 已經不會被推進時，「已達上限」這句話語意失效，指向一件
+#      不再發生的事）----
+jq '.stage="delivered" | .auto_push_count=10' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":40030,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-stage-guard-auto-push-limit
+
+n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after" -eq "$n_inbox_before" ]; then
+  pass "watchdog：.stage=delivered 時即使計數已達上限也不發出達上限升級"
+else
+  bad "watchdog：.stage=delivered 卻仍發出達上限升級（before=$n_inbox_before after=$n_inbox_after）"
+fi
+
+# ---- 回到 running：閂鎖已經在 delivered 那一輪被清掉，同一個條件
+#      （計數仍在上限之上）能立刻重新發出，不被重提間隔壓抑 ----
+jq '.stage="running"' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+AGENT_TEAM_ESCALATION_REPEAT_SECONDS=100 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after" -gt "$n_inbox_before" ]; then
+  pass "watchdog：回到 running 後，閂鎖已清空，達上限升級能立刻重新發出"
+else
+  bad "watchdog：回到 running 後仍未重新發出達上限升級（before=$n_inbox_before after=$n_inbox_after）"
 fi
 
 # ---- 本任務自行補上：workspace 守衛真的接上——worker 記錄的座標指向
@@ -4070,9 +5039,9 @@ rm -f "$REG/workers/w3n-nopane-watchdog.json"
 # 錄順序無關，mutation 的紅綠不會因為順序而擺盪。
 #
 # 兩個 worker 用本節專屬的新名字（w3n-racea／w3n-raceb），不沿用
-# w3n-backend：沿用的話會拖進前面章節在 inbox 留下的 need-you／
-# delivered 記錄，豁免或計數重置一旦命中就沒有自動推進可送，時序根本
-# 造不出來，斷言會變成在驗證空情境。
+# w3n-backend：沿用的話會拖進前面章節在 inbox 留下的 need-you 記錄，
+# 豁免一旦命中就沒有自動推進可送，時序根本造不出來，斷言會變成在驗證
+# 空情境。
 rm -f "$T/wd-race-victim"
 printf '{"pane_id":"w3N:p6","held":false,"role":"race-a","auto_push_count":0}' > "$REG/workers/w3n-racea.json"
 printf '{"pane_id":"w3N:p7","held":false,"role":"race-b","auto_push_count":0}' > "$REG/workers/w3n-raceb.json"
@@ -4148,16 +5117,260 @@ fi
 rm -f "$REG/workers/w3n-racea.json" "$REG/workers/w3n-raceb.json" \
   "$REG/workers/w3n-racea.json.lock" "$REG/workers/w3n-raceb.json.lock"
 
-# 收尾：把 w3n-backend 留在一個乾淨、不會誤觸後續（此檔案已無更多章
-# 節）斷言的狀態。
+# 收尾：把 w3n-backend 留在一個乾淨、會被下一節（flock 逾時擴大範圍）
+# 沿用的狀態。
 jq '.auto_push_count=0 | .held=false | .pending_resend=[]' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+
+# ===== flock 逾時擴大到全部五處（獨立審查 Critical）=====
+# 圈定逾時範圍時只搜了 lib/common.sh 一個檔案，但「檔案鎖是無界等待」
+# 是跨檔案的事實：skill 目錄裡實際還有五處裸的 flock -x，watchdog.sh
+# 的 hat_watchdog_allocate_seq、report.sh 的 hat_allocate_seq、
+# grant-peer.sh 的 hat_grant_add 與 hat_grant_remove、shutdown-
+# worker.sh 的主鎖，全部已經比照 lib/common.sh 補上逾時。這裡逐一驗證
+# 每一處真的生效：持鎖者握著同一把鎖，逾時上限調短，斷言不會無界等
+# 下去、且以該腳本既有的失敗語意收尾，不是猜測補丁存在。
+
+# ---- watchdog.sh：hat_watchdog_allocate_seq（team.json.lock）——它是
+#      hat_wd_escalate 配號的唯一入口，四個升級呼叫點全部經過它；掛住
+#      的後果比乾淨失敗更糟，`( ... ) || rc=$?` 子殼保護接不到子殼根
+#      本不返回的情況，整個長駐迴圈會凍結在這一個 worker 上 ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"blocked","state_change_seq":60000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-teamjson-lock-timeout
+
+# 持鎖時間刻意抓得比逾時上限寬裕很多（8 秒 vs. 1 秒逾時），理由同上方
+# 「升級閂鎖只在真正落地後才記錄」小節同名說明：watchdog.sh 這一輪要
+# 先走過好幾步才會真的碰到這個鎖，餘裕不夠時持鎖者會提早放手。
+( exec 9>"$REG/team.json.lock"; flock -x 9; sleep 8 ) &
+lock_holder_pid=$!
+sleep 0.3
+: > "$REG/watchdog.log"
+lock_start="$(date +%s)"
+AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+lock_elapsed=$(( $(date +%s) - lock_start ))
+wait "$lock_holder_pid"
+if [ "$lock_elapsed" -lt 5 ]; then
+  pass "watchdog.sh：hat_watchdog_allocate_seq 等鎖有上限，沒有等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
+else
+  bad "watchdog.sh：等了 ${lock_elapsed}s，hat_watchdog_allocate_seq 看起來仍是無界等待"
+fi
+if grep -q "skip worker=w3n-backend reason=process_failed rc=5 " "$REG/watchdog.log"; then
+  pass "watchdog.sh：team.json 鎖逾時時，該 worker 被跳過並留下 rc=5 的 skip 記錄，不是靜默掛住"
+else
+  bad "watchdog.sh：watchdog.log 沒有預期的 skip 行：$(cat "$REG/watchdog.log")"
+fi
+
+# ---- watchdog.sh：hat_wd_retry_blocked_inbox（<inbox 記錄>.lock）——
+#      這個呼叫排在逐筆 worker 保護之外，鎖逾時給了它一條容易撞上的新
+#      路徑（Critical）；同時驗證逐筆 inbox 記錄的保護粒度：一筆卡鎖
+#      不會連累同一輪其餘待重投的記錄 ----
+hat_json_set "$REG/team.json" '.orchestrator_name' '"w3n-orchestrator"'
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-orchestrator","workspace_id":"w3N","agent_status":"idle","state_change_seq":1,"pane_id":"w3N:p1","tab_id":"w3N:t1"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-retry-blocked-inbox-lock-timeout
+
+printf '{"token":"fyi","worker":"w3n-lockvictim","summary":"卡鎖那筆","delivery":"blocked","processed_at":null}' > "$REG/inbox/50-w3n-lockvictim.json"
+printf '{"token":"fyi","worker":"w3n-locksurvivor","summary":"沒卡鎖那筆","delivery":"blocked","processed_at":null}' > "$REG/inbox/51-w3n-locksurvivor.json"
+: > "$HERDR_CALL_LOG"
+: > "$REG/watchdog.log"
+
+# 持鎖時間刻意抓得比逾時上限寬裕很多，理由同前面幾處鎖逾時測試。
+( exec 9>"$REG/inbox/50-w3n-lockvictim.json.lock"; flock -x 9; sleep 8 ) &
+lock_holder_pid=$!
+sleep 0.3
+lock_start="$(date +%s)"
+rc=0
+AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+lock_elapsed=$(( $(date +%s) - lock_start ))
+wait "$lock_holder_pid"
+
+if [ "$lock_elapsed" -lt 5 ]; then
+  pass "watchdog：hat_wd_retry_blocked_inbox 等鎖有上限，沒有等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
+else
+  bad "watchdog：等了 ${lock_elapsed}s，hat_wd_retry_blocked_inbox 看起來仍是無界等待"
+fi
+if [ "$rc" -eq 0 ]; then
+  pass "watchdog：inbox 補投鎖逾時不會把整個看門狗行程帶走，仍以 0 結束"
+else
+  bad "watchdog：得到 rc=$rc——inbox 補投鎖逾時把整個看門狗行程帶走了（長駐模式下自動推進／停滯偵測／投遞重試會一起靜默停止）"
+fi
+if grep -q "skip inbox=50-w3n-lockvictim.json reason=retry_blocked_failed rc=5 " "$REG/watchdog.log"; then
+  pass "watchdog：卡鎖的那筆 blocked 記錄在 watchdog.log 留下 skip 行（含檔名與結束碼）"
+else
+  bad "watchdog：watchdog.log 沒有預期的 skip 行：$(cat "$REG/watchdog.log")"
+fi
+if [ "$(jq -r '.delivery' "$REG/inbox/50-w3n-lockvictim.json" 2>/dev/null)" = "blocked" ]; then
+  pass "watchdog：鎖逾時、沒拿到鎖時卡鎖那筆不會被寫壞，.delivery 原樣還是 blocked"
+else
+  bad "watchdog：卡鎖那筆的 .delivery 變成 $(jq -r '.delivery' "$REG/inbox/50-w3n-lockvictim.json" 2>/dev/null)，記錄被寫壞了"
+fi
+if [ "$(jq -r '.delivery' "$REG/inbox/51-w3n-locksurvivor.json" 2>/dev/null)" = "delivered" ]; then
+  pass "watchdog：一筆卡鎖的 blocked 記錄不會讓同一輪其餘待重投的記錄也被跳過（w3n-locksurvivor 仍補投成功）"
+else
+  bad "watchdog：w3n-locksurvivor 沒有補投成功，被前一筆連累中止了：$(jq -r '.delivery' "$REG/inbox/51-w3n-locksurvivor.json" 2>/dev/null)"
+fi
+
+rm -f "$REG/inbox/50-w3n-lockvictim.json" "$REG/inbox/50-w3n-lockvictim.json.lock" \
+  "$REG/inbox/51-w3n-locksurvivor.json"
+
+# ---- report.sh：hat_allocate_seq（team.json.lock）——worker 上行取號
+#      的唯一入口，掛住的後果是那個 worker 從此完全不再回報，而且是靜
+#      默的 ----
+( exec 9>"$REG/team.json.lock"; flock -x 9; sleep 2 ) &
+lock_holder_pid=$!
+sleep 0.3
+lock_start="$(date +%s)"
+rc=0; out="$( ( AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 bash "$SCRIPTS/report.sh" --token fyi --summary '測試鎖逾時' ) 2>&1 )" || rc=$?
+lock_elapsed=$(( $(date +%s) - lock_start ))
+wait "$lock_holder_pid"
+if [ "$lock_elapsed" -lt 2 ]; then
+  pass "report.sh：hat_allocate_seq 等鎖有上限，沒有等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
+else
+  bad "report.sh：等了 ${lock_elapsed}s，hat_allocate_seq 看起來仍是無界等待"
+fi
+if [ "$rc" -eq 5 ]; then
+  pass "report.sh：team.json 鎖逾時時以 5 結束，訊息：$out"
+else
+  bad "report.sh：得到 rc=$rc（預期 5），輸出：$out"
+fi
+
+# ---- grant-peer.sh：hat_grant_add／hat_grant_remove（<from>.json.lock）
+#      ----
+printf '{"pane_id":"w3N:p8","held":false}' > "$REG/workers/w3n-grantfrom.json"
+printf '{"pane_id":"w3N:p9","held":false}' > "$REG/workers/w3n-grantto.json"
+
+( exec 9>"$REG/workers/w3n-grantfrom.json.lock"; flock -x 9; sleep 2 ) &
+lock_holder_pid=$!
+sleep 0.3
+lock_start="$(date +%s)"
+rc=0; out="$( ( AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 bash "$SCRIPTS/grant-peer.sh" --from w3n-grantfrom --to w3n-grantto ) 2>&1 )" || rc=$?
+lock_elapsed=$(( $(date +%s) - lock_start ))
+wait "$lock_holder_pid"
+if [ "$lock_elapsed" -lt 2 ]; then
+  pass "grant-peer.sh：hat_grant_add 等鎖有上限，沒有等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
+else
+  bad "grant-peer.sh：等了 ${lock_elapsed}s，hat_grant_add 看起來仍是無界等待"
+fi
+if [ "$rc" -eq 5 ]; then
+  pass "grant-peer.sh：hat_grant_add 鎖逾時時以 5 結束，訊息：$out"
+else
+  bad "grant-peer.sh：得到 rc=$rc（預期 5），輸出：$out"
+fi
+
+( exec 9>"$REG/workers/w3n-grantfrom.json.lock"; flock -x 9; sleep 2 ) &
+lock_holder_pid=$!
+sleep 0.3
+lock_start="$(date +%s)"
+rc=0; out="$( ( AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 bash "$SCRIPTS/grant-peer.sh" --from w3n-grantfrom --to w3n-grantto --revoke ) 2>&1 )" || rc=$?
+lock_elapsed=$(( $(date +%s) - lock_start ))
+wait "$lock_holder_pid"
+if [ "$lock_elapsed" -lt 2 ]; then
+  pass "grant-peer.sh：hat_grant_remove 等鎖有上限，沒有等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
+else
+  bad "grant-peer.sh：等了 ${lock_elapsed}s，hat_grant_remove 看起來仍是無界等待"
+fi
+if [ "$rc" -eq 5 ]; then
+  pass "grant-peer.sh：hat_grant_remove 鎖逾時時以 5 結束，訊息：$out"
+else
+  bad "grant-peer.sh：得到 rc=$rc（預期 5），輸出：$out"
+fi
+rm -f "$REG/workers/w3n-grantfrom.json" "$REG/workers/w3n-grantto.json" \
+  "$REG/workers/w3n-grantfrom.json.lock" "$REG/workers/w3n-grantto.json.lock"
+
+# ---- shutdown-worker.sh：主鎖（<to>.json.lock），從讀取記錄開始一路
+#      持有到最後移除記錄為止 ----
+printf '{"pane_id":"w3N:pL2","held":false,"tab_id":"w3N:tL2"}' > "$REG/workers/w3n-shutdownlock.json"
+
+( exec 9>"$REG/workers/w3n-shutdownlock.json.lock"; flock -x 9; sleep 2 ) &
+lock_holder_pid=$!
+sleep 0.3
+lock_start="$(date +%s)"
+rc=0; out="$( ( AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 bash "$SCRIPTS/shutdown-worker.sh" --to w3n-shutdownlock --reason "done" --evidence '測試鎖逾時' ) 2>&1 )" || rc=$?
+lock_elapsed=$(( $(date +%s) - lock_start ))
+wait "$lock_holder_pid"
+if [ "$lock_elapsed" -lt 2 ]; then
+  pass "shutdown-worker.sh：主鎖等鎖有上限，沒有等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
+else
+  bad "shutdown-worker.sh：等了 ${lock_elapsed}s，主鎖看起來仍是無界等待"
+fi
+if [ "$rc" -eq 5 ]; then
+  pass "shutdown-worker.sh：主鎖逾時時以 5 結束，訊息：$out"
+else
+  bad "shutdown-worker.sh：得到 rc=$rc（預期 5），輸出：$out"
+fi
+if [ -e "$REG/workers/w3n-shutdownlock.json" ]; then
+  pass "shutdown-worker.sh：鎖逾時、沒拿到鎖時不會把記錄寫壞或移除，原始記錄還在"
+else
+  bad "shutdown-worker.sh：鎖逾時之後記錄卻不見了"
+fi
+rm -f "$REG/workers/w3n-shutdownlock.json" "$REG/workers/w3n-shutdownlock.json.lock"
+
+# ---- 收尾：確認整個 skill 目錄已經收斂——不該再有任何不帶逾時的
+#      flock -x 呼叫（搜尋而不是回想改過哪幾個檔案）----
+# 錨定在行首（只允許前面有空白）：真正呼叫 flock 的程式碼行一定以
+# flock 開頭；散落在檔頭說明裡、引號包住當成技巧名稱提的
+# `flock -x "$fd"` 不會以 flock 開頭，不會被這個樣式誤判。
+bare_flock_hits="$(grep -rn '^[[:space:]]*flock -x "' "$SCRIPTS" 2>/dev/null || true)"
+if [ -z "$bare_flock_hits" ]; then
+  pass "flock 逾時：搜過整個 skill 目錄，沒有任何一處 flock -x 仍是無逾時的裸呼叫"
+else
+  bad "flock 逾時：還有裸的 flock -x 沒有補逾時：$bare_flock_hits"
+fi
+
+# ---- 收尾：三處已被事實推翻的殘留敘述都已改寫，且沒有第四處殘留
+#      （搜尋而不是回想，同上一節 flock 逾時收尾的做法）----
+# 三處：team-init.sh 檔頭「補送設下的新持有旗標會被 watchdog.sh 補發
+# 事件的處理流程當成上一輪沒收回的殘留而收掉」、instruct.sh 印給使用
+# 者的「看門狗會在解除後補投」、report.sh 印的「看門狗會另行重試投
+# 遞」。SKILL.md 由另一條流程處理，不列入這個 scripts 目錄的搜尋範圍。
+stale_claim_hits="$(grep -rn '看門狗會另行重試投遞\|看門狗會在解除後補投\|補發事件的處理流程當成「上一輪沒收回的殘留」而收掉' "$SCRIPTS" 2>/dev/null || true)"
+if [ -z "$stale_claim_hits" ]; then
+  pass "殘留敘述：搜過整個 scripts 目錄，三處已被事實推翻的敘述都沒有殘留副本"
+else
+  bad "殘留敘述：scripts 目錄還有殘留副本：$stale_claim_hits"
+fi
+
+# ---- 收尾：references/provider-drivers.md 的門檻值標題與本文內容一致
+#      ----
+# 該節本文只談 AGENT_TEAM_STALL_SECONDS 一個門檻值，標題卻曾經寫「三
+# 個門檻值」——SKILL.md 現在數的是六個，「三個」純粹是跟本文對不上的殘
+# 留數字，不是那六個的子集說法。
+PROVIDER_DRIVERS_MD="$(dirname "$SCRIPTS")/references/provider-drivers.md"
+if grep -qF '三個門檻值與低保真的關聯' "$PROVIDER_DRIVERS_MD" 2>/dev/null; then
+  bad "provider-drivers.md：標題仍是跟本文對不上的『三個門檻值與低保真的關聯』"
+else
+  pass "provider-drivers.md：標題不再寫錯誤的『三個』"
+fi
+if grep -qE '^## .*AGENT_TEAM_STALL_SECONDS.*低保真的關聯' "$PROVIDER_DRIVERS_MD" 2>/dev/null; then
+  pass "provider-drivers.md：標題已改成與本文唯一涵蓋的 AGENT_TEAM_STALL_SECONDS 對應"
+else
+  bad "provider-drivers.md：標題沒有反映本文實際涵蓋的內容"
+fi
 
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=387
+HAT_EXPECTED_ASSERTIONS=473
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

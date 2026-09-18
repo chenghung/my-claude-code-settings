@@ -36,7 +36,8 @@
 #      門、關閉閘門、代按前的狀態重查、grant——本檔的 hat_assert_workspace
 #      只負責 workspace 邊界這一類，其餘五類由後續任務的函式各自產生
 #   5  registry 缺漏或內容不合法：本檔的 hat_json_get（欄位缺漏）與
-#      hat_json_set（mktemp／jq／mv 三步任一步失敗）會產生此碼
+#      hat_json_set（等鎖逾時／mktemp／jq／mv 任一步失敗）會產生此碼；
+#      _hat_pending_resend_apply 同一組失敗路徑也用這個碼，理由相同
 #   6  herdr 拒絕（herdr 自身結束碼 1 一律映射成本碼）
 #   7  握手未取得憑據，含逾時與 agent_prompt_stalled，本檔不產生
 #   8  啟動未就緒，本檔不產生
@@ -261,20 +262,43 @@ hat_whitelist_agents() {
 # 為「寫入都有鎖」就推論放行更多欄位也安全：
 #
 # 寫入端分邊，欄位集合刻意不重疊——座標類欄位由 launch-worker.sh 寫；
-# 整筆記錄由 shutdown-worker.sh 移除；計數類欄位（.auto_push_count、
-# .last_seq_stamp、.last_seq_changed_at、.auto_push_reset_seq）由
-# watchdog.sh 維護；.stage 與 .held 由 orchestrator 端腳本寫。
+# 整筆記錄由 shutdown-worker.sh 移除；計數／閂鎖類欄位（.auto_push_
+# count、.last_seq_stamp、.last_seq_changed_at、.auto_push_reset_seen_at、
+# .escalation_active、.escalation_last_at）由 watchdog.sh 維護；.stage、
+# .held 與 .last_delivered_at 由 orchestrator 端腳本寫。
 #
-# .auto_push_reset_seq（Task 12 新增，task-1 訂這份清單時沒有預見到）：
-# 記錄「自動推進計數上一次歸零檢查已經看過的最高 inbox seq」，watchdog.sh
-# 自己讀寫，見該腳本檔頭「計數重置」一節。task-1 當時的目標是「涵蓋後續
-# 每個任務要寫的欄位，避免每個任務都要回頭改這裡」，但自動推進計數的歸
-# 零時機（「收到 delivered 或 orchestrator 送出定案回覆才歸零、fyi 不歸
-# 零」才是規格原文）需要一個能
-# 分辨「這次 delivered／回覆是不是新的」的水位線，否則同一則 delivered
-# 記錄會在每一輪都把計數重新歸零，讓上限形同虛設（原地繞圈永遠推不到上
-# 限）——這正是這份清單原本想避免、但沒有涵蓋到的一個欄位需求，回報見任
-# 務報告。
+# 例外（線上故障修正新增）：.escalation_active 在中斷恢復時多一個寫入
+# 端——team-init.sh --recover 會把它清成 null，收回跨 orchestrator 重
+# 啟殘留的升級閂鎖，理由見該檔「升級閂鎖收回」一節。這不是「不重疊」
+# 被打破：中斷恢復發生的時間點，上一個 session 的 watchdog.sh 行程已
+# 經不在，不存在兩個寫入端同時活著互相覆蓋的競態，跟 .held「orchestrator
+# 端腳本寫、team-init.sh --recover 額外收回殘留」是同一種安全前提。
+#
+# .last_delivered_at／.auto_push_reset_seen_at（線上故障修正新增，取代
+# 已移除的 .auto_push_reset_seq）：舊版計數歸零看的是「worker 有沒有回
+# 報 delivered」，但這正是 livelock 的成因之一——worker 在 delivered 關
+# 卡靜止是契約要求的正常狀態，卻會被看門狗當成卡住而持續推進，推滿上限
+# 後 worker 只好再回報一次 delivered，這一報又把計數歸零、重新開始推，
+# 形成自我維持的迴圈（見 watchdog.sh 檔頭「計數重置」一節）。正確的歸
+# 零時機只有一個：orchestrator 真的送出了一則下行。instruct.sh 成功送
+# 出下行時寫 .last_delivered_at（它自己擁有的欄位），watchdog.sh 讀到這
+# 個欄位變動時才歸零自己擁有的 .auto_push_count；.auto_push_reset_seen_
+# at 是 watchdog.sh 自己的水位線，記錄「上一次歸零檢查已經看過的 .last_
+# delivered_at 值」，避免同一次下行在後續每一輪都被重複判定成「新的」
+# 而把計數重置到 0，讓上限形同虛設——跟已移除的 .auto_push_reset_seq 是
+# 同一個問題、同一個解法，只是比對依據從 inbox seq 換成下行時間戳。
+# watchdog.sh 自己補投待補送佇列成功時視同一次下行送達，直接歸零 .auto_
+# push_count（watchdog 自己的程式碼，不需要透過這兩個欄位間接觸發）。
+#
+# .escalation_active／.escalation_last_at（線上故障修正新增）：升級摘要
+# 原本沒有去重，只要觸發條件還成立，下一輪 poll 就原封不動再發一次（線
+# 上實測單一句子最高重複 56 次）。這兩個欄位讓同一個條件只在「從不成立
+# 變成成立」的那一輪發出一次，持續成立時最多每隔 AGENT_TEAM_ESCALATION_
+# REPEAT_SECONDS 秒重提一次；.escalation_active 記目前是哪個條件（四個
+# 升級呼叫點互斥，同一輪至多一個成立），條件不再成立時清成 null，讓下
+# 次重新成立能立刻再發，見 watchdog.sh hat_wd_escalate_once 的說明。跨
+# orchestrator 重啟的殘留收回另由 team-init.sh --recover 處理，見上方
+# 「例外」一段與該檔「升級閂鎖收回」一節。
 _HAT_TEAM_JSON_FIELDS=(
   '.orchestrator_name' '.orchestrator_pane' '.team_home'
   '.thin_command_source' '.next_seq' '.goal_version' '.goal_confirmed'
@@ -285,7 +309,8 @@ _HAT_WORKER_JSON_FIELDS=(
   '.role' '.kind' '.args' '.tab_id' '.pane_id' '.agent_name' '.cwd'
   '.completion_criteria' '.delivery_point' '.end_point' '.stage' '.held'
   '.auto_push_count' '.last_seq_stamp' '.last_seq_changed_at'
-  '.auto_push_reset_seq' '.ack_reconciliation' '.grants' '.pending_resend'
+  '.auto_push_reset_seen_at' '.last_delivered_at' '.escalation_active'
+  '.escalation_last_at' '.ack_reconciliation' '.grants' '.pending_resend'
 )
 _HAT_INBOX_JSON_FIELDS=(
   '.token' '.worker' '.summary' '.detail_path' '.locator' '.created_at'
@@ -344,10 +369,26 @@ hat_json_get() {
   printf '%s\n' "$value"
 }
 
+# hat_lock_timeout_seconds
+# 印出 AGENT_TEAM_LOCK_TIMEOUT_SECONDS（未設時預設 30），純數字驗證慣
+# 例同其餘門檻值（見 watchdog.sh 檔頭「五個門檻值都能覆寫」一節），非
+# 數字以 2 結束。供 hat_json_set／_hat_pending_resend_apply 兩處
+# `flock -x` 共用——兩者原本是無界等待，持鎖者若異常死亡，任何碰同一個
+# 檔案的腳本會永久卡住；改成有上限的等待，逾時視為呼叫端無法安全繼續
+# 的失敗，由呼叫端自己決定要用哪個結束碼收尾。
+hat_lock_timeout_seconds() {
+  local v="${AGENT_TEAM_LOCK_TIMEOUT_SECONDS:-30}"
+  case "$v" in
+    '' | *[!0-9]*)
+      hat_die 2 "hat_lock_timeout_seconds: AGENT_TEAM_LOCK_TIMEOUT_SECONDS 必須是純數字秒數，收到：$v" ;;
+  esac
+  printf '%s\n' "$v"
+}
+
 # hat_json_set <file> <jq_path> <json_value>
-# 加鎖的讀-改-寫：mktemp → jq 算新內容 → mv 置換，三步串起來，任一步失
-# 敗都以 5 結束；mv 不得無條件執行，否則 jq 解析失敗時 mv 照跑，會把原
-# 檔換成暫存檔裡的半成品內容。
+# 加鎖的讀-改-寫：等鎖（有逾時上限，見 hat_lock_timeout_seconds）→
+# mktemp → jq 算新內容 → mv 置換，任一步失敗都以 5 結束；mv 不得無條件
+# 執行，否則 jq 解析失敗時 mv 照跑，會把原檔換成暫存檔裡的半成品內容。
 #
 # ---- 鎖檔路徑改版：從呼叫端傳入的 <file> 自己的路徑推導，不再呼叫
 #      hat_registry_root ----
@@ -404,7 +445,7 @@ hat_json_get() {
 hat_json_set() {
   local file="$1" path="$2" json_value="$3"
   local -a fields
-  local lock_file lock_fd tmp allowed candidate
+  local lock_file lock_fd lock_timeout tmp allowed candidate
 
   case "$file" in
     */team.json)      fields=("${_HAT_TEAM_JSON_FIELDS[@]}") ;;
@@ -426,22 +467,52 @@ hat_json_set() {
 
   lock_file="${file}.lock"
   exec {lock_fd}>"$lock_file"
-  flock -x "$lock_fd"
+  # ---- hat_die 在命令替換的子殼裡 exit，不會讓本函式跟著結束：子殼的
+  #      結束碼要自己接住再轉呼叫端 exit，否則 hat_lock_timeout_seconds
+  #      驗證失敗時只會讓 lock_timeout 變空字串，接著被 flock 誤判成別
+  #      的錯誤（已實測：AGENT_TEAM_LOCK_TIMEOUT_SECONDS=abc 沒有以 2
+  #      結束，反而讓 flock 因為逾時參數是空字串而失敗，錯誤地回報成
+  #      5）----
+  lock_timeout="$(hat_lock_timeout_seconds)" || exit "$?"
+  if ! flock -x -w "$lock_timeout" "$lock_fd"; then
+    hat_die 5 "hat_json_set: 等鎖逾時（${lock_timeout}s），拒絕在未取得鎖的情況下寫入，'$path' 未寫入：$lock_file"
+  fi
 
-  tmp="$(mktemp "${file}.XXXXXX")" || hat_die 5 "hat_json_set: 無法建立暫存檔，'$path' 未寫入：$file"
+  # ---- 本任務實作 instruct.sh 的 EXIT trap 保底時實測發現的問題：拿到鎖之後的四個失敗分支都必須先關 lock_fd
+  #      才能 hat_die，不能只靠「行程反正要 exit 了」----
+  # 上面 flock 逾時那個分支不需要這麼做：那個分支根本沒拿到鎖，
+  # lock_fd 只是一個開著、沒上鎖的檔案描述符，放著不關不會擋到任何人。
+  # 但下面四個分支這裡都已經成功拿到鎖，若不主動關閉就直接 hat_die，
+  # `exit` 確實會終止整個行程、順帶關掉所有檔案描述符——但那是行程真
+  # 正結束「之後」的事；EXIT trap 是在行程結束「之前」執行的，若呼叫端
+  # 掛了一個 EXIT trap、且那個 trap 想對同一個檔案再做一次
+  # hat_json_set（例如 instruct.sh 用來保底放掉 .held 的
+  # hat_instruct_release_held），trap 執行的當下這個 fd 依然開著、依然
+  # 持有鎖——trap 裡那次新的 `exec {new_fd}>"$lock_file"; flock -x -w
+  # ...` 會對同一個檔案的鎖排隊，卻永遠排在自己前面一個沒被釋放的鎖後
+  # 面，等到逾時才放棄。已用 instruct.sh 的 held-not-stuck 測試實測重
+  # 現：不主動關閉時，trap 裡的補救寫入以「等鎖逾時（30s）」失敗，
+  # .held 依舊卡在 true——EXIT trap 保底之所以看起來沒作用，成因不在
+  # trap 本身，而是這裡的 fd 洩漏讓保底寫入自己去等一個同一行程內、永
+  # 遠不會被放開的鎖。修法是這四個分支各自在 hat_die 之前明確關閉
+  # lock_fd，讓鎖確實跟著這次失敗一起釋放，不留到行程真正結束才釋放。
+  tmp="$(mktemp "${file}.XXXXXX")" || { exec {lock_fd}>&-; hat_die 5 "hat_json_set: 無法建立暫存檔，'$path' 未寫入：$file"; }
 
   if ! jq --argjson v "$json_value" "${path} = \$v" "$file" > "$tmp"; then
     rm -f "$tmp"
+    exec {lock_fd}>&-
     hat_die 5 "hat_json_set: 寫入失敗（jq 解析未成功），'$path' 未寫入：$file"
   fi
 
   if [ ! -e "$file" ]; then
     rm -f "$tmp"
+    exec {lock_fd}>&-
     hat_die 5 "hat_json_set: 置換前重新確認，目標檔已不存在（可能已被 shutdown-worker.sh 等不可逆動作移除），拒絕置換，'$path' 未寫入：$file"
   fi
 
   if ! mv "$tmp" "$file"; then
     rm -f "$tmp"
+    exec {lock_fd}>&-
     hat_die 5 "hat_json_set: 寫入失敗（置換未成功），'$path' 未寫入：$file"
   fi
 
@@ -465,33 +536,48 @@ hat_json_set() {
 # 鎖，同一個成因見 report.sh `hat_allocate_seq` 檔頭「序號配發」一節。
 #
 # _hat_pending_resend_apply <file> <jq_filter> [jq 選項與引數...]
-# 加鎖執行一次 jq 轉換並置換回 <file>；<jq_filter> 與其後的引數原樣轉
-# 給 jq（選項在前、filter 由本函式自己接在引數之後、file 放最後，符合
-# jq 的呼叫慣例）。前置整理之二（見 hat_json_set 同名一節）同樣套用在
-# 這裡：mv 前重新確認 <file> 是否還存在，不在就以 5 結束、絕不置換。
+# 加鎖（有逾時上限，見 hat_lock_timeout_seconds）執行一次 jq 轉換並置換
+# 回 <file>；<jq_filter> 與其後的引數原樣轉給 jq（選項在前、filter 由
+# 本函式自己接在引數之後、file 放最後，符合 jq 的呼叫慣例）。前置整理
+# 之二（見 hat_json_set 同名一節）同樣套用在這裡：mv 前重新確認 <file>
+# 是否還存在，不在就以 5 結束、絕不置換。
 _hat_pending_resend_apply() {
   local file="$1" filter="$2"
   shift 2
-  local lock_fd tmp
+  local lock_fd lock_timeout tmp
 
   lock_fd=""
   exec {lock_fd}>"${file}.lock"
-  flock -x "$lock_fd"
+  # 見 hat_json_set 同名一節：hat_die 在命令替換的子殼裡 exit，結束碼
+  # 要自己接住再轉呼叫端 exit，否則驗證失敗只會讓 lock_timeout 變空字
+  # 串，被 flock 誤判成別的錯誤。
+  lock_timeout="$(hat_lock_timeout_seconds)" || exit "$?"
+  if ! flock -x -w "$lock_timeout" "$lock_fd"; then
+    hat_die 5 "_hat_pending_resend_apply: 等鎖逾時（${lock_timeout}s），拒絕在未取得鎖的情況下寫入，pending_resend 未變動：${file}.lock"
+  fi
 
-  tmp="$(mktemp "${file}.XXXXXX")" || hat_die 5 "_hat_pending_resend_apply: 無法建立暫存檔，pending_resend 未變動：$file"
+  # ---- 本任務實作 instruct.sh 的 EXIT trap 保底時實測發現的問題：拿到鎖之後的四個失敗分支都必須先關 lock_fd
+  #      才能 hat_die，理由見 hat_json_set 同名一節（instruct.sh 的
+  #      hat_append_pending_resend 正是這裡的呼叫端之一，也一樣要靠這
+  #      個修法才能讓它自己的 EXIT trap 保底寫入不撞上同一行程內沒放開
+  #      的鎖）----
+  tmp="$(mktemp "${file}.XXXXXX")" || { exec {lock_fd}>&-; hat_die 5 "_hat_pending_resend_apply: 無法建立暫存檔，pending_resend 未變動：$file"; }
 
   if ! jq "$@" "$filter" "$file" > "$tmp"; then
     rm -f "$tmp"
+    exec {lock_fd}>&-
     hat_die 5 "_hat_pending_resend_apply: 寫入失敗（jq 解析未成功），pending_resend 未變動：$file"
   fi
 
   if [ ! -e "$file" ]; then
     rm -f "$tmp"
+    exec {lock_fd}>&-
     hat_die 5 "_hat_pending_resend_apply: 置換前重新確認，目標檔已不存在，拒絕置換，pending_resend 未變動：$file"
   fi
 
   if ! mv "$tmp" "$file"; then
     rm -f "$tmp"
+    exec {lock_fd}>&-
     hat_die 5 "_hat_pending_resend_apply: 寫入失敗（置換未成功），pending_resend 未變動：$file"
   fi
 
