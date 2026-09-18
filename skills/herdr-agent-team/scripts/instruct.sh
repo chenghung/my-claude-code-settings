@@ -260,13 +260,15 @@
 #      同的命名空間 ----
 # hat_assert_supported_kind／hat_kind_fidelity 判斷的是 claude／codex／
 # agy／opencode 這四種 CLI provider；這裡的 --kind（instruct／
-# decision／goal-update／halt）標記的是這一則下行訊息本身的種類，只用
-# 於：(a) 進 pending_resend 清單時一併記錄，供 Task 12 的看門狗補投時
-# 知道這是哪一種訊息；(b) 白名單外一律拒絕。不影響送出的文字內容本
-# 身——文字內容一律是 --text／--text-file 給的原文，本腳本不替四種
-# kind 分別組不同格式的訊息（規格與可觸及的任務簡報都沒有規定 worker
-# 端要怎麼從純文字辨識 kind，只有 pending_resend 這個內部記錄需要它；
-# 這是本次實作的判斷，回報見任務報告）。
+# decision／goal-update／halt）標記的是這一則下行訊息本身的種類，目前
+# 影響四處：(a) 白名單外一律拒絕；(b) 進 pending_resend 清單時一併記
+# 錄，供 Task 12 的看門狗補投時知道這是哪一種訊息；(c) 成功送出下行時
+# 是否撥回 .stage；(d) 成功送達時是否寫 .last_delivered_at——(c)(d) 都
+# 是 halt 的例外，理由分別見下方「叫停不是復工」與「叫停不是續杯」兩
+# 節，這裡不重複。不影響送出的文字內容本身——文字內容一律是
+# --text／--text-file 給的原文，本腳本不替四種 kind 分別組不同格式的
+# 訊息（規格與可觸及的任務簡報都沒有規定 worker 端要怎麼從純文字辨識
+# kind；這是本次實作的判斷，回報見任務報告）。
 
 set -euo pipefail
 IFS=$'\n\t'
