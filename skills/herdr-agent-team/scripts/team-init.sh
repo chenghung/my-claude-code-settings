@@ -91,6 +91,17 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 hat_require_herdr_env
 
+# hat_json_string <text>
+# 把任意文字安全地轉成一個 JSON 字串字面，印出來。tab 的 label 是
+# herdr／使用者可自由輸入的文字，可能含引號、反斜線或本身就帶方括號
+# （已實測形如 `[1] Orchestrator`），不能像下面對 hat_normalize_name
+# 輸出那樣手工拼 `"\"$text\""`——那樣做安全是因為輸出字元集受限，這裡
+# 沒有那層保證。改用 jq -Rn --arg 讓 jq 自己處理跳脫（與 set-goal.sh
+# 等腳本同名的局部函式做法一致，見那裡的說明）。
+hat_json_string() {
+  jq -Rn --arg v "$1" '$v'
+}
+
 recover=0
 if [ "$#" -gt 1 ]; then
   hat_die 2 "team-init.sh: 用法：team-init.sh [--recover]"
@@ -113,6 +124,31 @@ if [ -z "$pane_id" ]; then
   hat_die 4 "team-init.sh: HERDR_PANE_ID 未設，無法自我命名"
 fi
 
+# ---- worker 環境守衛：拒絕竊取 orchestrator 名稱與 registry 座標 ----
+# launch-worker.sh 建 worker tab 時用 `herdr tab create --env` 一次性
+# 注入 AGENT_TEAM_SELF（worker 自己的名字）與 AGENT_TEAM_ROLE（worker
+# 的 role）；這兩個變數只在 worker tab 才會出現——orchestrator 是人類
+# 直接啟動、跑在自己的終端機/pane 裡的 session，herdr 從來不會替它注
+# 入這兩個變數（已讀過 launch-worker.sh 確認：只有建 worker tab 那一
+# 步的 `--env` 會設它們）。本腳本只靠 HERDR_WORKSPACE_ID 算名稱，而
+# launch-worker.sh 建 worker tab 用的是同一個 HERDR_WORKSPACE_ID，任何
+# worker 呼叫到這裡都會算出跟 orchestrator 完全相同的名字：worker 會
+# 把自己的 pane rename 成那個名字（herdr 的 agent 名稱同一時間只能屬
+# 於一個 pane，這一步等於把名字從 orchestrator pane 搶走），並無條件
+# 覆寫 team.json 的 .orchestrator_name／.orchestrator_pane，讓這兩個
+# 欄位從此指向那個 worker 的 pane——且不會觸發任何警報：看門狗只在名
+# 字整個查不到時才會響，名字被搶走時仍查得到，只是掛在錯的 pane 上。
+# 因此偵測到任一變數存在就必須整個拒絕，且要在讀 $name、呼叫任何
+# herdr 指令、寫入 team.json 任何欄位之前就擋下，不能有一步先做了才回
+# 頭失敗——跟上面 HERDR_ENV／HERDR_WORKSPACE_ID／HERDR_PANE_ID 三道既
+# 有守衛同一種寫法。用的結束碼是 9：team-init.sh 目前用過的 2／3／4
+# 分別代表呼叫端用錯參數／HERDR_ENV 不成立／缺必要座標，這裡的性質不
+# 一樣（呼叫端身分本身就不該呼叫這支腳本），不沿用既有語意；本檔頭沒
+# 有正式的結束碼列表，因此直接把語意寫在這則錯誤訊息裡。
+if [ -n "${AGENT_TEAM_SELF:-}" ] || [ -n "${AGENT_TEAM_ROLE:-}" ]; then
+  hat_die 9 "team-init.sh: 偵測到 AGENT_TEAM_SELF 或 AGENT_TEAM_ROLE 已設定，判斷目前是 worker 環境（這兩個變數只由 launch-worker.sh 建立 worker tab 時注入，orchestrator 自己的 session 不會有）。team-init.sh 是 orchestrator 專用的自我命名工具，worker 不得呼叫：呼叫下去會把 worker 自己的 pane 改名成 orchestrator 的名字，並覆寫 team.json 的 .orchestrator_name／.orchestrator_pane，等於竊取 orchestrator 的名稱與 registry 座標。拒絕執行，未呼叫任何 herdr 指令，也未寫入任何 registry 欄位"
+fi
+
 team_home="${AGENT_TEAM_HOME:-$PWD}"
 
 # hat_registry_init 內部經由 hat_registry_root 呼叫 hat_project_tmp，
@@ -132,7 +168,95 @@ hat_json_set "$registry_root/team.json" '.orchestrator_name' "\"$name\""
 hat_json_set "$registry_root/team.json" '.orchestrator_pane' "\"$pane_id\""
 hat_json_set "$registry_root/team.json" '.team_home' "\"$team_home\""
 
+# ---- 記錄 tab id 與原始 label（規格「設計項目三」的前置資料）----
+# tab id 直接從上面已經拿到的 `agent get` 回應取（已實測 herdr 0.9.1
+# `.result.agent.tab_id` 即為此值，不需要另外呼叫）；label 沒有現成回
+# 應可用，另外查一次 `herdr tab get`（已實測 `.result.tab.label` 即為
+# 此值，例如 `[1] Orchestrator`）。tab_id 在回應裡缺席時整段跳過、不
+# 算失敗——目前沒有已知會讓它缺席的情境，但寫法上不假設它一定存在。
+#
+# ---- 只在 .orchestrator_tab 還沒記錄過時才寫，不是每次都覆寫 ----
+# .orchestrator_tab_label 記的是「原始」label，是 --recover 還原時的
+# 比對基準與還原目標。report.sh（第二批）會用 `herdr tab rename` 把這
+# 個 tab 的 label 改成警示字樣；若本段每次執行都無條件把「目前」的
+# label 寫回這兩個欄位，遇到「警報還沒被 --recover 處理掉、卻又跑了
+# 一次不帶 --recover 的 team-init.sh」這種情況，會把警示字樣錯當成
+# 「原始」值存起來，往後 --recover 比對「目前 label 與記錄值」會判定
+# 兩者相同而不還原，警示字樣就永久回不去了。orchestrator_pane／
+# orchestrator_name 不受這個風險影響（沒有其他腳本會把它們改寫成需要
+# 保護的臨時狀態），可以放心每次都覆寫。
+#
+# ---- 盡力而為：這裡的 `tab get` 失敗不得讓整支腳本被 errexit 帶走
+#      （獨立審查修正）----
+# 上面的自我命名（`agent rename`）這時已經成功執行過；這段查 tab id／
+# label 純粹是裝飾性的記錄，失敗只代表「這次記不到 label」，不代表自我
+# 命名失敗。裸賦值在本檔 `set -euo pipefail` 之下會讓 herdr 任何一次失
+# 敗直接以 errexit 終止整支腳本、印不出檔尾 `orchestrator=... registry=
+# ...` 那行成功訊息，讓呼叫端誤判成自我命名失敗——手法同 lib/common.sh
+# `hat_alert_orchestrator_tab` 對同類 `tab get` 呼叫的既有做法：`|| rc=$?`
+# 接住失敗，只在 stderr 留一行說明，tab_label 留空，`.orchestrator_tab`
+# 本身不需要這次呼叫就已經知道（來自上面的 `agent get` 回應），仍然照
+# 常寫入；只有依賴這次呼叫結果的 `.orchestrator_tab_label` 略過。
+existing_tab="$(jq -r '.orchestrator_tab // empty' "$registry_root/team.json")"
+if [ -z "$existing_tab" ]; then
+  tab_id="$(printf '%s' "$current_json" | jq -r '.result.agent.tab_id // empty')"
+  if [ -n "$tab_id" ]; then
+    rc=0
+    tab_json="$(hat_herdr tab get "$tab_id")" || rc=$?
+    tab_label=""
+    if [ "$rc" -ne 0 ]; then
+      printf 'team-init.sh: 無法讀取 tab %s 的 label，只記錄 tab id，不記錄 label\n' "$tab_id" >&2
+    else
+      tab_label="$(printf '%s' "$tab_json" | jq -r '.result.tab.label // empty')"
+    fi
+
+    hat_json_set "$registry_root/team.json" '.orchestrator_tab' "\"$tab_id\""
+    if [ -n "$tab_label" ]; then
+      hat_json_set "$registry_root/team.json" '.orchestrator_tab_label' "$(hat_json_string "$tab_label")"
+    fi
+  fi
+fi
+
 if [ "$recover" -eq 1 ]; then
+  # ---- 警報還原：把 tab label 改回 .orchestrator_tab_label 記錄的原
+  #      始值（規格「設計項目三」指定的還原時機）----
+  # report.sh（第二批）偵測到投遞對象是 agent_not_found 時，會用
+  # `herdr tab rename` 把這個 tab 的 label 改成警示字樣，讓人在 herdr
+  # 的 tab 列上直接看得到；警報本身不會自動清除，因為「orchestrator
+  # 名稱消失」這件事只有等人真的回來跑 --recover，才代表有人已經處理
+  # 過。兩個欄位任一缺席（含尚未走過上面「記錄 tab id 與原始 label」
+  # 那段的舊 registry）都跳過，不算失敗。目前 label 已經等於記錄值時
+  # 不呼叫 `herdr tab rename`，避免每次 --recover 都多打一次寫入型呼
+  # 叫（沒有警報要清時，這是常態）。
+  #
+  # ---- 盡力而為：這兩次 herdr 呼叫失敗都不得讓整支 --recover 被
+  #      errexit 中止（獨立審查修正）----
+  # 這兩行原本是裸賦值／裸陳述句，任一次 herdr 失敗都會在本檔
+  # `set -euo pipefail` 之下讓 errexit 直接終止整支腳本——而這兩行排
+  # 在下面「收回持有旗標與升級閂鎖」那段之前，中斷恢復真正的安全網會
+  # 因此完全沒有機會執行。手法同上面「記錄 tab id 與原始 label」一
+  # 節、也同 lib/common.sh `hat_alert_orchestrator_tab` 對同類呼叫的
+  # 既有做法：`|| rc=$?` 接住失敗，只在 stderr 留一行說明，警報還原
+  # 這一步盡力而為地放棄，不影響下面收回旗標與閂鎖繼續執行。
+  recorded_tab="$(jq -r '.orchestrator_tab // empty' "$registry_root/team.json")"
+  recorded_tab_label="$(jq -r '.orchestrator_tab_label // empty' "$registry_root/team.json")"
+  if [ -n "$recorded_tab" ] && [ -n "$recorded_tab_label" ]; then
+    rc=0
+    current_tab_json="$(hat_herdr tab get "$recorded_tab")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf 'team-init.sh --recover: 無法讀取 tab %s 目前的 label，跳過警報還原（不影響下面收回持有旗標與升級閂鎖）\n' "$recorded_tab" >&2
+    else
+      current_tab_label="$(printf '%s' "$current_tab_json" | jq -r '.result.tab.label // empty')"
+      if [ "$current_tab_label" != "$recorded_tab_label" ]; then
+        rc=0
+        hat_herdr tab rename "$recorded_tab" "$recorded_tab_label" >/dev/null || rc=$?
+        if [ "$rc" -ne 0 ]; then
+          printf 'team-init.sh --recover: tab rename %s 失敗，警報字樣可能仍未還原（不影響下面收回持有旗標與升級閂鎖）\n' "$recorded_tab" >&2
+        fi
+      fi
+    fi
+  fi
+
   # ---- 收回殘留持有旗標＋升級閂鎖，回報待補送清單，不自行補送 ----
   # .held 的正常值就包含 false（不是缺漏的訊號）；hat_json_get 已能正
   # 確區分「欄位缺漏」（5 結束）與「值合法地是 false」（正常回傳該

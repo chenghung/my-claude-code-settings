@@ -52,7 +52,7 @@ orchestrator 必須跑在 herdr 環境內：進入本流程任何動作之前，
 3. **`set-goal.sh --achieve ... --success ... --not-doing ... --assumption ...`**（不帶 `--confirmed`）：把四項寫進 `team.json`。
 4. **停下來，把這四項原文呈給人類，請他確認**。這一關無條件，不論素材看起來多明確——見下方「開工閘門的射程」。
 5. **`set-goal.sh` 再呼叫一次、同樣四項內容、加上 `--confirmed`**：把 `goal_confirmed` 設成 `true`。
-6. **以背景／detach 方式啟動 `watchdog.sh`**（不帶 `--once`，長駐）：goal 確認之後就該掛上，不必等第一個 worker 真的啟動——它自己會在沒有任何 worker 時安靜地跑，不產生任何動作。**這支腳本是一個無界的輪詢迴圈（`while :; do ...; sleep <間隔>; done`），絕不能用一般前景阻塞呼叫啟動**——跟下方「不使用任何 `wait-*` 動作」是同一個理由：前景呼叫本身就變成一次阻塞的等待，工具逾時會把整個行程收掉，而看門狗消失是靜默的，自動推進、升級、停滯偵測、投遞重試與待補送補投這四項職責自此全部停止，不會有任何錯誤訊息——待補送佇列從此也永遠排不空，因為移除佇列裡那一筆的唯一呼叫端就是它的補投。啟動後可檢查 registry 根目錄下的 `watchdog.log` 判斷它有沒有在動，但要知道這個判準有多鬆：**整支腳本只有四個寫入點**（見 `watchdog.sh`）——`auto-push worker=<名稱> count=<次數> at=<時間>` 是真的送出了一次自動推進；另外三個都是 `skip ... reason=<原因> at=<時間>`，代表某一筆記錄這一輪被跳過。`reason` 目前有三個值：`missing_pane_id` 是那筆記錄裡沒有 pane 座標，判不出它屬不屬於本 workspace，整筆不處理；`process_failed` 是處理這一筆時發生致命失敗（這一行另外帶 `rc=<結束碼>` 欄位，下面的 `retry_blocked_failed` 同樣帶，只有 `missing_pane_id` 不帶），最常見的成因是 `shutdown-worker.sh` 正在關閉同一個 worker——它從讀取記錄起一路持有該筆記錄的檔案鎖，直到把記錄刪除為止，看門狗同一輪若也處理到這個 worker，後續的寫入會在等到鎖之後發現目標檔已經不存在而致命失敗；這種失敗現在只讓那一筆被跳過並記一行，不再把整個看門狗行程帶走；`retry_blocked_failed` 是重投某一筆先前投遞失敗的上行記錄（`inbox/` 裡 `.delivery` 還是 `blocked` 的那些）時，處理這一筆發生致命失敗，最可能的成因是等鎖逾時。前兩個值的識別欄位是 `worker=<名稱>`，第三個換成 `inbox=<序號>-<worker 名稱>.json`——檔名本身就帶著 worker 名稱，不必再印一次。三種跳過行的處置一樣：偶發一次不必處理，同一筆反覆出現才值得追。升級、補投成功、停滯追蹤的欄位更新全都不寫這個檔案，所以一個正在對每個 worker 反覆升級、正在補投下行的看門狗，可以一行都不產生：沒有新記錄既不代表它已經停止，也不代表它目前沒事可做。要確認它還在動，更可靠的補充觀測是 inbox 有沒有新的升級記錄、或 `team-status.sh` 的欄位有沒有變化。
+6. **以背景／detach 方式啟動 `watchdog.sh`**（不帶 `--once`，長駐）：goal 確認之後就該掛上，不必等第一個 worker 真的啟動——它自己會在沒有任何 worker 時安靜地跑，不產生任何動作。**這支腳本是一個無界的輪詢迴圈（`while :; do ...; sleep <間隔>; done`），絕不能用一般前景阻塞呼叫啟動**——跟下方「不使用任何 `wait-*` 動作」是同一個理由：前景呼叫本身就變成一次阻塞的等待，工具逾時會把整個行程收掉，而看門狗消失是靜默的，自動推進、升級、停滯偵測、投遞重試與待補送補投這四項職責自此全部停止，不會有任何錯誤訊息——待補送佇列從此也永遠排不空，因為移除佇列裡那一筆的唯一呼叫端就是它的補投。掛上的當下沒有任何存活證據可看，唯一的訊號是這次呼叫本身立即返回、沒有卡住：此刻還沒有任何 worker，下面那六個寫入點一個都觸發不到，`watchdog.log` 必然是空的——安靜活著跟一啟動就死掉，在這個時間點的 log 上長得一模一樣，分不出來；要等第一個 worker 啟動之後，這個檔案裡才可能出現內容。之後可檢查 registry 根目錄下的 `watchdog.log` 判斷它有沒有在動，但要知道這個判準有多鬆：**整支腳本只有六個寫入點**（見 `watchdog.sh`）——`auto-push worker=<名稱> count=<次數> at=<時間>` 是真的送出了一次自動推進；四個是 `skip ... reason=<原因> at=<時間>`，代表某一筆記錄、或整整一輪，被跳過；最後一個是 `alert reason=orchestrator_name_missing at=<時間>`，代表這一輪查不到你自己的 agent 名稱，看門狗替你拉了一次視覺警報（見「中斷恢復」）。`reason` 目前有四個值：`missing_pane_id` 是那筆記錄裡沒有 pane 座標，判不出它屬不屬於本 workspace，整筆不處理；`process_failed` 是處理這一筆時發生致命失敗（這一行另外帶 `rc=<結束碼>` 欄位，下面的 `retry_blocked_failed`、`agent_list_failed` 同樣帶，只有 `missing_pane_id` 不帶），最常見的成因是 `shutdown-worker.sh` 正在關閉同一個 worker——它從讀取記錄起一路持有該筆記錄的檔案鎖，直到把記錄刪除為止，看門狗同一輪若也處理到這個 worker，後續的寫入會在等到鎖之後發現目標檔已經不存在而致命失敗；這種失敗現在只讓那一筆被跳過並記一行，不再把整個看門狗行程帶走；`retry_blocked_failed` 是重投某一筆先前投遞失敗的上行記錄（`inbox/` 裡 `.delivery` 是 `blocked` 或 `orchestrator_lost` 的那些）時，處理這一筆發生致命失敗，最可能的成因是等鎖逾時；`agent_list_failed` 是這一輪呼叫 `herdr agent list` 本身失敗，只跳過這一輪，不再讓整個看門狗行程被帶走。前兩個值的識別欄位是 `worker=<名稱>`，`retry_blocked_failed` 換成 `inbox=<序號>-<worker 名稱>.json`——檔名本身就帶著 worker 名稱，不必再印一次；`agent_list_failed` 兩種識別欄位都不帶，這一輪連清單都沒拿到，沒有東西可以逐一識別。四種跳過行與那一行 `alert` 的處置一樣：偶發一次不必處理，同一筆反覆出現才值得追。升級、補投成功、停滯追蹤的欄位更新全都不寫這個檔案，所以一個正在對每個 worker 反覆升級、正在補投下行的看門狗，可以一行都不產生：沒有新記錄既不代表它已經停止，也不代表它目前沒事可做。要確認它還在動，更可靠的補充觀測是 inbox 有沒有新的升級記錄、或 `team-status.sh` 的欄位有沒有變化。
 7. **逐個 `launch-worker.sh`**：對每個要啟動的 role，先依 `briefing-template.md` 組好啟動包內容、寫成檔案，再呼叫 `launch-worker.sh --role <role> --kind <kind> --cwd <路徑> --briefing-file <路徑> [--arg <原生引數>]...`。`hat_require_goal_confirmed` 會在腳本內部再確認一次 `goal_confirmed`，第 4 步沒做完這裡會被結束碼 `4` 擋下。
 
 ## 開工閘門的射程
@@ -71,7 +71,7 @@ worker 只有一個回報動作（`report.sh`），六個 token 固定不開放�
 | --- | --- | --- |
 | `ack` | 會 | 這是 `launch-worker.sh` 第 8 步自己等的 token，orchestrator 不需要另外處理；它啟動時已經完成對帳並寫進該 worker `workers/<name>.json` 的 `.ack_reconciliation`。啟動成功之後若要確認 `worker_id_match`／`cwd_match` 是否為 `true`，直接讀這個檔案即可，不必派調查者——那是結構化的 registry 中繼資料，不是開發內容 |
 | `working` | 不會 | `report.sh` 對這個 token 只落檔、絕不投遞（規格 §8）。orchestrator 永遠收不到這個 token 的即時通知，不必等它 |
-| `fyi` | 會；worker 發的不需回覆，看門狗發的要處置 | **先分岔**：這一則是 `watchdog.sh` 的升級嗎（識別訊號見「看門狗的自動推進與升級」）？是的話不套漂移判準，依該節四種條件各自的處置走。不是（真的是 worker 發的）才讀摘要（見下方「上行前綴」，前綴之後才是 worker 原文），判斷是不是漂移（規格 §9 判準一：照 goal 原本的敘述做會失敗，或做出與所述不同的結果）。是則走下方「漂移處置」；不是（例如單純說一聲、或事後醒悟但不影響全局）就不必回覆，worker 會繼續做 |
+| `fyi` | 會；worker 發的不需回覆，看門狗發的要處置 | **先分岔**：這一則是 `watchdog.sh` 的升級嗎（識別訊號見「看門狗的自動推進與升級」）？是的話不套漂移判準，依該節五種條件各自的處置走。不是（真的是 worker 發的）才讀摘要（見下方「上行前綴」，前綴之後才是 worker 原文），判斷是不是漂移（規格 §9 判準一：照 goal 原本的敘述做會失敗，或做出與所述不同的結果）。是則走下方「漂移處置」；不是（例如單純說一聲、或事後醒悟但不影響全局）就不必回覆，worker 會繼續做 |
 | `need-you` | 會，需要回覆 | 從即時訊息的前綴直接取出這則的 inbox 序號（見下方「上行前綴」），呼叫 `instruct.sh --to <worker> --text <定案文字> --reply-to <序號>`。這一步同時會標記那筆 inbox 記錄為已處理 |
 | `delivered` | 會 | 從即時訊息的前綴取出序號；worker 的摘要文字（前綴之後那一段）裡通常會提到交付了什麼，需要確認 locator 的精確值時，直接讀 `inbox/<序號>-<worker>.json` 的 `.locator`——`report.sh` 已把 `--locator` 存在這個欄位，序號已知之後這是唯一一筆、不必再猜。呼叫 `set-worker-field.sh --to <worker> --field stage --value delivered` 把該 worker 的關卡改成 `delivered`（腳本本身會驗證這個值必須是設計定義的生命週期關卡名稱之一）。**不呼叫 `shutdown-worker.sh`**：交付點不等於終點，review 回來要改就回到執行中 |
 | `done` | 會 | 對照該 worker 的完成判準（若先前經 `set-worker-field.sh --field completion_criteria` 寫入過，可直接讀 `workers/<name>.json` 確認內容），確認外部可查證的證據確實存在（一個檔案、一個已合併的 PR、一次測試通過的紀錄），證據齊全才呼叫 `shutdown-worker.sh --to <worker> --reason done --evidence <外部可查證的事實>`。關閉前那個 worker 的 `.stage` 不能還是 `delivered`，否則 `shutdown-worker.sh` 以結束碼 `4` 拒絕——多數情況不必特別處理，因為 `instruct.sh` 發出任何一則下行時就會把 `delivered` 撥回 `running`（帶 `--kind halt` 的叫停除外，不撥回，理由見「漂移處置」第 3 步）；撞得到的是兩條路徑——交付之後再也沒收過任何下行就要直接關閉，或收到的最後一則是叫停——那時先 `set-worker-field.sh --field stage --value running` 撥回再關。證據不足就當成一則需要進一步核對的 `fyi` 處理，不直接關閉 |
@@ -103,8 +103,7 @@ orchestrator 自己不讀畫面、不打開回報的細節檔、不讀 `peer-log
   還是在跑一個很長的工具呼叫——若是後者就什麼都不必做，讓它跑完，狀態一動停滯計時就重新起算。這個出
   口只對停滯這一種成立：達上限那一種觸發的當下 worker 必定已經是閒置或完成（那個判斷排在「狀態不是
   閒置或完成就早退」之後），不可能正在跑長工具呼叫，而且推進計數不隨時間衰減，什麼都不做解除不了條
-  件，只會每個重提間隔再被提醒一次。達上限與豁免到期兩種的處置一律以「看門狗的自動推進與升級」的升
-  級表為準
+  件，只會每個重提間隔再被提醒一次。其餘升級條件的處置一律以「看門狗的自動推進與升級」的升級表為準
 - 需要讀 `peer-log/` 了解兩個 worker 之間談了什麼
 - 一則 `done`／`delivered` 回報所附的完成判準指向一個 GitHub issue、PR 或本機檔案，需要核對外部權威
   是否真的吻合
@@ -146,9 +145,9 @@ orchestrator 自己：不要寫一個輪詢迴圈去等某個 worker 回應—�
   已經在 `delivered` 關卡的 worker 被每 20 秒（預設輪詢間隔）推一次「繼續」，然後被持續升級。要讓
   一個 `delivered` 的 worker 重新回到照看範圍，不必特地去改欄位——`instruct.sh` 送出下一則下行時就
   會把 `.stage` 撥回 `running`，唯一的例外是帶 `--kind halt` 的叫停，它不撥回（理由見「漂移處置」
-  第 3 步）。另外兩種升級不受這道守衛影響，任何關卡下都照常發出：worker 卡在核准
-  框（`blocked`），以及你自己欠一則 `need-you` 的定案回覆超過時限。這兩件事在哪個關卡都需要人介
-  入，跟該不該推無關。
+  第 3 步）。另外三種升級不受這道守衛影響，任何關卡下都照常發出：worker 身分消失（那道檢查排在讀
+  `.stage` 之前）、worker 卡在核准框（`blocked`），以及你自己欠一則 `need-you` 的定案回覆超過時
+  限。這三件事在哪個關卡都需要人介入，跟該不該推無關。
 - **自動推進計數只由你的下行歸零，叫停除外。** 舊版是 worker 回報 `delivered` 就歸零，這是倒因為
   果：worker 回報交付代表它該休息，不是該獲得一輪新的推進預算；而這條規則正好讓上面那個迴圈成環
   ——被推到再回報一次交付，那次回報又把計數歸零，於是重新開始推。現在只有一則真的送達的下行才歸零
@@ -166,7 +165,7 @@ orchestrator 自己：不要寫一個輪詢迴圈去等某個 worker 回應—�
   舊可能是一個重提間隔以前（預設半小時）的。要即時值就讀 `team-status.sh` 輸出的 `pending_resend=`
   欄位。
 
-### 認出一則升級，以及四種條件各自該做什麼
+### 認出一則升級，以及五種條件各自該做什麼
 
 升級不經 `report.sh`：看門狗自己落一筆 inbox 記錄（`token` 也是 `fyi`）再直接送給你，所以它跟
 worker 自己發的 `fyi` 擠在同一個 token 底下。三個可機械判斷的識別訊號：訊息**沒有** `[[HAT ...]]`
@@ -180,6 +179,7 @@ worker 自己發的 `fyi` 擠在同一個 token 底下。三個可機械判斷�
 | 已停滯（摘要含「已停滯 Xs」） | 派調查者判斷是真的卡住還是在跑一個很長的工具呼叫；真的卡住就依判讀結果叫停（叫停一律帶 `--kind halt`，理由見「漂移處置」第 3 步）、改派或結束 |
 | 自動推進已達上限（摘要含「已達上限」） | 同樣派調查者判斷；推了這麼多次仍不動，代表繼續推沒有用，出口是改派或結束，不是再等 |
 | 豁免到期（摘要含「有一則你還沒回的定案請求」） | 不必派人：補一則 `instruct.sh --to <worker> --text <定案> --reply-to <序號>`。序號就寫在那則摘要結尾（「回覆時請對 instruct.sh 帶 `--reply-to <序號>`」），照抄即可，不必自己去翻 inbox。填錯也不會靜默過關——`--reply-to` 會驗證那筆記錄確實是一筆還沒被回覆的 `need-you`，不是就以結束碼 `5` 失敗；最容易填錯的正是升級自己那筆記錄的序號，它跟定案請求的檔名形狀一模一樣。在你回覆之前，那個 worker 的自動推進與停滯偵測都不會恢復 |
+| worker 身分消失（摘要含 `briefings` 字樣——五種升級只有這一種會提到它） | 不必派人：那個 pane 上掛的已經不是你的 worker 了——最常見的成因是機器重開機、或那個 CLI 行程被殺掉後重啟，新起來的 CLI 沒有讀過這個 team 的任何 briefing。出口是對同一個 role 重新跑一次 `launch-worker.sh` 啟動一個新的 worker，內容不必重寫——`briefings/<worker>.md` 還留著原文，但**要先把它的內容複製到另一個檔案路徑，拿那個新路徑當 `--briefing-file`**，不要直接把 `--briefing-file` 指向 `briefings/<worker>.md` 本身：`launch-worker.sh` 對這個參數做的是裸 `cp`，而同名重啟算出來的目的地正是同一個檔案，來源與目的同檔時 `cp` 直接拒絕，腳本以結束碼 `5` 失敗——而那時 tab 已經建好、registry 欄位也已經寫入，不是乾淨的失敗。**重啟不是乾淨的起點**：`launch-worker.sh` 只在 `workers/<name>.json` 不存在時才建空白記錄，同名重啟只覆寫座標與身分那幾個欄位，`.stage`、自動推進計數、待補送佇列一律沿用舊值——身分消失前若正停在 `delivered`，要先 `set-worker-field.sh --to <worker> --field stage --value running` 撥回，否則新 worker 一啟動就落在看門狗的照看範圍之外；舊的推進計數與積在佇列裡的下行也會直接接到新 worker 身上。**不要對舊 pane 送任何指令，也不要代按**：那裡面的 CLI 不是你的 worker，對它下指令等於把工作交給一個完全不知情的陌生 CLI。在你重啟之前，看門狗對這個 worker 的其餘處理（自動推進、停滯偵測、待補送補投）每一輪都整段跳過 |
 
 ## 漂移處置
 
@@ -224,7 +224,26 @@ orchestrator session 重啟之後，依序走六步。第 1 步與第 3 步由�
 一起完成（夾在中間的第 2 步是你自己讀檔重建，腳本不碰），其餘各是獨立的動作：
 
 1. **重新自我命名**（`team-init.sh --recover` 的一部分）：herdr 眼中人類直接啟動的 session 沒有
-   名字，且名稱會在被取代時清空，所以每次恢復都要重做，不是只做一次。
+   名字，且名稱會在被取代時清空，所以每次恢復都要重做，不是只做一次。**但這一步現在是保險，不是
+   名稱恢復的唯一途徑**：你自己呼叫的八支腳本（`launch-worker.sh`、`instruct.sh`、
+   `press-approval.sh`、`grant-peer.sh`、`set-goal.sh`、`set-worker-field.sh`、
+   `shutdown-worker.sh`、`team-status.sh`）在做自己的工作之前，都會先比對你這個 pane 目前掛的
+   agent 名稱跟 `team.json` 的 `.orchestrator_name` 是否一致，不一致就試著改回去——所以即使你忘
+   了跑這一步，下一次呼叫上述任何一支腳本時，它會順手試著把名字修回來。**這是盡力而為，不是保
+   證**：`agent get`／`agent rename` 任一失敗都只在 stderr 留一行說明，腳本照常往下做完自己原本
+   的工作，名字有沒有真的修好得另外確認；呼叫的位置各腳本也不一致（有幾支排在自己的參數與守衛檢
+   查之後才呼叫，為的是保住「守衛擋下時完全不呼叫任何 herdr」這個既有保證），別假設它一定發生在
+   腳本的最前面。三個邊界要知道：一、這道自我續租有一道 pane 守衛——`team.json` 的
+   `.orchestrator_pane` 有記錄、而且不等於呼叫端的 `HERDR_PANE_ID` 時，直接無動作返回（不然一個
+   好奇的 worker 跑一次 `team-status.sh` 就能把你的名字搬到它的 pane 上；worker 改跑
+   `team-init.sh` 自己命名那條路，由那支腳本自己的 worker 環境守衛擋掉，見「腳本一覽」那一
+   列）；欄位缺席的舊 registry 無從比對，不擋，照樣續租。二、同一道守衛也會擋掉合法的你：這次的
+   session 若落在跟 `.orchestrator_pane` 記錄不同的 pane 或 tab 上（例如人在另一個 pane 重開了一
+   個），自我續租一樣不動作，而且完全靜默、不印任何東西。三、`watchdog.sh` 不在那八支之內——它是
+   背景行程，沒有立場代表你這個身分。**即使如此這一步仍然要跑**：自我續租只管名稱本身，第 3 步
+   要收回的持有旗標與升級閂鎖、以及本節末講的警示 tab label 還原，都不會被它觸發；而上面第二個
+   邊界只有這一步救得回來——`team-init.sh --recover` 會用你目前這個 pane 重寫
+   `.orchestrator_pane`，不跑它，那八支腳本的自我續租會永遠靜默地跳過你。
 2. **讀 registry 重建進度**：讀 `team.json` 與各 `workers/<name>.json`，重建目前有哪些 worker、各自
    的關卡（`.stage`）。
 3. **收回中斷時留下的持有旗標與升級閂鎖**（同一次 `team-init.sh --recover` 呼叫的另一半）：把所有
@@ -243,8 +262,17 @@ orchestrator session 重啟之後，依序走六步。第 1 步與第 3 步由�
 
 **這個順序不是任意的偏好，兩端各有理由**：`watchdog.sh` 排最後，是因為掛起當下會補發事件，而那時
 進度表必須已經在手上。重新命名排最前，理由已經不是「後面幾步要靠它聯絡 worker」（手動補送那一步已
-經拿掉了），而是看門狗要有一個登記好的名字才送得到升級——`team.json` 的 `.orchestrator_name` 是空
-的時候，升級照樣落成一筆 inbox 記錄，但投遞標成失敗，你不會收到任何通知。
+經拿掉了），也不是「不做就沒人會知道名字掉了」——名字從 herdr 消失時，升級照樣落成一筆 inbox 記
+錄、投遞標成失敗，而這件事多半不是靜默的：看門狗那一輪查不到你的名字就會拉警報，把你自己的 tab
+label 換成帶 `🚨 ORCHESTRATOR NAME LOST: ` 前綴的樣子，人在 herdr 的 tab 列上一眼就看得到；worker
+上行撞到同一件事時 `report.sh` 也會拉同一個警報，並把那筆記錄的 `.delivery` 記成
+`orchestrator_lost`。**但這道警報同樣是盡力而為，不能當成唯一的偵測手段**：`team.json` 的
+`.orchestrator_tab`／`.orchestrator_tab_label` 任一缺席（例如這個功能上線之前建立的舊 registry）、
+`tab get` 讀不到目前的 label、或 `tab rename` 失敗，三種情況都只在 stderr 留一行，tab 上不會出現任
+何警示字樣。投遞失敗的記錄不會永遠卡住，名字恢復可查之後會被看門狗的補投迴圈重投回來。排最前真正
+剩下的理由是另外兩件事：警示字樣只有 `team-init.sh --recover` 會還原（它比對目前的 tab label 與
+`team.json` 記的 `.orchestrator_tab_label`，不同就改回去），不跑它，tab 上的警報就一直亮著；而看
+門狗要送得到那些升級，終究還是得有一個登記好、查得到的名字。
 
 ## 腳本一覽
 
@@ -266,7 +294,7 @@ orchestrator session 重啟之後，依序走六步。第 1 步與第 3 步由�
 
 | 腳本 | 呼叫時機 | 拿到結果之後怎麼判斷 |
 | --- | --- | --- |
-| `team-init.sh [--recover]` | 見「啟動流程」第 1 步；帶 `--recover` 時在主流程之外多做三件事——收回殘留的持有旗標、清空升級閂鎖、印出待補送清單——對應「中斷恢復」第 1、3 步 | 印出 `orchestrator=<名稱> registry=<路徑>`；帶 `--recover` 時額外逐行印出 `pending-resend worker=<名稱> count=<筆數>`，這幾行純粹告知積壓量，沒有要你做的下游動作——排空交給看門狗，不要自己補送 |
+| `team-init.sh [--recover]` | 見「啟動流程」第 1 步；帶 `--recover` 時在主流程之外多做四件事——還原被拉起的警示 tab label（目前的 label 與 `team.json` 記的 `.orchestrator_tab_label` 不同就改回去，這是那個警報唯一會被清除的時機）、收回殘留的持有旗標、清空升級閂鎖、印出待補送清單——對應「中斷恢復」第 1、3 步 | 印出 `orchestrator=<名稱> registry=<路徑>`；帶 `--recover` 時額外逐行印出 `pending-resend worker=<名稱> count=<筆數>`，這幾行純粹告知積壓量，沒有要你做的下游動作——排空交給看門狗，不要自己補送。這支腳本另有一個上表之外的專屬結束碼 `9`：偵測到環境變數 `AGENT_TEAM_SELF` 或 `AGENT_TEAM_ROLE` 任一存在（只有 `launch-worker.sh` 建 worker tab 時會注入它們，你自己的 session 不會有）就判定呼叫端是 worker 環境，整個拒絕執行，不呼叫任何 herdr 指令、不寫入任何 registry 欄位。理由是這支腳本只靠 `HERDR_WORKSPACE_ID` 算 orchestrator 的名稱，而 worker 跟你共用同一個 workspace id：任何 worker 呼叫到它，都會算出跟你一模一樣的名字、把名字搬到自己的 pane 上並覆寫 `.orchestrator_name`／`.orchestrator_pane`，從此你的自我續租會被 pane 守衛永久靜默地擋在外面，而且不會有任何警報（看門狗只在名字整個查不到時才響，名字被搶走時仍查得到，只是掛在錯的 pane 上） |
 | `set-goal.sh --achieve <> --success <> --not-doing <> --assumption <> [--confirmed] [--changed-by <>] [--rationale <>]` | 收斂 goal 之後、每一次要覆寫 goal 時 | 四項有缺以 `2` 結束；印出 `GOAL-SUCCESS-CHANGED version=<N>` 代表這次動到「怎樣算成功」，要轉述給使用者，沒印代表沒動到那一項 |
 | `launch-worker.sh --role <> --kind <> --cwd <> --briefing-file <> [--arg <>]... [--ack-timeout <秒>]` | goal 確認之後，逐個 role 啟動 | 成功印 `worker=<名稱> pane=<id> tab=<id> ack=ok`；結束碼 `8` 是已內部重試一次仍啟動失敗，registry 記錄已移除、`--briefing-file` 的副本仍留在 `briefings/<worker>.md`；結束碼 `6` 是識別碼取不到或 herdr 拒絕（例如建 tab 那次呼叫本身被拒），沒有寫入 registry；結束碼 `2` 是 herdr 語法錯誤（呼叫端用錯，不是啟動失敗） |
 | `instruct.sh --to <> (--text <> \| --text-file <>) [--reply-to <序號>] [--kind instruct\|decision\|goal-update\|halt]` | 下行任何指令、定案、goal 傳播；回覆 `need-you` 用 `--reply-to` | 結束碼 `0` 送達；結束碼 `7` 是對方卡在核准框、這一則進了 `.pending_resend` 待補送——重送沒有意義（問題不在這則訊息），但 `watchdog.sh` 只在那個 worker 離開 `blocked` 之後才補投，而沒有任何機制會讓它自己離開：那個框要有人處理，途徑是派調查者讀畫面判讀，可以代按的才呼叫 `press-approval.sh`，屬於不該代按的那兩類就交給人類（見「派調查者的時機」）。不去處理那個框，待補送佇列就永遠排不空，而且全程靜默；結束碼 `6` 是其他真正的拒絕（目標可能已不存在）。`0` 與 `7` 都算「發出」，兩者都會把該 worker 停在 `delivered` 的 `.stage` 撥回 `running`，看門狗的照看因此自己恢復，不必再呼叫一次 `set-worker-field.sh`。撥回有兩個例外：`.stage` 是 `closing`／`closed` 時不動，以及帶 `--kind halt` 的叫停一律不撥回（叫停不是復工，理由見「漂移處置」第 3 步）——要關一個被叫停後仍停在 `delivered` 的 worker，得自己先撥回。`--kind halt` 另有一個與關卡無關的效果，別跟上面那條混在一起看：叫停即使送達也不寫 `.last_delivered_at`，因此不會把自動推進計數歸零（見「看門狗的自動推進與升級」）。兩件事各管一邊——關卡撥回決定這個 worker 在不在照看範圍，時間戳決定它的推進預算要不要重算 |
@@ -276,7 +304,7 @@ orchestrator session 重啟之後，依序走六步。第 1 步與第 3 步由�
 | `grant-peer.sh --from <> --to <> [--revoke]` | thin command 的 `grant` 落地時；漂移處置改變了介面時 | 成功印 `from=<> to=<> granted`（或 `revoked`）；下行通知是 best-effort，送不到只印一句提示，不影響授權本身已經生效 |
 | `team-status.sh` | 中斷恢復核對哪些 tab 還活著；想看全隊概況時 | 逐行 `worker=<> stage=<> status=<> seq=<> held=<> pending_resend=<> unprocessed=<>`；某一筆座標對不上本 workspace 會被跳過，不影響其餘行 |
 | `fetch-detail.sh --seq <序號>` | 某則回報需要讀細節之前，先取路徑 | 印出絕對路徑（不含內容）；結束碼 `5` 是該序號沒有細節檔 |
-| `watchdog.sh [--once]` | goal 確認之後即掛上長駐（不帶 `--once`，不必等第一個 worker 啟動）；中斷恢復時排在最後一步才重掛 | **長駐模式必須以背景／detach 方式啟動，不得前景阻塞呼叫**——它是無界輪詢迴圈，前景呼叫逾時會被工具收掉，看門狗從此消失且不會有任何錯誤訊息，四項職責（自動推進、升級、停滯偵測、投遞重試與待補送補投）一起停止；長駐時不會自己結束。`--once` 供人工巡檢一輪。存活判準只有單向效力：`watchdog.log` 新增了 `auto-push`（真的送出一次自動推進）或任一種 `skip` 行，就證明它還活著。`skip` 的 `reason` 有三個值：`missing_pane_id`（那筆 worker 記錄沒有 pane 座標）與 `process_failed`（處理那個 worker 途中致命失敗）以 `worker=<名稱>` 為識別欄位；`retry_blocked_failed`（重投某一筆先前投遞失敗的上行記錄時致命失敗，最可能是等鎖逾時）改以 `inbox=<序號>-<worker 名稱>.json` 為識別欄位。三種都是偶發一次不必理會、同一筆反覆出現才值得追。反過來不成立——整支腳本只有這四個寫入點，升級、補投成功、停滯追蹤都不寫，所以沒有新記錄既不代表它停了、也不代表沒事可做。要補強觀測就看 inbox 有沒有新的升級記錄、或 `team-status.sh` 的欄位有沒有變化 |
+| `watchdog.sh [--once]` | goal 確認之後即掛上長駐（不帶 `--once`，不必等第一個 worker 啟動）；中斷恢復時排在最後一步才重掛 | **長駐模式必須以背景／detach 方式啟動，不得前景阻塞呼叫**——它是無界輪詢迴圈，前景呼叫逾時會被工具收掉，看門狗從此消失且不會有任何錯誤訊息，四項職責（自動推進、升級、停滯偵測、投遞重試與待補送補投）一起停止；長駐時不會自己結束。`--once` 供人工巡檢一輪。存活判準只有單向效力：`watchdog.log` 新增了 `auto-push`（真的送出一次自動推進）、任一種 `skip` 行、或 `alert reason=orchestrator_name_missing`（這一輪查不到 orchestrator 的名稱，拉了一次視覺警報，見「中斷恢復」），就證明它還活著。`skip` 的 `reason` 有四個值：`missing_pane_id`（那筆 worker 記錄沒有 pane 座標）與 `process_failed`（處理那個 worker 途中致命失敗）以 `worker=<名稱>` 為識別欄位；`retry_blocked_failed`（重投某一筆先前投遞失敗的上行記錄時致命失敗，最可能是等鎖逾時）改以 `inbox=<序號>-<worker 名稱>.json` 為識別欄位；`agent_list_failed`（這一輪 `herdr agent list` 本身失敗，整輪跳過）不帶識別欄位，連清單都沒拿到就沒有東西可以逐一識別。四種 `skip` 與那一行 `alert` 都是偶發一次不必理會、同一筆反覆出現才值得追。反過來不成立——整支腳本只有這六個寫入點，升級、補投成功、停滯追蹤都不寫，所以沒有新記錄既不代表它停了、也不代表沒事可做。要補強觀測就看 inbox 有沒有新的升級記錄、或 `team-status.sh` 的欄位有沒有變化 |
 
 ### worker 端腳本
 

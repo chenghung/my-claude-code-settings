@@ -208,6 +208,22 @@ else
   args_json="$(printf '%s\n' "${native_args[@]}" | jq -R . | jq -s -c .)"
 fi
 
+# ---- 自我續租（線上故障修正新增，位置為最終審查修正）----
+# 排在這裡而不是緊接 hat_require_herdr_env：本腳本的本地判斷範圍比
+# instruct.sh／grant-peer.sh 等腳本大得多（參數解析、必填檢查、
+# --ack-timeout／--kind 格式、--briefing-file 存在性、開工閘門、名稱正
+# 規化、原生引數序列化），這裡是它們全部做完、下面第一次真正呼叫
+# herdr（迴圈第 2 步 `hat_herdr tab create`）之前的最後一點——跟另外四
+# 支既有寫法「參數解析、目標名稱格式、workspace 邊界都做完才續租」是
+# 同一個精神，只是本腳本沒有既有 target 可驗 workspace 邊界（它自己建
+# 立新座標，`hat_assert_workspace` 要等 tab create 回來才驗得到，見檔
+# 頭「入口守衛」一節），因此邊界落在「所有本地判斷結束」而不是「workspace
+# 邊界檢查之後」。放在這裡而不是重試迴圈之前的更早處，能讓「上面任一
+# 本地判斷用錯時完全不呼叫任何 herdr」這個既有保證不失真。正當性、絕
+# 對不可以被 watchdog.sh 呼叫的理由、失敗時的行為，全部見 lib/common.sh
+# hat_renew_orchestrator_name 的檔頭。
+hat_renew_orchestrator_name
+
 attempt=1
 launch_ok=0
 last_failure_reason=""

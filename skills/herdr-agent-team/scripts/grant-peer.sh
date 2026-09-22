@@ -140,6 +140,15 @@ hat_assert_workspace "$from_pane_id"
 to_pane_id="$(hat_json_get "$to_file" '.pane_id')"
 hat_assert_workspace "$to_pane_id"
 
+# ---- 自我續租（線上故障修正新增）----
+# 放在這裡而不是緊接 hat_require_herdr_env：本函式一定會呼叫
+# `hat_herdr agent get`（必要時還會 rename），若放在上面所有純本地判
+# 斷（參數解析、--from／--to 名稱格式、workspace 邊界）之前，會讓「這
+# 幾類用錯或守衛擋下時完全不呼叫任何 herdr」這個既有保證失真。正當
+# 性、絕對不可以被 watchdog.sh 呼叫的理由、失敗時的行為，全部見
+# lib/common.sh hat_renew_orchestrator_name 的檔頭。
+hat_renew_orchestrator_name
+
 if [ "$revoke" -eq 1 ]; then
   hat_grant_remove "$from_file" "$to"
   printf 'from=%s to=%s revoked\n' "$from" "$to"

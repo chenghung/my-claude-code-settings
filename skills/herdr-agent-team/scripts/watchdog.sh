@@ -95,17 +95,17 @@
 #    ---- 升級去重（線上故障修正新增）----
 #    上面這個動作原本沒有任何去重：只要觸發條件還成立，下一輪 poll 就
 #    原封不動再發一次（線上實測單一句子最高重複 56 次，時間戳間隔穩定
-#    在一個 poll 間隔）。四個升級呼叫點（豁免到期、停滯、blocked、達上
-#    限）改經 hat_wd_escalate_once 統一去重：同一個條件只在「從不成立
-#    變成成立」的那一輪送出，持續成立時最多每隔 AGENT_TEAM_ESCALATION_
-#    REPEAT_SECONDS 秒重提一次；四個呼叫點在控制流程上互斥（同一輪至
-#    多命中一個就會 `return 0`），因此只需要記「目前是哪個條件」
-#    （.escalation_active）與「上次真的送出的時間」（.escalation_
-#    last_at）兩個欄位，不需要每個條件各自一組。條件不再成立的那一輪
-#    （四個升級分支都沒有觸發）呼叫 hat_wd_escalation_clear 把
-#    .escalation_active 清成 null，讓下次重新成立時不必等重提間隔、能
-#    立刻再發——這正是「從 blocked 變成達上限屬於不同條件，必須立刻發
-#    出」這個要求的實作方式：條件名不同就等同「重新成立」。
+#    在一個 poll 間隔）。五個升級呼叫點（豁免到期、停滯、blocked、達上
+#    限、worker 身分消失）改經 hat_wd_escalate_once 統一去重：同一個條
+#    件只在「從不成立變成成立」的那一輪送出，持續成立時最多每隔
+#    AGENT_TEAM_ESCALATION_REPEAT_SECONDS 秒重提一次；五個呼叫點在控制
+#    流程上互斥（同一輪至多命中一個就會 `return 0`），因此只需要記
+#    「目前是哪個條件」（.escalation_active）與「上次真的送出的時間」
+#    （.escalation_last_at）兩個欄位，不需要每個條件各自一組。條件不
+#    再成立的那一輪（五個升級分支都沒有觸發）呼叫 hat_wd_escalation_
+#    clear 把 .escalation_active 清成 null，讓下次重新成立時不必等重
+#    提間隔、能立刻再發——這正是「從 blocked 變成達上限屬於不同條件，
+#    必須立刻發出」這個要求的實作方式：條件名不同就等同「重新成立」。
 #
 # 3. 停滯偵測：`.stage` 是 running（見下方「.stage 守衛」一節）、且
 #    worker 的 state_change_seq 連續超過 AGENT_TEAM_STALL_SECONDS 沒有
@@ -146,8 +146,8 @@
 # done／unknown 三種。
 #
 # ---- .stage 守衛（線上故障修正新增，修正迴圈第二輪擴大範圍）：只有
-#      running 才自動推進、才判停滯、才發達上限升級；三項對兩項——
-#      blocked 升級與豁免到期升級不受影響 ----
+#      running 才自動推進、才判停滯、才發達上限升級；三項對三項——
+#      blocked 升級、豁免到期升級、worker 身分消失升級不受影響 ----
 # `.stage` 的生命週期是 running → delivered →（可回到 running）→
 # closing → closed（見 set-worker-field.sh 檔頭「.stage 的值另有一層
 # 驗證」一節）；`delivered`、`closing`、`closed` 三者是 worker 依照
@@ -178,18 +178,25 @@
 # （blocked 升級）與豁免到期升級不受這個守衛影響，任何 stage 下都照常
 # 發出——核准框卡住與定案請求沒回覆都是任何 stage 下都需要人介入的真
 # 實阻塞（前者）或 orchestrator 自己欠的回覆（後者），跟 worker 該不該
-# 被推無關。第 2b 這個分支不成立時（不論是計數真的還沒到，或是 `.stage`
+# 被推無關。worker 身分消失升級同樣不受這個守衛影響（見下方「worker
+# 身分消失」一節）：那個檢查排在讀 `.stage` 之前，任何 stage 下都照常
+# 升級，理由是同一套——pane 佔用者已經換人是任何 stage 下都需要人重新
+# 啟動的真實情況，跟 worker 原本該不該被推無關。第 2b 這個分支不成立
+# 時（不論是計數真的還沒到，或是 `.stage`
 # 不是 running）都會落到 hat_wd_process_worker 既有的升級閂鎖清空點
 # （見上方「升級去重」一節），讓 worker 之後真的回到 running、又推到上
 # 限時能立刻重新發出一次，不被重提間隔壓抑。
 #
 # 4. 投遞重試與待補送補投：兩種佇列，各自的「對象」不同。
-#    a) inbox/ 裡 .delivery 是 blocked 的記錄——這些是 worker 上行時
-#       orchestrator 剛好卡在核准框，投遞失敗（見 report.sh 檔頭「投
-#       遞失敗不是本腳本的失敗」一節）。這裡的「對象」是 orchestrator
-#       自己：只在這一輪觀測到 orchestrator 本人的狀態不是 blocked
-#       時才重投，逐筆呼叫 `hat_herdr agent prompt <orchestrator>
-#       <summary>`，成功就把該筆 .delivery 改成 delivered。
+#    a) inbox/ 裡 .delivery 是 blocked 或 orchestrator_lost 的記錄——
+#       前者是 worker 上行時 orchestrator 剛好卡在核准框，後者是
+#       orchestrator 的 agent 名稱當時已經從 herdr 消失（見 report.sh
+#       檔頭「投遞失敗不是本腳本的失敗」一節）。這裡的「對象」都是
+#       orchestrator 自己：只在這一輪觀測到 orchestrator 本人的名稱查
+#       得到、且狀態不是 blocked 時才重投，逐筆呼叫 `hat_herdr agent
+#       prompt <orchestrator> <summary>`，成功就把該筆 .delivery 改成
+#       delivered。名稱查不到時另外拉警報，見下方 `hat_wd_retry_
+#       blocked_inbox` 函式本體。
 #    b) workers/*.json 的 .pending_resend 清單——這些是 orchestrator
 #       下行時那個 worker 剛好卡在核准框（見 instruct.sh 檔頭
 #       「blocked 是待補送」一節）。這裡的「對象」是那個 worker：只在
@@ -345,6 +352,72 @@
 # 行；用 `inbox=<檔名>` 取代 `worker=` 當識別欄位，因為檔名本身就是
 # `<seq>-<worker>.json`，已經帶著 worker 名稱，不必為了印一次 worker
 # 名稱而多冒一次讀取失敗的風險。
+#
+# ---- 線上故障修正新增之一：worker 身分消失時宣告死亡，不再自動推進
+#      （規格「設計項目一」）----
+# 依據：機器重開機後 herdr 用原本的 argv 把 pane 裡的 CLI 重新拉起，
+# codex／agy／opencode 沒有 resume 概念，回來的是一個空白、沒讀過任何
+# briefing 的陌生 CLI；把名字補回去等於把下行送進這個陌生 CLI，比送不
+# 到更糟（worker 的名稱因此不比照 orchestrator 那樣自我續租，見規格
+# 「設計項目一」）。
+#
+# 做法：`hat_wd_process_worker` 一開始（早於 4b 待補送補投、早於任何
+# 自動推進／停滯偵測／升級評估）用這一輪已經拿到的 `$whitelisted`，以
+# 這個 worker 記錄的 `pane_id` 為 key 查（`hat_wd_lookup_by_pane`，不
+# 是下面才會用到、以 name 為 key 的 `hat_wd_lookup`）：查到的 name 若
+# 不等於這個 worker 登記的名稱——含查無此 pane（該 pane 這一輪整個不
+# 在清單裡）——一律視為不符；持續不符超過 `HAT_IDENTITY_MISMATCH_
+# GRACE_SECONDS`（獨立審查修正新增的緩衝，見 `hat_wd_process_worker`
+# 「worker 身分檢查」一節）才真的視為身分已經消失，經既有的升級去重機
+# 制（`hat_wd_escalate_once`／`.escalation_active` 閂鎖）升級一次，條件
+# 名 `identity_lost`，跟既有四個（needyou_expired／stall／
+# blocked／auto_push_limit）互斥；不論是這一輪只記錄不符（緩衝中）還是
+# 真的升級，都直接 `return 0`，這一輪對這個 worker 的其餘處理（自動推
+# 進、停滯偵測、待補送補投）全部跳過。
+#
+# 緩衝期間會新增一個 registry 欄位 `.identity_mismatch_since`（獨立審
+# 查修正）：記「這一連串不符第一次被觀察到的時間」，`return 0` 本身達
+# 成「這一輪不再對它自動推進」，但單靠它不足以分辨「第一次觀察到不
+# 符」與「已經持續不符一段時間」，緩衝需要這個時間戳才能判斷門檻是否
+# 已過；名稱對上時清成 null，不留殘影，見 lib/common.sh 欄位白名單一節
+# 該欄位的完整說明。
+#
+# 這裡不呼叫 `hat_renew_orchestrator_name`：那個函式的正當性建立在
+# 「呼叫者就是那個 pane 的佔用者」，看門狗是外部行程，沒有立場幫任何
+# worker（或 orchestrator）補名字，見 lib/common.sh 該函式檔頭「絕對不
+# 可以被 watchdog.sh 呼叫」一節。
+#
+# ---- 線上故障修正新增之二：hat_wd_retry_blocked_inbox 查無
+#      orchestrator 名稱時不再靜默（規格「設計項目三」看門狗側）----
+# 舊版在 `.orchestrator_name` 讀不到時直接 `return 0`：不重試、不記
+# 錄、不通知任何人。這是跟 worker 上行 report.sh 對稱的另一半：worker
+# 那一側查無 orchestrator（`agent_not_found`）時會拉警報（見 lib/
+# common.sh `hat_alert_orchestrator_tab`），看門狗這一側同樣的情況若
+# 完全靜默，等於這個訊號只有 worker 剛好在同一時間點回報才會被人看
+# 見。修法：查不到時改呼叫同一個共用的拉警報函式，並在 watchdog.log
+# 留一行 `alert reason=orchestrator_name_missing at=...`，才返回。跟
+# 下面第二個早退分支（orchestrator 這一輪觀測到的狀態是 blocked）是
+# 兩件不同的事，不受這裡影響：那是「名稱還在、只是暫時卡在核准框」，
+# 保守跳過、等它離開再重投才是正確行為，不該套用「名稱查不到」的處置
+# ----
+#
+# ---- 線上故障修正新增之三：agent list 失敗只跳過該輪，不得把長駐迴
+#      圈帶走（規格「設計項目五」）----
+# `hat_wd_run_once` 呼叫 `hat_herdr agent list` 取得這一輪的觀測資
+# 料，這一步原本是裸賦值——本檔掛 `set -euo pipefail`，herdr 只要拒絕
+# 一次，errexit 就會在讀到結束碼之前把整個長駐輪詢行程帶走，而且完全
+# 靜默（沒有任何 skip 記錄，因為連 `hat_wd_run_once` 都沒能跑完）。herdr
+# server 重啟正好會同時觸發名稱被清空與 `agent list` 失敗兩件事，若不
+# 修這一項，上面「設計項目一」的身分檢查根本不會執行。
+#
+# 修法：跟 `hat_wd_escalate`／`hat_json_set` 已有的先例一樣，用
+# `agents_json="$(hat_herdr agent list)" || rc=$?` 接住結束碼；失敗只
+# 在 watchdog.log 留一行 `skip reason=agent_list_failed rc=... at=...`
+# 並 `return 0`（略過這一輪其餘所有處理，含 4a 補投與逐一處理
+# worker），不呼叫 `hat_die`。`--once` 與長駐模式一律同樣處理（見上方
+# 同名一節）：`--once` 這一輪等於什麼都沒做、以 0 結束；長駐模式的
+# `while :; do hat_wd_run_once; sleep ...; done` 則會在 `sleep` 之後
+# 自然進入下一輪，不會被這一次失敗帶走。
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -357,6 +430,20 @@ hat_require_herdr_env
 readonly HAT_POLL_SECONDS_DEFAULT=20
 readonly HAT_STALL_SECONDS_DEFAULT=1800
 readonly HAT_AUTO_PUSH_LIMIT_DEFAULT=10
+
+# ---- worker 身分消失緩衝門檻：固定值，不比照上面三個走環境變數覆寫
+#      （獨立審查修正，見 hat_wd_process_worker「worker 身分檢查」一節
+#      與 lib/common.sh `.identity_mismatch_since` 欄位說明）----
+# 依據：launch-worker.sh 的 `agent start` 逾時上限是 30 秒
+# （HAT_AGENT_START_TIMEOUT_MS），啟動失敗會內部重試一次，最壞情況兩次
+# 嘗試都逼近逾時上限，連續觀察到「pane 存在但名稱對不上」的窗口理論上
+# 可以逼近 60 秒；90 秒是在這個理論值上再留 30 秒餘裕（涵蓋兩次嘗試之
+# 間 tab close／tab create／registry 寫入這些非零但通常很短的呼叫往返
+# 時間，這段往返時間本身沒有實測依據，是讀原始碼推得的上界，不是量出
+# 來的）。不做成環境變數：這是本檔內部的緩衝門檻，不是使用者要調整的
+# 業務門檻，做成可覆寫會讓 SKILL.md「門檻值」一節那張表少列一項，修表
+# 不在本次職責範圍內。
+readonly HAT_IDENTITY_MISMATCH_GRACE_SECONDS=90
 
 poll_seconds="${AGENT_TEAM_POLL_SECONDS:-$HAT_POLL_SECONDS_DEFAULT}"
 stall_seconds="${AGENT_TEAM_STALL_SECONDS:-$HAT_STALL_SECONDS_DEFAULT}"
@@ -416,7 +503,7 @@ hat_watchdog_allocate_seq() {
   lock_fd=""
   exec {lock_fd}>"$lock_file"
   # ---- 線上故障修正：等鎖要有逾時上限 ----
-  # 這是 hat_wd_escalate 配號的唯一入口，四個升級呼叫點全部經過它；審
+  # 這是 hat_wd_escalate 配號的唯一入口，五個升級呼叫點全部經過它；審
   # 查發現本函式沒有套用 lib/common.sh 新增的逾時機制，而它掛住的後果
   # 比一次乾淨的失敗更糟——掛住不是 exit，hat_wd_process_worker 外面
   # 那層 `( ... ) || rc=$?` 子殼保護完全接不到（子殼根本不會返回），
@@ -453,6 +540,17 @@ hat_watchdog_allocate_seq() {
 hat_wd_lookup() {
   local whitelisted="$1" name="$2"
   printf '%s\n' "$whitelisted" | awk -F'\t' -v n="$name" '$1 == n'
+}
+
+# hat_wd_lookup_by_pane <whitelisted_tsv> <pane_id>
+# 從六欄 TSV 裡篩出 pane_id 欄（第五欄）等於 <pane_id> 的那一行；找不到
+# 印空字串。跟 hat_wd_lookup（以 name 為 key）互補：後者若 pane 的佔用
+# 者已經換人，會直接查無此名，分不出「pane 還在、名字換了」跟「pane
+# 這一輪剛好沒出現在清單裡」的差別——身分檢查（見檔頭「worker 身分消
+# 失」一節）要問的正是前者，必須以 pane_id 為 key 才問得出來。
+hat_wd_lookup_by_pane() {
+  local whitelisted="$1" pane_id="$2"
+  printf '%s\n' "$whitelisted" | awk -F'\t' -v p="$pane_id" '$5 == p'
 }
 
 # hat_wd_needyou_pending <registry_root> <worker>
@@ -521,6 +619,20 @@ hat_wd_needyou_oldest_created_at() {
 # 見檔頭「升級」一節：落一筆 inbox 記錄（token=fyi，worker=<worker>），
 # 並 best-effort 呼叫 hat_herdr agent prompt 通知 orchestrator。
 #
+# ---- 投遞失敗依 error.code 分類，不是一律 blocked（獨立審查修正）----
+# 本函式是所有看門狗自發升級（含豁免到期、停滯、blocked、達上限、
+# identity_lost 五個呼叫點）共用的唯一投遞點，跟 report.sh「投遞失敗
+# 不是本腳本的失敗，但依 error.code 分三種處理，不能完全靜默」一節同
+# 一套分類：`agent_not_found`（orchestrator 的 agent 名稱已經從 herdr
+# 消失）時 `.delivery` 記 "orchestrator_lost"、並呼叫
+# `hat_alert_orchestrator_tab` 拉警報；其餘（含 `agent_blocked`）維持
+# 原本的 "blocked"。讀 `AGENT_TEAM_HERDR_ERROR_CODE` 必須在
+# `orchestrator_name` 非空、真的呼叫過 `hat_herdr` 之後才讀；
+# `orchestrator_name` 本身為空（team 從未初始化過名稱）這條路徑完全沒
+# 呼叫 `hat_herdr`，`herdr_error_code` 留空字串，落到下面的 `blocked`
+# 分支，不誤讀上一次呼叫殘留的全域值（見 lib/common.sh `hat_herdr`
+# 檔頭「呼叫端如何拿到 error.code」一節）。
+#
 # ---- 補逾時機制時發現的既有缺陷（下面 `|| exit "$?"` 已修正，這段
 #      描述的是修正前、已被推翻的行為，不是現狀）----
 # 本函式一路都在 `( hat_wd_process_worker ... ) || rc=$?` 這個子殼裡執
@@ -539,7 +651,7 @@ hat_wd_needyou_oldest_created_at() {
 # 未修正版本。
 hat_wd_escalate() {
   local registry_root="$1" orchestrator_name="$2" worker="$3" summary="$4"
-  local seq inbox_file created_at rc
+  local seq inbox_file created_at rc herdr_error_code
 
   seq="$(hat_watchdog_allocate_seq "$registry_root")" || exit "$?"
   inbox_file="$registry_root/inbox/${seq}-${worker}.json"
@@ -554,13 +666,18 @@ hat_wd_escalate() {
   hat_json_set "$inbox_file" '.created_at' "$(hat_json_string "$created_at")"
 
   rc=0
+  herdr_error_code=""
   if [ -n "$orchestrator_name" ]; then
     hat_herdr agent prompt "$orchestrator_name" "$summary" >/dev/null || rc=$?
+    herdr_error_code="$AGENT_TEAM_HERDR_ERROR_CODE"
   else
     rc=1
   fi
   if [ "$rc" -eq 0 ]; then
     hat_json_set "$inbox_file" '.delivery' '"delivered"'
+  elif [ "$herdr_error_code" = "agent_not_found" ]; then
+    hat_json_set "$inbox_file" '.delivery' '"orchestrator_lost"'
+    hat_alert_orchestrator_tab "$registry_root"
   else
     hat_json_set "$inbox_file" '.delivery' '"blocked"'
   fi
@@ -568,8 +685,9 @@ hat_wd_escalate() {
 
 # hat_wd_escalate_once <registry_root> <orchestrator_name> <worker> \
 #   <worker_file> <condition> <repeat_seconds> <summary>
-# 見檔頭「升級去重」一節：<condition> 是四個升級呼叫點互斥的其中一個
-# 條件名（needyou_expired／stall／blocked／auto_push_limit）。跟
+# 見檔頭「升級去重」一節：<condition> 是五個升級呼叫點互斥的其中一個
+# 條件名（needyou_expired／stall／blocked／auto_push_limit／
+# identity_lost）。跟
 # <worker_file> 的 .escalation_active 不同（含缺席，即從不成立變成成
 # 立，或换成別的條件）就視為新的一次；相同就檢查距離 .escalation_
 # last_at 是否已經超過 <repeat_seconds>，超過才重提一次，沒超過就整段
@@ -615,7 +733,7 @@ hat_wd_escalate_once() {
 }
 
 # hat_wd_escalation_clear <worker_file>
-# 見檔頭「升級去重」一節：這一輪四個升級條件都沒有成立時由呼叫端呼
+# 見檔頭「升級去重」一節：這一輪五個升級條件都沒有成立時由呼叫端呼
 # 叫，把 .escalation_active 清成 null，讓下次重新成立時不必等
 # AGENT_TEAM_ESCALATION_REPEAT_SECONDS、能立刻再發一次。.escalation_
 # active 本來就缺席（從未升級過，或上一輪已經清過）時是安全的無動
@@ -662,20 +780,60 @@ hat_wd_apply_delivery_reset() {
 
 # hat_wd_retry_blocked_inbox <registry_root> <orchestrator_name> <whitelisted>
 # 見檔頭「投遞重試與待補送補投」a) 一節：inbox/ 裡 .delivery 是
-# blocked 的記錄，orchestrator 目前不是 blocked 時逐筆重投一次。
-# orchestrator 這一輪查無觀測值（未知）時保守跳過，不猜測。
+# blocked 或 orchestrator_lost 的記錄，orchestrator 目前不是 blocked
+# 時逐筆重投一次。orchestrator 這一輪查無觀測值（名稱已經從 herdr 消
+# 失，即 orch_status 為空）時拉警報、記一行 log 之後保守跳過這一輪的
+# 重投，不猜測，見檔頭「線上故障修正新增之二」一節；<orchestrator_
+# name> 本身缺席（team.json 從未寫入這個欄位，team 從未初始化過）則單
+# 純跳過、不拉警報——這種情況下通常也還沒有 .orchestrator_tab／
+# .orchestrator_tab_label 可用。
+#
+# ---- 狀態轉換才寫 log：不是每一輪都無條件追加一行（獨立審查修正）----
+# 上面「查無觀測值」這個分支原本只要 orch_status 持續是空，每一輪
+# （預設 20 秒一次）都會無條件在 watchdog.log 新增一行、也多打一次
+# `hat_alert_orchestrator_tab` 內部的 `tab get` 往返——這正是本檔檔頭與
+# `hat_wd_escalate_once` 要根除的那種「同一個條件每輪重發一次」問題，
+# 只是在這條路徑上重新出現。`hat_alert_orchestrator_tab` 本身仍然每輪
+# 都呼叫（它內部對 `tab rename` 已經冪等，多打的只有一次唯讀的
+# `tab get`，成本遠低於重複寫 log），但 log 行只在「上一輪是否已經處
+# 於這個警報狀態」真的改變時才寫：team.json 的 `.orchestrator_alert_
+# active`（本次修正新增，見 lib/common.sh 欄位白名單一節）記這個布林
+# 狀態，從 false／缺席變成 true 的那一輪才寫 log，之後持續是 true 不再
+# 重寫；名稱下一輪恢復可查時清回 false，再消失一次就又是新的一次轉
+# 換，可以再寫一次。這是「不成立→成立」半邊的轉換去重，不是時間節
+# 流——沒有依賴任何固定重提間隔。
 hat_wd_retry_blocked_inbox() {
   local registry_root="$1" orchestrator_name="$2" whitelisted="$3"
   local orch_line orch_status f delivery worker summary rc
+  local team_json alert_active
 
   [ -n "$orchestrator_name" ] || return 0
 
+  team_json="$registry_root/team.json"
   orch_line="$(hat_wd_lookup "$whitelisted" "$orchestrator_name")"
   orch_status=""
   if [ -n "$orch_line" ]; then
     orch_status="$(printf '%s' "$orch_line" | cut -f3)"
   fi
-  if [ -z "$orch_status" ] || [ "$orch_status" = "blocked" ]; then
+  if [ -z "$orch_status" ]; then
+    hat_alert_orchestrator_tab "$registry_root"
+    alert_active="$(jq -r '.orchestrator_alert_active // empty' "$team_json" 2>/dev/null || true)"
+    if [ "$alert_active" != "true" ]; then
+      printf 'alert reason=orchestrator_name_missing at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        >> "$registry_root/watchdog.log"
+      hat_json_set "$team_json" '.orchestrator_alert_active' 'true'
+    fi
+    return 0
+  fi
+
+  # ---- 名稱這一輪恢復可查：清掉警報狀態，讓下一次消失算新的一次轉換
+  #      ----
+  alert_active="$(jq -r '.orchestrator_alert_active // empty' "$team_json" 2>/dev/null || true)"
+  if [ "$alert_active" = "true" ]; then
+    hat_json_set "$team_json" '.orchestrator_alert_active' 'false'
+  fi
+
+  if [ "$orch_status" = "blocked" ]; then
     return 0
   fi
 
@@ -689,7 +847,10 @@ hat_wd_retry_blocked_inbox() {
     rc=0
     (
       delivery="$(jq -r '.delivery // empty' "$f")"
-      [ "$delivery" = "blocked" ] || exit 0
+      case "$delivery" in
+        blocked | orchestrator_lost) ;;
+        *) exit 0 ;;
+      esac
 
       worker="$(jq -r '.worker // empty' "$f")"
       summary="$(jq -r '.summary // empty' "$f")"
@@ -765,7 +926,10 @@ hat_wd_retry_pending_resend() {
 # hat_wd_process_worker <registry_root> <orchestrator_name> <worker> \
 #   <whitelisted> <stall_seconds> <auto_push_limit> <needyou_limit_seconds> \
 #   <escalation_repeat_seconds>
-# 對單一 worker 依序執行：4b) 待補送補投 → 讀取這一輪觀測值 → 更新
+# 對單一 worker 依序執行：0) worker 身分檢查（線上故障修正新增，見檔頭
+# 「worker 身分消失」一節；pane 上的名稱換了，持續不符超過緩衝門檻才
+# 升級一次，緩衝中或已升級這一輪其餘處理都全部跳過，早於 4b） → 4b)
+# 待補送補投 → 讀取這一輪觀測值 → 更新
 # stamp 追蹤 → 豁免的時間上限到期就直接升級（檔頭同名一節，不看
 # status，不受 .stage 守衛影響） → 2a) blocked 升級（不受豁免與 .stage
 # 守衛影響；排在 3) 之前，見上方「修正迴圈：blocked 升級搬到停滯偵測
@@ -780,8 +944,8 @@ hat_wd_retry_pending_resend() {
 # Critical」一節），因此這個順序跟後面的自動推進評估互不影響，純粹是
 # 「先把積壓的事做完」。
 #
-# ---- 升級閂鎖清空的位置：只在確定四個條件這一輪都沒有成立時 ----
-# 四個升級呼叫點都經 hat_wd_escalate_once 去重（見檔頭「升級去重」一
+# ---- 升級閂鎖清空的位置：只在確定五個條件這一輪都沒有成立時 ----
+# 五個升級呼叫點都經 hat_wd_escalate_once 去重（見檔頭「升級去重」一
 # 節），呼叫端只需要在「這一輪確定沒有任何條件成立」的三個退出點呼叫
 # hat_wd_escalation_clear：unknown 直接跳過、held 直接跳過、以及 2b
 # （達上限）判定為假之後——這一點同時涵蓋後面「豁免跳過」與「送出自動
@@ -807,6 +971,7 @@ hat_wd_process_worker() {
   local needyou_expired needyou_oldest needyou_seq needyou_created_at
   local needyou_created_epoch needyou_wait_elapsed
   local pending_resend_count
+  local pane_line pane_name identity_mismatch_since
 
   worker_file="$registry_root/workers/$worker.json"
   [ -f "$worker_file" ] || return 0
@@ -829,15 +994,91 @@ hat_wd_process_worker() {
     return 0
   fi
 
-  hat_wd_retry_pending_resend "$worker" "$worker_file" "$whitelisted"
-
-  line="$(hat_wd_lookup "$whitelisted" "$worker")"
-  if [ -z "$line" ]; then
-    # 這一輪的 agent list 裡找不到這個已註冊的 worker（名稱可能被清
-    # 空，或暫時性的列表落差），沒有觀測值可用，跳過這一輪的自動推
-    # 進／升級／停滯評估，下一輪再看。
+  # ---- worker 身分檢查（線上故障修正新增，見檔頭「worker 身分消失」
+  #      一節）：這個 pane 上目前掛的名稱是否還是這個 worker 登記的名
+  #      稱，早於待補送補投與其餘任何評估，讓身分消失時「這一輪對它其
+  #      餘處理全部跳過」是真的全部，不只是自動推進 ----
+  # 用這一輪已經拿到的 $whitelisted 以 pane_id 為 key 查（hat_wd_lookup_
+  # by_pane），不是下面幾行才會用到、以 name 為 key 的 hat_wd_lookup：
+  # 後者若 pane 佔用者已經換人，會直接查無此名，分不出「pane 還在、名
+  # 字換了」跟「pane 這一輪剛好沒出現在清單裡」；本節要問的正是前者，
+  # 而兩者（名字換了、或整個不在清單裡）依規格「設計項目一」都一律視
+  # 為不符。
+  #
+  # ---- 不符不等於立刻升級：先緩衝，持續不符超過門檻才真的升級（獨立
+  #      審查修正）----
+  # 這裡原本一偵測到不符就立刻升級，但兩個正常的過渡期看起來跟真正的
+  # 身分消失一模一樣：一、launch-worker.sh 第 3 步把 `.pane_id` 寫進
+  # workers/<name>.json 早於第 4 步 `agent start`，而 `agent start` 有
+  # 30 秒逾時、失敗還會內部重試一次——這段期間 pane 已經存在但 herdr 還
+  # 沒把任何名稱綁上去，`agent list` 對它的名稱欄位是空的，最壞情況兩
+  # 次嘗試都逼近逾時上限，連續不符窗口可以長達 60 秒上下；二、
+  # shutdown-worker.sh 在 `tab close` 之後還要做交接檔複製與三步記錄歸
+  # 檔才 `rm -f "$worker_file"`，這段純檔案 I/O 的窗口通常遠短於一個輪
+  # 詢間隔。對這兩種正常過渡期立刻升級，是比舊版（用名稱查、查無此名
+  # 時靜默跳過）更糟的退步——舊版這裡不會有任何動作，這裡卻會主動叫人
+  # 去做一件錯的事（放棄這個 worker、另外啟動一個新的）。
+  #
+  # 緩衝用 `.identity_mismatch_since`（epoch 秒，本次修正新增，見
+  # lib/common.sh 欄位白名單一節）記「這一連串不符第一次被觀察到的時
+  # 間」：第一輪只記錄、不升級；之後每一輪重算經過的秒數，超過
+  # HAT_IDENTITY_MISMATCH_GRACE_SECONDS 才真的呼叫 hat_wd_escalate_once
+  # 升級。用經過的時間而不是輪數：輪數會隨 AGENT_TEAM_POLL_SECONDS 的
+  # 設定而失真（poll 間隔設得很短時，固定輪數的緩衝可能遠遠不夠蓋住上
+  # 面 60 秒的啟動窗口；設得很長時又會不必要地拖長真正故障的偵測延
+  # 遲），時間戳比對不受這個影響，手法比照停滯偵測的 last_seq_changed_
+  # at。門檻本身不做成環境變數可覆寫，理由見 lib/common.sh 該欄位說明。
+  # 這個緩衝只延遲偵測一段固定時間，不會豁免真正的身分消失：reboot 之
+  # 後長期掛著別人的 pane 會持續不符，超過門檻後照樣升級。
+  #
+  # 名稱對上時（不符已恢復）清掉這個欄位，不留殘影；worker 正常結束、
+  # workers/<name>.json 被移除時也不需要額外清理——本函式最上面已經會
+  # 因為 worker_file 不存在而直接 return。
+  pane_line="$(hat_wd_lookup_by_pane "$whitelisted" "$pane_id")"
+  pane_name=""
+  if [ -n "$pane_line" ]; then
+    pane_name="$(printf '%s' "$pane_line" | cut -f1)"
+  fi
+  if [ "$pane_name" != "$worker" ]; then
+    identity_mismatch_since="$(jq -r '.identity_mismatch_since // empty' "$worker_file")"
+    if [ -z "$identity_mismatch_since" ]; then
+      # 第一輪觀察到不符：只記錄，不採信、不升級。
+      now="$(date +%s)"
+      hat_json_set "$worker_file" '.identity_mismatch_since' "$now"
+      return 0
+    fi
+    now="$(date +%s)"
+    elapsed=$((now - identity_mismatch_since))
+    if [ "$elapsed" -lt "$HAT_IDENTITY_MISMATCH_GRACE_SECONDS" ]; then
+      return 0
+    fi
+    hat_wd_escalate_once "$registry_root" "$orchestrator_name" "$worker" "$worker_file" \
+      "identity_lost" "$escalation_repeat_seconds" \
+      "worker=$worker 的 pane（$pane_id）目前的佔用者已經更換，那個 CLI 沒有讀過這個 team 的任何 briefing；啟動包全文仍在 registry 的 briefings 目錄下 $worker.md 這個檔案裡；需要重新啟動一個 worker，不要嘗試對現有 pane 繼續下指令"
     return 0
   fi
+  identity_mismatch_since="$(jq -r '.identity_mismatch_since // empty' "$worker_file")"
+  if [ -n "$identity_mismatch_since" ]; then
+    hat_json_set "$worker_file" '.identity_mismatch_since' 'null'
+  fi
+
+  hat_wd_retry_pending_resend "$worker" "$worker_file" "$whitelisted"
+
+  # ---- hat_wd_lookup 在這裡保證找得到，不再需要「查無觀測值」的分支
+  #      （線上故障修正新增：worker 身分檢查加入之後，這裡原本的死碼被
+  #      推翻）----
+  # 舊版這裡原本有一個「$line 為空就靜默 return 0」的分支，理由寫的是
+  # 「名稱可能被清空，或暫時性的列表落差，沒有觀測值可用」。但走到這一
+  # 行之前，上面的身分檢查已經用 hat_wd_lookup_by_pane 以 pane_id 為
+  # key、從同一份 $whitelisted 查過一次，並且已經確認查到的名稱等於
+  # $worker（不等於的那個情況已經在身分檢查那裡升級並 return 0，執行
+  # 不會落到這裡）。也就是說 $whitelisted 裡必然存在一列 name=$worker
+  # ——就是身分檢查剛剛查到的那一列，而 herdr 保證名稱在存活 agent 之間
+  # 唯一，這裡改用 hat_wd_lookup 以 name 為 key 查同一份 $whitelisted，
+  # 必然命中同一列，不可能落空。「名稱被清空」這個情境本身沒有消失，只
+  # 是現在會在身分檢查那一步就被攔截並升級，不會再讓執行流程走到這裡
+  # 才發現查無觀測值，因此這個分支已經是死碼，拿掉。
+  line="$(hat_wd_lookup "$whitelisted" "$worker")"
 
   status="$(printf '%s' "$line" | cut -f3)"
   stamp="$(printf '%s' "$line" | cut -f4)"
@@ -959,7 +1200,7 @@ hat_wd_process_worker() {
     return 0
   fi
 
-  # 到這裡表示這一輪四個升級條件都沒有成立，清掉升級閂鎖（見檔頭「升
+  # 到這裡表示這一輪五個升級條件都沒有成立，清掉升級閂鎖（見檔頭「升
   # 級閂鎖清空的位置」一節）；後面的豁免跳過與自動推進兩條路徑都已經
   # 涵蓋在內，不必各自再清一次。
   hat_wd_escalation_clear "$worker_file"
@@ -990,7 +1231,10 @@ hat_wd_process_worker() {
 # worker 包子殼）。兩處都是失敗只跳過那一筆並記一行日誌，理由與
 # `--once` 的語意見檔頭「單一 worker 的致命失敗不得帶走整個行程」、
 # 「修正迴圈：hat_wd_retry_blocked_inbox 一樣要包子殼」與「`--once`
-# 與長駐模式一律同樣處理」三節。
+# 與長駐模式一律同樣處理」三節。`agent list` 本身失敗（線上故障修正新
+# 增，見檔頭「線上故障修正新增之三」一節）不接住結束碼就會被 errexit
+# 帶走整個長駐行程，因此改成失敗只記一行日誌並跳過這一輪其餘所有處理
+# （含 4a 補投與逐一處理 worker），不呼叫 `hat_die`。
 hat_wd_run_once() {
   local registry_root team_json orchestrator_name agents_json whitelisted worker rc
 
@@ -998,7 +1242,13 @@ hat_wd_run_once() {
   team_json="$registry_root/team.json"
   orchestrator_name="$(jq -r '.orchestrator_name // empty' "$team_json" 2>/dev/null || true)"
 
-  agents_json="$(hat_herdr agent list)"
+  rc=0
+  agents_json="$(hat_herdr agent list)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'skip reason=agent_list_failed rc=%s at=%s\n' "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      >> "$registry_root/watchdog.log"
+    return 0
+  fi
   whitelisted="$(hat_whitelist_agents "$agents_json")"
 
   hat_wd_retry_blocked_inbox "$registry_root" "$orchestrator_name" "$whitelisted"

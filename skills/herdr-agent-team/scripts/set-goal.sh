@@ -100,6 +100,18 @@ if [ "$have_achieve" -ne 1 ] || [ "$have_success" -ne 1 ] \
   hat_die 2 "set-goal.sh: --achieve／--success／--not-doing／--assumption 四項全部必填（規格 §9）"
 fi
 
+# ---- 自我續租（線上故障修正新增，位置為最終審查修正）----
+# 排在參數解析與必填檢查之後，不是緊接 hat_require_herdr_env：本函式
+# 一定會呼叫 `hat_herdr agent get`（必要時還會 rename），若放在上面這
+# 個本地守衛之前，會讓「呼叫端用錯（缺必填參數）時完全不呼叫任何
+# herdr」這個既有保證失真，理由同 instruct.sh／grant-peer.sh 等既有寫
+# 法。本腳本沒有既有 target 座標可驗（不像 instruct.sh／grant-peer.sh
+# 那樣操作某個 worker 的 pane，只寫 team.json），因此本地守衛到這裡就
+# 走完，沒有名稱格式或 workspace 邊界可等。正當性、絕對不可以被
+# watchdog.sh 呼叫的理由、失敗時的行為，全部見 lib/common.sh
+# hat_renew_orchestrator_name 的檔頭。
+hat_renew_orchestrator_name
+
 team_json="$(hat_registry_root)/team.json"
 
 # ---- 讀舊值：欄位缺漏是正常狀態，不透過 hat_json_get ----

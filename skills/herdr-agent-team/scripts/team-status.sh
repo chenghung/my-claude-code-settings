@@ -72,6 +72,15 @@ if [ "$#" -gt 0 ]; then
   hat_die 2 "team-status.sh: 不接受任何參數"
 fi
 
+# ---- 自我續租（線上故障修正新增，位置為最終審查修正）----
+# 排在「不接受任何參數」這個本地守衛之後，不是緊接 hat_require_herdr_
+# env：本函式一定會呼叫 `hat_herdr agent get`（必要時還會 rename），若
+# 放在這個本地守衛之前，會讓「呼叫端用錯（帶了多餘參數）時完全不呼叫
+# 任何 herdr」這個既有保證失真，理由同 instruct.sh／grant-peer.sh 等既
+# 有寫法。正當性、絕對不可以被 watchdog.sh 呼叫的理由、失敗時的行為，
+# 全部見 lib/common.sh hat_renew_orchestrator_name 的檔頭。
+hat_renew_orchestrator_name
+
 # hat_status_unprocessed_count <registry_root> <worker>
 # 印出 <worker> 在 inbox/ 裡 .processed_at 仍是 JSON null 的記錄筆數
 # （見檔頭「unprocessed」一節）。掃過去比對 .worker 欄位，不解析檔名
