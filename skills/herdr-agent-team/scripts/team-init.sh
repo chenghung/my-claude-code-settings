@@ -175,16 +175,31 @@ hat_json_set "$registry_root/team.json" '.team_home' "\"$team_home\""
 # 此值，例如 `[1] Orchestrator`）。tab_id 在回應裡缺席時整段跳過、不
 # 算失敗——目前沒有已知會讓它缺席的情境，但寫法上不假設它一定存在。
 #
-# ---- 只在 .orchestrator_tab 還沒記錄過時才寫，不是每次都覆寫 ----
+# ---- .orchestrator_tab 只在還沒記錄過時才寫、不是每次都覆寫；
+#      .orchestrator_tab_label 只要還缺席就有機會補上，即使
+#      .orchestrator_tab 已經記錄過（獨立審查 Critical 修正）----
 # .orchestrator_tab_label 記的是「原始」label，是 --recover 還原時的
 # 比對基準與還原目標。report.sh（第二批）會用 `herdr tab rename` 把這
-# 個 tab 的 label 改成警示字樣；若本段每次執行都無條件把「目前」的
-# label 寫回這兩個欄位，遇到「警報還沒被 --recover 處理掉、卻又跑了
-# 一次不帶 --recover 的 team-init.sh」這種情況，會把警示字樣錯當成
-# 「原始」值存起來，往後 --recover 比對「目前 label 與記錄值」會判定
-# 兩者相同而不還原，警示字樣就永久回不去了。orchestrator_pane／
-# orchestrator_name 不受這個風險影響（沒有其他腳本會把它們改寫成需要
-# 保護的臨時狀態），可以放心每次都覆寫。
+# 個 tab 的 label 改成警示字樣；若本段對已經有值的 .orchestrator_tab_
+# label 無條件覆寫，遇到「警報還沒被 --recover 處理掉、卻又跑了一次不
+# 帶 --recover 的 team-init.sh」這種情況，會把警示字樣錯當成「原始」值
+# 存起來，往後 --recover 比對「目前 label 與記錄值」會判定兩者相同而不
+# 還原，警示字樣就永久回不去了——因此保護對象只限「已經有值」的
+# .orchestrator_tab_label，不是這整個重入判斷式。
+#
+# 舊版把 .orchestrator_tab 存不存在當成唯一的重入守衛，兩個欄位綁在同
+# 一個判斷式下：若第一次執行時 `agent get` 成功、但緊接著的 `tab get`
+# 遇到暫態失敗，.orchestrator_tab 已經無條件寫入、.orchestrator_tab_
+# label 卻因為 tab_label 是空字串而被跳過——之後任何一次重跑（含
+# --recover）都會因為 .orchestrator_tab 已經非空而整段跳過，
+# .orchestrator_tab_label 永遠沒有機會被補上，讓依賴這兩個欄位皆存在
+# 才會拉警報的 `hat_alert_orchestrator_tab` 對這個 team 永久靜默失能。
+# 修法：兩個欄位分別判斷是否需要補寫——.orchestrator_tab 缺席時才用這
+# 次 `agent get` 拿到的 tab_id 寫入且僅寫一次；.orchestrator_tab_label
+# 只要缺席，不論 .orchestrator_tab 是否已經記錄過，都嘗試查一次
+# `tab get` 補上。orchestrator_pane／orchestrator_name 不受這個風險影
+# 響（沒有其他腳本會把它們改寫成需要保護的臨時狀態），可以放心每次都
+# 覆寫。
 #
 # ---- 盡力而為：這裡的 `tab get` 失敗不得讓整支腳本被 errexit 帶走
 #      （獨立審查修正）----
@@ -194,24 +209,32 @@ hat_json_set "$registry_root/team.json" '.team_home' "\"$team_home\""
 # 敗直接以 errexit 終止整支腳本、印不出檔尾 `orchestrator=... registry=
 # ...` 那行成功訊息，讓呼叫端誤判成自我命名失敗——手法同 lib/common.sh
 # `hat_alert_orchestrator_tab` 對同類 `tab get` 呼叫的既有做法：`|| rc=$?`
-# 接住失敗，只在 stderr 留一行說明，tab_label 留空，`.orchestrator_tab`
-# 本身不需要這次呼叫就已經知道（來自上面的 `agent get` 回應），仍然照
-# 常寫入；只有依賴這次呼叫結果的 `.orchestrator_tab_label` 略過。
+# 接住失敗，只在 stderr 留一行說明，tab_label 留空；`.orchestrator_tab`
+# 已經記錄過時本來就不需要這次呼叫（來自上面的 `agent get` 回應或既有
+# 記錄），不受這次失敗影響；只有依賴這次呼叫結果的 `.orchestrator_tab_
+# label` 略過。
 existing_tab="$(jq -r '.orchestrator_tab // empty' "$registry_root/team.json")"
-if [ -z "$existing_tab" ]; then
-  tab_id="$(printf '%s' "$current_json" | jq -r '.result.agent.tab_id // empty')"
+existing_tab_label="$(jq -r '.orchestrator_tab_label // empty' "$registry_root/team.json")"
+if [ -z "$existing_tab" ] || [ -z "$existing_tab_label" ]; then
+  if [ -n "$existing_tab" ]; then
+    tab_id="$existing_tab"
+  else
+    tab_id="$(printf '%s' "$current_json" | jq -r '.result.agent.tab_id // empty')"
+  fi
   if [ -n "$tab_id" ]; then
     rc=0
     tab_json="$(hat_herdr tab get "$tab_id")" || rc=$?
     tab_label=""
     if [ "$rc" -ne 0 ]; then
-      printf 'team-init.sh: 無法讀取 tab %s 的 label，只記錄 tab id，不記錄 label\n' "$tab_id" >&2
+      printf 'team-init.sh: 無法讀取 tab %s 的 label，這次不補上 label\n' "$tab_id" >&2
     else
       tab_label="$(printf '%s' "$tab_json" | jq -r '.result.tab.label // empty')"
     fi
 
-    hat_json_set "$registry_root/team.json" '.orchestrator_tab' "\"$tab_id\""
-    if [ -n "$tab_label" ]; then
+    if [ -z "$existing_tab" ]; then
+      hat_json_set "$registry_root/team.json" '.orchestrator_tab' "\"$tab_id\""
+    fi
+    if [ -z "$existing_tab_label" ] && [ -n "$tab_label" ]; then
       hat_json_set "$registry_root/team.json" '.orchestrator_tab_label' "$(hat_json_string "$tab_label")"
     fi
   fi

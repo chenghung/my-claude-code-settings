@@ -35,7 +35,9 @@
 #      <role> --no-focus --env` 五次注入五個變數。取不到 tab_id 與
 #      pane_id 任一個就立刻以 6 結束，不寫 registry。
 #   3. 寫 registry：座標、agent 名稱、kind、role、cwd、原生引數、持有
-#      旗標初值，在啟動之前就寫齊；同一步把 --briefing-file 的內容複
+#      旗標初值，在啟動之前就寫齊；同名重啟時一併把 watchdog.sh 可能留
+#      下的 `.identity_mismatch_since` 重置成 null（獨立審查 Critical
+#      修正，見下方同名一節），同一步把 --briefing-file 的內容複
 #      製進 briefings/<worker>.md。複製失敗即以 5 結束，不繼續啟動。
 #   4. `agent start`：成功不是就緒憑據，只代表 herdr 認為那個 pane 裡
 #      有一個它認得的 agent。失敗（含逾時）判定本次嘗試失敗。
@@ -297,6 +299,22 @@ while [ "$attempt" -le 2 ]; do
   hat_json_set "$worker_file" '.tab_id' "$(hat_json_string "$tab_id")"
   hat_json_set "$worker_file" '.pane_id' "$(hat_json_string "$pane_id")"
   hat_json_set "$worker_file" '.held' 'false'
+  # ---- 獨立審查 Critical：同名重啟時重置身分緩衝，否則 90 秒緩衝形同
+  #      虛設 ----
+  # `hat_normalize_name` 只依 workspace id 與 role 計算名稱，同一個 role
+  # 重啟算出的名字與 worker_file 都跟上一個死掉的 worker 完全相同。若上
+  # 一個 worker 死亡時 watchdog.sh 已經在這個檔案寫過
+  # `.identity_mismatch_since`（見 watchdog.sh「worker 身分檢查」一
+  # 節），這裡若不清掉，新 pane 進 `agent start`（第 4 步，最壞情況兩次
+  # 嘗試逼近 60 秒）期間，watchdog.sh 第一輪輪詢讀到的會是舊時間戳、經
+  # 過秒數通常早已超過 90 秒門檻，緩衝在新 worker 第一輪就被繞過——這正
+  # 是這個緩衝機制原本要防止的事，被自己的重啟路徑繞過去。重置成 null
+  # 讓新 pane 完全重新起算，不連帶清 `.escalation_active`／
+  # `.escalation_last_at`：那兩個欄位管的是「同一個已成立條件要不要重
+  # 複發送升級」，跟這裡「該不該開始採信身分不符」是不同層次，只要這個
+  # 欄位重置，新 worker 在合法啟動視窗內就不會被判定成「已經不符超過 90
+  # 秒」，根本不會走到需要看 `.escalation_active` 的那一步。
+  hat_json_set "$worker_file" '.identity_mismatch_since' 'null'
 
   briefing_dest="$registry_root/briefings/$name.md"
   if ! cp "$briefing_file" "$briefing_dest"; then

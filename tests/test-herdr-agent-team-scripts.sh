@@ -771,6 +771,46 @@ fi
 # 回下面幾節既有測試預期的值，不讓這裡的失敗情境對後續測試留下副作用。
 jq '.orchestrator_tab_label = "[1] Orchestrator"' "$REG/team.json" > "$T/team-tabgetfail-restore.json" && mv "$T/team-tabgetfail-restore.json" "$REG/team.json"
 
+# ===== team-init.sh：.orchestrator_tab 已寫過但 .orchestrator_tab_label
+#      缺席時，之後任一次執行都要有機會補上（獨立審查 Critical：舊版
+#      重入守衛只看 .orchestrator_tab 是否存在，兩者綁在同一個判斷式
+#      下，只要 .orchestrator_tab 已經寫過，.orchestrator_tab_label 永
+#      遠沒有機會被補——上面「tab get 失敗」那個情境就會落入這個狀態，
+#      只是那裡沒有驗證「之後重跑會不會補上」）=====
+jq 'del(.orchestrator_tab_label)' "$REG/team.json" > "$T/team-tab-label-missing.json" && mv "$T/team-tab-label-missing.json" "$REG/team.json"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "agent get") printf '{"result":{"agent":{"name":"w3n-orchestrator","tab_id":"w3N:t1"}}}' ;;
+  "tab get") printf '{"result":{"tab":{"label":"[2] Orchestrator (backfilled)","tab_id":"w3N:t1"}}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" team-init-tab-label-backfill
+
+rc=0; bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "team-init：.orchestrator_tab 已寫過但 .orchestrator_tab_label 缺席時仍以 0 結束"
+else
+  bad "team-init：得到 rc=$rc"
+fi
+if [ "$(jq -r '.orchestrator_tab' "$REG/team.json")" = "w3N:t1" ]; then
+  pass "team-init：補 label 的同時 .orchestrator_tab 維持原值不變"
+else
+  bad "team-init：.orchestrator_tab 被改成 '$(jq -r '.orchestrator_tab' "$REG/team.json")'"
+fi
+if [ "$(jq -r '.orchestrator_tab_label' "$REG/team.json")" = "[2] Orchestrator (backfilled)" ]; then
+  pass "team-init：.orchestrator_tab_label 缺席時，重跑真的查了 tab get 並補上"
+else
+  bad "team-init：.orchestrator_tab_label 沒有被補上，仍是 '$(jq -r '.orchestrator_tab_label // empty' "$REG/team.json")'"
+fi
+
+# 補回下面「--recover 把 tab label 還原成記錄值」等既有測試預期的值，
+# 不讓這裡驗證補值用的臨時 label 對後續測試留下副作用。
+jq '.orchestrator_tab_label = "[1] Orchestrator"' "$REG/team.json" > "$T/team-tab-label-backfill-restore.json" && mv "$T/team-tab-label-backfill-restore.json" "$REG/team.json"
+
 # ===== team-init.sh --recover：把 tab label 還原成記錄值（規格「設計
 #      項目三」指定的還原時機——警報由 report.sh 寫上去、不自動還原，
 #      還原時機是人真的回來跑 --recover 這一刻）=====
@@ -1040,6 +1080,66 @@ if [ -s "$HERDR_CALL_LOG" ]; then
 else
   pass "自我續租：.orchestrator_name 缺席時完全不呼叫 herdr（team 還沒初始化過）"
 fi
+
+# ---- 獨立審查修正：零測試覆蓋補回——.orchestrator_pane 與呼叫端
+#      HERDR_PANE_ID 不同時，直接無動作返回，不呼叫任何 herdr（第一批
+#      code review 加的安全邊界：防止 worker 誤觸 team-status.sh 之類
+#      的腳本竊取 orchestrator 名稱，見 lib/common.sh 該函式檔頭「守
+#      衛：只在自己確實是 orchestrator 的 pane 時才動作」一節；全文搜
+#      尋 orchestrator_pane 原本在本檔零命中）----
+saved_orchestrator_pane="$(jq -r '.orchestrator_pane' "$REG/team.json")"
+hat_json_set "$REG/team.json" '.orchestrator_pane' '"w3N:p9"'
+: > "$HERDR_CALL_LOG"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+case "\$1 \$2" in
+  "agent get") printf '{"result":{"agent":{"name":""}}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" renew-pane-guard-mismatch
+
+rc=0; ( hat_renew_orchestrator_name ) 2>/dev/null && rc=0 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "自我續租：.orchestrator_pane 與呼叫端不同時以 0 結束"
+else
+  bad "自我續租：得到 rc=$rc"
+fi
+if [ -s "$HERDR_CALL_LOG" ]; then
+  bad "自我續租：.orchestrator_pane 與呼叫端不同卻仍呼叫了 herdr（agent get／agent rename），身分守衛沒有擋下：$(cat "$HERDR_CALL_LOG")"
+else
+  pass "自我續租：.orchestrator_pane 與呼叫端不同時，完全不呼叫任何 herdr（守衛擋下，防止 worker 竊取 orchestrator 名稱）"
+fi
+
+# ---- 對照（非必須，補上讓覆蓋更完整）：.orchestrator_pane 欄位缺席時
+#      （舊 registry）維持缺席前的既有行為，不因為新增這道守衛而多擋
+#      一種情況 ----
+jq 'del(.orchestrator_pane)' "$REG/team.json" > "$T/renew-pane-guard-absent.json" && mv "$T/renew-pane-guard-absent.json" "$REG/team.json"
+: > "$HERDR_CALL_LOG"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+case "\$1 \$2" in
+  "agent get") printf '{"result":{"agent":{"name":""}}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" renew-pane-guard-absent
+
+hat_renew_orchestrator_name
+if grep -q 'agent rename' "$HERDR_CALL_LOG"; then
+  pass "自我續租：.orchestrator_pane 欄位缺席（舊 registry）時仍照舊放行續租，不因新守衛多擋一種情況"
+else
+  bad "自我續租：.orchestrator_pane 缺席時應該照舊放行，卻沒有呼叫 rename：$(cat "$HERDR_CALL_LOG")"
+fi
+
+# 還原：後面每一節都假設 .orchestrator_pane 是 w3N:p1。
+hat_json_set "$REG/team.json" '.orchestrator_pane' "\"$saved_orchestrator_pane\""
 
 # ===== set-goal.sh：四項必填 =====
 # ---- 順便驗證：自我續租的呼叫位置（獨立審查修正：8 支腳本裡有 4 支
@@ -1818,6 +1918,53 @@ if [ ! -e "$REG/workers/w3n-acktimeoutfinal.json" ]; then
   pass "launch：ACK 逾時終局失敗後，狀態記錄已移除"
 else
   bad "launch：終局失敗卻留下了指向已死 tab 的狀態記錄"
+fi
+
+# ---- 獨立審查 Critical：同名重啟時 .identity_mismatch_since 沒有清
+#      空，90 秒緩衝形同虛設 ----
+# `hat_normalize_name` 只依 workspace id 與 role 計算名稱，重啟同一個
+# role 算出的名字與 worker_file 都跟上一個死掉的 worker 完全相同。這裡
+# 先模擬「上一個 worker 死亡時 watchdog.sh 已經寫過 .identity_mismatch_
+# since」的殘留狀態（給一個很久以前的 epoch 秒數，代表『已經不符很久
+# 了』），再跑一次成功的 launch-worker.sh 重啟同一個 role，斷言第 3 步
+# 覆寫座標時把它一併重置成 null——不然新 pane 進 agent start 期間，
+# watchdog.sh 第一輪輪詢讀到的仍是這個遠早於 90 秒前的舊時間戳，緩衝在
+# 第一輪就被繞過。
+printf '{}' > "$REG/workers/w3n-identityreset.json"
+hat_json_set "$REG/workers/w3n-identityreset.json" '.identity_mismatch_since' "$(( $(date +%s) - 99999 ))"
+HERDR_CALL_LOG="$T/herdr-call-log-launch-identity-reset"
+: > "$HERDR_CALL_LOG"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+case "\$1 \$2" in
+  "tab create")  printf '{"result":{"tab":{"tab_id":"w3N:t10"},"root_pane":{"pane_id":"w3N:p10"}}}' ;;
+  "agent start") printf '{"result":{}}' ;;
+  "agent get")   printf '{"result":{"agent":{"agent_status":"idle"}}}' ;;
+  "agent prompt")
+    printf '{"token":"ack","worker":"w3n-identityreset","summary":"worker_id=w3n-identityreset cwd=$REG model=claude-3-test"}' > "$REG/inbox/42-w3n-identityreset.json"
+    printf '{"result":{}}'
+    ;;
+  "tab close")   printf '{"result":{}}' ;;
+  *) printf '{"result":{}}' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" launch-identity-mismatch-reset
+
+rc=0
+bash "$SCRIPTS/launch-worker.sh" --role identityreset --kind claude --cwd "$REG" --briefing-file "$BRIEF" --ack-timeout 5 >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "launch：同名重啟成功以 0 結束"
+else
+  bad "launch：同名重啟得到 rc=$rc"
+fi
+mismatch_after="$(jq -r '.identity_mismatch_since // empty' "$REG/workers/w3n-identityreset.json")"
+if [ -z "$mismatch_after" ]; then
+  pass "launch：重啟覆寫座標時把舊的 .identity_mismatch_since 重置成 null，90 秒緩衝不會被繞過"
+else
+  bad "launch：重啟後 .identity_mismatch_since 仍是舊值 '$mismatch_after'，90 秒緩衝形同虛設"
 fi
 
 # ===== report.sh：worker 上行 =====
@@ -6148,6 +6295,56 @@ if grep -q 'tab rename' "$HERDR_CALL_LOG"; then
 else
   pass "watchdog：hat_wd_escalate 遇到 agent_blocked 時不呼叫 tab rename"
 fi
+
+# ---- 獨立審查抓到的覆蓋度缺口：第三種分類——非 agent_not_found、非
+#      agent_blocked 的其他任何錯誤碼，一樣要維持既有的 .delivery=
+#      blocked、不呼叫 tab rename（走 hat_wd_escalate 的 else 分支，上
+#      面兩種只涵蓋 if／elif）。未知錯誤碼字面沿用 report.sh 既有測試
+#      同款的 agent_teapot（該檔「report：未知錯誤碼」小節已在用），不
+#      是本檔上面「agent list 失敗」小節已經用掉的 transient_failure，
+#      避免撞名混淆 ----
+printf '{"pane_id":"w3N:p5","held":false,"role":"backend","stage":"running","auto_push_count":0}' \
+  > "$REG/workers/w3n-escalatecode.json"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+case "\$1 \$2" in
+  "agent list")
+    printf '{"result":{"agents":[{"name":"w3n-orchestrator","workspace_id":"w3N","agent_status":"idle","state_change_seq":60004,"pane_id":"w3N:p1","tab_id":"w3N:t1"},{"name":"w3n-escalatecode","workspace_id":"w3N","agent_status":"blocked","state_change_seq":60003,"pane_id":"w3N:p5","tab_id":"w3N:t5"}]}}'
+    ;;
+  "agent prompt")
+    printf '{"error":{"code":"agent_teapot","message":"未知錯誤"}}' >&2
+    exit 1
+    ;;
+  *)
+    printf '{"result":{}}'
+    ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-escalate-unknown-error-code
+
+: > "$HERDR_CALL_LOG"
+rc=0; bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "watchdog：升級投遞失敗（未知錯誤碼）時這一輪仍以 0 結束"
+else
+  bad "watchdog：得到 rc=$rc"
+fi
+teapot_seq="$(hat_last_seq_for_worker w3n-escalatecode)"
+teapot_record="$REG/inbox/${teapot_seq}-w3n-escalatecode.json"
+if [ "$(jq -r '.delivery' "$teapot_record")" = "blocked" ]; then
+  pass "watchdog：hat_wd_escalate 投遞失敗且 error.code 是非 agent_not_found／agent_blocked 的其他碼時，.delivery 維持 blocked"
+else
+  bad "watchdog：.delivery 是 '$(jq -r '.delivery' "$teapot_record")'，不是 blocked"
+fi
+if grep -q 'tab rename' "$HERDR_CALL_LOG"; then
+  bad "watchdog：未知錯誤碼不該呼叫 tab rename，卻呼叫了：$(cat "$HERDR_CALL_LOG")"
+else
+  pass "watchdog：hat_wd_escalate 遇到未知錯誤碼時不呼叫 tab rename"
+fi
+
 rm -f "$REG/workers/w3n-escalatecode.json"
 
 # ===== watchdog.sh：worker 身分消失（線上故障修正新增，規格「設計項目
@@ -6335,6 +6532,45 @@ else
 fi
 # 這節其餘測試預期 w3n-backend 的身分是對得上的乾淨狀態，清掉這裡刻意
 # 留下的不符狀態，不讓它影響後續章節。
+printf '{"pane_id":"w3N:p2","held":false,"role":"backend","stage":"running","auto_push_count":0}' \
+  > "$REG/workers/w3n-backend.json"
+
+# ---- 獨立審查抓到的覆蓋度缺口：above 每一輪都是「pane 還在、名稱換
+#      人」（agent list 回應帶著別的名稱 w3n-stranger），從沒測過「pane
+#      整個不在清單裡」這個子情境——檔頭「worker 身分消失」一節明講兩者
+#      都要視為不符，這裡用一個不含 w3N:p2 的 agent list 回應（改用不
+#      相干的 pane w3N:p9）單獨補一次第一輪緩衝的驗證，預期行為與「pane
+#      還在但改名」完全一致：只記錄 .identity_mismatch_since，不升級
+#      ----
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-otherguy","workspace_id":"w3N","agent_status":"idle","state_change_seq":4,"pane_id":"w3N:p9","tab_id":"w3N:t9"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-identity-lost-pane-absent
+
+: > "$HERDR_CALL_LOG"
+n_inbox_before_absent=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+AGENT_TEAM_ESCALATION_REPEAT_SECONDS=100 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after_absent=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after_absent" -eq "$n_inbox_before_absent" ]; then
+  pass "watchdog：pane 整個不在 agent list 清單裡時，第一輪只緩衝，不立刻升級"
+else
+  bad "watchdog：pane 整個不在清單裡卻第一輪就升級了（before=$n_inbox_before_absent after=$n_inbox_after_absent）"
+fi
+if [ "$(jq -r '.identity_mismatch_since // empty' "$REG/workers/w3n-backend.json")" = "" ]; then
+  bad "watchdog：pane 整個不在清單裡時，應該記錄 .identity_mismatch_since，卻是空的"
+else
+  pass "watchdog：pane 整個不在清單裡時，第一輪同樣記錄了 .identity_mismatch_since，與「pane 還在但改名」情境一致"
+fi
+
+# 收尾：讓 w3n-backend 回到下一節（agent list 失敗）預期的乾淨狀態。
 printf '{"pane_id":"w3N:p2","held":false,"role":"backend","stage":"running","auto_push_count":0}' \
   > "$REG/workers/w3n-backend.json"
 
@@ -6829,6 +7065,57 @@ fi
 rm -f "$REG/inbox/50-w3n-lockvictim.json" "$REG/inbox/50-w3n-lockvictim.json.lock" \
   "$REG/inbox/51-w3n-locksurvivor.json"
 
+# ---- watchdog.sh：hat_wd_retry_blocked_inbox 內部兩處 .orchestrator_
+#      alert_active 寫入（team.json.lock）——這兩處落在函式主殼層，不
+#      在上面逐筆 inbox 記錄的子殼保護範圍內，鎖逾時原本會以 hat_die 5
+#      直接終止整支 watchdog.sh，比一次乾淨的失敗更糟（獨立審查
+#      Critical）；驗證呼叫端已經把整次呼叫包進子殼接住結束碼 ----
+hat_json_set "$REG/team.json" '.orchestrator_alert_active' 'false'
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-retry-blocked-inbox-teamjson-lock-timeout
+
+# 持鎖時間刻意抓得比逾時上限寬裕很多，理由同前面幾處鎖逾時測試。
+( exec 9>"$REG/team.json.lock"; flock -x 9; sleep 8 ) &
+lock_holder_pid=$!
+sleep 0.3
+: > "$REG/watchdog.log"
+lock_start="$(date +%s)"
+rc=0
+AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+lock_elapsed=$(( $(date +%s) - lock_start ))
+wait "$lock_holder_pid"
+
+if [ "$lock_elapsed" -lt 5 ]; then
+  pass "watchdog：hat_wd_retry_blocked_inbox 內 .orchestrator_alert_active 寫入等鎖有上限，沒有等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
+else
+  bad "watchdog：等了 ${lock_elapsed}s，.orchestrator_alert_active 寫入看起來仍是無界等待"
+fi
+if [ "$rc" -eq 0 ]; then
+  pass "watchdog：.orchestrator_alert_active 鎖逾時不會把整個看門狗行程帶走，仍以 0 結束"
+else
+  bad "watchdog：得到 rc=$rc——.orchestrator_alert_active 鎖逾時把整個看門狗行程帶走了（長駐模式下自動推進／停滯偵測／投遞重試會一起靜默停止）"
+fi
+if grep -q "skip reason=retry_blocked_inbox_failed rc=5 " "$REG/watchdog.log"; then
+  pass "watchdog：.orchestrator_alert_active 寫入鎖逾時時，watchdog.log 留下可辨識的 skip 行"
+else
+  bad "watchdog：watchdog.log 沒有預期的 skip 行：$(cat "$REG/watchdog.log")"
+fi
+if [ "$(jq -r '.orchestrator_alert_active' "$REG/team.json")" = "false" ]; then
+  pass "watchdog：鎖逾時、沒拿到鎖時 .orchestrator_alert_active 不會被寫壞，原樣還是 false"
+else
+  bad "watchdog：.orchestrator_alert_active 變成 $(jq -r '.orchestrator_alert_active' "$REG/team.json")，狀態被寫壞了"
+fi
+
 # ---- report.sh：hat_allocate_seq（team.json.lock）——worker 上行取號
 #      的唯一入口，掛住的後果是那個 worker 從此完全不再回報，而且是靜
 #      默的 ----
@@ -6993,7 +7280,7 @@ fi
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=600
+HAT_EXPECTED_ASSERTIONS=617
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

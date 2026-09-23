@@ -347,6 +347,17 @@
 # 成單一大子殼會讓一筆撞上鎖逾時就連帶跳過同一輪其餘記錄；逐筆包則只
 # 丟這一筆，其餘記錄這一輪照常重投。
 #
+# 例外（獨立審查 Critical 修正新增）：呼叫端 `hat_wd_run_once` 後來另
+# 外把整個 `hat_wd_retry_blocked_inbox` 呼叫也包了一次子殼，這不是取
+# 代上面逐筆包的設計，是互補——保護對象是函式主殼層兩處新增的
+# `.orchestrator_alert_active` 寫入（不在上述逐筆迴圈的保護範圍內，見
+# 該函式檔頭「狀態轉換才寫 log」一節），兩者互斥、同一次呼叫至多命中
+# 其中一處，沒有「逐筆重試、一筆失敗不連累其餘」這個顧慮，見
+# `hat_wd_run_once` 呼叫端同名一節。逐筆迴圈本身的保護粒度不變：一筆
+# `.delivery` 寫入失敗仍然只丟那一筆，不會被外層子殼放大成整輪都跳過
+# ——外層子殼只在「逐筆迴圈都還沒開始執行」（兩個早退分支之一）時才會
+# 因為這裡討論的兩處寫入失敗而觸發。
+#
 # 被跳過的那一筆在 watchdog.log 留一行 `skip inbox=... reason=retry_
 # blocked_failed rc=... at=...`，欄位風格沿用同一個檔案既有的 skip
 # 行；用 `inbox=<檔名>` 取代 `worker=` 當識別欄位，因為檔名本身就是
@@ -1251,7 +1262,29 @@ hat_wd_run_once() {
   fi
   whitelisted="$(hat_whitelist_agents "$agents_json")"
 
-  hat_wd_retry_blocked_inbox "$registry_root" "$orchestrator_name" "$whitelisted"
+  # ---- 獨立審查 Critical：本呼叫內部兩處 .orchestrator_alert_active
+  #      寫入落在函式主殼層，鎖逾時要包子殼接住 ----
+  # `hat_wd_retry_blocked_inbox` 內「orchestrator 名稱查無」與「名稱恢
+  # 復可查」兩個分支各有一次 `hat_json_set "$team_json" '.orchestrator_
+  # alert_active' ...`，兩者都落在函式主殼層、不在該函式逐筆 inbox 記
+  # 錄那層子殼保護範圍內（那層只包每一筆 `.delivery` 的寫入，見該函式
+  # 檔頭「狀態轉換才寫 log」與「修正迴圈：hat_wd_retry_blocked_inbox 一
+  # 樣要包子殼」兩節——這兩處是本次修正新增，那兩節寫成的當下還不存
+  # 在）。裸呼叫底下，鎖逾時會讓 `hat_json_set` 以 `hat_die 5` 直接
+  # `exit`，沒有任何子殼可接，會把整支 watchdog.sh 一併終止，比一次乾
+  # 淨的失敗更糟。手法比照下面 `hat_wd_process_worker` 呼叫端既有先
+  # 例：整次呼叫包進子殼接住結束碼，失敗只記一行 skip、不中止長駐迴
+  # 圈；這裡選擇包整個呼叫，不是逐一堵這兩處 `hat_json_set`，因為兩者
+  # 是同一次呼叫裡彼此互斥的分支（成立其中之一就會 `return`），失敗後
+  # 沒有「跳過這一句、繼續走完整個函式」的中間語意，整次放棄最乾淨，留
+  # 給下一輪重試。
+  rc=0
+  ( hat_wd_retry_blocked_inbox "$registry_root" "$orchestrator_name" "$whitelisted" ) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'skip reason=retry_blocked_inbox_failed rc=%s at=%s\n' \
+      "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      >> "$registry_root/watchdog.log"
+  fi
 
   while IFS= read -r worker; do
     [ -n "$worker" ] || continue

@@ -358,6 +358,17 @@ hat_whitelist_agents() {
 # 境變數可覆寫（不比照其餘五個門檻值）：SKILL.md「門檻值」一節的六個環
 # 境變數表格是受管路徑，本次修正不改它；若把這個門檻也做成可覆寫，那張
 # 表就會少列一項本該存在的環境變數，而修表不在本次職責範圍內。
+#
+# 例外（獨立審查 Critical 修正新增）：.identity_mismatch_since 在同名
+# worker 原地重啟時多一個寫入端——launch-worker.sh 第 3 步覆寫座標的同
+# 一段會把它重置成 null，收回上一個死掉的 worker 殘留的緩衝起算時間，
+# 理由見該檔「獨立審查 Critical：同名重啟時重置身分緩衝」一節：不清掉
+# 的話，新 pane 進 `agent start` 期間 watchdog.sh 讀到的仍是舊時間戳，
+# 90 秒緩衝在第一輪輪詢就被繞過。這不是「不重疊」被打破：launch-
+# worker.sh 執行的時間點，上一個 watchdog.sh 對這個 worker 的緩衝評估
+# 要嘛已經升級過（走完了它要做的事），要嘛還在緩衝中——兩者都不存在跟
+# 這次重置同時發生、互相覆蓋的競態，跟 .escalation_active／.held 已有
+# 的先例是同一種安全前提。
 _HAT_TEAM_JSON_FIELDS=(
   '.orchestrator_name' '.orchestrator_pane' '.orchestrator_tab'
   '.orchestrator_tab_label' '.team_home' '.orchestrator_alert_active'
