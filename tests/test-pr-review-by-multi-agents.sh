@@ -7500,6 +7500,74 @@ test_reviewer_contract_direct_comment_and_boundaries() {
 test_reviewer_contract_direct_comment_and_boundaries
 
 # ------------------------------------------------------------
+# reviewer-contract: 精簡後的契約結構（TDD 先寫失敗：契約尚未改寫）
+# ------------------------------------------------------------
+test_reviewer_contract_slim_structure() {
+  local contract="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
+  local ok=1
+
+  # 契約整體大小上限：逐字比對前先確認契約已瘦身
+  local max_bytes=15360
+  local size
+  size=$(wc -c < "$contract")
+  if [ "$size" -gt "$max_bytes" ]; then
+    bad "reviewer-contract 超過 $max_bytes 位元組上限（實際 $size）"
+    ok=0
+  fi
+
+  # 必要逐字字串：直接對檔案 grep -qF，讀取端就是 grep 本身，不經任何
+  # 管線／heredoc 轉交，不會重演本檔開頭記錄過的 SIGPIPE 假失敗
+  local required=(
+    '<!-- pr-review-by-multi-agents -->'
+    '## 揭露聲明'
+    'Reviewer Agent'
+    '===PR-REVIEW-BY-MULTI-AGENTS-END==='
+    'nice-to-have'
+    '可維護性與設計'
+    '需求與文件一致性'
+    'file://'
+    'path:line'
+    '本次審查沒有發現'
+    '呼叫端會在每個 review 行程啟動前後比對 worktree 的 git 狀態'
+    '事實依據'
+    '發布'
+    '輸出前自查'
+    'GitHub 互動邊界'
+    '授權操作'
+    '材料檔目錄絕對路徑'
+    '輸出檔絕對路徑'
+    '--name-only'
+    '...HEAD'
+  )
+  local req
+  for req in "${required[@]}"; do
+    if ! grep -qF -- "$req" "$contract"; then
+      bad "reviewer-contract 缺少必要字串: $req"
+      ok=0
+    fi
+  done
+
+  # 應被移除的舊字串：命中即代表契約尚未瘦身完成
+  local forbidden=(
+    '三道是非題'
+    '與材料的符合度'
+    '偽造座標'
+  )
+  local fb
+  for fb in "${forbidden[@]}"; do
+    if grep -qF -- "$fb" "$contract"; then
+      bad "reviewer-contract 仍殘留應移除字串: $fb"
+      ok=0
+    fi
+  done
+
+  if [ "$ok" -eq 1 ]; then
+    pass "reviewer-contract 精簡後結構符合預期（位元組數與必要/禁止字串皆符合）"
+  fi
+}
+test_reviewer_contract_slim_structure
+
+# ------------------------------------------------------------
 # reviewer_home: .config/gh symlink for gh pr comment authentication
 # ------------------------------------------------------------
 test_reviewer_home_gh_config_symlink() {
