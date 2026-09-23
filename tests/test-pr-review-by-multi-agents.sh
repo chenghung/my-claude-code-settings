@@ -2961,9 +2961,8 @@ fi
 # alongside it, this file would pass as "done", and `sed '$d'` would
 # return everything above the *last* line, including the earlier marker
 # line and the real content that follows it verbatim: an untrustworthy
-# duplicate-marker file judged postable, exactly the one failure shape
-# SKILL.md's own contract names as the one that gets bad content onto the
-# PR.
+# duplicate-marker file judged postable -- exactly the corrupted-content-
+# reaches-the-PR consequence this uniqueness check exists to prevent.
 cat > "$EXTRACTOUT_FIXTURE_DIR/duplicate-marker.md" <<'REVIEWEOF'
 line one of the review
 ===PR-REVIEW-BY-MULTI-AGENTS-END===
