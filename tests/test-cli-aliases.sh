@@ -131,8 +131,15 @@ bash -n "$ALIAS_SRC" && pass claude-aliases-syntax || bad claude-aliases-syntax
 # ------------------------------------------------------------
 CLAUTH_BIN="$T/clauth-stub-bin"
 mkdir -p "$CLAUTH_BIN"
+# `status --json` (used by _clauth_smart_pick, exercised further down) prints
+# a per-case fixture instead of logging; everything else (the `clauth start
+# ...` every alias below ends in) logs argv like before.
 cat > "$CLAUTH_BIN/clauth" <<'STUB'
 #!/usr/bin/env bash
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  cat "${CLAUTH_STATUS_FIXTURE:?}"
+  exit 0
+fi
 printf '%s\n' "$*" > "${CLAUTH_STUB_LOG:?}"
 exit 0
 STUB
@@ -324,5 +331,260 @@ done
 grep -qF '# >>> cli-tools aliases (managed) >>>' "$INSTALL_SH" && pass sentinel-begin-unchanged || bad sentinel-begin-unchanged
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qF '# <<< cli-tools aliases (managed) <<<' "$INSTALL_SH" && pass sentinel-end-unchanged || bad sentinel-end-unchanged
+
+# ------------------------------------------------------------
+# Case set 3: _clauth_smart_pick's selection algorithm.
+#
+# Extraction: pull the literal `_clauth_smart_pick() { ... } / clauto() {
+# ... } / alias claude='clauto'` trio straight out of install-cli-tools.sh's
+# heredoc (anchored on the exact function-open and alias lines the brief
+# requires to stay unchanged), instead of retyping the jq algorithm here -
+# a hand-retyped copy would silently drift from the real algorithm the next
+# time it is edited without this test being touched.
+# ------------------------------------------------------------
+SMART_PICK_SRC="$T/clauth-smart-pick.sh"
+awk '/^_clauth_smart_pick\(\) \{$/,/^alias claude=.clauto.$/' "$INSTALL_SH" > "$SMART_PICK_SRC"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+test -s "$SMART_PICK_SRC" && pass extract-smart-pick || bad extract-smart-pick
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+bash -n "$SMART_PICK_SRC" && pass smart-pick-syntax || bad smart-pick-syntax
+
+# Shadow note: this section's only external command is `clauth` (called both
+# by `_clauth_smart_pick`'s `clauth status --json` and by `clauto`'s `clauth
+# start ...`), the exact same name the per-name shadow guard above already
+# derived from the cl/cla/.../clpre aliases, proved, and gated
+# CLAUTH_SHADOW_OK on - reused here as-is via the same $CLAUTH_BIN/clauth
+# stub (already extended with a `status --json` branch, see its definition
+# above) rather than re-deriving or re-proving a second copy of the same
+# single-name list. `jq` is deliberately left unstubbed and unguarded: it is
+# a pure, deterministic, side-effect-free text transform with no cost, no
+# wall-clock dependency and no state outside the test, which is exactly the
+# exemption the stub-guard requirement itself carves out.
+
+# Fixed "now" instants from the brief, each labeled with its Taipei weekday
+# and clock time so the per-case comments below can refer to them by name.
+WED="$(date -u -d '2026-09-23T03:24:00Z' +%s)"         # Wed 11:24 Taipei
+SAT="$(date -u -d '2026-09-26T03:00:00Z' +%s)"         # Sat 11:00 Taipei
+WED1730="$(date -u -d '2026-09-23T09:30:00Z' +%s)"     # Wed 17:30 Taipei
+
+# iso_at <base epoch> <hours offset, may be fractional> [date format]: builds
+# a resets_at string in the same shape real `clauth status --json` output
+# uses by default (fractional seconds + explicit +00:00), so the fixtures
+# below exercise the same sub()-based parsing the picker runs against
+# production data. The hour offsets used by every case in this suite
+# multiply out to whole seconds. The optional 3rd arg overrides the date
+# format, used by the plain-"Z"-suffix regression case further down.
+iso_at() {
+  local base="$1" hours="$2" fmt="${3:-%Y-%m-%dT%H:%M:%S.123456+00:00}" offset_sec
+  offset_sec="$(awk -v h="$hours" 'BEGIN { printf "%d", h*3600 }')"
+  date -u -d "@$((base + offset_sec))" +"$fmt"
+}
+
+# build_fixture <out file> <now epoch> <active profile> <onr w T r5 t5> <per w T r5 t5>
+# Mirrors the real `clauth status --json` shape given in the brief, including
+# a "7d fable" window on each profile that the picker must ignore.
+build_fixture() {
+  local out="$1" now="$2" active="$3"
+  local onr_w="$4" onr_T="$5" onr_r5="$6" onr_t5="$7"
+  local per_w="$8" per_T="$9" per_r5="${10}" per_t5="${11}"
+  cat >"$out" <<JSON
+{
+  "schema": 2,
+  "active_profile": "$active",
+  "profiles": [
+    {"name": "onramplab", "auth_status": "ok", "stale": false, "windows": [
+      {"label": "5h", "utilization_pct": $((100 - onr_r5)), "resets_at": "$(iso_at "$now" "$onr_t5")"},
+      {"label": "7d", "utilization_pct": $((100 - onr_w)), "resets_at": "$(iso_at "$now" "$onr_T")"},
+      {"label": "7d fable", "utilization_pct": 0, "resets_at": "2099-01-01T00:00:00+00:00"}
+    ]},
+    {"name": "personal", "auth_status": "ok", "stale": false, "windows": [
+      {"label": "5h", "utilization_pct": $((100 - per_r5)), "resets_at": "$(iso_at "$now" "$per_t5")"},
+      {"label": "7d", "utilization_pct": $((100 - per_w)), "resets_at": "$(iso_at "$now" "$per_T")"},
+      {"label": "7d fable", "utilization_pct": 0, "resets_at": "2099-01-01T00:00:00+00:00"}
+    ]}
+  ]
+}
+JSON
+}
+
+# run_claude_pick <now epoch> <fixture path>: sources the extracted picker
+# trio into a throwaway bash -c (expand_aliases must be on before the source,
+# same ordering constraint as run_alias above) and invokes the `claude` alias
+# against the stubbed PATH, returning whatever `clauth start ...` logged.
+run_claude_pick() {
+  local now="$1" fixture="$2" log="$T/clauth-pick-out.log"
+  : >"$log"
+  PATH="$CLAUTH_TEST_PATH" CLAUTH_STUB_LOG="$log" CLAUTH_PICK_NOW="$now" CLAUTH_STATUS_FIXTURE="$fixture" bash -c "
+    shopt -s expand_aliases
+    source '$SMART_PICK_SRC'
+    claude >/dev/null 2>&1
+  "
+  cat "$log" 2>/dev/null
+}
+
+# run_case <label> <now> <expected profile> <active profile> <onr w T r5 t5> <per w T r5 t5>
+run_case() {
+  local label="$1" now="$2" expected="$3" active="$4"
+  local fixture="$T/fixture-${label}.json"
+  build_fixture "$fixture" "$now" "$active" "${@:5}"
+  local got
+  got="$(run_claude_pick "$now" "$fixture")"
+  if [ "$got" = "start ${expected} -- --permission-mode auto" ]; then
+    pass "smart-pick-${label}"
+  else
+    bad "smart-pick-${label}"
+    printf '     expected: start %s -- --permission-mode auto\n     got:      %s\n' "$expected" "$got" >&2
+  fi
+}
+
+if [ "$CLAUTH_SHADOW_OK" -eq 1 ]; then
+  run_case case1  "$WED"     personal  onramplab 22 62.6 65 3.75 99 154.6 97 3.6
+  run_case case2  "$WED"     onramplab onramplab 40 10   70 2    80 100   90 3
+  run_case case3  "$WED"     personal  onramplab 40 10   8  4    80 100   90 3
+  run_case case4  "$WED"     onramplab onramplab 40 10   8  0.3  80 100   90 3
+  run_case case5  "$WED"     onramplab onramplab 40 10   10 4    80 100   5  4.5
+  run_case case6  "$WED"     onramplab onramplab 4  30   80 2    50 120   60 2
+  run_case case8  "$WED"     onramplab onramplab 30 50   50 2    1  20    90 2
+  run_case case9a "$WED"     personal  onramplab 40 10   22 4    80 100   90 3
+  run_case case9b "$SAT"     onramplab onramplab 40 10   22 4    80 100   90 3
+  run_case case10 "$WED1730" onramplab onramplab 40 10   60 4    80 100   90 3
+  run_case case11 "$WED"     personal  personal  1  30   80 2    50 120   1  2
+
+  # Regression: a resets_at already ending in plain "Z" (no fraction, no
+  # +00:00 - a shape real `clauth status --json` can emit) must parse without
+  # doubling the "Z". personal's windows use this format; onramplab keeps the
+  # usual fractional+offset format. Expected pick is personal - deliberately
+  # NOT onramplab, the function's own fallback default - so a regression that
+  # makes parse_epoch error (jq exits, target stays empty) is caught by a
+  # wrong pick rather than being masked by a fallback that happens to match.
+  FIXTURE_Z="$T/fixture-case-z-suffix.json"
+  cat >"$FIXTURE_Z" <<JSON
+{
+  "schema": 2,
+  "active_profile": "onramplab",
+  "profiles": [
+    {"name": "onramplab", "auth_status": "ok", "stale": false, "windows": [
+      {"label": "5h", "utilization_pct": $((100 - 22)), "resets_at": "$(iso_at "$WED" 4)"},
+      {"label": "7d", "utilization_pct": $((100 - 40)), "resets_at": "$(iso_at "$WED" 10)"},
+      {"label": "7d fable", "utilization_pct": 0, "resets_at": "2099-01-01T00:00:00+00:00"}
+    ]},
+    {"name": "personal", "auth_status": "ok", "stale": false, "windows": [
+      {"label": "5h", "utilization_pct": $((100 - 90)), "resets_at": "$(iso_at "$WED" 3 '%Y-%m-%dT%H:%M:%SZ')"},
+      {"label": "7d", "utilization_pct": $((100 - 80)), "resets_at": "$(iso_at "$WED" 100 '%Y-%m-%dT%H:%M:%SZ')"},
+      {"label": "7d fable", "utilization_pct": 0, "resets_at": "2099-01-01T00:00:00+00:00"}
+    ]}
+  ]
+}
+JSON
+  got="$(run_claude_pick "$WED" "$FIXTURE_Z")"
+  if [ "$got" = "start personal -- --permission-mode auto" ]; then
+    pass smart-pick-z-suffix
+  else
+    bad smart-pick-z-suffix
+    printf '     expected: start personal -- --permission-mode auto\n     got:      %s\n' "$got" >&2
+  fi
+
+  # Regression: a window whose resets_at is JSON null (present window, no
+  # reset timestamp) must be treated like a missing reset - 7d: T floors to
+  # 0.25; 5h: t5=0, E=0 - not fed straight into parse_epoch, which errors on
+  # a null input. onramplab gets null resets_at on both windows; personal is
+  # a normal, stronger profile. Expected pick is personal, again deliberately
+  # not the onramplab fallback default, for the same masking reason as above.
+  FIXTURE_NULL="$T/fixture-case-null-resets.json"
+  cat >"$FIXTURE_NULL" <<JSON
+{
+  "schema": 2,
+  "active_profile": "onramplab",
+  "profiles": [
+    {"name": "onramplab", "auth_status": "ok", "stale": false, "windows": [
+      {"label": "5h", "utilization_pct": 50, "resets_at": null},
+      {"label": "7d", "utilization_pct": 94, "resets_at": null},
+      {"label": "7d fable", "utilization_pct": 0, "resets_at": "2099-01-01T00:00:00+00:00"}
+    ]},
+    {"name": "personal", "auth_status": "ok", "stale": false, "windows": [
+      {"label": "5h", "utilization_pct": $((100 - 95)), "resets_at": "$(iso_at "$WED" 1)"},
+      {"label": "7d", "utilization_pct": $((100 - 90)), "resets_at": "$(iso_at "$WED" 2)"},
+      {"label": "7d fable", "utilization_pct": 0, "resets_at": "2099-01-01T00:00:00+00:00"}
+    ]}
+  ]
+}
+JSON
+  got="$(run_claude_pick "$WED" "$FIXTURE_NULL")"
+  if [ "$got" = "start personal -- --permission-mode auto" ]; then
+    pass smart-pick-null-resets
+  else
+    bad smart-pick-null-resets
+    printf '     expected: start personal -- --permission-mode auto\n     got:      %s\n' "$got" >&2
+  fi
+else
+  for c in case1 case2 case3 case4 case5 case6 case8 case9a case9b case10 case11 z-suffix null-resets; do
+    bad "smart-pick-${c}"
+  done
+fi
+
+# ------------------------------------------------------------
+# Outside-block warning: install-cli-tools.sh must warn to stderr when a
+# stray `_clauth_smart_pick()` definition sits outside the BEGIN..END
+# managed range (it would silently override the managed copy at zsh load
+# time), and stay silent when nothing sits outside the block.
+#
+# Extraction: the exact post-sync warning snippet, anchored on its own
+# `OUTSIDE_SMART_PICK=` assignment through the closing `fi` of its `if`, run
+# standalone against a synthetic ZSHRC under $T - never the real ~/.zshrc.
+# BEGIN_MARK/END_MARK are likewise pulled from install-cli-tools.sh's own
+# constants rather than retyped, so a sentinel-text change can't silently
+# desync this test from the script it is checking.
+# ------------------------------------------------------------
+OUTSIDE_CHECK_SRC="$T/outside-check.sh"
+awk '/^OUTSIDE_SMART_PICK=/,/^fi$/' "$INSTALL_SH" > "$OUTSIDE_CHECK_SRC"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+test -s "$OUTSIDE_CHECK_SRC" && pass extract-outside-check || bad extract-outside-check
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+bash -n "$OUTSIDE_CHECK_SRC" && pass outside-check-syntax || bad outside-check-syntax
+
+TEST_BEGIN_MARK="$(grep -oE '^BEGIN_MARK="[^"]+"' "$INSTALL_SH" | sed -E 's/^BEGIN_MARK="(.*)"$/\1/')"
+TEST_END_MARK="$(grep -oE '^END_MARK="[^"]+"' "$INSTALL_SH" | sed -E 's/^END_MARK="(.*)"$/\1/')"
+
+run_outside_check() { # $1 = synthetic zshrc path; prints whatever it wrote to stderr
+  # shellcheck disable=SC2069  # intentional fd-swap idiom to capture only stderr (verified: stdout is discarded, stderr is what $() captures), not the "wanted both merged" mistake this check usually flags
+  ZSHRC="$1" BEGIN_MARK="$TEST_BEGIN_MARK" END_MARK="$TEST_END_MARK" bash "$OUTSIDE_CHECK_SRC" 2>&1 1>/dev/null
+}
+
+ZSHRC_CLEAN="$T/zshrc-clean"
+cat >"$ZSHRC_CLEAN" <<EOF
+# a normal, unrelated zshrc line
+$TEST_BEGIN_MARK
+some managed content, no stray definition anywhere
+$TEST_END_MARK
+EOF
+out="$(run_outside_check "$ZSHRC_CLEAN")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$out" ] && pass outside-check-silent-when-clean || bad outside-check-silent-when-clean
+
+ZSHRC_STRAY="$T/zshrc-stray"
+cat >"$ZSHRC_STRAY" <<EOF
+_clauth_smart_pick() { echo old-hand-copied-version; }
+$TEST_BEGIN_MARK
+some managed content
+$TEST_END_MARK
+EOF
+out="$(run_outside_check "$ZSHRC_STRAY")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$out" | grep -qF '_clauth_smart_pick' && pass outside-check-warns-on-stray || bad outside-check-warns-on-stray
+
+# Same stray-definition scenario, but using the bash/zsh `function` keyword
+# declaration form (no parens) instead of the POSIX `name() { ... }` form -
+# both are valid ways to define a function outside the managed block, and
+# the check must catch either.
+ZSHRC_STRAY_FN="$T/zshrc-stray-fn"
+cat >"$ZSHRC_STRAY_FN" <<EOF
+function _clauth_smart_pick { echo old-hand-copied-version; }
+$TEST_BEGIN_MARK
+some managed content
+$TEST_END_MARK
+EOF
+out="$(run_outside_check "$ZSHRC_STRAY_FN")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+printf '%s' "$out" | grep -qF '_clauth_smart_pick' && pass outside-check-warns-on-stray-function-form || bad outside-check-warns-on-stray-function-form
 
 exit $fail
