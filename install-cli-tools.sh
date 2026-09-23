@@ -491,6 +491,74 @@ alias tree="eza --long --tree"
 alias md="glow -lt"
 #alias glow="glow -lt"
 alias csv="csvlens --color-columns --ignore-case --wrap words"
+## clauth 智慧選 profile（claude 啟動前自動判斷要用哪個 profile）
+# _clauth_smart_pick 依 `clauth status --json` 中每個 auth_status=="ok" profile
+# 的 7d／5h 用量視窗計算分數 S，挑最適合現在使用的 profile；claude 改呼叫
+# clauto，不再固定寫死 onramplab 或 personal。
+#   w  = 100 - 7d 視窗 utilization_pct（缺 7d 視窗視為已用滿，w=0）
+#   T  = 距 7d resets_at 的小時數，下限鎖 0.25 小時
+#   r5 = 100 - 5h 視窗 utilization_pct（缺 5h 視窗視為尚未使用，r5=100）
+#   t5 = 距 5h resets_at 的小時數（缺視窗或已過期記為 0）
+#   c(t) = 台北時間週一至週五 09:00–19:00（不含 19:00）每小時耗用 40%，其餘 25%
+#   E  = now 到 5h 重置這段時間，逐 15 分鐘 slot 累加 c(slot 起點)，最後不足
+#        15 分鐘的 slot 依剩餘比例加權（t5=0 時 E=0）
+#   F  = E=0 時為 1，否則 min(1, r5/E)；U = max(w-2, 0)/T；S = U * F
+# 篩選：先剔除 r5<=2 或 w<=2 者；剩餘中若有 2<w<=5 且 F>=0.5（即將用完 7d 配額、
+# 但 5h 還撐得住）者，取其中 S 最高者；否則取剩餘中 S 最高者；全數被剔除時
+# 回退 .active_profile。CLAUTH_PICK_NOW（epoch 秒）可覆寫「現在時間」，供測試
+# 用固定時間注入，未設定時才用系統當下時間。
+_clauth_smart_pick() {
+  local now target
+  now="${CLAUTH_PICK_NOW:-$(date +%s)}"
+  target=$(clauth status --json 2>/dev/null | jq -r --argjson now "$now" '
+    def parse_epoch:
+      sub("(\\.[0-9]+)?(Z|\\+00:00)$"; "Z") | fromdateiso8601;
+    def rate($t):
+      ($t + 8*3600 | gmtime) as $tp
+      | ($tp[6]) as $wday
+      | ($tp[3]*3600 + $tp[4]*60 + $tp[5]) as $secofday
+      | if ($wday >= 1 and $wday <= 5 and $secofday >= 9*3600 and $secofday < 19*3600)
+        then 40 else 25 end;
+    def win($p; $label):
+      ($p.windows // []) | map(select(.label == $label)) | first;
+    def expected_consumption($now; $reset_epoch):
+      if $reset_epoch == null then 0
+      else ([0, ($reset_epoch - $now)] | max) as $total
+        | ($total / 900 | floor) as $nfull
+        | ($total - $nfull*900) as $rem
+        | (if $rem > 0 then $nfull + 1 else $nfull end) as $nslots
+        | reduce range(0; $nslots) as $i
+            (0; . + (rate($now + $i*900) * 0.25 * (if $i < $nfull then 1 else ($rem/900) end)))
+      end;
+    def score($p):
+      win($p; "7d") as $w7
+      | win($p; "5h") as $w5
+      | (if $w7 == null then 100 else $w7.utilization_pct end) as $u7
+      | (100 - $u7) as $w
+      | (if $w7.resets_at == null then null else ($w7.resets_at | parse_epoch) end) as $r7e
+      | (if $r7e == null then 0.25 else ([0.25, (($r7e - $now) / 3600)] | max) end) as $T
+      | (if $w5 == null then 0 else $w5.utilization_pct end) as $u5
+      | (100 - $u5) as $r5
+      | (if $w5.resets_at == null then null else ($w5.resets_at | parse_epoch) end) as $r5e
+      | expected_consumption($now; $r5e) as $e
+      | (if $e == 0 then 1 else ([1, ($r5 / $e)] | min) end) as $f
+      | (([$w - 2, 0] | max) / $T) as $u
+      | { name: $p.name, w: $w, r5: $r5, f: $f, s: ($u * $f) };
+    . as $root
+    | ($root.profiles // [])
+    | map(select(.auth_status == "ok"))
+    | map(score(.))
+    | map(select(.r5 > 2 and .w > 2)) as $remain
+    | ($remain | map(select(.w > 2 and .w <= 5 and .f >= 0.5))) as $finish
+    | (if ($finish | length) > 0 then $finish else $remain end) as $pool
+    | if ($pool | length) > 0 then ($pool | max_by(.s) | .name)
+      else ($root.active_profile // empty)
+      end
+  ')
+  echo "${target:-onramplab}"
+}
+clauto() { local profile; profile=$(_clauth_smart_pick); echo "==> [clauth] 選定 profile: $profile" >&2; clauth start "$profile" -- --permission-mode auto "$@"; }
+alias claude='clauto'
 ## aliases for claude code
 # 統一透過 clauth 的 profile 啟動 claude，不再直接呼叫 claude、也不再走
 # 自製的 _ccp_launch config-dir 切換函式（已移除）。clauth start 執行期間
@@ -603,6 +671,30 @@ else
   # 附加路徑：先輸出一行空行作為與既有內容的分隔，再接整個區塊。
   { echo ""; cat "$NEW_BLOCK"; } >>"$ZSHRC"
   echo "    alias 區塊已寫入完成。"
+fi
+
+# ------------------------------------------------------------
+# 殘留副本檢查：託管區塊內已含 _clauth_smart_pick() 定義，若使用者自己在
+# 區塊之外（無論之前或之後）也留了一份同名函式，zsh 載入 ~/.zshrc 時後定義
+# 的那份會覆蓋掉先前的定義，可能悄悄蓋掉託管區塊剛同步進來的新版演算法。
+# 只掃描 BEGIN/END 之外的行（用與上方合併邏輯相同的 awk 狀態機找出範圍），
+# 偵測到就提醒使用者手動移除，絕不代為修改託管區塊以外的內容。兩種函式
+# 宣告寫法都要抓：POSIX 風格 `_clauth_smart_pick()` 與 bash/zsh 的
+# `function _clauth_smart_pick` 關鍵字寫法（後者可以不帶括號）。
+# ------------------------------------------------------------
+OUTSIDE_SMART_PICK="$(awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
+  !done && !inblk && index($0, b) { inblk = 1; next }
+  inblk && index($0, e) { inblk = 0; done = 1; next }
+  inblk { next }
+  /_clauth_smart_pick\(\)/ { print; next }
+  /function[ \t]+_clauth_smart_pick/ { print }
+' "$ZSHRC")"
+if [ -n "$OUTSIDE_SMART_PICK" ]; then
+  echo "    [警告] ${ZSHRC} 內託管區塊之外仍有 _clauth_smart_pick() 定義，" >&2
+  echo "           該份定義會覆蓋託管區塊內的版本，請手動移除：" >&2
+  while IFS= read -r _outside_line; do
+    echo "           $_outside_line" >&2
+  done <<<"$OUTSIDE_SMART_PICK"
 fi
 
 echo
