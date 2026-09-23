@@ -120,6 +120,26 @@ hat_assert_workspace() {
 # 呼叫端的 stderr；任一欄位取不到（含結束碼 2 印出的純文字用法說明，
 # 非合法 JSON——已實測 herdr 0.8.2 正是如此）就用明確的替代字串，不得
 # 因此退回轉發原始內容。
+#
+# ---- 呼叫端如何拿到 error.code（線上故障修正新增）----
+# stderr 那一行字串是印給人看的，呼叫端的腳本無法安全地從裡面切出
+# code 本身分歧處理（例如區分 agent_not_found 與 agent_blocked）。改
+# 用全域變數 AGENT_TEAM_HERDR_ERROR_CODE 暴露：失敗時設成該次的
+# error.code（含上面提到的替代字串 "unknown_error"）；成功
+# （結束碼 0）時明確清成空字串，不留上一次呼叫殘留的值——呼叫端每次
+# 呼叫本函式之後都能直接讀這個變數，不需要自己猜測上一次是否設過。
+#
+# ---- 呼叫慣例：想讀這個變數就不能用 `$(hat_herdr ...)` 指令替換 ----
+# 指令替換一定會另開一個子殼執行本函式，子殼內對
+# AGENT_TEAM_HERDR_ERROR_CODE 的賦值在子殼結束後就消失，呼叫端讀到的
+# 只會是舊值（已實測：連續兩次都用指令替換呼叫，第二次讀到的是第一
+# 次留下的殘影，不是這一次的新值）。想讀取這個變數，本函式要用
+# grant-peer.sh／report.sh 既有的裸陳述句寫法呼叫——不接指令替換、把
+# stdout 導去別處（通常是 `>/dev/null`，因為想要的是錯誤路徑，成功時
+# 的 JSON 本來就用不到），失敗結束碼用 `|| rc=$?` 接住，例如
+# `hat_herdr agent prompt "$to" "$text" >/dev/null || rc=$?`。需要同時
+# 保留 stdout 內容（JSON 本體）又要讀這個變數時，改用暫存檔取代指令
+# 替換：`hat_herdr agent get "$id" >"$tmp"; rc=$?`。
 hat_herdr() {
   local err_file rc code message
 
@@ -136,6 +156,7 @@ hat_herdr() {
 
   if [ "$rc" -eq 0 ]; then
     rm -f "$err_file"
+    AGENT_TEAM_HERDR_ERROR_CODE=""
     return 0
   fi
 
@@ -147,6 +168,8 @@ hat_herdr() {
   rm -f "$err_file"
   [ -n "$code" ] || code="unknown_error"
   [ -n "$message" ] || message="(herdr 未提供可解析的錯誤訊息)"
+  # shellcheck disable=SC2034 # 刻意設計成給呼叫端讀的全域變數，本檔自己不消費它
+  AGENT_TEAM_HERDR_ERROR_CODE="$code"
   printf 'herdr %s: %s\n' "$code" "$message" >&2
 
   if [ "$rc" -eq 1 ]; then
@@ -264,8 +287,20 @@ hat_whitelist_agents() {
 # 寫入端分邊，欄位集合刻意不重疊——座標類欄位由 launch-worker.sh 寫；
 # 整筆記錄由 shutdown-worker.sh 移除；計數／閂鎖類欄位（.auto_push_
 # count、.last_seq_stamp、.last_seq_changed_at、.auto_push_reset_seen_at、
-# .escalation_active、.escalation_last_at）由 watchdog.sh 維護；.stage、
-# .held 與 .last_delivered_at 由 orchestrator 端腳本寫。
+# .escalation_active、.escalation_last_at、.identity_mismatch_since，最
+# 後一個是本次修正新增）由 watchdog.sh 維護；.stage、.held 與
+# .last_delivered_at 由 orchestrator 端腳本寫。
+#
+# team.json 自己的五個欄位（.orchestrator_name／.orchestrator_pane／
+# .orchestrator_tab／.orchestrator_tab_label／.team_home，線上故障修
+# 正新增後兩個）目前只有 team-init.sh 一個寫入端：自我命名與 tab／
+# label 記錄在同一支腳本裡完成，不存在跨腳本切分欄位的問題。
+# .orchestrator_tab_label 額外的例外是 team-init.sh --recover——目前
+# 這個 tab 的 label 與這裡記錄的值不同時，把它改回記錄值；警報本身
+# 由 report.sh 用 `herdr tab rename` 寫上去、不自動還原，真正的還原
+# 時機是人回來跑 --recover 這一刻（規格「設計項目三」）。跟
+# .held／.escalation_active 已有的先例一樣，中斷恢復當下不存在兩個寫
+# 入端同時活著互相覆蓋的競態。
 #
 # 例外（線上故障修正新增）：.escalation_active 在中斷恢復時多一個寫入
 # 端——team-init.sh --recover 會把它清成 null，收回跨 orchestrator 重
@@ -273,6 +308,15 @@ hat_whitelist_agents() {
 # 被打破：中斷恢復發生的時間點，上一個 session 的 watchdog.sh 行程已
 # 經不在，不存在兩個寫入端同時活著互相覆蓋的競態，跟 .held「orchestrator
 # 端腳本寫、team-init.sh --recover 額外收回殘留」是同一種安全前提。
+#
+# .orchestrator_alert_active（本次修正新增）：team.json 六個欄位裡唯一
+# 不由 team-init.sh 寫的一個，只有 watchdog.sh 的
+# hat_wd_retry_blocked_inbox 讀寫，記「上一輪查無 orchestrator 名稱這件
+# 事是不是已經記過 watchdog.log 那一行 alert」，讓那一行只在「從查得到
+# 變成查不到」的狀態轉換時才寫一次，見該函式檔頭「狀態轉換才寫 log」一
+# 節。跟 .escalation_active 是同一類「watchdog.sh 專屬、team-init.sh 從
+# 不碰」的欄位，兩者互不重疊：一個管 worker 逐一的升級去重，一個管
+# orchestrator 名稱這個團隊層級狀態的警報去重。
 #
 # .last_delivered_at／.auto_push_reset_seen_at（線上故障修正新增，取代
 # 已移除的 .auto_push_reset_seq）：舊版計數歸零看的是「worker 有沒有回
@@ -294,13 +338,40 @@ hat_whitelist_agents() {
 # 原本沒有去重，只要觸發條件還成立，下一輪 poll 就原封不動再發一次（線
 # 上實測單一句子最高重複 56 次）。這兩個欄位讓同一個條件只在「從不成立
 # 變成成立」的那一輪發出一次，持續成立時最多每隔 AGENT_TEAM_ESCALATION_
-# REPEAT_SECONDS 秒重提一次；.escalation_active 記目前是哪個條件（四個
-# 升級呼叫點互斥，同一輪至多一個成立），條件不再成立時清成 null，讓下
-# 次重新成立能立刻再發，見 watchdog.sh hat_wd_escalate_once 的說明。跨
-# orchestrator 重啟的殘留收回另由 team-init.sh --recover 處理，見上方
-# 「例外」一段與該檔「升級閂鎖收回」一節。
+# REPEAT_SECONDS 秒重提一次；.escalation_active 記目前是哪個條件（五個
+# 升級呼叫點互斥，同一輪至多一個成立——新增 identity_lost 之後是五個，
+# 這裡原本寫「四個」是本次修正之前遺留的殘留，一併更正），條件不再成立
+# 時清成 null，讓下次重新成立能立刻再發，見 watchdog.sh
+# hat_wd_escalate_once 的說明。跨 orchestrator 重啟的殘留收回另由
+# team-init.sh --recover 處理，見上方「例外」一段與該檔「升級閂鎖收
+# 回」一節。
+#
+# .identity_mismatch_since（本次修正新增）：worker 身分消失升級原本一
+# 偵測到 pane 佔用者換人就立刻升級，但 launch-worker.sh 啟動一個 worker
+# 期間（`agent start` 逾時上限 30 秒、可能內部重試一次）與
+# shutdown-worker.sh 關閉一個 worker 期間（tab 已關、記錄還沒刪除的檔案
+# I/O 窗口），從 watchdog.sh 的角度看都跟真正的身分消失一模一樣——都是
+# 「這個 pane 上查不到登記的名稱」。這個欄位記「這一連串不符狀態第一次
+# 被觀察到的時間」（epoch 秒），watchdog.sh 讀到持續不符時比對經過的秒
+# 數是否已經超過內部門檻才真的升級，見該檔 hat_wd_process_worker「worker
+# 身分消失」一節；名稱對上時清成 null，不留殘影。這個門檻刻意不做成環
+# 境變數可覆寫（不比照其餘五個門檻值）：SKILL.md「門檻值」一節的六個環
+# 境變數表格是受管路徑，本次修正不改它；若把這個門檻也做成可覆寫，那張
+# 表就會少列一項本該存在的環境變數，而修表不在本次職責範圍內。
+#
+# 例外（獨立審查 Critical 修正新增）：.identity_mismatch_since 在同名
+# worker 原地重啟時多一個寫入端——launch-worker.sh 第 3 步覆寫座標的同
+# 一段會把它重置成 null，收回上一個死掉的 worker 殘留的緩衝起算時間，
+# 理由見該檔「獨立審查 Critical：同名重啟時重置身分緩衝」一節：不清掉
+# 的話，新 pane 進 `agent start` 期間 watchdog.sh 讀到的仍是舊時間戳，
+# 90 秒緩衝在第一輪輪詢就被繞過。這不是「不重疊」被打破：launch-
+# worker.sh 執行的時間點，上一個 watchdog.sh 對這個 worker 的緩衝評估
+# 要嘛已經升級過（走完了它要做的事），要嘛還在緩衝中——兩者都不存在跟
+# 這次重置同時發生、互相覆蓋的競態，跟 .escalation_active／.held 已有
+# 的先例是同一種安全前提。
 _HAT_TEAM_JSON_FIELDS=(
-  '.orchestrator_name' '.orchestrator_pane' '.team_home'
+  '.orchestrator_name' '.orchestrator_pane' '.orchestrator_tab'
+  '.orchestrator_tab_label' '.team_home' '.orchestrator_alert_active'
   '.thin_command_source' '.next_seq' '.goal_version' '.goal_confirmed'
   '.goal.achieve' '.goal.success' '.goal.not_doing' '.goal.assumptions'
   '.goal_history'
@@ -310,7 +381,8 @@ _HAT_WORKER_JSON_FIELDS=(
   '.completion_criteria' '.delivery_point' '.end_point' '.stage' '.held'
   '.auto_push_count' '.last_seq_stamp' '.last_seq_changed_at'
   '.auto_push_reset_seen_at' '.last_delivered_at' '.escalation_active'
-  '.escalation_last_at' '.ack_reconciliation' '.grants' '.pending_resend'
+  '.escalation_last_at' '.identity_mismatch_since' '.ack_reconciliation'
+  '.grants' '.pending_resend'
 )
 _HAT_INBOX_JSON_FIELDS=(
   '.token' '.worker' '.summary' '.detail_path' '.locator' '.created_at'
@@ -806,4 +878,154 @@ hat_strip_uplink_prefix() {
       ;;
   esac
   printf '%s\n' "$text"
+}
+
+# ---- orchestrator 自我續租（線上故障修正新增，見規格「設計項目二」）
+#      ----
+# herdr 官方文件記載：agent 名稱跟著 pane 目前的佔用者走，佔用者退
+# 出、被釋放或被取代時名稱就被清空；機器重開機後 herdr 用原本的
+# argv 把 pane 裡的 CLI 重新拉起，若是以 resume 方式接回完整對話脈絡
+# 的 provider（已實測對 claude 成立），佔用者感覺不到自己中斷過，不
+# 會主動重新命名，通道因此在雙方都沒有錯誤訊號的情況下悄悄斷掉。
+#
+# ---- 正當性完全建立在「呼叫者就是那個佔用者」這個前提上，不需要任
+#      何身分比對 ----
+# 呼叫 hat_renew_orchestrator_name 的腳本，是由 orchestrator 自己透過
+# 工具呼叫起來的子行程：執行這段檢查的行程，與 HERDR_PANE_ID 那個
+# pane 的佔用者在同一個行程樹上，所以「我還活著」這件事在呼叫當下就
+# 是成立的——不像 watchdog.sh 或任何外部行程，沒有辦法單靠一個行程還
+# 活著就推論出某個 pane 現在是誰。這一點對 claude／codex／agy／
+# opencode 四家 provider 一律成立（見規格「實測結果」一節）。
+#
+# ---- 絕對不可以被 watchdog.sh 呼叫 ----
+# watchdog.sh 是以 setsid 脫離出去的背景行程，已實測會在 orchestrator
+# 的佔用者死掉之後繼續活著；它沒有立場斷定 HERDR_PANE_ID 這個 pane 裡
+# 現在是誰。讓看門狗呼叫本函式，等於把名字補回一個無法驗證的佔用者身
+# 上——那正是這個設計原本要避免的靜默故障，只是換了方向。
+#
+# ---- 盡力而為：本函式一律以 0 結束 ----
+# HERDR_PANE_ID 未設、team.json 讀不到、`.orchestrator_name` 缺席，都
+# 是正常的「還沒有東西可續」狀態（team 還沒初始化過），無動作返回，不
+# 是錯誤。`agent get`／`agent rename` 呼叫失敗只在 stderr 留一行可辨
+# 識的說明；本函式一律以 0 結束，不讓呼叫端的腳本（全部掛
+# `set -euo pipefail`）因為這個自我修復的旁支動作而被 errexit 帶走。
+# 名稱本來就正確時，直接返回，不呼叫 rename——避免每支腳本每次執行都
+# 多打一次寫入型呼叫。
+#
+# ---- 守衛：只在自己確實是 orchestrator 的 pane 時才動作（第一批 code
+#      review 發現）----
+# team-status.sh 同時在調查者 subagent 的允許清單上，`AGENT_TEAM_
+# SCRIPTS` 這個路徑又是注入到 worker 環境裡的——一個好奇的 worker 直接
+# 跑 team-status.sh 並非不可能。若本函式只憑「HERDR_PANE_ID 有值」就動
+# 手，那個 worker 的 pane 會被改名成 orchestrator 的名字，等於竊取身
+# 分，而且 orchestrator 從此再也補不回自己的名稱（agent 名稱同一時間只
+# 能屬於一個 pane）。`.orchestrator_pane` 記的正是 team-init.sh 當初自
+# 我命名時的那個 pane，是 orchestrator 真正的座標；跟目前呼叫端的
+# `HERDR_PANE_ID` 不同就代表呼叫者不是那個 pane，直接無動作返回，不呼
+# 叫任何 herdr。欄位缺席（舊 registry）時無從比對，維持缺席前的既有行
+# 為，不因為新增這道守衛而多擋一種情況。
+hat_renew_orchestrator_name() {
+  local pane_id="${HERDR_PANE_ID:-}"
+  local root team_json orchestrator_pane orchestrator_name current_json current_name rc
+
+  [ -n "$pane_id" ] || return 0
+
+  root="$(hat_registry_root)"
+  team_json="$root/team.json"
+  [ -f "$team_json" ] || return 0
+
+  orchestrator_pane="$(jq -r '.orchestrator_pane // empty' "$team_json" 2>/dev/null || true)"
+  if [ -n "$orchestrator_pane" ] && [ "$orchestrator_pane" != "$pane_id" ]; then
+    return 0
+  fi
+
+  orchestrator_name="$(jq -r '.orchestrator_name // empty' "$team_json" 2>/dev/null || true)"
+  [ -n "$orchestrator_name" ] || return 0
+
+  rc=0
+  current_json="$(hat_herdr agent get "$pane_id")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'hat_renew_orchestrator_name: 無法讀取 pane %s 目前的 agent 名稱，跳過自我續租\n' "$pane_id" >&2
+    return 0
+  fi
+
+  current_name="$(printf '%s' "$current_json" | jq -r '.result.agent.name // empty' 2>/dev/null || true)"
+  [ "$current_name" != "$orchestrator_name" ] || return 0
+
+  rc=0
+  hat_herdr agent rename "$pane_id" "$orchestrator_name" >/dev/null || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'hat_renew_orchestrator_name: rename pane %s 回 %s 失敗，orchestrator 的 agent 名稱可能仍然消失\n' "$pane_id" "$orchestrator_name" >&2
+  fi
+
+  return 0
+}
+
+# ---- 拉警報（線上故障修正新增，見規格「設計項目三」）----
+# worker 發現 orchestrator 的名稱消失（`hat_herdr` 回
+# `AGENT_TEAM_HERDR_ERROR_CODE=agent_not_found`）時，是唯一還活著、也
+# 是第一個發現的角色，但它無法驗證那個 pane 裡現在是誰，因此不代為修
+# 復（那是 `hat_renew_orchestrator_name` 的職責，由 orchestrator 自己
+# 修）；worker 能做的只有讓人看得見：用 `herdr tab rename` 把
+# orchestrator 的 tab 改成帶警示前綴的 label，讓人在 herdr 的 tab 列上
+# 一眼看到異常。呼叫端：report.sh（worker 上行投遞失敗時）、
+# watchdog.sh（`hat_wd_retry_blocked_inbox` 查無 orchestrator 名稱時，
+# 見該函式）。
+#
+# tab id 與原始 label 讀 team.json 的 `.orchestrator_tab`／
+# `.orchestrator_tab_label`（team-init.sh 寫入，只在第一次記錄，不受本
+# 函式影響，見該檔「記錄 tab id 與原始 label」一節）。新 label 固定是
+# 本函式的區域變數 `prefix` 加上 team.json 記錄的**原始** label（不是目
+# 前查到的 label）：這樣不論本函式被呼叫幾次，新 label 的內容都以同一個
+# 基準組成，`team-init.sh --recover` 拿 `.orchestrator_tab_label` 還原
+# 時才對得起來。
+#
+# ---- 冪等：目前的 label 已經帶著警示前綴就跳過 ----
+# 呼叫前用 `herdr tab get` 查一次目前的 label，已經是這個 `prefix` 開頭
+# 就直接返回，不再呼叫 `tab rename`：避免每則回報都多打一
+# 次寫入型呼叫，也避免警示前綴被疊加多次（連續兩次沒被 --recover 處理
+# 掉的失敗，不該讓 label 變成前綴疊前綴）。
+#
+# ---- 盡力而為：本函式一律以 0 結束，兩個欄位任一缺席都只在 stderr
+#      留一行說明 ----
+# `.orchestrator_tab`／`.orchestrator_tab_label` 任一缺席（舊 registry，
+# 尚未走過 team-init.sh 記錄那段的既有 registry）、`tab get` 讀不到、
+# 或 `tab rename` 失敗，都不得讓呼叫端的腳本（全部掛
+# `set -euo pipefail`）被這個旁支動作的 errexit 帶走，也不得改變呼叫
+# 端既有的結束碼語意——警報本來就是盡力而為，失敗不影響回報／看門狗這
+# 一輪其餘的工作。
+hat_alert_orchestrator_tab() {
+  local registry_root="$1" team_json tab_id orig_label current_json current_label rc new_label
+  local prefix='🚨 ORCHESTRATOR NAME LOST: '
+
+  team_json="$registry_root/team.json"
+  [ -f "$team_json" ] || { printf 'hat_alert_orchestrator_tab: team.json 不存在，跳過拉警報\n' >&2; return 0; }
+
+  tab_id="$(jq -r '.orchestrator_tab // empty' "$team_json" 2>/dev/null || true)"
+  orig_label="$(jq -r '.orchestrator_tab_label // empty' "$team_json" 2>/dev/null || true)"
+  if [ -z "$tab_id" ] || [ -z "$orig_label" ]; then
+    printf 'hat_alert_orchestrator_tab: .orchestrator_tab／.orchestrator_tab_label 任一缺席（舊 registry），跳過拉警報\n' >&2
+    return 0
+  fi
+
+  rc=0
+  current_json="$(hat_herdr tab get "$tab_id")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'hat_alert_orchestrator_tab: 無法讀取 tab %s 目前的 label，跳過拉警報\n' "$tab_id" >&2
+    return 0
+  fi
+  current_label="$(printf '%s' "$current_json" | jq -r '.result.tab.label // empty' 2>/dev/null || true)"
+
+  case "$current_label" in
+    "$prefix"*) return 0 ;;
+  esac
+
+  new_label="${prefix}${orig_label}"
+  rc=0
+  hat_herdr tab rename "$tab_id" "$new_label" >/dev/null || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'hat_alert_orchestrator_tab: tab rename %s 失敗，警報沒有拉起\n' "$tab_id" >&2
+  fi
+
+  return 0
 }

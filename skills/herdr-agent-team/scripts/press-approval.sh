@@ -183,6 +183,15 @@ if [ "$startup" -eq 1 ]; then
   fi
 fi
 
+# ---- 自我續租（線上故障修正新增）----
+# 放在這裡而不是緊接 hat_require_herdr_env：本函式一定會呼叫
+# `hat_herdr agent get`（必要時還會 rename），若放在上面所有純本地判
+# 斷（參數解析、--to 名稱格式、workspace 邊界、允許清單比對）之前，會
+# 讓「這幾類用錯或守衛擋下時完全不呼叫任何 herdr」這個既有保證失真。
+# 正當性、絕對不可以被 watchdog.sh 呼叫的理由、失敗時的行為，全部見
+# lib/common.sh hat_renew_orchestrator_name 的檔頭。
+hat_renew_orchestrator_name
+
 # ---- 共同守衛第 2 項：代按之前重查一次狀態，必須仍是 blocked ----
 # 裸賦值（不接 `|| rc=$?`）讓 hat_herdr 對這通呼叫本身的失敗（herdr 拒
 # 絕、語法錯誤）直接透過 errexit 帶著它自己已經映射好的結束碼（6 或 2）

@@ -30,23 +30,43 @@
 # stalled` 這個歧義狀態要處理，唯一要判別的失敗是「對方卡在核准框而以
 # `agent_blocked` 拒絕」。因此本腳本的投遞呼叫絕對不加這三個選項。
 #
-# ---- 投遞失敗（agent_blocked）不是本腳本的失敗，但不能完全靜默 ----
+# ---- 投遞失敗不是本腳本的失敗，但依 error.code 分三種處理，不能完全
+#      靜默（線上故障修正新增，規格「設計項目三、四」）----
 # 編排端已裁決採納本次實作原本的判斷：落檔成功之後，投遞是
-# best-effort——失敗（不論是 agent_blocked 還是任何其他 herdr 拒絕）只
-# 記在該筆 inbox 記錄的 `.delivery` 欄位（"blocked"），本腳本仍以 0 結
-# 束。理由：規格明講「看門狗只在投遞失敗時介入重試」，重試責任已經明
-# 確歸給看門狗，不歸呼叫端（worker）；若本腳本此時回報失敗，worker 很
-# 可能誤判成「這則回報整個沒有送出」而重新呼叫一次，造成 inbox 出現重
-# 複記錄、`next_seq` 被多耗用一個號碼；而且那則回報已經 durable 地落
-# 在磁碟上，從 worker 的角度它確實已經被系統接受了。落檔本身（寫
+# best-effort，任何失敗都不讓本腳本以非 0 結束（理由見下段）；但
+# `.delivery` 記的值與 stdout 印的提示，依 `hat_herdr` 設好的
+# `AGENT_TEAM_HERDR_ERROR_CODE`（見 lib/common.sh 該函式檔頭）分歧：
+#   - `agent_blocked`（對方卡在核准框）：`.delivery` 記 "blocked"，印
+#     出核准框那句提示——這是修正前唯一存在的分支，行為不變。看門狗的
+#     `hat_wd_retry_blocked_inbox` 會在 orchestrator 離開 blocked 後重
+#     投這一筆（該函式只認 "blocked"）。
+#   - `agent_not_found`（orchestrator 的 agent 名稱已經從 herdr 消失，
+#     線上故障的核心成因，見規格「背景與問題」）：`.delivery` 記
+#     "orchestrator_lost"——刻意用跟 "blocked" 不同的值，讓看得到這筆
+#     記錄的人（調查者）不會把兩種完全不同的成因混為一談；也因此不會
+#     被 `hat_wd_retry_blocked_inbox` 誤重投——地址對象（orchestrator
+#     的名稱）本身已經失效，在名稱修好之前重投毫無意義。修復路徑是另
+#     外兩個機制：`hat_alert_orchestrator_tab`（下面就會呼叫，把
+#     orchestrator 的 tab 改成警示 label 讓人看到）與 orchestrator 端
+#     腳本的 `hat_renew_orchestrator_name`（自我續租修好名稱），都不是
+#     本腳本的職責。
+#   - 其他任何 herdr 拒絕：跟 `agent_blocked` 共用同一個 "blocked" 桶
+#     （沿用修正前「投遞失敗一律記 blocked」的既有語意），但印出的訊
+#     息帶實際的 `error.code`——成因不明時假裝成已知的核准框情境，只
+#     會讓人往錯的方向排查。
+# 理由：規格明講「看門狗只在投遞失敗時介入重試」，重試責任已經明確歸
+# 給看門狗，不歸呼叫端（worker）；若本腳本此時回報失敗，worker 很可能
+# 誤判成「這則回報整個沒有送出」而重新呼叫一次，造成 inbox 出現重複記
+# 錄、`next_seq` 被多耗用一個號碼；而且那則回報已經 durable 地落在磁
+# 碟上，從 worker 的角度它確實已經被系統接受了。落檔本身（寫
 # inbox／details）才是本腳本自己要對呼叫端負責的部分：那個失敗才真的
 # 以非 0 結束（見下方各步驟）。
 #
-# 修正迴圈第一輪新增的要求：投遞被判定 blocked 時，必須在 stdout 印一
-# 行明講「已記錄、投遞延後」。單純把結束碼留在 0、卻什麼都不印，會讓
+# 修正迴圈第一輪新增的要求：投遞被判定失敗時，必須在 stdout 印一行明
+# 講「已記錄、投遞延後」。單純把結束碼留在 0、卻什麼都不印，會讓
 # worker 誤以為 orchestrator 已經看到這則回報了，而它其實還躺在佇列裡
-# 等看門狗補投——結束碼的沉默和這裡要擋的其中一種「完全靜默的錯誤」是
-# 同一種類，只是換了個位置。
+# ——結束碼的沉默和這裡要擋的其中一種「完全靜默的錯誤」是同一種類，只
+# 是換了個位置。
 #
 # ---- ACK 的固定摘要格式：本腳本不產生，但 ack 這個 token 一律豁免長
 #      度上限 ----
@@ -357,8 +377,9 @@ hat_json_set "$inbox_file" '.created_at' "$(hat_json_string "$created_at")"
 # ---- 投遞：working 不投遞，只落檔；其餘五個一律嘗試（規格 §8、本任
 #      務行為要求 6、7）----
 # 不透過 `--wait`／`--until`／`--timeout`：見檔頭「投遞不帶任何握手選
-# 項」一節。投遞失敗（含 agent_blocked）只記在 `.delivery`，不讓本腳本
-# 以非 0 結束：見檔頭「投遞失敗不是本腳本的失敗」一節。
+# 項」一節。投遞失敗一律不讓本腳本以非 0 結束，`.delivery` 記的值與
+# stdout 的提示依 error.code 分三種：見檔頭「投遞失敗不是本腳本的失
+# 敗，但依 error.code 分三種處理」一節。
 if [ "$token" = "working" ]; then
   hat_json_set "$inbox_file" '.delivery' '"skipped"'
 else
@@ -367,10 +388,33 @@ else
   if [ "$rc" -eq 0 ]; then
     hat_json_set "$inbox_file" '.delivery' '"delivered"'
   else
-    hat_json_set "$inbox_file" '.delivery' '"blocked"'
-    # 不能只把結束碼留在 0：完全靜默會讓 worker 以為 orchestrator 已經
-    # 看到了，見檔頭「投遞失敗不是本腳本的失敗，但不能完全靜默」一節。
-    printf '已記錄、投遞延後：orchestrator 目前卡在核准框，看門狗會在它離開 blocked 後自動重投，但沒有任何機制會讓它自己離開，需要有人去處理那個框\n'
+    # 讀 AGENT_TEAM_HERDR_ERROR_CODE 必須在呼叫任何其他 hat_herdr（含
+    # agent_not_found 分支要呼叫的 hat_alert_orchestrator_tab，它內部
+    # 還會再呼叫 hat_herdr tab get／tab rename）之前先存成區域變數：這
+    # 個全域變數在每次 hat_herdr 呼叫後都會被覆寫，見 lib/common.sh
+    # hat_herdr 檔頭「呼叫端如何拿到 error.code」一節。
+    herdr_error_code="$AGENT_TEAM_HERDR_ERROR_CODE"
+    case "$herdr_error_code" in
+      agent_blocked)
+        hat_json_set "$inbox_file" '.delivery' '"blocked"'
+        # 不能只把結束碼留在 0：完全靜默會讓 worker 以為 orchestrator
+        # 已經看到了，見檔頭「投遞失敗不是本腳本的失敗，但依 error.code
+        # 分三種處理」一節。
+        printf '已記錄、投遞延後：orchestrator 目前卡在核准框，看門狗會在它離開 blocked 後自動重投，但沒有任何機制會讓它自己離開，需要有人去處理那個框\n'
+        ;;
+      agent_not_found)
+        hat_json_set "$inbox_file" '.delivery' '"orchestrator_lost"'
+        # 拉警報：盡力而為，兩個欄位任一缺席或 tab rename 失敗都不影響
+        # 本腳本的結束碼，見 lib/common.sh hat_alert_orchestrator_tab
+        # 檔頭。
+        hat_alert_orchestrator_tab "$state_dir"
+        printf '已記錄、投遞延後：orchestrator 的 agent 名稱已經從 herdr 消失，本次回報已經 durable 落檔；警報已經拉起（herdr 的 tab 列會顯示警示字樣），等 orchestrator 下次有任何動作時會自動續租、把名稱與通道修好\n'
+        ;;
+      *)
+        hat_json_set "$inbox_file" '.delivery' '"blocked"'
+        printf '已記錄、投遞延後：herdr 拒絕投遞（error.code=%s），本次回報已經 durable 落檔，需要人介入排查\n' "$herdr_error_code"
+        ;;
+    esac
   fi
 fi
 

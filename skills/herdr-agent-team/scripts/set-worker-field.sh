@@ -120,6 +120,16 @@ worker_file="$registry_root/workers/$to.json"
 pane_id="$(hat_json_get "$worker_file" '.pane_id')"
 hat_assert_workspace "$pane_id"
 
+# ---- 自我續租（線上故障修正新增，位置為最終審查修正）----
+# 排在上面所有純本地判斷（參數解析與必填檢查、欄位／值白名單、名稱格
+# 式、workspace 邊界）之後，不是緊接 hat_require_herdr_env：本函式一
+# 定會呼叫 `hat_herdr agent get`（必要時還會 rename），若放在這些本地
+# 守衛之前，會讓「這幾類用錯或守衛擋下時完全不呼叫任何 herdr」這個既
+# 有保證失真，理由同 instruct.sh／grant-peer.sh 等既有寫法。正當性、絕
+# 對不可以被 watchdog.sh 呼叫的理由、失敗時的行為，全部見 lib/common.sh
+# hat_renew_orchestrator_name 的檔頭。
+hat_renew_orchestrator_name
+
 hat_json_set "$worker_file" ".$field" "$(hat_json_string "$value")"
 
 printf 'to=%s field=%s set\n' "$to" "$field"
