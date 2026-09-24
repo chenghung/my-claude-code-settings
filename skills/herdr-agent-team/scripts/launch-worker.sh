@@ -114,8 +114,7 @@ hat_require_herdr_env
 # ---- herdr agent start 逾時：已用當前這台機器上真實 herdr 0.8.2 的
 #      `herdr agent start --help` 查證，預設 30000、上限 300000。這裡
 #      明確帶入而不是依賴隱含預設，日後 herdr 改了預設值也不會讓本腳
-#      本的行為跟著意外改變（沿用 skills/epic-orchestration/scripts/
-#      start-phase.sh 對同一個常數的既有做法與理由）。
+#      本的行為跟著意外改變。
 readonly HAT_AGENT_START_TIMEOUT_MS=30000
 
 # ---- ACK 輪詢間隔與預設逾時：兩者都沒有實測依據（規格 §15 未驗清單
@@ -324,9 +323,8 @@ while [ "$attempt" -le 2 ]; do
   # ---- 第 4 步：agent start ----
   # 不透過 hat_herdr：失敗（含逾時）要映射成本腳本專屬的「啟動未就
   # 緒」語意（本次嘗試失敗，可能被重試一次），不是 hat_herdr 通用的
-  # 「herdr 拒絕」6；語法錯誤（rc=2）仍然是呼叫端用錯，不重試。手法沿
-  # 用 skills/epic-orchestration/scripts/start-phase.sh 對同一個呼叫的
-  # 既有做法：stderr 先擷取到變數，只取 error.code／error.message 兩
+  # 「herdr 拒絕」6；語法錯誤（rc=2）仍然是呼叫端用錯，不重試。做
+  # 法：stderr 先擷取到變數，只取 error.code／error.message 兩
   # 個純字串欄位重組，不讓 herdr 的原始酬載（可能整包帶著終端標題）進
   # 入本腳本呼叫端的 context。
   rc=0

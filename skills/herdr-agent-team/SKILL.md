@@ -5,10 +5,9 @@ description: >
   組成一個團隊去推進某件事時觸發，例如「幫我組一個 agent team，一個人做前端一個人做後端」、「用
   codex 跟 claude 各開一個 worker 平行做這件事」、或指名要用某份 thin command 啟動一個 team。判斷
   依據是客觀事實：使用者要的是啟動或操作一群由本 skill 腳本（`team-init.sh`／`launch-worker.sh` 這
-  條路徑）管理的 herdr worker，不是單一 agent 自己完成的任務，也不是已經拆成 GitHub parent issue 與
-  sub-issue、要按 phase 推進的 epic（那走 `epic-orchestration`），也不是對同一個既有 PR 派多個 AI
+  條路徑）管理的 herdr worker，不是單一 agent 自己完成的任務，也不是對同一個既有 PR 派多個 AI
   平台各做一次 code review（那走 `pr-review-by-multi-agents`）。不觸發：單一 agent 就做得完的任
-  務；已經有 parent issue 與 sub-issue 結構的 epic；用 claude、codex、agy、opencode 對同一個既有 PR
+  務；用 claude、codex、agy、opencode 對同一個既有 PR
   做交叉 code review（即使字面上也提到「組 team」「跨平台」，只要目的是審查同一個 PR 就落在
   `pr-review-by-multi-agents` 的範圍）；純粹想知道 herdr 或某個 CLI 怎麼用而不涉及啟動 team。觸發
   關鍵字：組一個 agent team、開幾個 worker 平行做、herdr agent team、啟動這個 thin command。
