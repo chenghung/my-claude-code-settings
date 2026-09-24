@@ -47,11 +47,12 @@
 # CLIs are available (input parsing and preflight checks); the code
 # workspace and full prompt each reviewer CLI needs (worktree setup and
 # prompt assembly); and, below, launching each reviewer CLI with its own
-# least-privilege sandbox/permission flags, supervising them to completion,
-# synthesizing the trustworthy reviews into the single comment that
-# eventually gets posted, and reporting a summary -- see main()'s own
-# docstring further down for how each of its five subcommands (prepare,
-# launch, run, wait, cleanup) draws on the pieces above.
+# least-privilege sandbox/permission flags, supervising them to completion
+# (each reviewer posts its own comment directly, per reviewer-contract.md's
+# own 發布 section -- no synthesis step here), and reporting a summary --
+# see main()'s own docstring further down for how each of its five
+# subcommands (prepare, launch, run, wait, cleanup) draws on the pieces
+# above.
 set -euo pipefail
 
 # IFS is intentionally left at its bash default here. Nothing in this file
@@ -66,9 +67,11 @@ set -euo pipefail
 # 本 skill 自己張貼的 comment 一律以這一行不可見標記開頭。它有兩個用途：
 # 抓取 PR 討論串時據此濾掉自己上一輪的產出（否則同一個 PR 跑第二次會把
 # 前一輪的三則 AI review 當成需求材料餵回給 reviewer，形成回音室），
-# 以及讓使用者一眼認出 PR 上哪些 comment 是這個 skill 貼的。標記由監督
-# 行程寫入內容檔，不交給 reviewer 自己加——reviewer 讀的是外部可控的
-# diff 與 comments，它加不加、加成什麼樣子都不可信。
+# 以及讓使用者一眼認出 PR 上哪些 comment 是這個 skill 貼的。發布出去的
+# 那份輸出檔由 reviewer 自己在第一行寫上這個標記（見 reviewer-contract.md
+# 的「寫入、核對、發布」一節），沒有人代補。監督行程另外維護一份本機稽核
+# 用的副本（.comment-body-<cli>.md），產生這份副本時會在開頭再加一次
+# 標記，見 _record_reviewer_result_interactive。
 readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 
 # PROMPT_BYTE_LIMIT: the largest prompt_file size, in bytes,
@@ -123,11 +126,13 @@ readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 #
 # Measured 2026-09-23 by calling build_prompt against the current contract:
 # contract 15356 bytes, coordinates block 445, prompt 15801 -- 15.8% of this
-# limit, 84199 bytes of headroom. Two earlier readings, both real, show why
+# limit, 84199 bytes of headroom. Three earlier readings, all real, show why
 # this comment cannot be trusted on its own: an undated ~96018 from a shorter
-# contract, and 97939 (97.9%, only 2061 bytes of headroom) measured against
-# the contract as it stood immediately before the 2026-09 slimming. The
-# contract grew 1921 bytes between those two readings without either number
+# contract; 97939 (97.9%, only 2061 bytes of headroom) measured against the
+# contract as it stood immediately before the 2026-09-04 slimming; and 51814
+# (51.8%, 48186 bytes of headroom) measured 2026-09-04 against the contract
+# as it stood immediately before this 2026-09-23 slimming. The contract grew
+# 1921 bytes between the first two of those readings without either number
 # being updated. So: re-measure this margin (the same way the ceilings above
 # were measured against a real binary, not assumed) whenever the contract
 # changes meaningfully, and pin the measurement after the last edit -- three

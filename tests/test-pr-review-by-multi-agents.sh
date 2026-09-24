@@ -7499,13 +7499,14 @@ test_reviewer_contract_direct_comment_and_boundaries() {
 test_reviewer_contract_direct_comment_and_boundaries
 
 # ------------------------------------------------------------
-# reviewer-contract: 精簡後的契約結構（TDD 先寫失敗：契約尚未改寫）
+# reviewer-contract: 精簡後的契約結構（鎖住結構錨點與大小上限）
 # ------------------------------------------------------------
 test_reviewer_contract_slim_structure() {
   local contract="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
   local ok=1
 
-  # 契約整體大小上限：逐字比對前先確認契約已瘦身
+  # 契約整體大小上限：刻意壓緊的護欄，防止契約再度膨脹；目前契約 15356
+  # bytes，要加內容就得先刪等量的字，或經設計討論後調高
   local max_bytes=15360
   local size
   size=$(wc -c < "$contract")
