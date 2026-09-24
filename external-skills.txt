@@ -37,12 +37,14 @@ herdrdev/herdr@herdr
 #                              recovering each side's original intent
 #   triage                     moves issues and external PRs through a triage
 #                              state machine and writes agent-ready briefs
+#   to-spec                    turns the agreed conversation into a formal spec
 mattpocock/skills@grill-me
 mattpocock/skills@grill-with-docs
 mattpocock/skills@teach
 mattpocock/skills@handoff
 mattpocock/skills@resolving-merge-conflicts
 mattpocock/skills@triage
+mattpocock/skills@to-spec
 humanlayer/skills@show-me
 deanpeters/product-manager-skills@incoming-request-advisor
 deanpeters/product-manager-skills@user-story-mapping
