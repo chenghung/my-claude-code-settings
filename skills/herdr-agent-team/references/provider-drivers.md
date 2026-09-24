@@ -8,7 +8,7 @@
 
 | kind | 保真度 | 規則數 | 正向 idle 規則 | 有 unknown | 快速核准旗標 | 無引數啟動就緒 |
 | --- | --- | --- | --- | --- | --- | --- |
-| claude | 高 | 16 | 3 條 | 有 | `--permission-mode auto` | 沿用 epic-orchestration 既有實務 |
+| claude | 高 | 16 | 3 條 | 有 | `--permission-mode auto` | 沿用先前既有實務 |
 | codex | 高 | 9 | 1 條 | 有 | `--dangerously-bypass-approvals-and-sandbox` | 已實測以 `agent_not_ready` 失敗——herdr 回的錯誤訊息是該 agent 在啟動過程中處於 `blocked`、尚未準備好接受 prompt，成因見下方「codex 的更新框」 |
 | agy | 低 | 3 | 無 | 無 | `--dangerously-skip-permissions` | 已實測結束碼 0 即就緒 |
 | opencode | 低 | 3 | 無 | 無 | `--auto` | 已實測結束碼 0 即就緒 |

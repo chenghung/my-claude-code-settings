@@ -16,8 +16,7 @@ STUB_BIN="$T/bin"
 # ---- 「回報 0 FAIL 但其實只跑了一部分」要自己看得出來 ----
 # 這份套件裡的 hat_die／hat_assert_workspace 呼叫失敗時是真正的 exit，
 # 會直接把套件行程帶走；被帶走時已經跑過的斷言全是 PASS，只看 FAIL 數
-# 的判讀會把它當成全綠（同一形狀在 tests/test-epic-orchestration-
-# scripts.sh 已經實測過兩條真實路徑）。兩道防線一起做：這個 EXIT trap
+# 的判讀會把它當成全綠。兩道防線一起做：這個 EXIT trap
 # 負責「沒走到結尾」（不論被什麼帶走），檔尾的斷言數下限檢查負責「走
 # 到結尾但少跑了」。訊息刻意用 `FAIL ` 前綴印在 stdout：任何以 FAIL
 # 行數判讀成敗的讀法（人或腳本）都會看到它。
@@ -120,10 +119,7 @@ if [ "$rc" -eq 4 ]; then pass "workspace 守衛：不屬於本 workspace 時以 
 # 同一個成因，只是這裡是套件呼叫 hat_herdr 這一層再中一次。改寫成
 # `... && rc=0 || rc=$?`：把整句賦值放進 `&&/||` 鏈的非最後位置，
 # errexit 對它豁免；已用 `bash -c` 各自對 exit 與 return 兩種寫法各驗
-# 證一次，行為相同，兩者都需要這個修法（實測記錄見任務報告）。這個寫
-# 法也是 tests/test-epic-orchestration-scripts.sh 全篇擷取可能失敗之呼
-# 叫的慣用寫法（例如該檔的 `( eo_herdr ... ) 2>/dev/null && rc=0 ||
-# rc=$?`），沿用同一慣例。
+# 證一次，行為相同，兩者都需要這個修法（實測記錄見任務報告）。
 mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
@@ -311,8 +307,7 @@ fi
 printf '{}' > "$REG/team.json"
 
 # ---- Step 1（任務簡報逐字）：mktemp 失敗必須讓 hat_json_set 以 5 結束 ----
-# 這是整個 lib 最重要的一條測試：epic-orchestration 那邊踩過的實際後
-# 果是 mktemp 被樁成失敗之後，函式照樣回 0、自動推進的累計上限永不觸
+# 這是整個 lib 最重要的一條測試：先前實際踩過的後果是 mktemp 被樁成失敗之後，函式照樣回 0、自動推進的累計上限永不觸
 # 發、同一則標記每輪都被判成新的，全程沒有訊息也沒有非 0 結束碼。
 cat > "$STUB_BIN/mktemp" <<'STUB'
 #!/usr/bin/env bash

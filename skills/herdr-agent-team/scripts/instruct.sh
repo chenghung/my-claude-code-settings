@@ -242,9 +242,8 @@
 #
 # ---- 入口守衛：hat_assert_workspace 用在既有 target 上 ----
 # 本腳本接受呼叫端傳入的既有 target（worker 已註冊的座標），不像
-# launch-worker.sh 自己建立新座標；套用方式沿用 skills/epic-
-# orchestration/scripts/send-to-phase.sh 對同一類「既有 target」的既有
-# 手法：從 registry 讀出這個 worker 的 pane_id，對它斷言屬於本
+# launch-worker.sh 自己建立新座標；套用方式：從 registry 讀出這個
+# worker 的 pane_id，對它斷言屬於本
 # workspace，早於任何 herdr 呼叫。三道 workspace 守衛裡唯一擋得住「誤
 # 觸別的 team 的 worker」的一道。
 #
