@@ -47,11 +47,12 @@
 # CLIs are available (input parsing and preflight checks); the code
 # workspace and full prompt each reviewer CLI needs (worktree setup and
 # prompt assembly); and, below, launching each reviewer CLI with its own
-# least-privilege sandbox/permission flags, supervising them to completion,
-# synthesizing the trustworthy reviews into the single comment that
-# eventually gets posted, and reporting a summary -- see main()'s own
-# docstring further down for how each of its five subcommands (prepare,
-# launch, run, wait, cleanup) draws on the pieces above.
+# least-privilege sandbox/permission flags, supervising them to completion
+# (each reviewer posts its own comment directly, per reviewer-contract.md's
+# own 發布 section -- no synthesis step here), and reporting a summary --
+# see main()'s own docstring further down for how each of its five
+# subcommands (prepare, launch, run, wait, cleanup) draws on the pieces
+# above.
 set -euo pipefail
 
 # IFS is intentionally left at its bash default here. Nothing in this file
@@ -66,9 +67,11 @@ set -euo pipefail
 # 本 skill 自己張貼的 comment 一律以這一行不可見標記開頭。它有兩個用途：
 # 抓取 PR 討論串時據此濾掉自己上一輪的產出（否則同一個 PR 跑第二次會把
 # 前一輪的三則 AI review 當成需求材料餵回給 reviewer，形成回音室），
-# 以及讓使用者一眼認出 PR 上哪些 comment 是這個 skill 貼的。標記由監督
-# 行程寫入內容檔，不交給 reviewer 自己加——reviewer 讀的是外部可控的
-# diff 與 comments，它加不加、加成什麼樣子都不可信。
+# 以及讓使用者一眼認出 PR 上哪些 comment 是這個 skill 貼的。發布出去的
+# 那份輸出檔由 reviewer 自己在第一行寫上這個標記（見 reviewer-contract.md
+# 的「寫入、核對、發布」一節），沒有人代補。監督行程另外維護一份本機稽核
+# 用的副本（.comment-body-<cli>.md），產生這份副本時會在開頭再加一次
+# 標記，見 _record_reviewer_result_interactive。
 readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 
 # PROMPT_BYTE_LIMIT: the largest prompt_file size, in bytes,
@@ -121,13 +124,15 @@ readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 # against large PRs and become a guard against the contract itself growing
 # further.
 #
-# Measured 2026-09-04 by calling build_prompt against the current contract:
-# contract 51335 bytes, coordinates block 479, prompt 51814 -- 51.8% of this
-# limit, 48186 bytes of headroom. Two earlier readings, both real, show why
+# Measured 2026-09-23 by calling build_prompt against the current contract:
+# contract 15356 bytes, coordinates block 445, prompt 15801 -- 15.8% of this
+# limit, 84199 bytes of headroom. Three earlier readings, all real, show why
 # this comment cannot be trusted on its own: an undated ~96018 from a shorter
-# contract, and 97939 (97.9%, only 2061 bytes of headroom) measured against
-# the contract as it stood immediately before the 2026-09 slimming. The
-# contract grew 1921 bytes between those two readings without either number
+# contract; 97939 (97.9%, only 2061 bytes of headroom) measured against the
+# contract as it stood immediately before the 2026-09-04 slimming; and 51814
+# (51.8%, 48186 bytes of headroom) measured 2026-09-04 against the contract
+# as it stood immediately before this 2026-09-23 slimming. The contract grew
+# 1921 bytes between the first two of those readings without either number
 # being updated. So: re-measure this margin (the same way the ceilings above
 # were measured against a real binary, not assumed) whenever the contract
 # changes meaningfully, and pin the measurement after the last edit -- three
@@ -365,14 +370,15 @@ readonly PANE_CLOSE_RETRY_INTERVAL_SECONDS=5
 # own docstring for the race this whole retry mechanism exists for) before
 # giving up and leaving that pane open for a human to look at. A reasoned
 # bound, not a measured one: two minutes is generous margin over the
-# ordinary case (a file readback, a self-check against the reviewer
-# contract's own 輸出前自查 list, and one `gh pr comment` network call --
-# normally single-digit seconds total) while still being short enough,
-# relative to a whole run's own multi-minute timescale, that a reviewer
-# whose own `gh pr comment` call genuinely failed (and per the contract's
-# own 發布 step, is never retried on the reviewer's own side) does not
-# leave this script silently retrying for the rest of the run. Giving up
-# never discards anything: the pane simply stays open, and
+# ordinary case (a file readback, a check against the reviewer contract's
+# own 讀回核對 requirements -- its must-pass items and the 輸出前自查 list
+# -- and one `gh pr comment` network call -- normally single-digit seconds
+# total) while still being short enough, relative to a whole run's own
+# multi-minute timescale, that a reviewer whose own `gh pr comment` call
+# genuinely failed (and per the contract's own 發布 step, is never retried
+# on the reviewer's own side) does not leave this script silently
+# retrying for the rest of the run. Giving up never discards anything:
+# the pane simply stays open, and
 # <base_dir>/.pane-close-status records why (see this file's own "reason="
 # convention for that status file).
 readonly PANE_CLOSE_CONFIRM_DEADLINE_SECONDS=120
@@ -1834,8 +1840,8 @@ _write_opencode_home_interactive() {
 # completion and report success while producing nothing to read back.
 # The `gh pr comment*` line is denied in the headless config for the same
 # reason -- that reviewer never posts anything itself -- but the review
-# contract (see references/reviewer-contract.md's "GitHub 互動邊界 / 授權操作
-# （正面清單）") makes `gh pr comment "<PR>" --body-file "<review.md>"` this
+# contract (see references/reviewer-contract.md's "GitHub 互動邊界 / 授權操作")
+# makes `gh pr comment "<PR>" --body-file "<review.md>"` this
 # interactive reviewer's one contractually authorized state change, and
 # opencode's own `--auto` flag (see launch_reviewer_interactive's own
 # opencode branch) auto-approves any permission request not explicitly
@@ -2787,9 +2793,9 @@ _extract_review_content() {
 # looks past the last line), and everything from the file's start up to
 # that earlier occurrence's own position is not what `sed '$d'` extracts;
 # the content this function returns would silently include the earlier
-# marker line verbatim, which is exactly the shape SKILL.md's own contract
-# names as the one failure mode that gets untrustworthy content posted to
-# the PR.
+# marker line verbatim -- a file with a duplicated end marker like this
+# would otherwise be misread as a complete, postable review and reach the
+# PR with that earlier, corrupted content still in it.
 _extract_reviewer_output() {
   local output_file="$1"
   local end_marker='===PR-REVIEW-BY-MULTI-AGENTS-END==='
@@ -2961,8 +2967,9 @@ _record_orphan_reviewer_result_interactive() {
 # marker can appear on the front of -- a prior run against the same PR
 # posts a comment with the same marker too, and with several reviewers
 # dispatched in the same run, several *other* comments on this exact PR
-# also start with it. The reviewer contract's own 揭露聲明 section commits
-# every review to naming its own producing CLI in its opening disclosure
+# also start with it. The reviewer contract's own 輸出 section skeleton
+# carries a `## 揭露聲明` segment that commits every review to naming its
+# own producing CLI in its opening disclosure
 # (see build_prompt's own coordinates block, "產出這則 review 的 CLI
 # 名稱"), so two different reviewers' own review.md content is never the
 # same string -- exact match is what turns that fact into a way to tell
@@ -3096,10 +3103,11 @@ _confirm_pr_comment_posted_interactive() {
 # fetched read-only from a real PR and inspected byte-for-byte (`cat -A`,
 # no CR anywhere), all take the shape marker-line, then an optional blank
 # line, then a `## 揭露聲明` heading, then a blank line, then the four
-# bullets the reviewer contract's own 揭露聲明 section requires (one of
-# them naming the CLI), then either a `---` rule or the next `##` heading
-# starting the following section. "Skip line 1, read until the first
-# blank line" -- what this function used to do -- stops after the heading
+# bullets the reviewer contract's own 輸出 section skeleton's 揭露聲明
+# segment requires (one of them naming the CLI), then either a `---` rule
+# or the next `##` heading starting the following section. "Skip line 1,
+# read until the first blank line" -- what this function used to do --
+# stops after the heading
 # alone in every one of those three real samples (the heading's very next
 # line is blank), never reaching the bullet that actually names the CLI;
 # for the one sample whose own line 2 is itself blank, that same old rule
@@ -3124,11 +3132,12 @@ _confirm_pr_comment_posted_interactive() {
 # spot, it is a narrower search inside the wider range: this function
 # first looks, inside the disclosure block, for the one line containing
 # the literal substring "Reviewer Agent" -- the exact label text the
-# reviewer contract's own 揭露聲明 section itself uses for this bullet,
-# and the exact text all three real samples happened to render verbatim,
-# independently, for three different CLIs -- and if that line exists,
-# every check below (both <cli>'s own name and the other-cli conflict
-# check) runs against that ONE line, not the whole block. A finding two
+# reviewer contract's own 輸出 section skeleton's 揭露聲明 segment itself
+# uses for this bullet, and the exact text all three real samples happened
+# to render verbatim, independently, for three different CLIs -- and if
+# that line exists, every check below (both <cli>'s own name and the
+# other-cli conflict check) runs against that ONE line, not the whole
+# block. A finding two
 # bullets later that happens to name another platform is outside that
 # one line and cannot trigger a false conflict, and cannot falsely supply
 # <cli>'s own name either. Only when no such line exists at all -- a
@@ -3447,11 +3456,12 @@ _close_reviewer_pane_interactive() {
 # INTERVAL_SECONDS's own docstring for the full account of what such a
 # measurement would need and why it has not been done) -- already imply a
 # race. The reviewer contract's own ordering is write review.md complete ->
-# read it back and self-check -> only then call `gh pr comment`; this loop,
-# before this retry mechanism existed, confirmed exactly once, the instant
-# review.md was first seen complete, then dropped that cli with no second
-# chance. Those two orderings together mean that single confirm attempt
-# could land before the reviewer's own `gh pr comment` call had even
+# read it back and verify -> call `gh pr comment` only when that read-back
+# check does not stop; this loop, before this retry mechanism existed,
+# confirmed exactly once, the instant review.md was first seen complete,
+# then dropped that cli with no second chance. Those two orderings
+# together mean that single confirm attempt could land before the
+# reviewer's own `gh pr comment` call had even
 # started, not only before it returned -- which is the race this retry
 # mechanism now closes; how often it actually did, in real runs, is not
 # something either fact establishes on its own. Every pass, each cli in
