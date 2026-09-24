@@ -257,7 +257,11 @@ readonly REVIEWER_CONFIRM_BUDGET_SECONDS=60
 # hiccup, a tool-permission dialog codex has no auto-approve flag for the
 # way claude's --permission-mode auto, opencode's --auto, and agy's
 # --dangerously-skip-permissions do, see launch_reviewer_interactive's own
-# branch comments) without herdr ever reporting it as
+# branch comments -- except for posting the review itself: `gh pr comment`
+# specifically is pre-approved via .codex/rules/default.rules (see
+# _write_codex_home_interactive's own docstring), so that one dialog no
+# longer causes this class of stall; any other tool-permission dialog
+# codex raises still can) without herdr ever reporting it as
 # agent_status=blocked. Not every such stall reports blocked -- herdr's own
 # blocked detection is necessarily specific to whatever dialog shapes it
 # recognizes, and nothing here guarantees every platform's every possible
@@ -1748,12 +1752,59 @@ _write_claude_home_interactive() {
 # idempotent backup of cmd_prepare's own earlier call (see
 # _write_claude_home_interactive's docstring for why that file matters
 # and which call is the one actually protecting the pane).
+#
+# Also hand-writes .codex/rules/default.rules, a single prefix_rule
+# allowing `gh pr comment` and nothing else. Without it, codex posting the
+# review via `gh pr comment` inside its sandbox cannot reach the network
+# and pops the "run this outside the sandbox?" approval dialog instead.
+# Landing on PANE_CLOSE_CONFIRM_DEADLINE_SECONDS's own deadline unanswered
+# is what left the pane open (see that constant's own docstring); this
+# closes the approval gate the deadline was timing out against, for this
+# one command, rather than widening the deadline or the retry loop.
+#
+# Confirmed against a real codex-cli 0.156.1 in an interactive herdr pane,
+# with this same isolated-HOME shape, across two separate rounds of
+# testing:
+#   - No rules file: a network-reaching `gh` command cannot reach the
+#     network from inside the sandbox, codex then pops the "run this
+#     outside the sandbox?" approval dialog, and herdr reports the pane
+#     blocked; approving that dialog lets the command run outside the
+#     sandbox and succeed.
+#   - With exactly this prefix_rule written (pattern
+#     ["gh","pr","comment"], decision allow), a real `gh pr comment`
+#     against a PR number that does not exist (#999999) raised no approval
+#     dialog at all -- it went straight to the network, GitHub's own
+#     GraphQL API replied "Could not resolve to a PullRequest", and
+#     nothing was ever posted anywhere.
+#   - The allow does not extend past the exact command it names, checked
+#     against three separate ways of riding a second network command onto
+#     the same shell line: semicolon (`gh pr comment 999999 --repo
+#     chenghung/my-claude-code-settings --body probe; gh api user --jq
+#     .login`), `&&` (same two commands joined with `&&` instead), and
+#     command substitution (`gh pr comment 999999 --repo ... --body
+#     "$(gh api user --jq .login)"`). None of the three was let through --
+#     each whole line first failed inside the sandbox, then popped the
+#     same approval dialog the no-rules-file case does. Pipes, backticks,
+#     newline-joined commands, and any other composition not listed here
+#     were not tested; this bullet makes no claim about them.
+#   - `codex execpolicy check` matches `gh pr comment ...` against this
+#     rule as allow, and does not match `gh api -X DELETE ...` against it
+#     at all -- but this only speaks to a single command in isolation:
+#     execpolicy check does not decompose the contents of a `bash -lc`
+#     invocation at all (confirmed: even a lone `bash -lc "gh pr comment
+#     ..."`, with no second command riding along, does not match this rule
+#     either), so it cannot support any claim about how a composite shell
+#     line behaves at runtime -- that claim rests on the three direct
+#     runtime reproductions above instead.
 _write_codex_home_interactive() {
   local dir="$1" reviewer_workdir="$2"
   mkdir -p "$dir/.codex" || return 1
   ln -sf "$HOME/.codex/auth.json" "$dir/.codex/auth.json" || return 1
   printf '[projects."%s"]\ntrust_level = "trusted"\n' "$reviewer_workdir" \
     > "$dir/.codex/config.toml" || return 1
+  mkdir -p "$dir/.codex/rules" || return 1
+  printf 'prefix_rule(pattern=["gh","pr","comment"], decision="allow")\n' \
+    > "$dir/.codex/rules/default.rules" || return 1
   mkdir -p "$dir/.config" || return 1
   ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
@@ -3865,22 +3916,76 @@ print_summary() {
 # (`git diff <base-ref>...HEAD`) can actually resolve <base-ref> inside the
 # shared worktree -- a linked worktree shares refs/objects with the repo
 # it's attached to, so fetching here (in the caller's cwd, the same repo
-# setup_worktree operates against) makes the ref resolve there too. Prints
-# "origin/<base-branch-name>" to stdout on success. This is a hard
-# precondition, same tier as setup_worktree failing: with no resolvable
-# base ref, every reviewer would independently hit the contract's own
-# "base ref 沒有提供" abort path and immediately exit without reviewing
-# anything, so failing here first avoids paying for three CLI invocations
-# that would only self-abort anyway.
+# setup_worktree operates against) makes the ref resolve there too. This is
+# a hard precondition, same tier as setup_worktree failing: with no
+# resolvable base ref, every reviewer would independently hit the
+# contract's own "base ref 沒有提供" abort path and immediately exit
+# without reviewing anything, so failing here first avoids paying for
+# three CLI invocations that would only self-abort anyway.
+#
+# Prints "origin/<base-branch-name>" on success for an OPEN (or CLOSED,
+# unmerged) PR -- unchanged from this function's original behavior. A
+# MERGED PR is different: by the time this script runs, that PR's own base
+# branch has already absorbed its head via the merge commit, so
+# `origin/<base>...HEAD` finds HEAD already an ancestor of origin/<base> --
+# the three-dot merge-base collapses onto HEAD itself and every reviewer's
+# contractual diff comes back empty (confirmed against two real merged
+# PRs, #41 and #43 in this repo: baseRefOid stayed pinned at the commit the
+# merge commit's own first parent points to, unmoved by main's later
+# advances, and a baseRefOid...headRefOid diff recovered the same 6 changed
+# files gh itself reports for PR #43). For a MERGED PR this prints
+# baseRefOid's own full commit id instead -- the base branch's tip at the
+# moment of merge, still fetched into origin/<base> first the same as
+# always, since baseRefOid is ordinarily already reachable from that same
+# history and this function still needs the base branch's own objects on
+# disk regardless of which ref it ultimately prints. An OPEN PR must never
+# take this branch: its own head can later merge in a newer base on its
+# own, and diffing against that PR's *original*, now-stale base would fold
+# the base's own later changes into the reported diff too.
+#
+# state and baseRefOid ride along on the same gh call as baseRefName,
+# rather than a second gh call, keeping this function's own network-call
+# count unchanged from before this MERGED handling existed. The raw JSON
+# is fetched once and then read three times over with three separate `jq`
+# filters, one per field -- not `@tsv` plus a single `read` split on tab.
+# That combination was tried first and is wrong: bash's `read` treats a
+# tab in IFS as IFS *whitespace* regardless of what else IFS holds, so a
+# leading empty field (baseRefName itself empty) collapses instead of
+# reading as an empty variable, shifting state into base_ref_name and
+# baseRefOid into state. Confirmed empirically: a `main\tOPEN` tsv line
+# with an empty leading field, split via `IFS=$'\t' read`, put "OPEN" into
+# what should have been the empty first field. Each field emptying out to
+# an actual empty string -- not silently reading some other field's value
+# -- is exactly what the `[ -n "$base_ref_name" ]` guard just below, and
+# the `[ -n "$base_ref_oid" ]` guard further down, depend on.
 resolve_base_ref() {
-  local owner="$1" repo="$2" number="$3" base_ref_name
+  local owner="$1" repo="$2" number="$3"
+  local pr_json base_ref_name state base_ref_oid resolved_sha
 
-  base_ref_name="$(gh pr view "$number" --repo "$owner/$repo" --json baseRefName --jq .baseRefName 2>/dev/null)" || return 1
+  pr_json="$(gh pr view "$number" --repo "$owner/$repo" \
+    --json baseRefName,state,baseRefOid 2>/dev/null)" || return 1
+  base_ref_name="$(printf '%s' "$pr_json" | jq -r '.baseRefName // empty' 2>/dev/null)" || base_ref_name=""
+  state="$(printf '%s' "$pr_json" | jq -r '.state // empty' 2>/dev/null)" || state=""
+  base_ref_oid="$(printf '%s' "$pr_json" | jq -r '.baseRefOid // empty' 2>/dev/null)" || base_ref_oid=""
   [ -n "$base_ref_name" ] || return 1
 
   git fetch origin "+refs/heads/$base_ref_name:refs/remotes/origin/$base_ref_name" >/dev/null 2>&1 || return 1
 
-  printf 'origin/%s\n' "$base_ref_name"
+  if [ "$state" != "MERGED" ]; then
+    printf 'origin/%s\n' "$base_ref_name"
+    return 0
+  fi
+
+  [ -n "$base_ref_oid" ] || return 1
+  if ! resolved_sha="$(git rev-parse -q --verify "${base_ref_oid}^{commit}" 2>/dev/null)"; then
+    # Ordinarily already reachable from the base-branch fetch just above;
+    # this is a best-effort fallback for a shallow clone or a base branch
+    # rewritten since the merge, not the expected path.
+    git fetch origin "$base_ref_oid" >/dev/null 2>&1 || true
+    resolved_sha="$(git rev-parse -q --verify "${base_ref_oid}^{commit}" 2>/dev/null)" || return 1
+  fi
+
+  printf '%s\n' "$resolved_sha"
 }
 
 # _dispatch_failed_cleanup <worktree_dir> <already_dispatched_cli>...
@@ -4812,6 +4917,138 @@ cmd_launch() {
   print_summary "$base_dir" "${dispatched_agents[@]+"${dispatched_agents[@]}"}" --skipped "${skipped[@]+"${skipped[@]}"}"
 }
 
+# _cleanup_pane_liveness <list_json> <pane_id>
+#
+# Pure function over an already-fetched `herdr agent list` response --
+# never calls herdr itself. <list_json> is the raw output
+# _cleanup_check_reviewers_stopped's own single, shared query produced (or
+# an empty string, that function's own signal that the herdr query itself
+# failed); this function never re-queries herdr, so calling it once per
+# candidate cli costs nothing extra.
+#
+# Prints exactly one of three words: "present" (at least one agent entry's
+# pane_id matches <pane_id>, in any agent_status), "absent" (.result.agents
+# is confirmed to be an actual array and the parsed count for this pane id
+# came back a clean zero), or "unknown" (<list_json> is empty, .result.
+# agents is present but is not itself an array, or the parsed count did
+# not come back a clean digit string).
+#
+# The .result.agents type check is not defensive-for-its-own-sake: jq's
+# `[]?` operator on a missing or null .result.agents silently yields an
+# empty array with no error at all, so a future herdr release that renames
+# or reshapes that field would otherwise read as a clean, confirmed zero
+# ("absent") rather than "cannot tell" ("unknown") -- exactly the wrong
+# side of this function's own present-biased-on-doubt philosophy (see
+# _cleanup_check_reviewers_stopped's own docstring), and the exact
+# opposite of what a reshaped response actually tells this caller: nothing
+# about whether any agent is still running.
+#
+# This is a different shape from _herdr_agent_present_in_pane's boolean,
+# on purpose: that function's only caller needs a single yes/no (present-
+# or-doubtful vs cleanly-absent) and does not care which kind of doubt it
+# got; _cleanup_check_reviewers_stopped needs to name, in its own refusal
+# message, which cli and which situation -- a still-live pane versus a
+# herdr query it could not trust -- so callers can tell the two apart. It
+# is not a reuse of _herdr_agent_present_in_pane under a new name: it is
+# built fresh from the same underlying `herdr agent list`/jq query shape
+# that function and _wait_agent_states both already use.
+_cleanup_pane_liveness() {
+  local list_json="$1" pane_id="$2"
+  local agents_type count
+
+  [ -n "$list_json" ] || { printf 'unknown\n'; return 0; }
+
+  agents_type="$(printf '%s' "$list_json" | jq -r '.result.agents | type' 2>/dev/null)" || agents_type=""
+  [ "$agents_type" = array ] || { printf 'unknown\n'; return 0; }
+
+  count="$(printf '%s' "$list_json" | jq -r --arg p "$pane_id" \
+    '[.result.agents[] | select(.pane_id == $p)] | length' 2>/dev/null)" || {
+    printf 'unknown\n'; return 0
+  }
+  case "$count" in
+    ''|*[!0-9]*) printf 'unknown\n'; return 0 ;;
+  esac
+  if [ "$count" -gt 0 ]; then printf 'present\n'; else printf 'absent\n'; fi
+}
+
+# _cleanup_check_reviewers_stopped <base_dir>
+#
+# Guards cmd_cleanup's own destructive path (see that function's own
+# docstring on why this runs after the worktree-gone check but before any
+# deletion or chmod): refuses to let cleanup proceed while any reviewer
+# this run dispatched might still be alive in its pane. On success (safe
+# to proceed) prints nothing and returns 0. On refusal, prints exactly one
+# reason line naming the cli and returns 1 -- "reviewer <cli>'s pane still
+# has a live agent" for a pane _cleanup_pane_liveness confirms "present",
+# or a differently-worded "reviewer <cli>'s pane liveness could not be
+# confirmed" for "unknown", so a human reading cmd_cleanup's own
+# run_dir_removed= line can tell the two apart. Bias matches
+# _herdr_agent_present_in_pane's own (see that function's docstring): on
+# any doubt, refuse rather than delete -- an incident already happened
+# where cleanup ran while a codex pane was still open and its still-live
+# process wrote back into the very directory this function is about to
+# `rm -rf`.
+#
+# Reads the cli list from <base_dir>/.roster, the same source
+# _wait_agent_states already reads it from, and for the same reason: it is
+# the authoritative record of which clis this run actually dispatched, so
+# a base_dir predating .roster (or one .roster failed to write, an
+# already-fatal condition elsewhere in this file) has nothing to check
+# and this returns 0 -- there is no dispatched-cli list to refuse against,
+# not license to skip the check on purpose. A cli with no
+# <base_dir>/.pane-<cli> file is skipped the same way: cmd_launch never
+# got far enough to record a pane id for it, so there is no pane to ask
+# herdr about either. <base_dir>/.pane-close-status is never read here --
+# despite the similar name, it is spawn_supervisor_interactive's own
+# per-cli close-attempt log, one line per close outcome, not a pane-id
+# file for any single cli, and no cli's pane id can be read out of it.
+#
+# `herdr agent list` is queried exactly once for the whole check, after
+# every candidate (a roster cli with an actual pane id on disk) has
+# already been collected -- not once per candidate. A base_dir whose
+# roster has zero candidates at all (nothing dispatched got far enough to
+# record a pane id) returns 0 without ever querying herdr: there is
+# nothing yet to check it against. When the shared query itself fails,
+# every candidate's own _cleanup_pane_liveness call reads that same empty
+# <list_json> as "unknown", so this loop still refuses on, and names, the
+# first candidate in roster order -- exactly as if that candidate's own
+# query had failed in isolation, just without the wasted repeat queries a
+# per-candidate call would have made for every candidate after it.
+_cleanup_check_reviewers_stopped() {
+  local base_dir="$1"
+  local cli pane_id liveness list_json i
+  local -a cand_cli=() cand_pane=()
+
+  [ -r "$base_dir/.roster" ] || return 0
+  while read -r cli _; do
+    [ -n "$cli" ] || continue
+    [ -f "$base_dir/.pane-$cli" ] || continue
+    pane_id="$(cat "$base_dir/.pane-$cli" 2>/dev/null)" || pane_id=""
+    [ -n "$pane_id" ] || continue
+    cand_cli+=("$cli")
+    cand_pane+=("$pane_id")
+  done < "$base_dir/.roster"
+
+  [ "${#cand_cli[@]}" -gt 0 ] || return 0
+
+  list_json="$(herdr agent list 2>/dev/null)" || list_json=""
+
+  for i in "${!cand_cli[@]}"; do
+    liveness="$(_cleanup_pane_liveness "$list_json" "${cand_pane[$i]}")"
+    case "$liveness" in
+      present)
+        printf "reviewer %s's pane still has a live agent\n" "${cand_cli[$i]}"
+        return 1
+        ;;
+      unknown)
+        printf "reviewer %s's pane liveness could not be confirmed (herdr query failed or unreadable)\n" "${cand_cli[$i]}"
+        return 1
+        ;;
+    esac
+  done
+  return 0
+}
+
 # cmd_cleanup --base-dir <path>
 #
 # The wrap-up half of the pipeline, moved here out of SKILL.md. Everything
@@ -4828,6 +5065,20 @@ cmd_launch() {
 # Unlocking is a cost paid for deletion; if the deletion is not going to
 # happen, the cost must not be paid.
 #
+# Once the worktree is confirmed gone, _cleanup_check_reviewers_stopped
+# (see its own docstring) runs next, still before any deletion or chmod:
+# an incident already happened where cleanup ran while a codex pane was
+# still open, and that still-live process wrote its own built-in skills
+# back into the directory tree cleanup was mid-`rm -rf`-ing, leaving a
+# half-deleted run directory `rm -rf` itself could not finish and a
+# missing .repo-path a second cleanup attempt then refused outright (see
+# the retry paragraph below for why a missing .repo-path is exactly the
+# state that makes a directory permanently unrecoverable through this
+# command). A refusal here prints its own reason on the run_dir_removed=
+# line and returns early -- local branch deletion still runs unconditionally
+# (see the branch-deletion paragraph below for why that is always safe),
+# but nothing under base_dir is touched.
+#
 # base_dir itself is only half of this function's blast-radius bound; the
 # other half is the branch name, which _cleanup_delete_branch already
 # anchors to .repo-path rather than trusting the caller. base_dir gets the
@@ -4843,34 +5094,80 @@ cmd_launch() {
 # side of the worktree check below this run lands on -- git's own refusal
 # to delete a branch still checked out in a live worktree is what keeps
 # this safe when the worktree is still present, not any check of this
-# function's own. On the worktree-gone side, _cleanup_delete_branch is
-# called *before* `rm -rf "$base_dir"`, not after: it reads .repo-path out
-# of base_dir's own contents, and `rm -rf` would take .repo-path down with
-# everything else, turning "branch already deleted" into "branch can never
-# be deleted" on every normal run. Its stdout is captured into
-# branch_result and printed last, so the three output lines still appear
-# in the documented worktree_removed/run_dir_removed/branch_deleted order
-# regardless of this internal ordering.
+# function's own. On the worktree-gone side, it is unconditional on
+# _cleanup_check_reviewers_stopped's own verdict too: that check only ever
+# gates base_dir's own destructive removal, and a still-live reviewer pane
+# has no bearing on whether deleting the local branch is safe. Both of
+# those non-deleting exits (worktree still present, or a reviewer still
+# running) call _cleanup_delete_branch directly and print its output
+# immediately, the same shape; the deleting path below instead captures its
+# output into branch_result and prints that last, so the three output
+# lines still appear in the documented worktree_removed/run_dir_removed/
+# branch_deleted order regardless of which shape ran. On the deleting path,
+# _cleanup_delete_branch is called *before* removing anything under
+# base_dir, not after: it reads .repo-path out of base_dir's own contents,
+# and removing base_dir would take .repo-path down with everything else,
+# turning "branch already deleted" into "branch can never be deleted" on
+# every normal run.
 #
-# Every mutating call from here on (`chmod -R u+w`, `rm -rf`, and the two
-# re-lock chmods in the removal-failed branch) is guarded with `|| true`.
-# This file runs under set -euo pipefail, and none of these four calls is
-# otherwise wrapped in an `if`/`&&`/`||` the way errexit would need to
-# leave it alone -- a bare failing chmod or rm here would abort this
-# function on the spot, silently skipping every line after it, including
-# the run_dir_removed=/branch_deleted= output the caller depends on and
-# the re-lock step the calling agent's own contract requires when deletion
-# fails. Confirmed for real: a directory this process cannot make
+# Removal itself is two phases, in this order, for a reason a real
+# incident forced (see _cleanup_check_reviewers_stopped's own docstring for
+# that incident): everything under base_dir EXCEPT .repo-path first, and
+# only once nothing but .repo-path remains does the second phase delete
+# .repo-path together with base_dir itself via one `rm -rf "$base_dir"`
+# call. A single `rm -rf "$base_dir"` with no such staging -- what this
+# used to do -- has no equivalent checkpoint at all: a removal that fails
+# partway (permissions, or something else writing back into the tree mid-
+# delete) can take .repo-path down before it takes down whatever blocked
+# the rest, and a missing .repo-path is indistinguishable, on the very
+# next cleanup attempt, from "this was never a pr-review run directory in
+# the first place" (see the early `[ ! -r "$base_dir/.repo-path" ]` guard
+# above) -- the run directory is then stuck forever, recoverable only by
+# hand. Staging the one file this function's own retry depends on behind
+# everything else means a failed first attempt USUALLY leaves .repo-path
+# for the second attempt to key off of, however many attempts removal
+# itself ends up taking -- but not always: the checkpoint just described
+# (confirming nothing but .repo-path remains) and the `rm -rf "$base_dir"`
+# call right after it are two separate steps, and a new top-level entry
+# written into base_dir in the gap between them is not a gap this
+# staging leaves open -- that entry is still on disk by the time `rm -rf`
+# starts its own traversal, and gets recursively removed right along with
+# everything else `rm -rf` was already going to delete. The gap that is
+# real is inside that single `rm -rf` call's own traversal: it can unlink
+# .repo-path before it finishes with every other entry (rm makes no
+# ordering promise here), and if a new top-level entry appears after `rm
+# -rf` has already scanned past the point where it would have caught it,
+# or removing base_dir's own directory entry fails for some unrelated
+# reason once everything inside it is gone, base_dir can survive that one
+# `rm -rf` call with .repo-path already gone from it -- landing the next
+# cleanup attempt on the same "missing .repo-path" guard above, exactly
+# the failure mode this staging exists to avoid, just narrowed from every
+# partial-removal failure down to this one race inside the final call.
+#
+# Every mutating call from here on (`chmod -R u+w`, both removal phases,
+# and the two re-lock chmods in the removal-failed branch) is guarded with
+# `|| true`. This file runs under set -euo pipefail, and none of these
+# calls is otherwise wrapped in an `if`/`&&`/`||` the way errexit would
+# need to leave it alone -- a bare failing chmod or rm here would abort
+# this function on the spot, silently skipping every line after it,
+# including the run_dir_removed=/branch_deleted= output the caller depends
+# on and the re-lock step the calling agent's own contract requires when
+# deletion fails. Confirmed for real: a directory this process cannot make
 # readable/executable again (chmod -R u+w only ever adds the write bit, it
 # cannot restore read/execute that was never granted) makes both `chmod -R
-# u+w` and the subsequent `rm -rf` fail outright, and a partial removal
-# that took out one of materials/logs but not the other makes the combined
+# u+w` and the removal phases fail outright, and a partial removal that
+# took out one of materials/logs but not the other makes the combined
 # `chmod -R a-w "$base_dir/materials" "$base_dir/logs"` fail too (chmod
 # reports an error, and a nonzero exit, for the one operand that no longer
 # exists) -- all three are the same failure class as the two the review
-# flagged by name, in the same remediation path.
+# flagged by name, in the same remediation path. Phase 2's own
+# `remaining=$(find ...)` guard belongs to this same failure class even
+# though it reads rather than mutates: the same unreadable base_dir that
+# defeats `chmod -R u+w` also defeats find's own opendir, and a bare,
+# unguarded assignment there aborted this function the same way, on real
+# hardware (see that line's own comment for the reproduction).
 cmd_cleanup() {
-  local base_dir="" d branch_result
+  local base_dir="" d branch_result reviewers_stopped_reason entry remaining
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -4902,10 +5199,47 @@ cmd_cleanup() {
   fi
 
   printf 'worktree_removed=yes\n'
+
+  if ! reviewers_stopped_reason="$(_cleanup_check_reviewers_stopped "$base_dir")"; then
+    printf 'run_dir_removed=no:%s\n' "$reviewers_stopped_reason"
+    _cleanup_delete_branch "$base_dir"
+    return 0
+  fi
+
   branch_result="$(_cleanup_delete_branch "$base_dir")"
 
   chmod -R u+w "$base_dir" 2>/dev/null || true
-  rm -rf "$base_dir" || true
+
+  # Phase 1: delete everything except .repo-path. -mindepth/-maxdepth 1
+  # scopes this to base_dir's own direct children -- .repo-path itself
+  # only ever lives there, never nested -- and -print0/read -r -d '' keeps
+  # this safe against any child name find can produce.
+  while IFS= read -r -d '' entry; do
+    rm -rf "$entry" 2>/dev/null || true
+  done < <(find "$base_dir" -mindepth 1 -maxdepth 1 ! -name '.repo-path' -print0 2>/dev/null)
+
+  # Phase 2: only once phase 1 left nothing but .repo-path behind does this
+  # delete .repo-path together with base_dir itself -- see this function's
+  # own docstring for the retry this staged order exists to preserve. The
+  # `||` here is load-bearing, not decoration: base_dir itself (not a
+  # child under it) can lose its own read permission -- `chmod -R u+w`
+  # above only ever adds the write bit, never read -- and find then
+  # cannot even opendir(base_dir) to check what is left inside it. A bare
+  # `remaining=$(find ...)` on that failure would abort this function on
+  # the spot under set -euo pipefail (confirmed for real: only
+  # worktree_removed= printed, run_dir_removed=/branch_deleted= both
+  # missing, non-zero exit) -- the same failure class this function's own
+  # docstring already documents for chmod/rm, just one command later than
+  # those. On a find failure this must land on the same side as "something
+  # is still there": a wrongly-empty reading here would fall through to
+  # deleting base_dir (including .repo-path) while this process still
+  # cannot even confirm what is inside it.
+  remaining="$(find "$base_dir" -mindepth 1 -maxdepth 1 ! -name '.repo-path' -print -quit 2>/dev/null)" \
+    || remaining='find-failed-treat-as-nonempty'
+  if [ -z "$remaining" ]; then
+    rm -rf "$base_dir" 2>/dev/null || true
+  fi
+
   if [ -e "$base_dir" ]; then
     chmod -R a-w "$base_dir/materials" "$base_dir/logs" 2>/dev/null || true
     for d in "$base_dir"/reviewers/*/workdir/materials; do

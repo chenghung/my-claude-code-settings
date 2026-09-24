@@ -85,15 +85,23 @@ pr)
       exit 0
     fi
     case " $* " in
-      *' --json baseRefName '*)
+      *' --json baseRefName,state,baseRefOid '*)
         # resolve_base_ref's call: gh pr view NUMBER --repo OWNER/REPO --json
-        # baseRefName --jq .baseRefName
+        # baseRefName,state,baseRefOid -- one gh call fetching all three
+        # fields together (see resolve_base_ref's own docstring for why
+        # state/baseRefOid ride along with baseRefName instead of a second
+        # gh call). Raw JSON, not --jq-filtered: resolve_base_ref reads
+        # this JSON itself with three separate jq calls, not a single
+        # `--jq`+`@tsv` line (see that function's own docstring for why
+        # @tsv plus a tab-split `read` was wrong).
         [ "${GH_STUB_BASE_REF_OK:-1}" = "1" ] || exit 1
         # `-` (no colon) rather than `:-`: a *set-but-empty*
         # GH_STUB_BASE_REF_NAME must print as empty (the resolve-base-ref-
         # empty-name test case), not fall back to "main" the way `:-`
         # would treat empty the same as unset.
-        printf '%s\n' "${GH_STUB_BASE_REF_NAME-main}"
+        printf '{"baseRefName":"%s","state":"%s","baseRefOid":"%s"}\n' \
+          "${GH_STUB_BASE_REF_NAME-main}" \
+          "${GH_STUB_BASE_REF_STATE:-OPEN}" "${GH_STUB_BASE_REF_OID:-}"
         exit 0
         ;;
       *' --json title,body,comments,reviews '*)
@@ -1732,6 +1740,24 @@ fi
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$codex_home_i/.zshrc" ] && pass "_write_codex_home_interactive 建立非空 .zshrc" || bad "_write_codex_home_interactive 未建立非空 .zshrc"
+
+# A1 迴歸測試：沒有這份 rules 檔時，codex 在沙箱內執行 `gh pr comment`
+# 連不上網路，會跳出「是否在沙箱外執行」的核准對話框，卡在 herdr 的
+# blocked 狀態直到 PANE_CLOSE_CONFIRM_DEADLINE_SECONDS 逾時，pane 因此
+# 留著關不掉。只放行 `gh pr comment` 這個前綴，不放行別的（例如
+# `gh api -X DELETE`），逐字比對整份檔案內容。
+crt="$codex_home_i/.codex/rules/default.rules"
+expected_crt='prefix_rule(pattern=["gh","pr","comment"], decision="allow")
+'
+# 用 printf x 幫兩邊各補一個 sentinel 字元再比較，避免指令替換本身把
+# 結尾換行吃掉，讓「加結尾換行」這個要求真的被驗證到，而不是被指令替
+# 換的副作用悄悄放過。
+if [ -f "$crt" ] \
+  && [ "$(cat "$crt" 2>/dev/null; printf x)" = "$(printf '%s' "$expected_crt"; printf x)" ]; then
+  pass "_write_codex_home_interactive 寫出正確的 .codex/rules/default.rules"
+else
+  bad "_write_codex_home_interactive 的 .codex/rules/default.rules 內容不正確: $(cat "$crt" 2>/dev/null)"
+fi
 
 # ==============================================================
 # _write_opencode_home_interactive
@@ -3553,6 +3579,197 @@ else
 fi
 unset GH_STUB_BASE_REF_NAME
 export PATH="$saved_path"
+
+# --- A5 regression: an OPEN PR must keep outputting origin/<base> even
+# though resolve_base_ref now also reads state/baseRefOid off the same gh
+# call -- state=OPEN is the new stub default (see the gh stub's own
+# comment), so this is really just resolve-base-ref-success run again with
+# the field explicit rather than implicit, guarding against a future edit
+# collapsing the OPEN/MERGED branches together. ---
+export PATH="$STUB_BIN:$saved_path"
+export GH_STUB_BASE_REF_OK=1
+export GH_STUB_BASE_REF_NAME=main
+export GH_STUB_BASE_REF_STATE=OPEN
+out="$(cd "$GIT_FIXTURE/work" && resolve_base_ref acme widgets 9)"
+unset GH_STUB_BASE_REF_OK GH_STUB_BASE_REF_NAME GH_STUB_BASE_REF_STATE
+export PATH="$saved_path"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$out" = "origin/main" ] && pass resolve-base-ref-open-outputs-origin-base || bad "resolve-base-ref-open-outputs-origin-base: $out"
+
+# ==============================================================
+# resolve_base_ref -- MERGED PR must resolve to baseRefOid, not
+# origin/<base>
+#
+# A5: an already-merged PR's base branch has, by the time this script
+# runs, absorbed the PR's own head via the merge commit -- fetching
+# origin/<base> and diffing `origin/<base>...HEAD` then finds HEAD (the
+# PR's head) already an ancestor of origin/<base>, so the three-dot
+# merge-base collapses onto HEAD itself and every reviewer's contractual
+# `git diff <base-ref>...HEAD` comes back empty. Reproduced here with a
+# real merge commit, not asserted from the docstring's own reasoning
+# alone: this fixture actually diffs both candidate base refs against the
+# PR's own head and checks which one comes back empty.
+# ==============================================================
+
+GIT_FIXTURE_MERGED="$T/git-fixture-merged"
+mkdir -p "$GIT_FIXTURE_MERGED/remotes/acme" "$GIT_FIXTURE_MERGED/work"
+git init -q -b main --bare "$GIT_FIXTURE_MERGED/remotes/acme/widgets.git"
+git init -q -b main "$GIT_FIXTURE_MERGED/work"
+(
+  cd "$GIT_FIXTURE_MERGED/work"
+  git config user.email test@example.com
+  git config user.name "Test"
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "https://github.com/acme/widgets.git"
+  git config "url.$GIT_FIXTURE_MERGED/remotes/acme/widgets.git.insteadOf" "https://github.com/acme/widgets.git"
+  git push -q origin HEAD:refs/heads/main
+  # The PR: one commit, off the base above, adding a new file.
+  git checkout -q -b pr-branch
+  printf 'pr change\n' > pr-file.txt
+  git add pr-file.txt
+  git commit -q -m "pr change"
+  git push -q origin pr-branch:refs/pull/55/head
+  # Simulate GitHub's own merge: a merge commit on main whose first parent
+  # is the base this PR was actually opened against (what baseRefOid holds
+  # onto, per this function's own docstring) and whose second parent is
+  # the PR's own head.
+  git checkout -q main
+  git merge --no-ff -q -m "Merge PR #55" pr-branch
+  git push -q origin main
+)
+MERGED_BASE_SHA="$(git -C "$GIT_FIXTURE_MERGED/work" rev-parse main^1)"
+MERGED_PR_HEAD_SHA="$(git -C "$GIT_FIXTURE_MERGED/work" rev-parse pr-branch)"
+
+export PATH="$STUB_BIN:$saved_path"
+export GH_STUB_BASE_REF_OK=1
+export GH_STUB_BASE_REF_NAME=main
+export GH_STUB_BASE_REF_STATE=MERGED
+export GH_STUB_BASE_REF_OID="$MERGED_BASE_SHA"
+merged_out="$(cd "$GIT_FIXTURE_MERGED/work" && resolve_base_ref acme widgets 55)"
+merged_rc=$?
+unset GH_STUB_BASE_REF_OK GH_STUB_BASE_REF_NAME GH_STUB_BASE_REF_STATE GH_STUB_BASE_REF_OID
+export PATH="$saved_path"
+
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$merged_rc" -eq 0 ] && pass resolve-base-ref-merged-success || bad "resolve-base-ref-merged-success: rc=$merged_rc"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$merged_out" = "$MERGED_BASE_SHA" ] && pass resolve-base-ref-merged-outputs-base-ref-oid || bad "resolve-base-ref-merged-outputs-base-ref-oid: $merged_out"
+
+# The bug's own repro: origin/main (post-merge) three-dot-diffed against
+# the PR's own head is empty -- the exact defect A5 reports.
+merged_diff_via_origin="$(git -C "$GIT_FIXTURE_MERGED/work" diff --name-only "origin/main...$MERGED_PR_HEAD_SHA")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$merged_diff_via_origin" ] && pass resolve-base-ref-merged-origin-base-diff-is-empty || bad "resolve-base-ref-merged-origin-base-diff-is-empty: $merged_diff_via_origin"
+
+# The fix's own payoff: diffing against what resolve_base_ref now returns
+# (baseRefOid) recovers the PR's actual changed file.
+merged_diff_via_oid="$(git -C "$GIT_FIXTURE_MERGED/work" diff --name-only "$merged_out...$MERGED_PR_HEAD_SHA")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$merged_diff_via_oid" = "pr-file.txt" ] && pass resolve-base-ref-merged-base-ref-oid-diff-recovers-pr-change || bad "resolve-base-ref-merged-base-ref-oid-diff-recovers-pr-change: $merged_diff_via_oid"
+
+# --- MERGED but baseRefOid does not resolve locally, even after this
+# function's own best-effort `git fetch origin <sha>` retry (a bogus,
+# never-pushed sha here stands in for that exhausted retry) -> failure,
+# no stdout. ---
+export PATH="$STUB_BIN:$saved_path"
+export GH_STUB_BASE_REF_OK=1
+export GH_STUB_BASE_REF_NAME=main
+export GH_STUB_BASE_REF_STATE=MERGED
+export GH_STUB_BASE_REF_OID="0000000000000000000000000000000000dead"
+if out="$(cd "$GIT_FIXTURE_MERGED/work" && resolve_base_ref acme widgets 55 2>/dev/null)"; then
+  bad resolve-base-ref-merged-unresolvable-oid
+else
+  pass resolve-base-ref-merged-unresolvable-oid
+fi
+unset GH_STUB_BASE_REF_OK GH_STUB_BASE_REF_NAME GH_STUB_BASE_REF_STATE GH_STUB_BASE_REF_OID
+export PATH="$saved_path"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$out" ] && pass resolve-base-ref-merged-unresolvable-oid-no-output || bad resolve-base-ref-merged-unresolvable-oid-no-output
+
+# ==============================================================
+# resolve_base_ref -- empty baseRefName must be caught by the existing
+# emptiness guard itself, not merely produce a failure for some other,
+# accidental reason
+#
+# Review finding: parsing the three fields gh returns via `@tsv` +
+# `IFS=$'\t' read` is wrong -- tab is bash's own IFS *whitespace*, so
+# `read` collapses a leading/empty field instead of preserving it as an
+# empty read variable, shifting every field down by one. A PR whose own
+# baseRefName comes back empty (state defaulting to OPEN) would then read
+# "OPEN" into base_ref_name -- non-empty, so the existing
+# `[ -n "$base_ref_name" ] || return 1` guard never fires -- and this
+# function would go on to attempt `git fetch` for a branch literally named
+# "OPEN". resolve-base-ref-empty-name above only ever asserted the overall
+# call still fails, which it does either way: the misparsed "OPEN" fetch
+# also fails (no such branch on this fixture's own remote), for the wrong
+# reason, with the right-looking exit status. Recording every `git`
+# invocation resolve_base_ref makes, via a PATH-prepended wrapper around
+# the real binary, is what actually tells the two apart.
+# ==============================================================
+
+GIT_RECORD_BIN="$T/git-record-bin"
+mkdir -p "$GIT_RECORD_BIN"
+cat > "$GIT_RECORD_BIN/git" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GIT_CALL_LOG"
+exec "$REAL_GIT" "$@"
+STUB
+chmod +x "$GIT_RECORD_BIN/git"
+# Resolved against $saved_path, before $GIT_RECORD_BIN ever joins PATH --
+# resolving it once PATH already carries $GIT_RECORD_BIN would just find
+# this wrapper itself and recurse forever.
+REAL_GIT="$(PATH="$saved_path" command -v git)"
+
+GIT_CALL_LOG="$T/git-calls-empty-name.log"
+: > "$GIT_CALL_LOG"
+export REAL_GIT GIT_CALL_LOG
+export PATH="$GIT_RECORD_BIN:$STUB_BIN:$saved_path"
+export GH_STUB_BASE_REF_OK=1
+export GH_STUB_BASE_REF_NAME=""
+export GH_STUB_BASE_REF_STATE=OPEN
+if out="$(cd "$GIT_FIXTURE/work" && resolve_base_ref acme widgets 9 2>/dev/null)"; then
+  bad resolve-base-ref-empty-name-still-fails
+else
+  pass resolve-base-ref-empty-name-still-fails
+fi
+export PATH="$saved_path"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$out" ] && pass resolve-base-ref-empty-name-no-output || bad resolve-base-ref-empty-name-no-output
+# The actual regression guard: no `git` subcommand at all -- and
+# specifically no `fetch` for a branch named "OPEN" -- was ever invoked.
+# The emptiness guard must reject this before resolve_base_ref ever
+# reaches its own `git fetch` call. Checked before unsetting GIT_CALL_LOG
+# below -- this file runs under `set -u`, so reading it after unset would
+# abort the whole test run instead of reporting a clean FAIL.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$GIT_CALL_LOG" ] && pass "resolve-base-ref-empty-name-no-git-call: 空 baseRefName 被守衛擋下，從未呼叫任何 git 指令" || bad "resolve-base-ref-empty-name-no-git-call: 守衛沒擋住，實際呼叫了 git: $(cat "$GIT_CALL_LOG")"
+unset GH_STUB_BASE_REF_OK GH_STUB_BASE_REF_NAME GH_STUB_BASE_REF_STATE REAL_GIT GIT_CALL_LOG
+
+# --- MERGED, but baseRefOid itself comes back empty -- must fail via the
+# `[ -n "$base_ref_oid" ] || return 1` guard, with no field misalignment
+# smuggling some other field's value into base_ref_oid. baseRefName here
+# is non-empty (main) so the base-branch fetch above still runs
+# normally -- only the oid-specific guard is under test. ---
+GIT_CALL_LOG="$T/git-calls-merged-empty-oid.log"
+: > "$GIT_CALL_LOG"
+REAL_GIT="$(PATH="$saved_path" command -v git)"
+export REAL_GIT GIT_CALL_LOG
+export PATH="$GIT_RECORD_BIN:$STUB_BIN:$saved_path"
+export GH_STUB_BASE_REF_OK=1
+export GH_STUB_BASE_REF_NAME=main
+export GH_STUB_BASE_REF_STATE=MERGED
+export GH_STUB_BASE_REF_OID=""
+if out="$(cd "$GIT_FIXTURE_MERGED/work" && resolve_base_ref acme widgets 55 2>/dev/null)"; then
+  bad resolve-base-ref-merged-empty-oid
+else
+  pass resolve-base-ref-merged-empty-oid
+fi
+unset GH_STUB_BASE_REF_OK GH_STUB_BASE_REF_NAME GH_STUB_BASE_REF_STATE GH_STUB_BASE_REF_OID REAL_GIT GIT_CALL_LOG
+export PATH="$saved_path"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -z "$out" ] && pass resolve-base-ref-merged-empty-oid-no-output || bad resolve-base-ref-merged-empty-oid-no-output
 
 # --- _check_origin_matches must run, and reject, before resolve_base_ref
 # ever gets a chance to fetch -- exercised through a real cmd_prepare() run
@@ -6394,6 +6611,370 @@ else
 fi
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 git -C "$CLEANBR_GITOK" show-ref --verify --quiet refs/heads/pr-review-42-13579 && pass "cmd_cleanup 沒有誤刪名字相近的另一個分支 pr-review-42-13579" || bad "cmd_cleanup 誤刪了不該碰的分支 pr-review-42-13579"
+
+# ==============================================================
+# cmd_cleanup -- A2a：reviewer 的 pane 仍有 agent 時拒絕刪除
+#
+# 實際發生過的事件：codex 那一格 pane 還開著、codex 行程還活著時執行了
+# cleanup；刪除途中 codex 把內建 skills 解壓寫回執行目錄，導致刪除失敗
+# 且留下無法重試的殘骸（見下面 A2b 那組測試）。這裡驗證的是問題的源頭：
+# cleanup 動手刪之前，要先確認每個派出去的 reviewer 都已經離開它的
+# pane。
+#
+# 只需要 herdr 一支替身，`agent list` 的回應內容逐案控制。
+# ==============================================================
+
+CLEANUP_HERDR_BIN="$T/cleanup-herdr-bin"
+mkdir -p "$CLEANUP_HERDR_BIN"
+cat > "$CLEANUP_HERDR_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+agent)
+  case "${2:-}" in
+  list)
+    list_json="${CLEANUP_AGENT_LIST_JSON:-}"
+    [ -n "$list_json" ] || list_json='{"result":{"agents":[]}}'
+    printf '%s' "$list_json"
+    exit 0
+    ;;
+  esac
+  ;;
+esac
+exit 1
+STUB
+chmod +x "$CLEANUP_HERDR_BIN/herdr"
+
+# --- 情形四：codex 那一格 pane 仍有 agent 在 -> 拒絕，執行目錄完整保留
+# .pane-close-status 刻意也放在這個 fixture 裡：它跟 .pane-<cli> 系列檔
+# 名字相近，卻不是任何 cli 的 pane 對應檔（見 _cleanup_check_reviewers_
+# stopped 自己的文件），這裡確認它不會被誤讀成某個叫 "close-status" 的
+# cli 的 pane id。---
+CLEANRUN_ACTIVE="$T/cleanup-reviewer-active"
+mkdir -p "$CLEANRUN_ACTIVE/materials"
+printf 'x' > "$CLEANRUN_ACTIVE/materials/pr.md"
+printf '%s\n' "$T/fake-repo" > "$CLEANRUN_ACTIVE/.repo-path"
+printf 'claude claude-model dispatched\ncodex codex-model dispatched\n' > "$CLEANRUN_ACTIVE/.roster"
+printf 'w1:p1\n' > "$CLEANRUN_ACTIVE/.pane-claude"
+printf 'w1:p2\n' > "$CLEANRUN_ACTIVE/.pane-codex"
+printf 'cli=claude pane_closed=yes\n' > "$CLEANRUN_ACTIVE/.pane-close-status"
+
+export PATH="$CLEANUP_HERDR_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$CLEANUP_HERDR_BIN" herdr
+# claude 那格已經不在 agent list 裡了（絕對不能誤判成擋下來的那個），
+# codex 那格還在，狀態任意（working -- 不論狀態都算還在）。
+export CLEANUP_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"w1:p2","agent_status":"working"}]}}'
+active_out="$(cmd_cleanup --base-dir "$CLEANRUN_ACTIVE" 2>&1)"; active_rc=$?
+unset CLEANUP_AGENT_LIST_JSON
+export PATH="$saved_path"
+
+case "$active_out" in
+  *'worktree_removed=yes'*) pass "cmd_cleanup reviewer 仍在時仍回報 worktree_removed=yes（worktree 本身確實已不在）" ;;
+  *) bad "cmd_cleanup reviewer 仍在時 worktree_removed 不正確: $active_out" ;;
+esac
+case "$active_out" in
+  *'run_dir_removed=no:'*'codex'*) pass "cmd_cleanup reviewer 仍在時拒絕刪除並點名該 cli" ;;
+  *) bad "cmd_cleanup reviewer 仍在時輸出不正確: $active_out" ;;
+esac
+case "$active_out" in
+  *'branch_deleted='*) pass "cmd_cleanup reviewer 仍在時仍走到 branch_deleted= 那一行（worktree 已不在，刪分支本來就安全）" ;;
+  *) bad "cmd_cleanup reviewer 仍在時未走到 branch_deleted=: $active_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -d "$CLEANRUN_ACTIVE" ] && [ -f "$CLEANRUN_ACTIVE/materials/pr.md" ] \
+  && pass "cmd_cleanup reviewer 仍在時執行目錄完整保留" \
+  || bad "cmd_cleanup reviewer 仍在時執行目錄被動到"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$active_rc" -eq 0 ] && pass "cmd_cleanup reviewer 仍在時仍以結束碼 0 回報判準結果" || bad "cmd_cleanup reviewer 仍在時結束碼為 $active_rc"
+
+# --- 情形五：向 herdr 查詢失敗 -> 一律當成「還在」，保守拒絕，且措辭
+# 跟「pane 確實還在」不同，呼叫端才分得出兩者。fixture 刻意放兩個
+# candidate（claude、codex），驗證：(a) herdr agent list 對整次檢查只查
+# 一次，不是每個 cli 各查一次；(b) 查詢失敗時原因字串點名的是 roster
+# 裡第一個 candidate（claude），不是第二個（codex）。---
+CLEANUP_HERDR_FAIL_BIN="$T/cleanup-herdr-fail-bin"
+mkdir -p "$CLEANUP_HERDR_FAIL_BIN"
+cat > "$CLEANUP_HERDR_FAIL_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+count_file="${CLEANUP_HERDR_CALL_COUNT_FILE:-}"
+if [ -n "$count_file" ]; then
+  c=0
+  [ -f "$count_file" ] && c="$(cat "$count_file")"
+  printf '%s' "$((c + 1))" > "$count_file"
+fi
+exit 1
+STUB
+chmod +x "$CLEANUP_HERDR_FAIL_BIN/herdr"
+
+CLEANRUN_UNKNOWN="$T/cleanup-reviewer-unknown"
+mkdir -p "$CLEANRUN_UNKNOWN/materials"
+printf 'x' > "$CLEANRUN_UNKNOWN/materials/pr.md"
+printf '%s\n' "$T/fake-repo" > "$CLEANRUN_UNKNOWN/.repo-path"
+printf 'claude claude-model dispatched\ncodex codex-model dispatched\n' > "$CLEANRUN_UNKNOWN/.roster"
+printf 'w2:p1\n' > "$CLEANRUN_UNKNOWN/.pane-claude"
+printf 'w2:p2\n' > "$CLEANRUN_UNKNOWN/.pane-codex"
+
+CLEANUP_HERDR_FAIL_COUNT_FILE="$T/cleanup-herdr-fail-call-count"
+rm -f "$CLEANUP_HERDR_FAIL_COUNT_FILE"
+export CLEANUP_HERDR_CALL_COUNT_FILE="$CLEANUP_HERDR_FAIL_COUNT_FILE"
+export PATH="$CLEANUP_HERDR_FAIL_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$CLEANUP_HERDR_FAIL_BIN" herdr
+unknown_out="$(cmd_cleanup --base-dir "$CLEANRUN_UNKNOWN" 2>&1)"; unknown_rc=$?
+unset CLEANUP_HERDR_CALL_COUNT_FILE
+export PATH="$saved_path"
+
+case "$unknown_out" in
+  *'run_dir_removed=no:'*'claude'*) pass "cmd_cleanup herdr 查詢失敗時保守拒絕刪除並點名第一個 candidate（claude）" ;;
+  *) bad "cmd_cleanup herdr 查詢失敗時輸出不正確: $unknown_out" ;;
+esac
+case "$unknown_out" in
+  *'codex'*) bad "cmd_cleanup herdr 查詢失敗時錯誤點名了第二個 candidate（codex），不是第一個: $unknown_out" ;;
+  *) pass "cmd_cleanup herdr 查詢失敗時沒有誤點名第二個 candidate" ;;
+esac
+case "$unknown_out" in
+  *'still has a live agent'*) bad "cmd_cleanup 把「herdr 查詢失敗」跟「pane 確實還在」的措辭混在一起: $unknown_out" ;;
+  *) pass "cmd_cleanup herdr 查詢失敗的措辭跟「pane 確實還在」不同" ;;
+esac
+herdr_fail_call_count="$(cat "$CLEANUP_HERDR_FAIL_COUNT_FILE" 2>/dev/null || echo 0)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$herdr_fail_call_count" = "1" ] && pass "cmd_cleanup herdr 查詢失敗時，兩個 candidate 仍只查了一次 herdr agent list" || bad "cmd_cleanup herdr 查詢失敗時查了 herdr agent list $herdr_fail_call_count 次，預期只查一次"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -d "$CLEANRUN_UNKNOWN" ] && pass "cmd_cleanup herdr 查詢失敗時執行目錄仍完整保留" || bad "cmd_cleanup herdr 查詢失敗時執行目錄被刪"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$unknown_rc" -eq 0 ] && pass "cmd_cleanup herdr 查詢失敗時仍以結束碼 0 回報判準結果" || bad "cmd_cleanup herdr 查詢失敗時結束碼為 $unknown_rc"
+
+# --- 情形六：.roster 裡每一格都已經不在 agent list 裡了 -> 正常刪除。
+# opencode 那筆刻意不建 .pane-opencode，驗證缺這個檔的 cli 直接跳過、
+# 不會擋下刪除，也不會出錯。---
+CLEANRUN_CLEAR="$T/cleanup-reviewer-clear"
+mkdir -p "$CLEANRUN_CLEAR/materials"
+printf 'x' > "$CLEANRUN_CLEAR/materials/pr.md"
+printf '%s\n' "$T/fake-repo" > "$CLEANRUN_CLEAR/.repo-path"
+printf 'claude claude-model dispatched\nopencode opencode-model dispatched\n' > "$CLEANRUN_CLEAR/.roster"
+printf 'w3:p1\n' > "$CLEANRUN_CLEAR/.pane-claude"
+
+export PATH="$CLEANUP_HERDR_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$CLEANUP_HERDR_BIN" herdr
+export CLEANUP_AGENT_LIST_JSON='{"result":{"agents":[]}}'
+clear_out="$(cmd_cleanup --base-dir "$CLEANRUN_CLEAR" 2>&1)"
+unset CLEANUP_AGENT_LIST_JSON
+export PATH="$saved_path"
+
+case "$clear_out" in
+  *'run_dir_removed=yes'*) pass "cmd_cleanup 所有 reviewer 都已離開 pane 時正常刪除執行目錄" ;;
+  *) bad "cmd_cleanup 所有 reviewer 都已離開時未刪除: $clear_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -d "$CLEANRUN_CLEAR" ] && pass "cmd_cleanup 所有 reviewer 都已離開時執行目錄確實不存在" || bad "cmd_cleanup 誤留下了執行目錄"
+
+# ==============================================================
+# cmd_cleanup -- Minor：herdr agent list 對整次檢查只查一次
+#
+# 修法前 _cleanup_check_reviewers_stopped 對 .roster 裡每個 cli 各呼叫
+# 一次 herdr agent list。用三個 candidate、herdr 回應每次都成功但都查無
+# 這個 pane（全部 absent，不擋刪除）驗證：即使有三個 cli 要逐一核對，
+# herdr agent list 全程只被呼叫一次。
+# ==============================================================
+
+CLEANUP_HERDR_COUNT_BIN="$T/cleanup-herdr-count-bin"
+mkdir -p "$CLEANUP_HERDR_COUNT_BIN"
+cat > "$CLEANUP_HERDR_COUNT_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+agent)
+  case "${2:-}" in
+  list)
+    count_file="${CLEANUP_HERDR_CALL_COUNT_FILE:-}"
+    if [ -n "$count_file" ]; then
+      c=0
+      [ -f "$count_file" ] && c="$(cat "$count_file")"
+      printf '%s' "$((c + 1))" > "$count_file"
+    fi
+    list_json="${CLEANUP_AGENT_LIST_JSON:-}"
+    [ -n "$list_json" ] || list_json='{"result":{"agents":[]}}'
+    printf '%s' "$list_json"
+    exit 0
+    ;;
+  esac
+  ;;
+esac
+exit 1
+STUB
+chmod +x "$CLEANUP_HERDR_COUNT_BIN/herdr"
+
+CLEANRUN_COUNT="$T/cleanup-reviewer-count"
+mkdir -p "$CLEANRUN_COUNT/materials"
+printf 'x' > "$CLEANRUN_COUNT/materials/pr.md"
+printf '%s\n' "$T/fake-repo" > "$CLEANRUN_COUNT/.repo-path"
+printf 'claude claude-model dispatched\ncodex codex-model dispatched\nopencode opencode-model dispatched\n' > "$CLEANRUN_COUNT/.roster"
+printf 'w4:p1\n' > "$CLEANRUN_COUNT/.pane-claude"
+printf 'w4:p2\n' > "$CLEANRUN_COUNT/.pane-codex"
+printf 'w4:p3\n' > "$CLEANRUN_COUNT/.pane-opencode"
+
+CLEANUP_HERDR_CALL_COUNT_FILE="$T/cleanup-herdr-call-count"
+rm -f "$CLEANUP_HERDR_CALL_COUNT_FILE"
+export CLEANUP_HERDR_CALL_COUNT_FILE
+export PATH="$CLEANUP_HERDR_COUNT_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$CLEANUP_HERDR_COUNT_BIN" herdr
+export CLEANUP_AGENT_LIST_JSON='{"result":{"agents":[]}}'
+count_out="$(cmd_cleanup --base-dir "$CLEANRUN_COUNT" 2>&1)"
+unset CLEANUP_AGENT_LIST_JSON CLEANUP_HERDR_CALL_COUNT_FILE
+export PATH="$saved_path"
+
+case "$count_out" in
+  *'run_dir_removed=yes'*) pass "cmd_cleanup 三個 reviewer 都已離開時仍正常刪除（單一查詢改版的回歸保證）" ;;
+  *) bad "cmd_cleanup 三個 reviewer 都已離開時未刪除: $count_out" ;;
+esac
+herdr_call_count="$(cat "$T/cleanup-herdr-call-count" 2>/dev/null || echo 0)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$herdr_call_count" = "1" ] && pass "cmd_cleanup 對三個 reviewer 只查一次 herdr agent list" || bad "cmd_cleanup 查了 herdr agent list $herdr_call_count 次，預期只查一次"
+
+# ==============================================================
+# cmd_cleanup -- 保守方向的缺口：.result.agents 不是陣列時必須當成
+# unknown（拒刪），不能被 `[]?` 悄悄讀成一個空陣列而判成 absent（放行）
+#
+# 情境：herdr 升版後回應的 JSON 裡 .result.agents 整個欄位不見了（或改
+# 名、改形狀）。`[.result.agents[]? | select(...)] | length` 在
+# .result.agents 缺席時一樣可以順利算出 0（`[]?` 對 null 不報錯，直接
+# 當空陣列），如果不特別檢查型別，這會被誤判成「確實沒有任何 agent」
+# （absent），而不是「看不懂這次回應」（unknown）。
+# ==============================================================
+
+CLEANRUN_BADSHAPE="$T/cleanup-reviewer-badshape"
+mkdir -p "$CLEANRUN_BADSHAPE/materials"
+printf 'x' > "$CLEANRUN_BADSHAPE/materials/pr.md"
+printf '%s\n' "$T/fake-repo" > "$CLEANRUN_BADSHAPE/.repo-path"
+printf 'claude claude-model dispatched\n' > "$CLEANRUN_BADSHAPE/.roster"
+printf 'w5:p1\n' > "$CLEANRUN_BADSHAPE/.pane-claude"
+
+export PATH="$CLEANUP_HERDR_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$CLEANUP_HERDR_BIN" herdr
+export CLEANUP_AGENT_LIST_JSON='{"result":{}}'
+badshape_out="$(cmd_cleanup --base-dir "$CLEANRUN_BADSHAPE" 2>&1)"
+unset CLEANUP_AGENT_LIST_JSON
+export PATH="$saved_path"
+
+case "$badshape_out" in
+  *'run_dir_removed=no:'*'claude'*) pass "cmd_cleanup .result.agents 不是陣列時保守拒絕並點名該 cli" ;;
+  *) bad "cmd_cleanup .result.agents 不是陣列時輸出不正確: $badshape_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -d "$CLEANRUN_BADSHAPE" ] && pass "cmd_cleanup .result.agents 不是陣列時執行目錄仍完整保留" || bad "cmd_cleanup .result.agents 不是陣列時誤刪了執行目錄"
+
+# ==============================================================
+# cmd_cleanup -- A2b：刪除中途失敗時 .repo-path 必須留到最後一步，讓
+# 第二次 cleanup 能重試
+#
+# 實際發生過的事件：第一次 cleanup 因為 codex 寫回檔案而刪除失敗，
+# .repo-path 卻已經隨 rm -rf 被刪掉；第二次 cleanup 因此在最外層的
+# .repo-path 存在性檢查就被拒絕，判定成「不是執行目錄」，永遠清不掉。
+# 用跟 CLEANRMFAIL 一樣的手法（目錄 000，rm -rf 連 opendir 都做不到）
+# 重現刪除中途失敗，然後解除阻礙、驗證第二次 cleanup 真的能把整個目錄
+# 連 .repo-path 一起清乾淨。
+# ==============================================================
+
+CLEANRETRY="$T/cleanup-retry"
+mkdir -p "$CLEANRETRY/materials"
+touch "$CLEANRETRY/materials/pr.md"
+printf '%s\n' "$T/fake-repo" > "$CLEANRETRY/.repo-path"
+chmod 000 "$CLEANRETRY/materials"
+
+retry1_out="$(cmd_cleanup --base-dir "$CLEANRETRY" 2>&1)"; retry1_rc=$?
+case "$retry1_out" in
+  *'run_dir_removed=no:removal failed, run directory still present'*) pass "cmd_cleanup 第一次刪除失敗時回報 removal failed" ;;
+  *) bad "cmd_cleanup 第一次刪除失敗時輸出不正確: $retry1_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$retry1_rc" -eq 0 ] && pass "cmd_cleanup 第一次刪除失敗仍以結束碼 0 回報判準結果" || bad "cmd_cleanup 第一次刪除失敗時結束碼為 $retry1_rc"
+# 關鍵：.repo-path 必須還在，第二次 cleanup 才不會落入「missing
+# .repo-path」那個永久卡死的出口。
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$CLEANRETRY/.repo-path" ] && pass "cmd_cleanup 第一次刪除失敗後 .repo-path 仍在，可供重試" || bad "cmd_cleanup 第一次刪除失敗後 .repo-path 被誤刪，無法重試"
+
+# 排除阻礙：造成第一次失敗的原因後來被解除了（模擬 codex pane 已經關閉、
+# 不再有東西寫回這個目錄）。
+chmod u+rwx "$CLEANRETRY/materials"
+
+retry2_out="$(cmd_cleanup --base-dir "$CLEANRETRY" 2>&1)"; retry2_rc=$?
+case "$retry2_out" in
+  *'run_dir_removed=yes'*) pass "cmd_cleanup 排除阻礙後第二次 cleanup 成功刪除執行目錄" ;;
+  *) bad "cmd_cleanup 第二次 cleanup 未成功刪除: $retry2_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$retry2_rc" -eq 0 ] && pass "cmd_cleanup 第二次 cleanup 成功時結束碼為 0" || bad "cmd_cleanup 第二次 cleanup 結束碼為 $retry2_rc"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -d "$CLEANRETRY" ] && pass "cmd_cleanup 第二次 cleanup 後執行目錄（含 .repo-path）確實不存在" || bad "cmd_cleanup 第二次 cleanup 後執行目錄仍在"
+
+# ==============================================================
+# cmd_cleanup -- Critical：執行目錄本身失去讀取權限時，phase 2 的
+# `remaining="$(find ... -print -quit)"` 不得是沒有豁免的賦值型命令替換
+#
+# 審查發現：這一行在真正的腳本上可以重現 -- 執行目錄本身（不是子目錄）
+# 失去讀取權限，chmod -R u+w 補不回讀取位元（u+w 只加寫入位），find 因
+# 此連 opendir 都做不到而失敗。這一行沒有 `|| true` 或 `if` 包住，在
+# set -euo pipefail 下會讓整個 cmd_cleanup 當場中止：只印出
+# worktree_removed=yes，run_dir_removed= 與 branch_deleted= 兩行都印不出
+# 來，結束碼非 0。修法要求 find 失敗時要保守地當成「還有殘留」，走既有
+# 的 removal failed 失敗路徑，而不是誤判成已清空、繼續刪掉整個目錄。
+#
+# 用「執行目錄自己 chmod 100（只留 execute，不留 read）」重現：對named
+# 檔案（.repo-path）直接 stat 只需要 base_dir 本身的 execute 權限，不需
+# 要 read，所以 cmd_cleanup 前面幾道檢查（.repo-path 可讀、worktree 子
+# 目錄不存在）都還過得去；但 find 列舉 base_dir 自己的直接子項需要
+# read，opendir 因此失敗。
+#
+# 呼叫形狀刻意跟 CLEANRMFAIL 那組「刪除失敗時唯讀保護被補回去」測試一
+# 樣，透過真正另開一個子行程執行 `bash "$RUN_SH" cleanup ...`，不是
+# `$(cmd_cleanup ...)`：已用最小重現驗證過，把已經 source 進本測試進程
+# 的 cmd_cleanup 函式包在 `$(...)` 賦值型命令替換裡呼叫，會讓函式內部
+# 未加 `|| true` 的失敗也测不出來 -- bash 預設關閉 inherit_errexit，
+# `$(...)` 這種指令替換子殼層不會真的套用外層的 set -e，函式內的
+# `false` 因此不會讓子殼層提前中止，`$(cmd_cleanup ...)` 這個呼叫形狀
+# 本身就會把這個 bug 完全遮蔽掉（已實際驗證：用同一個 fixture 分別以
+# `$(cmd_cleanup ...)` 和 `bash "$RUN_SH" cleanup ...` 呼叫，前者兩種寫
+# 法的輸出看不出差異，後者才會在未修好前中止在 worktree_removed=yes 那
+# 一行）。改成真正的子行程呼叫，才有辦法驗證這條防護線。
+# ==============================================================
+
+CLEANUNREADABLE="$T/cleanup-dir-unreadable"
+mkdir -p "$CLEANUNREADABLE"
+printf '%s\n' "$T/fake-repo" > "$CLEANUNREADABLE/.repo-path"
+chmod 100 "$CLEANUNREADABLE"
+
+# `if var=$(...); then ... else ... fi`, not a bare `var=$(...); rc=$?`:
+# this subprocess call is exactly the case under test, and before the fix
+# it genuinely exits non-zero for real (unlike CLEANRMFAIL's own subprocess
+# call just above, which stays guarded by `|| true` all the way through
+# and so always exits 0 even when its own internal commands fail) -- a
+# bare assignment capturing a real subprocess's non-zero exit status is
+# exactly what set -e in *this test file itself* would abort on, taking
+# down every assertion after it (and every following section) instead of
+# reporting one clean FAIL. The `if` form's condition is the one context
+# `-e` is documented to exempt.
+if unreadable_out="$(HERDR_ENV=1 bash "$RUN_SH" cleanup --base-dir "$CLEANUNREADABLE" 2>&1)"; then
+  unreadable_rc=0
+else
+  unreadable_rc=$?
+fi
+
+case "$unreadable_out" in
+  *'worktree_removed=yes'*) pass "cmd_cleanup 執行目錄自己不可讀時仍回報 worktree_removed=yes" ;;
+  *) bad "cmd_cleanup 執行目錄自己不可讀時 worktree_removed 不正確: $unreadable_out" ;;
+esac
+case "$unreadable_out" in
+  *'run_dir_removed=no:removal failed, run directory still present'*) pass "cmd_cleanup 執行目錄自己不可讀時走保守的 removal failed 路徑" ;;
+  *) bad "cmd_cleanup 執行目錄自己不可讀時輸出不正確（find 失敗很可能讓函式當場中止）: $unreadable_out" ;;
+esac
+case "$unreadable_out" in
+  *'branch_deleted='*) pass "cmd_cleanup 執行目錄自己不可讀時仍走到 branch_deleted= 那一行（未被 errexit 中止）" ;;
+  *) bad "cmd_cleanup 執行目錄自己不可讀時未走到 branch_deleted=（errexit 中止的跡象）: $unreadable_out" ;;
+esac
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$unreadable_rc" -eq 0 ] && pass "cmd_cleanup 執行目錄自己不可讀時仍以結束碼 0 回報判準結果" || bad "cmd_cleanup 執行目錄自己不可讀時結束碼為 $unreadable_rc"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$CLEANUNREADABLE/.repo-path" ] && pass "cmd_cleanup 執行目錄自己不可讀時 .repo-path 仍在" || bad "cmd_cleanup 執行目錄自己不可讀時 .repo-path 不見了"
+
+# 清乾淨：把鎖住的目錄權限救回來，否則這支測試檔最後的 trap 清不掉它。
+chmod u+rwx "$CLEANUNREADABLE" 2>/dev/null || true
 
 # ==============================================================
 # cmd_wait
