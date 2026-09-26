@@ -1717,7 +1717,8 @@ fi
 codex_home_i="$T/codex-home-interactive"
 codex_workdir_i="$T/codex-workdir-interactive"
 mkdir -p "$codex_workdir_i"
-if _write_codex_home_interactive "$codex_home_i" "$codex_workdir_i"; then
+codex_pr_url_i="https://github.com/codex-home-owner/codex-home-repo/pull/717"
+if _write_codex_home_interactive "$codex_home_i" "$codex_workdir_i" "$codex_pr_url_i"; then
   pass "_write_codex_home_interactive 回傳成功"
 else
   bad "_write_codex_home_interactive 回傳非零"
@@ -1741,14 +1742,15 @@ fi
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$codex_home_i/.zshrc" ] && pass "_write_codex_home_interactive 建立非空 .zshrc" || bad "_write_codex_home_interactive 未建立非空 .zshrc"
 
-# A1 迴歸測試：沒有這份 rules 檔時，codex 在沙箱內執行 `gh pr comment`
+# A1/F1 迴歸測試：沒有這份 rules 檔時，codex 在沙箱內執行 `gh pr comment`
 # 連不上網路，會跳出「是否在沙箱外執行」的核准對話框，卡在 herdr 的
 # blocked 狀態直到 PANE_CLOSE_CONFIRM_DEADLINE_SECONDS 逾時，pane 因此
-# 留著關不掉。只放行 `gh pr comment` 這個前綴，不放行別的（例如
-# `gh api -X DELETE`），逐字比對整份檔案內容。
+# 留著關不掉。A1 當初只放行 `gh pr comment` 這個三 token 前綴，任何 repo
+# 任何 PR 都能過；F1 收窄成第 4 個 token 釘死本次審查的 PR 網址，逐字比對
+# 整份檔案內容。
 crt="$codex_home_i/.codex/rules/default.rules"
-expected_crt='prefix_rule(pattern=["gh","pr","comment"], decision="allow")
-'
+expected_crt="prefix_rule(pattern=[\"gh\",\"pr\",\"comment\",\"$codex_pr_url_i\"], decision=\"allow\")
+"
 # 用 printf x 幫兩邊各補一個 sentinel 字元再比較，避免指令替換本身把
 # 結尾換行吃掉，讓「加結尾換行」這個要求真的被驗證到，而不是被指令替
 # 換的副作用悄悄放過。
@@ -1758,6 +1760,37 @@ if [ -f "$crt" ] \
 else
   bad "_write_codex_home_interactive 的 .codex/rules/default.rules 內容不正確: $(cat "$crt" 2>/dev/null)"
 fi
+
+# F1 失敗即關閉：pr_url 為空，或不符合
+# ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[0-9]+$ 時，
+# 回傳非零，且絕不寫出三 token 的寬規則 -- 網址會被嵌進 Starlark 字串，
+# parse_pr_url 接受的 owner/repo 字元範圍比這裡寬，驗證不能鬆放。
+
+codex_home_empty_i="$T/codex-home-interactive-empty-pr-url"
+codex_workdir_empty_i="$T/codex-workdir-interactive-empty-pr-url"
+mkdir -p "$codex_workdir_empty_i"
+if _write_codex_home_interactive "$codex_home_empty_i" "$codex_workdir_empty_i" ""; then
+  bad "_write_codex_home_interactive pr_url 為空時仍回傳成功"
+else
+  pass "_write_codex_home_interactive pr_url 為空時回傳非零"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$codex_home_empty_i/.codex/rules/default.rules" ] \
+  && pass "_write_codex_home_interactive pr_url 為空時沒有寫出 default.rules" \
+  || bad "_write_codex_home_interactive pr_url 為空時仍寫出了 default.rules: $(cat "$codex_home_empty_i/.codex/rules/default.rules" 2>/dev/null)"
+
+codex_home_bad_i="$T/codex-home-interactive-malformed-pr-url"
+codex_workdir_bad_i="$T/codex-workdir-interactive-malformed-pr-url"
+mkdir -p "$codex_workdir_bad_i"
+if _write_codex_home_interactive "$codex_home_bad_i" "$codex_workdir_bad_i" "not-a-github-pr-url"; then
+  bad "_write_codex_home_interactive pr_url 格式不符時仍回傳成功"
+else
+  pass "_write_codex_home_interactive pr_url 格式不符時回傳非零"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$codex_home_bad_i/.codex/rules/default.rules" ] \
+  && pass "_write_codex_home_interactive pr_url 格式不符時沒有寫出 default.rules" \
+  || bad "_write_codex_home_interactive pr_url 格式不符時仍寫出了 default.rules: $(cat "$codex_home_bad_i/.codex/rules/default.rules" 2>/dev/null)"
 
 # ==============================================================
 # _write_opencode_home_interactive
@@ -1924,6 +1957,14 @@ LRI_ROOT="$T/launch-reviewer-interactive-fixture"
 LRI_WT="$(_make_worktree_fixture "$LRI_ROOT")"
 LRI_RECORD_DIR="$LRI_ROOT/records"
 mkdir -p "$LRI_RECORD_DIR"
+# base_dir/.pr-url is what cmd_prepare would have written before launch
+# ever runs (see cmd_prepare's own docstring on that file); the codex
+# branch below now reads it back to scope its .codex/rules/default.rules
+# allow rule to this run's own PR (see F1's own docstring on
+# _write_codex_home_interactive), so this direct-call fixture needs to
+# supply it itself, the same way cmd_prepare would have.
+LRI_PR_URL="https://github.com/lri-owner/lri-repo/pull/4242"
+printf '%s\n' "$LRI_PR_URL" > "$LRI_ROOT/.pr-url"
 
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
@@ -2212,6 +2253,18 @@ case "$(cat "$codex_start_argv")" in
 esac
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pA.text" 2>/dev/null)" = "codex review prompt" ] && pass launch-reviewer-interactive-codex-agent-prompt-carries-full-contract || bad "launch-reviewer-interactive-codex-agent-prompt-carries-full-contract: $(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pA.text" 2>/dev/null)"
+
+# F1: the .codex/rules/default.rules this call wrote must be scoped to
+# *this run's* PR (read back from base_dir/.pr-url above), not a bare
+# `gh pr comment` allow-anything rule -- proves launch_reviewer_interactive
+# actually threads the real value through, not just a hardcoded literal.
+lri_codex_rules="$lri_codex_home/.codex/rules/default.rules"
+lri_codex_expected_rule="prefix_rule(pattern=[\"gh\",\"pr\",\"comment\",\"$LRI_PR_URL\"], decision=\"allow\")
+"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$lri_codex_rules" ] && [ "$(cat "$lri_codex_rules" 2>/dev/null; printf x)" = "$(printf '%s' "$lri_codex_expected_rule"; printf x)" ] \
+  && pass "launch-reviewer-interactive-codex-rules-scoped-to-this-run-pr-url" \
+  || bad "launch-reviewer-interactive-codex-rules-scoped-to-this-run-pr-url: $(cat "$lri_codex_rules" 2>/dev/null)"
 
 # --- opencode: no `run`; no `--dir` (dropped in favour of the positional
 # project-path argument -- the top-level command has no --dir at all) ---
@@ -2533,6 +2586,11 @@ rm -f "$STUB_BIN/herdr"
 LRIRECOVER_ROOT="$T/launch-reviewer-interactive-recovery-fixture"
 LRIRECOVER_WT="$(_make_worktree_fixture "$LRIRECOVER_ROOT")"
 LRIRECOVER_RECORD_DIR="$LRIRECOVER_ROOT/records"
+# Same reason as LRI_ROOT's own .pr-url above: the codex calls further
+# down this section go through the real _write_codex_home_interactive,
+# which now refuses to run at all without a valid base_dir/.pr-url.
+printf '%s\n' "https://github.com/lrirecover-owner/lrirecover-repo/pull/9009" \
+  > "$LRIRECOVER_ROOT/.pr-url"
 mkdir -p "$LRIRECOVER_RECORD_DIR"
 
 cat > "$STUB_BIN/herdr" <<'STUB'
@@ -8195,7 +8253,7 @@ test_reviewer_home_gh_config_symlink() {
   local h_codex="$test_dir/codex-home"
   local w_codex="$test_dir/codex-workdir"
   mkdir -p "$w_codex"
-  _write_codex_home_interactive "$h_codex" "$w_codex"
+  _write_codex_home_interactive "$h_codex" "$w_codex" "https://github.com/gh-config-symlink-owner/gh-config-symlink-repo/pull/1"
   if [ -L "$h_codex/.config/gh" ] && [ "$(readlink "$h_codex/.config/gh")" = "$expected_gh" ]; then
     pass "test_reviewer_home_gh_config_symlink: codex 掛載 .config/gh 正確"
   else
