@@ -1767,10 +1767,15 @@ _write_claude_home_interactive() {
 # approval gate the deadline was timing out against, for this one command,
 # rather than widening the deadline or the retry loop.
 #
-# <pr_url> must come from this run's own base_dir/.pr-url (written by
-# cmd_prepare, see that write's own docstring) -- launch_reviewer_interactive
-# is the only caller and reads it back for exactly this purpose, never
-# inventing or re-deriving the value itself. Checked with
+# <pr_url> must ultimately trace back to this run's own base_dir/.pr-url
+# (written by cmd_prepare, see that write's own docstring), but this
+# function's only caller, launch_reviewer_interactive, no longer reads
+# that file itself -- it just forwards whatever its own caller,
+# cmd_launch, handed it as codex_pr_url (see launch_reviewer_interactive's
+# own docstring on why cmd_launch reads base_dir/.pr-url exactly once,
+# before dispatching any reviewer, rather than this function or its
+# caller reading it lazily on codex's own turn). This function itself
+# never inventing or re-deriving the value is unchanged. Checked with
 # ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[0-9]+$ before
 # writing anything at all: an empty or malformed value returns 1 and
 # leaves the whole home directory (including config.toml and auth.json)
@@ -1808,6 +1813,18 @@ _write_claude_home_interactive() {
 #     same approval dialog the no-rules-file case does. Pipes, backticks,
 #     newline-joined commands, and any other composition not listed here
 #     were not tested; this bullet makes no claim about them.
+#   - `codex execpolicy check` matched `gh pr comment ...` against the
+#     three-token rule as allow, and did not match `gh api -X DELETE ...`
+#     against it at all -- but this only speaks to a single command in
+#     isolation: execpolicy check does not decompose the contents of a
+#     `bash -lc` invocation at all (confirmed: even a lone `bash -lc "gh pr
+#     comment ..."`, with no second command riding along, did not match
+#     this rule either), so it could not support any claim about how a
+#     composite shell line behaves at runtime -- that claim rested on the
+#     three direct runtime reproductions above instead (see F1's own
+#     "Not tested" bullet below for what this specific limitation of
+#     execpolicy check implies about *why* those three compositions were
+#     blocked).
 #
 # F1: SCOPING THE RULE TO THIS RUN'S PR
 #
@@ -1856,14 +1873,31 @@ _write_claude_home_interactive() {
 #   - Not tested: pipes, backticks, and newline-joined commands, under
 #     either rule shape. The semicolon/&&/command-substitution
 #     reproductions above were run against the three-token rule only, not
-#     re-run against this four-token one (inference: the same whole-line
-#     non-match mechanism applies, since none of those three compositions
-#     produces a line beginning with the exact matched prefix either way).
+#     re-run against this four-token one. Inference, not measurement, and
+#     not a claim about prefix matching: all three of those compositions
+#     were run as a single shell line that literally starts with `gh pr
+#     comment` -- textually matching the three-token prefix in full --
+#     and every one of them still raised the approval dialog rather than
+#     being auto-allowed (see the three-token bullet above). So whatever
+#     blocks a composite line is not simple prefix-of-argv matching (the
+#     prefix was already present there and still did not help); it is
+#     consistent instead with codex routing any multi-command shell line
+#     through a shell invocation (`bash -lc "<whole line>"`) whose own
+#     top-level argv starts with `bash`, not `gh` -- the same reason
+#     `codex execpolicy check` itself cannot decompose the contents of a
+#     `bash -lc` invocation at all (see the A1 bullet above). Since the
+#     four-token rule is only a stricter version of the same `gh pr
+#     comment` prefix, there is no reason to expect it to fare
+#     differently against that same composite-line handling -- but that
+#     expectation rests on this inference, not on a fresh runtime
+#     reproduction against the four-token rule.
 #   - Cost accepted: a reviewer that posts via a PR number, or any other
 #     form not matching this exact prefix, re-raises the approval dialog.
-#     The reviewer contract's own posting instruction is updated to use
-#     this run's own PR URL (from the coordinates block) by a separate
-#     task, not this function.
+#     The reviewer contract's own posting instruction (see
+#     references/reviewer-contract.md's "GitHub 互動邊界 / 授權操作") already
+#     names this run's own PR URL from the coordinates block as the
+#     posting target, not a PR number this reviewer would have to invent
+#     or look up itself.
 _write_codex_home_interactive() {
   local dir="$1" reviewer_workdir="$2" pr_url="$3"
   # Fail closed before writing anything: pr_url is about to be embedded
@@ -1971,10 +2005,12 @@ _write_opencode_home_interactive() {
 # The `gh pr comment*` line is denied in the headless config for the same
 # reason -- that reviewer never posts anything itself -- but the review
 # contract (see references/reviewer-contract.md's "GitHub 互動邊界 / 授權操作")
-# makes `gh pr comment "<PR>" --body-file "<review.md>"` this
-# interactive reviewer's one contractually authorized state change, and
-# opencode's own `--auto` flag (see launch_reviewer_interactive's own
-# opencode branch) auto-approves any permission request not explicitly
+# makes `gh pr comment "<座標 PR 網址>" --body-file "<review.md>"` --
+# targeting the exact PR URL build_prompt already printed in this
+# reviewer's own coordinates block, not a placeholder the reviewer fills in
+# itself -- this interactive reviewer's one contractually authorized state
+# change, and opencode's own `--auto` flag (see launch_reviewer_interactive's
+# own opencode branch) auto-approves any permission request not explicitly
 # denied -- so leaving this entry in place silently blocked the one
 # action the contract requires: the review reached review.md but never
 # reached the PR. Every other entry -- the bash deny list covering git
@@ -2262,7 +2298,7 @@ _herdr_agent_present_in_pane() {
   [ "$count" -gt 0 ]
 }
 
-# launch_reviewer_interactive <cli> <pane_id> <worktree_dir> <reviewer_workdir> <reviewer_home> <prompt_file>
+# launch_reviewer_interactive <cli> <pane_id> <worktree_dir> <reviewer_workdir> <reviewer_home> <prompt_file> <codex_pr_url>
 #
 # Starts one reviewer CLI, under the least-privilege rationale documented
 # below, inside an existing, already-created herdr pane via `herdr agent
@@ -2271,6 +2307,22 @@ _herdr_agent_present_in_pane() {
 # ONLY" below for why claude, and only claude, can do this); codex,
 # opencode and agy each get it via a second, separate `herdr agent prompt`
 # call right after (see "WHY CODEX/OPENCODE/AGY STAY TWO-STEP" below).
+#
+# <codex_pr_url> is forwarded verbatim to _write_codex_home_interactive
+# for the codex branch only (every other branch ignores it) -- this
+# function never reads base_dir/.pr-url itself, and never did the reading
+# on its own behalf even before this parameter existed; the caller
+# (cmd_launch) is the one responsible for reading that file, exactly
+# once, before its own dispatch loop calls this function for the first
+# time at all (see cmd_launch's own docstring on why this can't happen
+# lazily, per-cli, inside this function instead: claude's one-shot launch,
+# below, means the very first reviewer this loop dispatches is already
+# reading real PR text and could in principle rewrite base_dir/.pr-url
+# before codex's own turn in the same loop comes up, since nothing in this
+# file's own execution-directory posture locks that file down (see
+# references/rationale.md's own "執行目錄根層沒有上鎖" note) -- reading it
+# once, up front, before any reviewer exists to tamper with it, closes
+# that window regardless of dispatch order).
 #
 # ONE-SHOT LAUNCH: CLAUDE ONLY
 #
@@ -2658,23 +2710,14 @@ _herdr_agent_present_in_pane() {
 # .git/worktrees/<name>/, not inside the worktree's own directory tree.
 launch_reviewer_interactive() {
   local cli_name="$1" pane_id="$2" worktree_dir="$3"
-  local reviewer_workdir="$4" reviewer_home="$5" prompt_file="$6"
+  local reviewer_workdir="$4" reviewer_home="$5" prompt_file="$6" codex_pr_url="$7"
   local output_file="$reviewer_workdir/review.md"
-  local base_dir before_snapshot prompt_bytes agent_name pr_url
+  local base_dir before_snapshot prompt_bytes agent_name
   local -a cmd=()
-
-  # Computed up front (moved ahead of its only other use point further
-  # down) so the codex branch below can read this run's own .pr-url --
-  # written by cmd_prepare (see that function's own docstring) -- before
-  # ever writing this reviewer's home directory.
-  base_dir="$(dirname "$worktree_dir")"
 
   case "$cli_name" in
     claude) _write_claude_home_interactive "$reviewer_home" "$reviewer_workdir" || return 1 ;;
-    codex)
-      pr_url="$(cat "$base_dir/.pr-url" 2>/dev/null)" || pr_url=""
-      _write_codex_home_interactive "$reviewer_home" "$reviewer_workdir" "$pr_url" || return 1
-      ;;
+    codex)  _write_codex_home_interactive "$reviewer_home" "$reviewer_workdir" "$codex_pr_url" || return 1 ;;
     opencode)
       _write_opencode_home_interactive "$reviewer_home" || return 1
       _write_opencode_permission_config_interactive "$reviewer_home/opencode-permission.json" || return 1
@@ -2840,6 +2883,7 @@ launch_reviewer_interactive() {
     return 1
   fi
 
+  base_dir="$(dirname "$worktree_dir")"
   before_snapshot="$(_git_status_snapshot "$worktree_dir")"
   printf '%s\n' "$before_snapshot" > "$base_dir/.git-status-before-$cli_name"
 
@@ -4849,7 +4893,7 @@ _confirm_reviewers_working() {
 # uses -- see the comment on that second call below for why cmd_prepare's
 # own check is not enough to rely on here.
 cmd_launch() {
-  local base_dir="" logs_dir summary_file worktree_dir
+  local base_dir="" logs_dir summary_file worktree_dir codex_pr_url
   local cli parsed parsed_line agent_pair
   local reviewer_workdir reviewer_home prompt_file
   local -a all_reviewers=() skipped=() dispatched=() dispatched_agents=()
@@ -4871,6 +4915,27 @@ cmd_launch() {
   worktree_dir="$base_dir/worktree"
   logs_dir="$base_dir/logs"
   summary_file="$base_dir/summary.txt"
+
+  # Read once, here, before any reviewer in this run's dispatch loop below
+  # has even started -- not lazily, on codex's own turn, inside
+  # launch_reviewer_interactive (see that function's own docstring on the
+  # tampering window this closes). claude, whichever position it is
+  # dispatched in, is a one-shot launch that starts acting on real PR text
+  # the instant its pane exists (see launch_reviewer_interactive's own
+  # "ONE-SHOT LAUNCH: CLAUDE ONLY" docstring section), and this run's
+  # execution-directory root is not locked down the way the worktree,
+  # materials, and logs directories are (see references/rationale.md's own
+  # "執行目錄根層沒有上鎖" note) -- so a reviewer dispatched earlier in this
+  # same loop could in principle overwrite base_dir/.pr-url before a later
+  # cli's own turn comes up. Capturing the value here, once, before the
+  # loop below ever runs, means every cli this loop dispatches -- codex
+  # included, regardless of where codex falls in dispatch order -- gets
+  # the exact same value, immune to anything a reviewer already running
+  # does to the file on disk afterward. Validated again by
+  # _write_codex_home_interactive itself (see that function's own
+  # docstring) -- this read does not duplicate that check, it only fixes
+  # *which* string reaches it.
+  codex_pr_url="$(cat "$base_dir/.pr-url" 2>/dev/null)" || codex_pr_url=""
 
   # Must run before verify_selection below: a cli named on --agent that
   # prepare never selected has no prompt file, no reviewer_workdir, no
@@ -4909,7 +4974,7 @@ cmd_launch() {
     # with an already-dispatched reviewer or the worktree left behind with
     # nothing to clean it up.
     if ! launch_reviewer_interactive "$cli" "${pane_id_by_cli[$cli]}" "$worktree_dir" \
-         "$reviewer_workdir" "$reviewer_home" "$prompt_file" >/dev/null; then
+         "$reviewer_workdir" "$reviewer_home" "$prompt_file" "$codex_pr_url" >/dev/null; then
       _dispatch_failed_cleanup "$worktree_dir" "${dispatched[@]+"${dispatched[@]}"}"
       exit 1
     fi
