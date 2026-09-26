@@ -1717,7 +1717,8 @@ fi
 codex_home_i="$T/codex-home-interactive"
 codex_workdir_i="$T/codex-workdir-interactive"
 mkdir -p "$codex_workdir_i"
-if _write_codex_home_interactive "$codex_home_i" "$codex_workdir_i"; then
+codex_pr_url_i="https://github.com/codex-home-owner/codex-home-repo/pull/717"
+if _write_codex_home_interactive "$codex_home_i" "$codex_workdir_i" "$codex_pr_url_i"; then
   pass "_write_codex_home_interactive 回傳成功"
 else
   bad "_write_codex_home_interactive 回傳非零"
@@ -1741,14 +1742,15 @@ fi
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$codex_home_i/.zshrc" ] && pass "_write_codex_home_interactive 建立非空 .zshrc" || bad "_write_codex_home_interactive 未建立非空 .zshrc"
 
-# A1 迴歸測試：沒有這份 rules 檔時，codex 在沙箱內執行 `gh pr comment`
+# A1/F1 迴歸測試：沒有這份 rules 檔時，codex 在沙箱內執行 `gh pr comment`
 # 連不上網路，會跳出「是否在沙箱外執行」的核准對話框，卡在 herdr 的
 # blocked 狀態直到 PANE_CLOSE_CONFIRM_DEADLINE_SECONDS 逾時，pane 因此
-# 留著關不掉。只放行 `gh pr comment` 這個前綴，不放行別的（例如
-# `gh api -X DELETE`），逐字比對整份檔案內容。
+# 留著關不掉。A1 當初只放行 `gh pr comment` 這個三 token 前綴，任何 repo
+# 任何 PR 都能過；F1 收窄成第 4 個 token 釘死本次審查的 PR 網址，逐字比對
+# 整份檔案內容。
 crt="$codex_home_i/.codex/rules/default.rules"
-expected_crt='prefix_rule(pattern=["gh","pr","comment"], decision="allow")
-'
+expected_crt="prefix_rule(pattern=[\"gh\",\"pr\",\"comment\",\"$codex_pr_url_i\"], decision=\"allow\")
+"
 # 用 printf x 幫兩邊各補一個 sentinel 字元再比較，避免指令替換本身把
 # 結尾換行吃掉，讓「加結尾換行」這個要求真的被驗證到，而不是被指令替
 # 換的副作用悄悄放過。
@@ -1758,6 +1760,37 @@ if [ -f "$crt" ] \
 else
   bad "_write_codex_home_interactive 的 .codex/rules/default.rules 內容不正確: $(cat "$crt" 2>/dev/null)"
 fi
+
+# F1 失敗即關閉：pr_url 為空，或不符合
+# ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[0-9]+$ 時，
+# 回傳非零，且絕不寫出三 token 的寬規則 -- 網址會被嵌進 Starlark 字串，
+# parse_pr_url 接受的 owner/repo 字元範圍比這裡寬，驗證不能鬆放。
+
+codex_home_empty_i="$T/codex-home-interactive-empty-pr-url"
+codex_workdir_empty_i="$T/codex-workdir-interactive-empty-pr-url"
+mkdir -p "$codex_workdir_empty_i"
+if _write_codex_home_interactive "$codex_home_empty_i" "$codex_workdir_empty_i" ""; then
+  bad "_write_codex_home_interactive pr_url 為空時仍回傳成功"
+else
+  pass "_write_codex_home_interactive pr_url 為空時回傳非零"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$codex_home_empty_i/.codex/rules/default.rules" ] \
+  && pass "_write_codex_home_interactive pr_url 為空時沒有寫出 default.rules" \
+  || bad "_write_codex_home_interactive pr_url 為空時仍寫出了 default.rules: $(cat "$codex_home_empty_i/.codex/rules/default.rules" 2>/dev/null)"
+
+codex_home_bad_i="$T/codex-home-interactive-malformed-pr-url"
+codex_workdir_bad_i="$T/codex-workdir-interactive-malformed-pr-url"
+mkdir -p "$codex_workdir_bad_i"
+if _write_codex_home_interactive "$codex_home_bad_i" "$codex_workdir_bad_i" "not-a-github-pr-url"; then
+  bad "_write_codex_home_interactive pr_url 格式不符時仍回傳成功"
+else
+  pass "_write_codex_home_interactive pr_url 格式不符時回傳非零"
+fi
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -f "$codex_home_bad_i/.codex/rules/default.rules" ] \
+  && pass "_write_codex_home_interactive pr_url 格式不符時沒有寫出 default.rules" \
+  || bad "_write_codex_home_interactive pr_url 格式不符時仍寫出了 default.rules: $(cat "$codex_home_bad_i/.codex/rules/default.rules" 2>/dev/null)"
 
 # ==============================================================
 # _write_opencode_home_interactive
@@ -1924,6 +1957,15 @@ LRI_ROOT="$T/launch-reviewer-interactive-fixture"
 LRI_WT="$(_make_worktree_fixture "$LRI_ROOT")"
 LRI_RECORD_DIR="$LRI_ROOT/records"
 mkdir -p "$LRI_RECORD_DIR"
+# codex_pr_url is a caller-supplied argument to launch_reviewer_interactive
+# (see that function's own docstring on why cmd_launch captures it once,
+# up front, rather than this function reading base_dir/.pr-url itself),
+# used below to scope the codex branch's own .codex/rules/default.rules
+# allow rule to this run's PR (see F1's own docstring on
+# _write_codex_home_interactive). This direct-call fixture supplies it as
+# a plain shell value at each call site, the same value cmd_launch would
+# have read from base_dir/.pr-url exactly once before dispatching anything.
+LRI_PR_URL="https://github.com/lri-owner/lri-repo/pull/4242"
 
 cat > "$STUB_BIN/herdr" <<'STUB'
 #!/usr/bin/env bash
@@ -2039,8 +2081,12 @@ lri_claude_home="$LRI_ROOT/reviewers/claude/home"
 mkdir -p "$lri_claude_workdir" "$lri_claude_home"
 printf 'claude review prompt' > "$LRI_ROOT/claude.prompt"
 
+# Trailing "" is codex_pr_url -- unused by every branch except codex's own
+# (see launch_reviewer_interactive's own docstring on why this is now a
+# caller-supplied parameter rather than something this function reads back
+# itself), so any non-codex direct call is free to pass empty here.
 lri_claude_out="$(launch_reviewer_interactive claude w14:pZ "$LRI_WT" \
-  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt")"
+  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt" "")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$lri_claude_out" = "$lri_claude_workdir/review.md" ] && pass launch-reviewer-interactive-claude-prints-output-file || bad "launch-reviewer-interactive-claude-prints-output-file: $lri_claude_out"
 
@@ -2170,7 +2216,7 @@ mkdir -p "$lri_codex_workdir" "$lri_codex_home"
 printf 'codex review prompt' > "$LRI_ROOT/codex.prompt"
 
 lri_codex_out="$(launch_reviewer_interactive codex w1X:pA "$LRI_WT" \
-  "$lri_codex_workdir" "$lri_codex_home" "$LRI_ROOT/codex.prompt")"
+  "$lri_codex_workdir" "$lri_codex_home" "$LRI_ROOT/codex.prompt" "$LRI_PR_URL")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$lri_codex_out" = "$lri_codex_workdir/review.md" ] && pass launch-reviewer-interactive-codex-prints-output-file || bad "launch-reviewer-interactive-codex-prints-output-file: $lri_codex_out"
 
@@ -2213,6 +2259,19 @@ esac
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pA.text" 2>/dev/null)" = "codex review prompt" ] && pass launch-reviewer-interactive-codex-agent-prompt-carries-full-contract || bad "launch-reviewer-interactive-codex-agent-prompt-carries-full-contract: $(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pA.text" 2>/dev/null)"
 
+# F1: the .codex/rules/default.rules this call wrote must be scoped to
+# *this run's* PR ($LRI_PR_URL, passed as the codex_pr_url argument
+# above), not a bare `gh pr comment` allow-anything rule -- proves
+# launch_reviewer_interactive actually threads the real value through to
+# _write_codex_home_interactive, not just a hardcoded literal.
+lri_codex_rules="$lri_codex_home/.codex/rules/default.rules"
+lri_codex_expected_rule="prefix_rule(pattern=[\"gh\",\"pr\",\"comment\",\"$LRI_PR_URL\"], decision=\"allow\")
+"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -f "$lri_codex_rules" ] && [ "$(cat "$lri_codex_rules" 2>/dev/null; printf x)" = "$(printf '%s' "$lri_codex_expected_rule"; printf x)" ] \
+  && pass "launch-reviewer-interactive-codex-rules-scoped-to-this-run-pr-url" \
+  || bad "launch-reviewer-interactive-codex-rules-scoped-to-this-run-pr-url: $(cat "$lri_codex_rules" 2>/dev/null)"
+
 # --- opencode: no `run`; no `--dir` (dropped in favour of the positional
 # project-path argument -- the top-level command has no --dir at all) ---
 
@@ -2222,7 +2281,7 @@ mkdir -p "$lri_opencode_workdir" "$lri_opencode_home"
 printf 'opencode review prompt' > "$LRI_ROOT/opencode.prompt"
 
 lri_opencode_out="$(launch_reviewer_interactive opencode w2:p12 "$LRI_WT" \
-  "$lri_opencode_workdir" "$lri_opencode_home" "$LRI_ROOT/opencode.prompt")"
+  "$lri_opencode_workdir" "$lri_opencode_home" "$LRI_ROOT/opencode.prompt" "")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$lri_opencode_out" = "$lri_opencode_workdir/review.md" ] && pass launch-reviewer-interactive-opencode-prints-output-file || bad "launch-reviewer-interactive-opencode-prints-output-file: $lri_opencode_out"
 
@@ -2378,7 +2437,7 @@ mkdir -p "$lri_agy_workdir" "$lri_agy_home"
 printf 'agy review prompt' > "$LRI_ROOT/agy.prompt"
 
 lri_agy_out="$(launch_reviewer_interactive agy w28:p1 "$LRI_WT" \
-  "$lri_agy_workdir" "$lri_agy_home" "$LRI_ROOT/agy.prompt")"
+  "$lri_agy_workdir" "$lri_agy_home" "$LRI_ROOT/agy.prompt" "")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$lri_agy_out" = "$lri_agy_workdir/review.md" ] && pass launch-reviewer-interactive-agy-prints-output-file || bad "launch-reviewer-interactive-agy-prints-output-file: $lri_agy_out"
 
@@ -2463,7 +2522,7 @@ lri_oversized_bytes=$((PROMPT_BYTE_LIMIT + 1))
 head -c "$lri_oversized_bytes" /dev/zero > "$LRI_ROOT/oversized.prompt"
 
 if lri_oversized_out="$(launch_reviewer_interactive codex w1X:pO "$LRI_WT" \
-  "$lri_codex_workdir" "$lri_codex_home" "$LRI_ROOT/oversized.prompt" 2>"$LRI_ROOT/oversized.stderr")"; then
+  "$lri_codex_workdir" "$lri_codex_home" "$LRI_ROOT/oversized.prompt" "$LRI_PR_URL" 2>"$LRI_ROOT/oversized.stderr")"; then
   bad "launch-reviewer-interactive-prompt-too-large-rejected: printed $lri_oversized_out"
 else
   pass launch-reviewer-interactive-prompt-too-large-rejected
@@ -2496,7 +2555,7 @@ esac
 # codex again, for the same reason as the oversized-prompt case above. ---
 
 if lri_missing_prompt_out="$(launch_reviewer_interactive codex w1X:pM "$LRI_WT" \
-  "$lri_codex_workdir" "$lri_codex_home" "$LRI_ROOT/does-not-exist.prompt" 2>"$LRI_ROOT/missing-prompt.stderr")"; then
+  "$lri_codex_workdir" "$lri_codex_home" "$LRI_ROOT/does-not-exist.prompt" "$LRI_PR_URL" 2>"$LRI_ROOT/missing-prompt.stderr")"; then
   bad "launch-reviewer-interactive-missing-prompt-rejected: printed $lri_missing_prompt_out"
 else
   pass launch-reviewer-interactive-missing-prompt-rejected
@@ -2533,6 +2592,13 @@ rm -f "$STUB_BIN/herdr"
 LRIRECOVER_ROOT="$T/launch-reviewer-interactive-recovery-fixture"
 LRIRECOVER_WT="$(_make_worktree_fixture "$LRIRECOVER_ROOT")"
 LRIRECOVER_RECORD_DIR="$LRIRECOVER_ROOT/records"
+# codex_pr_url is now a caller-supplied argument to launch_reviewer_
+# interactive (see that function's own docstring on why it no longer
+# reads base_dir/.pr-url itself), so the codex calls further down this
+# section pass this value directly instead of relying on a .pr-url file
+# on disk -- without it, _write_codex_home_interactive would refuse to
+# run at all (see that function's own docstring).
+LRIRECOVER_PR_URL="https://github.com/lrirecover-owner/lrirecover-repo/pull/9009"
 mkdir -p "$LRIRECOVER_RECORD_DIR"
 
 cat > "$STUB_BIN/herdr" <<'STUB'
@@ -2592,6 +2658,37 @@ else
   pass "_herdr_agent_present_in_pane 對乾淨、明確的零筆結果回傳 1（pane 確實不存在）"
 fi
 
+# .result.agents 缺少、為 null、或不是 array 時：jq 的 `[]?` 會安靜地
+# 得到空陣列，count 為乾淨的 0 -- 但這不是「herdr 明確回報零筆」，是
+# herdr 回應形狀本身就可疑，屬於「疑慮」，該比照 herdr 指令失敗與 JSON
+# 無法解析的既有分支，一併回傳 0（偏向判為在）。
+export LRIRECOVER_AGENT_LIST_JSON='{"result":{}}'
+if _herdr_agent_present_in_pane "w9:p9"; then
+  pass "_herdr_agent_present_in_pane .result 缺少 agents 時保守回傳 0"
+else
+  bad "_herdr_agent_present_in_pane .result 缺少 agents 時誤判為明確不在（回傳 1）"
+fi
+export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":null}}'
+if _herdr_agent_present_in_pane "w9:p9"; then
+  pass "_herdr_agent_present_in_pane agents 為 null 時保守回傳 0"
+else
+  bad "_herdr_agent_present_in_pane agents 為 null 時誤判為明確不在（回傳 1）"
+fi
+# 這個 fixture 的鑑別力刻意選在「物件的值本身也是物件、但 pane_id 不匹配」
+# 這個形狀，不是隨便一個非 array 值：舊版 `[.result.agents[]? | select(...)]`
+# 對一個值是純字串的物件（如 {"pane_id":"w9:p9"}）迭代出字串後，`.pane_id`
+# 套用在字串上會直接讓 jq 報錯，被既有的 `|| return 0` 接住，回傳 0 只是
+# 巧合，不是型別檢查在生效 -- 那種 fixture 沒有鑑別力。這裡改用值是物件
+# 且 pane_id 不同的形狀：舊版能順利迭代出 {"pane_id":"other"}、比對不相符
+# 而乾淨算出 count=0，因而誤判為「明確不在」而回傳 1（真正重現這個
+# bug）；型別檢查修正後才會在算 count 之前就先攔下、回傳 0。
+export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":{"foo":{"pane_id":"other"}}}}'
+if _herdr_agent_present_in_pane "w9:p9"; then
+  pass "_herdr_agent_present_in_pane agents 為物件（非 array）時保守回傳 0"
+else
+  bad "_herdr_agent_present_in_pane agents 為物件（非 array）時誤判為明確不在（回傳 1）"
+fi
+
 # herdr 本身失敗：視為「無法確認」，保守回傳 0（寧可多留、不可誤刪）。用一
 # 支獨立、任何呼叫都直接失敗的替身，不是把 herdr 從 PATH 上整個拿掉 --
 # 拿掉後名稱會直接穿透到 $saved_path 上真正的 herdr 二進位，變成對它送出
@@ -2621,7 +2718,7 @@ printf 'codex review prompt\n' > "$LRIRECOVER_PROMPT"
 
 export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"w9:pRecover","agent_status":"working"}]}}'
 if HERDR_STUB_START_OK=0 launch_reviewer_interactive codex "w9:pRecover" "$LRIRECOVER_WT" \
-  "$LRIRECOVER_WORKDIR" "$LRIRECOVER_HOME" "$LRIRECOVER_PROMPT" >/dev/null 2>"$LRIRECOVER_ROOT/recover.err"; then
+  "$LRIRECOVER_WORKDIR" "$LRIRECOVER_HOME" "$LRIRECOVER_PROMPT" "$LRIRECOVER_PR_URL" >/dev/null 2>"$LRIRECOVER_ROOT/recover.err"; then
   pass "launch_reviewer_interactive agent start 回報失敗但 pane 裡確實有 agent 時仍回傳成功"
 else
   bad "launch_reviewer_interactive 未從 agent start 失敗但 pane 存活的情境復原: $(cat "$LRIRECOVER_ROOT/recover.err")"
@@ -2649,7 +2746,7 @@ LRIRECOVER_WORKDIR2="$LRIRECOVER_ROOT/workdir-codex2"
 mkdir -p "$LRIRECOVER_WORKDIR2"
 export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":[]}}'
 if HERDR_STUB_START_OK=0 launch_reviewer_interactive codex "w9:pGenuineFail" "$LRIRECOVER_WT" \
-  "$LRIRECOVER_WORKDIR2" "$LRIRECOVER_HOME2" "$LRIRECOVER_PROMPT" >/dev/null 2>"$LRIRECOVER_ROOT/genuine-fail.err"; then
+  "$LRIRECOVER_WORKDIR2" "$LRIRECOVER_HOME2" "$LRIRECOVER_PROMPT" "$LRIRECOVER_PR_URL" >/dev/null 2>"$LRIRECOVER_ROOT/genuine-fail.err"; then
   bad "launch_reviewer_interactive agent list 確實查無這格 pane 時不應回傳成功"
 else
   pass "launch_reviewer_interactive agent list 確實查無這格 pane 時仍照既有行為回傳失敗"
@@ -2680,7 +2777,7 @@ LRIRECOVER_WORKDIR3="$LRIRECOVER_ROOT/workdir-claude3"
 mkdir -p "$LRIRECOVER_WORKDIR3"
 export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":[]}}'
 HERDR_STUB_START_OK=1 launch_reviewer_interactive claude "w9:pTimeout" "$LRIRECOVER_WT" \
-  "$LRIRECOVER_WORKDIR3" "$LRIRECOVER_HOME3" "$LRIRECOVER_PROMPT" >/dev/null 2>&1 || true
+  "$LRIRECOVER_WORKDIR3" "$LRIRECOVER_HOME3" "$LRIRECOVER_PROMPT" "" >/dev/null 2>&1 || true
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 ! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.claude.argv" \
   && pass "launch_reviewer_interactive claude 的 agent start 不再帶 --timeout" \
@@ -2694,7 +2791,7 @@ LRIRECOVER_HOME4="$LRIRECOVER_ROOT/home-opencode4"
 LRIRECOVER_WORKDIR4="$LRIRECOVER_ROOT/workdir-opencode4"
 mkdir -p "$LRIRECOVER_WORKDIR4"
 HERDR_STUB_START_OK=1 launch_reviewer_interactive opencode "w9:pTimeout2" "$LRIRECOVER_WT" \
-  "$LRIRECOVER_WORKDIR4" "$LRIRECOVER_HOME4" "$LRIRECOVER_PROMPT" >/dev/null 2>&1 || true
+  "$LRIRECOVER_WORKDIR4" "$LRIRECOVER_HOME4" "$LRIRECOVER_PROMPT" "" >/dev/null 2>&1 || true
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 ! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.opencode.argv" \
   && pass "launch_reviewer_interactive opencode 的 agent start 不再帶 --timeout" \
@@ -2705,7 +2802,7 @@ LRIRECOVER_WORKDIR5="$LRIRECOVER_ROOT/workdir-agy5"
 LRIRECOVER_WT5="$LRIRECOVER_WT"
 mkdir -p "$LRIRECOVER_WORKDIR5"
 HERDR_STUB_START_OK=1 launch_reviewer_interactive agy "w9:pTimeout3" "$LRIRECOVER_WT5" \
-  "$LRIRECOVER_WORKDIR5" "$LRIRECOVER_HOME5" "$LRIRECOVER_PROMPT" >/dev/null 2>&1 || true
+  "$LRIRECOVER_WORKDIR5" "$LRIRECOVER_HOME5" "$LRIRECOVER_PROMPT" "" >/dev/null 2>&1 || true
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 ! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.agy.argv" \
   && pass "launch_reviewer_interactive agy 的 agent start 不再帶 --timeout" \
@@ -2714,6 +2811,139 @@ HERDR_STUB_START_OK=1 launch_reviewer_interactive agy "w9:pTimeout3" "$LRIRECOVE
 unset HERDR_RECORD_DIR LRIRECOVER_AGENT_LIST_JSON
 export PATH="$saved_path"
 rm -f "$STUB_BIN/herdr"
+
+# ==============================================================
+# cmd_launch -- F1 補述四：codex 規則所用的 PR 網址必須在這次 launch 派送
+# 任何 reviewer 之前就取得並固定，不能在某個 reviewer 已經起來、有機會
+# 竄改 base_dir/.pr-url 之後才去讀（見 cmd_launch 自己讀這個值那一段的
+# docstring，以及 launch_reviewer_interactive 自己 docstring 上對應的
+# 那一節，理由都寫在那裡）。
+#
+# 這裡走真正的 `bash "$RUN_SH" launch` 子行程（cmd_launch 本身在失敗分支
+# 會呼叫 exit，不能在這個測試行程裡直接呼叫函式本身，見上面每一個 E2E
+# launch 區塊已經在用的同一個理由），--agent 依序給 claude、codex，讓
+# claude 先派送、codex 後派送。herdr 替身只在被叫去對 claude 做
+# `agent start` 那一次，順手把 base_dir/.pr-url 覆寫成另一個同樣合法但
+# 不同的網址，模擬「claude 起來之後把這個檔案換掉」；之後檢查 codex 那份
+# .codex/rules/default.rules 用的仍是覆寫前的原始網址，不是覆寫後的。
+# ==============================================================
+
+F4_ROOT="$T/launch-pr-url-snapshot-fixture"
+# Printed path discarded: cmd_launch derives worktree_dir itself as
+# base_dir/worktree (see cmd_launch's own docstring), the exact same path
+# _make_worktree_fixture creates here, so this fixture has no separate
+# use for the value _make_worktree_fixture prints back.
+_make_worktree_fixture "$F4_ROOT" >/dev/null
+F4_HOME="$F4_ROOT/home"
+mkdir -p "$F4_HOME/.claude" "$F4_HOME/.config/gh" "$F4_HOME/.codex"
+F4_LOGS="$F4_ROOT/logs"
+mkdir -p "$F4_LOGS"
+printf 'claude review prompt\n' > "$F4_LOGS/claude.prompt"
+printf 'codex review prompt\n' > "$F4_LOGS/codex.prompt"
+mkdir -p "$F4_ROOT/reviewers/claude/workdir" "$F4_ROOT/reviewers/claude/home"
+mkdir -p "$F4_ROOT/reviewers/codex/workdir" "$F4_ROOT/reviewers/codex/home"
+# .roster: cmd_prepare's own record of which clis it selected (see
+# _check_agents_selected's own docstring on this exact format) --
+# hand-written here since this fixture skips cmd_prepare entirely and
+# builds the base_dir layout directly, the same way the LRI/LRIRECOVER
+# fixtures above already do for launch_reviewer_interactive itself.
+printf 'claude some-model dispatched\ncodex some-model dispatched\n' > "$F4_ROOT/.roster"
+
+F4_ORIGINAL_PR_URL="https://github.com/f4-original-owner/f4-original-repo/pull/1"
+F4_MUTATED_PR_URL="https://github.com/f4-mutated-owner/f4-mutated-repo/pull/2"
+printf '%s\n' "$F4_ORIGINAL_PR_URL" > "$F4_ROOT/.pr-url"
+
+# review.md pre-seeded with the contract's own END marker so
+# spawn_supervisor_interactive's backgrounded poll loop (started by
+# cmd_launch itself, at the very end) converges immediately instead of
+# polling forever -- the same technique the main E2E launch fixture above
+# already relies on.
+printf 'stub review body\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$F4_ROOT/reviewers/claude/workdir/review.md"
+printf 'stub review body\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$F4_ROOT/reviewers/codex/workdir/review.md"
+
+F4_STUB_BIN="$T/f4-stub-bin"
+mkdir -p "$F4_STUB_BIN"
+for f4_cli in claude codex; do
+  cat > "$F4_STUB_BIN/$f4_cli" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$F4_STUB_BIN/$f4_cli"
+done
+# gh is never meant to be reached synchronously by this fixture (cmd_launch
+# itself never calls it; only spawn_supervisor_interactive's backgrounded
+# orphan-check might, and both clis here are already "done" from the very
+# first pass) -- stubbed anyway, inert failure, so a PATH leak here would
+# never reach the real gh CLI network-side even if that background code
+# path were reached.
+cat > "$F4_STUB_BIN/gh" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$F4_STUB_BIN/gh"
+
+# herdr replica: agent start always succeeds, and -- only on the call
+# whose --kind is claude -- overwrites base_dir/.pr-url first, before
+# returning success. agent prompt always succeeds; agent wait always
+# reports working immediately, so _confirm_reviewers_working's own loop
+# never actually has to wait on anything.
+cat > "$F4_STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}" in
+agent)
+  case "\${2:-}" in
+  start)
+    f4_kind=""
+    f4_prev=""
+    for f4_a in "\$@"; do
+      if [ "\$f4_prev" = "--kind" ]; then f4_kind="\$f4_a"; fi
+      f4_prev="\$f4_a"
+    done
+    if [ "\$f4_kind" = claude ]; then
+      printf '%s\n' "$F4_MUTATED_PR_URL" > "$F4_ROOT/.pr-url"
+    fi
+    exit 0
+    ;;
+  prompt) exit 0 ;;
+  wait)
+    printf '{"agent_status":"working"}'
+    exit 0
+    ;;
+  esac
+  ;;
+esac
+exit 1
+STUB
+chmod +x "$F4_STUB_BIN/herdr"
+
+assert_cli_stub_only "$F4_STUB_BIN:$saved_path" "$F4_STUB_BIN" claude codex gh herdr
+if F4_OUT="$(HOME="$F4_HOME" PATH="$F4_STUB_BIN:$saved_path" HERDR_ENV=1 \
+  bash "$RUN_SH" launch --base-dir "$F4_ROOT" \
+    --agent claude=f4-pane-claude --agent codex=f4-pane-codex 2>&1)"; then
+  pass "cmd_launch pr-url-snapshot fixture 派送成功"
+else
+  bad "cmd_launch pr-url-snapshot fixture 派送失敗: $F4_OUT"
+fi
+
+# 佐證：.pr-url 這時已經確實變成改寫後的值，證明竄改真的發生過 -- 不是
+# 底下那筆斷言沒踩到竄改分支才通過。
+if [ "$(cat "$F4_ROOT/.pr-url" 2>/dev/null)" = "$F4_MUTATED_PR_URL" ]; then
+  pass "cmd_launch pr-url-snapshot fixture 的竄改確實發生過（.pr-url 現在是改寫後的值）"
+else
+  bad "cmd_launch pr-url-snapshot fixture 的竄改沒有發生，這筆測試沒有鑑別力: $(cat "$F4_ROOT/.pr-url" 2>/dev/null)"
+fi
+
+# 核心斷言：codex 那份 .codex/rules/default.rules 用的必須是 claude 派送
+# *之前* 那個原始網址，不是 claude 派送之後被改寫的那個。
+F4_RULES="$F4_ROOT/reviewers/codex/home/.codex/rules/default.rules"
+F4_EXPECTED_RULE="prefix_rule(pattern=[\"gh\",\"pr\",\"comment\",\"$F4_ORIGINAL_PR_URL\"], decision=\"allow\")
+"
+if [ -f "$F4_RULES" ] \
+  && [ "$(cat "$F4_RULES" 2>/dev/null; printf x)" = "$(printf '%s' "$F4_EXPECTED_RULE"; printf x)" ]; then
+  pass "cmd_launch 派送 claude 之後即使 .pr-url 被改寫，codex 規則仍鎖住改寫前的網址"
+else
+  bad "cmd_launch 沒有鎖住改寫前的網址，codex 規則變成: $(cat "$F4_RULES" 2>/dev/null)"
+fi
 
 # ==============================================================
 # _reap_stale_run_dirs
@@ -8172,7 +8402,7 @@ test_reviewer_home_gh_config_symlink() {
   local h_codex="$test_dir/codex-home"
   local w_codex="$test_dir/codex-workdir"
   mkdir -p "$w_codex"
-  _write_codex_home_interactive "$h_codex" "$w_codex"
+  _write_codex_home_interactive "$h_codex" "$w_codex" "https://github.com/gh-config-symlink-owner/gh-config-symlink-repo/pull/1"
   if [ -L "$h_codex/.config/gh" ] && [ "$(readlink "$h_codex/.config/gh")" = "$expected_gh" ]; then
     pass "test_reviewer_home_gh_config_symlink: codex 掛載 .config/gh 正確"
   else

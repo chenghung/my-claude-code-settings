@@ -188,7 +188,7 @@ worktree 的程式碼變更是唯一事實依據，以 `git -C <worktree> diff <
 讀回核對沒有停下就在 pane 印出輸出檔路徑。有 PR 就執行下面這道；沒有就不執行、不自己湊目標，在 pane 說明無法發布。
 
 ```bash
-gh pr comment "<PR 目標或 URL>" --body-file "<review.md 絕對路徑>"
+gh pr comment "<座標 PR 網址>" --body-file "<review.md 絕對路徑>"
 ```
 
 在 pane 印出結果：成功印 comment 目標；失敗印狀態碼與錯誤訊息，保留輸出檔，不重試。
