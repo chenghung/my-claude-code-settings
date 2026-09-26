@@ -2592,6 +2592,29 @@ else
   pass "_herdr_agent_present_in_pane 對乾淨、明確的零筆結果回傳 1（pane 確實不存在）"
 fi
 
+# .result.agents 缺少、為 null、或不是 array 時：jq 的 `[]?` 會安靜地
+# 得到空陣列，count 為乾淨的 0 -- 但這不是「herdr 明確回報零筆」，是
+# herdr 回應形狀本身就可疑，屬於「疑慮」，該比照 herdr 指令失敗與 JSON
+# 無法解析的既有分支，一併回傳 0（偏向判為在）。
+export LRIRECOVER_AGENT_LIST_JSON='{"result":{}}'
+if _herdr_agent_present_in_pane "w9:p9"; then
+  pass "_herdr_agent_present_in_pane .result 缺少 agents 時保守回傳 0"
+else
+  bad "_herdr_agent_present_in_pane .result 缺少 agents 時誤判為明確不在（回傳 1）"
+fi
+export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":null}}'
+if _herdr_agent_present_in_pane "w9:p9"; then
+  pass "_herdr_agent_present_in_pane agents 為 null 時保守回傳 0"
+else
+  bad "_herdr_agent_present_in_pane agents 為 null 時誤判為明確不在（回傳 1）"
+fi
+export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":{"pane_id":"w9:p9"}}}'
+if _herdr_agent_present_in_pane "w9:p9"; then
+  pass "_herdr_agent_present_in_pane agents 為物件（非 array）時保守回傳 0"
+else
+  bad "_herdr_agent_present_in_pane agents 為物件（非 array）時誤判為明確不在（回傳 1）"
+fi
+
 # herdr 本身失敗：視為「無法確認」，保守回傳 0（寧可多留、不可誤刪）。用一
 # 支獨立、任何呼叫都直接失敗的替身，不是把 herdr 從 PATH 上整個拿掉 --
 # 拿掉後名稱會直接穿透到 $saved_path 上真正的 herdr 二進位，變成對它送出

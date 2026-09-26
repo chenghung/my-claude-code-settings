@@ -2135,10 +2135,11 @@ _derive_agent_name() {
 # Returns 0 when herdr's own `agent list` shows any agent registered
 # against <pane_id> at all -- in any agent_status, not only working -- and
 # returns 0 (the same, conservative answer) on every kind of doubt too:
-# `herdr agent list` itself failing, its JSON not parsing, or the parsed
-# count not coming back as a clean digit string. Returns 1 only on a clean,
-# positive, zero-count result -- herdr ran, answered, and named no agent at
-# all for this pane id.
+# `herdr agent list` itself failing, its JSON not parsing, `.result.agents`
+# missing, null, or not itself an array, or the parsed count not coming
+# back as a clean digit string. Returns 1 only on a clean, positive,
+# zero-count result -- herdr ran, answered with .result.agents confirmed
+# to be an actual array, and named no agent at all for this pane id.
 #
 # This is deliberately biased toward "present": the caller
 # (launch_reviewer_interactive, see its own docstring on the incident this
@@ -2162,11 +2163,20 @@ _derive_agent_name() {
 # reviews on the same machine) -- not a second, differently-shaped query.
 _herdr_agent_present_in_pane() {
   local pane_id="$1"
-  local list_json count
+  local list_json agents_type count
 
   list_json="$(herdr agent list 2>/dev/null)" || return 0
+
+  # jq's `[]?` on a missing or null .result.agents silently yields an
+  # empty array with no error at all, which would read as a clean,
+  # confirmed zero (absent) rather than doubt (present-biased) -- see
+  # _cleanup_pane_liveness's own docstring on the same trap. Confirm the
+  # type explicitly before trusting the count.
+  agents_type="$(printf '%s' "$list_json" | jq -r '.result.agents | type' 2>/dev/null)" || return 0
+  [ "$agents_type" = array ] || return 0
+
   count="$(printf '%s' "$list_json" | jq -r --arg p "$pane_id" \
-    '[.result.agents[]? | select(.pane_id == $p)] | length' 2>/dev/null)" || return 0
+    '[.result.agents[] | select(.pane_id == $p)] | length' 2>/dev/null)" || return 0
   case "$count" in
     ''|*[!0-9]*) return 0 ;;
   esac
