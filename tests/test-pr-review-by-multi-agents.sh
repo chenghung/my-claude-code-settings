@@ -1769,7 +1769,7 @@ fi
 codex_home_empty_i="$T/codex-home-interactive-empty-pr-url"
 codex_workdir_empty_i="$T/codex-workdir-interactive-empty-pr-url"
 mkdir -p "$codex_workdir_empty_i"
-if _write_codex_home_interactive "$codex_home_empty_i" "$codex_workdir_empty_i" ""; then
+if _write_codex_home_interactive "$codex_home_empty_i" "$codex_workdir_empty_i" "" 2>/dev/null; then
   bad "_write_codex_home_interactive pr_url 為空時仍回傳成功"
 else
   pass "_write_codex_home_interactive pr_url 為空時回傳非零"
@@ -1782,7 +1782,7 @@ fi
 codex_home_bad_i="$T/codex-home-interactive-malformed-pr-url"
 codex_workdir_bad_i="$T/codex-workdir-interactive-malformed-pr-url"
 mkdir -p "$codex_workdir_bad_i"
-if _write_codex_home_interactive "$codex_home_bad_i" "$codex_workdir_bad_i" "not-a-github-pr-url"; then
+if _write_codex_home_interactive "$codex_home_bad_i" "$codex_workdir_bad_i" "not-a-github-pr-url" 2>/dev/null; then
   bad "_write_codex_home_interactive pr_url 格式不符時仍回傳成功"
 else
   pass "_write_codex_home_interactive pr_url 格式不符時回傳非零"
