@@ -7713,6 +7713,12 @@ export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-claude"
 wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_MIX" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_shape_got" = 'event=blocked cli=codex' ] && pass "cmd_wait 一格查詢失效時，其他格的 blocked 照常發出" || bad "cmd_wait 逐格處置（blocked）不正確: '$wait_shape_got'"
+# 重設在事件判斷之前完成：blocked 一返回，失效格（roster 排在前面）的
+# 時間戳就必須已經被改寫，不能等到下一次呼叫。
+wait_shape_lw="$(cat "$WAIT_SHAPE_MIX/.last-working-claude")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ] && pass "cmd_wait blocked 返回的同一次呼叫中，失效格的 .last-working 已被改寫" || bad "cmd_wait blocked 返回時失效格的 .last-working 未被改寫: '$wait_shape_lw'"
+printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_MIX/.last-working-claude"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-claude","agent_status":3},{"pane_id":"pane-codex","agent_status":"idle"}]}}'
 wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_MIX" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -7720,6 +7726,47 @@ wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_MIX" --deadline-at "$(( $(dat
 wait_shape_lw="$(cat "$WAIT_SHAPE_MIX/.last-working-claude")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ] && pass "cmd_wait 查詢失效那一格的 .last-working 在同輪被改寫" || bad "cmd_wait 查詢失效那一格的 .last-working 沒被改寫: '$wait_shape_lw'"
+
+# --- 失效格排在後面：roster 中 codex（idle、基準已過門檻）在前，claude
+# （查詢失效）在後。stalled 於 codex 返回，但失效格的時間戳在同一次呼叫中
+# 也必須已被重設 ---
+WAIT_SHAPE_AFTER_STALLED="$WAIT_SHAPE_ROOT/failed-after-stalled"
+mkdir -p "$WAIT_SHAPE_AFTER_STALLED"
+printf 'codex some-model dispatched\nclaude some-model dispatched\n' > "$WAIT_SHAPE_AFTER_STALLED/.roster"
+printf 'pane-claude\n' > "$WAIT_SHAPE_AFTER_STALLED/.pane-claude"
+printf 'pane-codex\n' > "$WAIT_SHAPE_AFTER_STALLED/.pane-codex"
+printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_AFTER_STALLED/.last-working-claude"
+printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_AFTER_STALLED/.last-working-codex"
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-claude","agent_status":3},{"pane_id":"pane-codex","agent_status":"idle"}]}}'
+wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_AFTER_STALLED" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_shape_got" = 'event=stalled cli=codex' ] && pass "cmd_wait 失效格排在後面時，前面 idle 格仍發 stalled" || bad "cmd_wait 失效格排在 stalled 格之後時事件不正確: '$wait_shape_got'"
+wait_shape_lw="$(cat "$WAIT_SHAPE_AFTER_STALLED/.last-working-claude")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ] && pass "cmd_wait stalled 返回的同一次呼叫中，排在後面的失效格 .last-working 已被改寫" || bad "cmd_wait stalled 返回時排在後面的失效格 .last-working 未被改寫: '$wait_shape_lw'"
+
+# --- 對稱案例：失效格（claude）排在未回報的 blocked 格（codex）之後 ---
+WAIT_SHAPE_AFTER_BLOCKED="$WAIT_SHAPE_ROOT/failed-after-blocked"
+mkdir -p "$WAIT_SHAPE_AFTER_BLOCKED"
+printf 'codex some-model dispatched\nclaude some-model dispatched\n' > "$WAIT_SHAPE_AFTER_BLOCKED/.roster"
+printf 'pane-claude\n' > "$WAIT_SHAPE_AFTER_BLOCKED/.pane-claude"
+printf 'pane-codex\n' > "$WAIT_SHAPE_AFTER_BLOCKED/.pane-codex"
+printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_AFTER_BLOCKED/.last-working-claude"
+export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-claude","agent_status":3},{"pane_id":"pane-codex","agent_status":"blocked"}]}}'
+wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_AFTER_BLOCKED" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_shape_got" = 'event=blocked cli=codex' ] && pass "cmd_wait 失效格排在 blocked 格之後時仍發 blocked" || bad "cmd_wait 失效格排在 blocked 格之後時事件不正確: '$wait_shape_got'"
+wait_shape_lw="$(cat "$WAIT_SHAPE_AFTER_BLOCKED/.last-working-claude")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ] && pass "cmd_wait blocked 返回的同一次呼叫中，排在後面的失效格 .last-working 已被改寫" || bad "cmd_wait blocked 返回時排在後面的失效格 .last-working 未被改寫: '$wait_shape_lw'"
+
+# --- jq 的錯誤訊息不得漏到 stderr（非 JSON、陣列含非物件元素）---
+for wait_shape_i in 15 16; do
+  export WAIT_HERDR_AGENT_LIST_JSON="${wait_shape_jsons[$wait_shape_i]}"
+  wait_shape_err="$(_wait_agent_states "$WAIT_SHAPE_ROOT/direct" 2>&1 >/dev/null)"
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ -z "$wait_shape_err" ] && pass "_wait_agent_states 變形回應（${wait_shape_labels[$wait_shape_i]}）stderr 為空" || bad "_wait_agent_states 變形回應（${wait_shape_labels[$wait_shape_i]}）漏出 stderr: '$wait_shape_err'"
+done
 
 # --- cmd_wait 真實形狀回歸：基準已超過門檻的 unknown 仍發 stalled
 # （編排端靠這條路偵測 agent 已消失）---

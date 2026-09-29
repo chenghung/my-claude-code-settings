@@ -5543,7 +5543,12 @@ _cleanup_delete_branch() {
 # treats that cell individually, in the same pass as the other cells:
 #   - no event=blocked and no event=stalled for it;
 #   - its .last-working-<cli> is rewritten to the current time (same
-#     `|| true`-guarded write the working branch uses). This is a RESET,
+#     `|| true`-guarded write the working branch uses), in a pre-pass over
+#     the whole snapshot that runs BEFORE any event is judged: the reset
+#     therefore does not depend on which cell returns an event first (the
+#     blocked and stalled loops each return on their first hit, so a
+#     failed cell later in the roster would otherwise keep its old
+#     timestamp). This is a RESET,
 #     not a pause: every failed round rewrites the timestamp to now, so
 #     stalled time already accumulated before the failure is zeroed too,
 #     and after herdr recovers the cell must stay non-working for a full
@@ -5559,7 +5564,8 @@ _cleanup_delete_branch() {
 # The behaviour of working, blocked, idle and done is unchanged.
 #
 # Why this way: the issue listed two candidates -- (1) skip the blocked and
-# stalled judgements for a failed cell and reset its stalled clock; (2) the same, plus a new event after some number of
+# stalled judgements for a failed cell and reset its stalled clock; (2) the
+# same, plus a new event after some number of
 # consecutive failed rounds. Both meet the criterion "under a malformed
 # response no false event=stalled at second 300, and no silent `unknown`".
 # (1) was chosen. If herdr stays broken the signal still surfaces: SKILL.md
@@ -5654,6 +5660,22 @@ cmd_wait() {
     # cmd_wait dying here with no event ever returned to its caller.
     agent_states="$(_wait_agent_states "$base_dir")" || agent_states=""
 
+    # Pre-pass for query failures (empty status field; see this function's
+    # docstring, "QUERY FAILURE"): reset each such cell's clock to now
+    # BEFORE any event is judged, so the reset does not depend on which
+    # cell happens to return an event first (the blocked loop and the
+    # stalled loop below both `return` on their first hit, which would
+    # otherwise skip a failed cell later in the roster). It is a RESET,
+    # not a pause: stalled time accumulated before this failure is zeroed
+    # too. Same `|| true` guard as the working branch below, for the same
+    # reason. Both loops below simply `continue` past empty-status cells.
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      cli="${line%% *}"; status="${line##* }"
+      [ -z "$status" ] || continue
+      printf '%s\n' "$now" > "$base_dir/.last-working-$cli" || true
+    done <<< "$agent_states"
+
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       cli="${line%% *}"; status="${line##* }"
@@ -5666,17 +5688,9 @@ cmd_wait() {
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       cli="${line%% *}"; status="${line##* }"
-      # Empty status = herdr query failure for this cell (see this
-      # function's docstring, "QUERY FAILURE"): no blocked/stalled
-      # judgement, and the clock is RESET to now -- stalled time already
-      # accumulated before this failure is zeroed too, not merely paused
-      # (so intermittent failures can keep a truly stuck cell from ever
-      # reaching the threshold; see the docstring). Same `|| true` guard
-      # as the working branch below, for the same reason.
-      if [ -z "$status" ]; then
-        printf '%s\n' "$now" > "$base_dir/.last-working-$cli" || true
-        continue
-      fi
+      # Empty status = herdr query failure for this cell: its clock was
+      # already reset by the pre-pass above, so no judgement here.
+      [ -n "$status" ] || continue
       if [ "$status" = working ]; then
         # Resets this cli's own elapsed-time clock (see this function's
         # own docstring) -- the mechanism that lets a reviewer which
@@ -5854,7 +5868,11 @@ _wait_already_reported() {
 # A query failure is printed as `<cli> ` followed by an EMPTY status field
 # -- the `%s %s` shape this function's printf already produced when jq
 # printed nothing. No new status string is introduced for it, and it must
-# never be printed as `unknown` or any invented status. An empty-string
+# never be printed as `unknown` or any invented status. jq's own stderr
+# (parse errors, "Cannot index ..." on non-object elements) is discarded
+# with 2>/dev/null, so a persistently bad response does not print one jq
+# error line per 5-second poll; the failure is carried by the empty status
+# field alone. An empty-string
 # agent_status is classed as a query failure because `$(...)` capture makes
 # it indistinguishable from "no output" anyway. The judgement is per cell,
 # because this function asks herdr once per cell.
@@ -5886,7 +5904,7 @@ _wait_agent_states() {
              | if length == 0 then "unknown"
                elif (.[0].agent_status|type) == "string" and .[0].agent_status != "" then .[0].agent_status
                else empty end)
-          else empty end')"
+          else empty end' 2>/dev/null)"
   done < "$base_dir/.roster"
 }
 
