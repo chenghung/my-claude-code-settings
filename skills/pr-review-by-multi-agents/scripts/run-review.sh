@@ -250,7 +250,8 @@ readonly REVIEWER_CONFIRM_BUDGET_SECONDS=60
 
 # REVIEWER_STALLED_THRESHOLD_SECONDS: how long cmd_wait (see its own
 # docstring) will let a dispatched reviewer go without being observed at
-# agent_status=working before reporting `event=stalled` for it. Exists
+# agent_status=working before reporting `event=stalled` for it (a cell whose
+# herdr status query failed is exempt, see cmd_wait's "QUERY FAILURE"). Exists
 # because REVIEWER_CONFIRM_BUDGET_SECONDS above only ever catches a
 # reviewer that never got moving in the first place -- it says nothing
 # about one that started working, then stopped partway (a crash, a network
@@ -5487,7 +5488,9 @@ _cleanup_delete_branch() {
 # gone REVIEWER_STALLED_THRESHOLD_SECONDS (see that constant's own
 # docstring for why five minutes, and for what this is a generic backstop
 # against) without being observed at agent_status=working, and has not yet
-# produced a summary line. Two design points that are not obvious from the
+# produced a summary line. A cell whose status query failed (empty status
+# field from _wait_agent_states) is excluded from this check -- see "QUERY
+# FAILURE" below. Two design points that are not obvious from the
 # event's own name:
 #   - blocked takes priority. A cli whose current status is blocked is
 #     handled entirely by the blocked branch above (whether newly blocked
@@ -5508,6 +5511,7 @@ _cleanup_delete_branch() {
 #     rather than never being eligible for this check at all. This
 #     function is the only place that value is later read or overwritten:
 #     every poll pass that observes a fresh agent_status=working for a cli
+#     (or, per "QUERY FAILURE" below, an unusable herdr response for it)
 #     rewrites this file to the current time (in the same pass that also
 #     checks for blocked/stalled, from one shared `_wait_agent_states`
 #     snapshot -- not a second, separate herdr query), which is what lets a
@@ -5532,6 +5536,44 @@ _cleanup_delete_branch() {
 # has already collected it, ready or not) is never reported stalled: once a
 # reviewer is done, "hasn't been seen working lately" stops meaning
 # anything about it.
+#
+# QUERY FAILURE (issue #49). When _wait_agent_states prints an EMPTY status
+# field for a cell (herdr's response was malformed or unusable for that
+# cell -- see "QUERY FAILURE VS `unknown`" in its docstring), this function
+# treats that cell individually, in the same pass as the other cells:
+#   - no event=blocked and no event=stalled for it;
+#   - its .last-working-<cli> is rewritten to the current time (same
+#     `|| true`-guarded write the working branch uses). This is a RESET,
+#     not a pause: every failed round rewrites the timestamp to now, so
+#     stalled time already accumulated before the failure is zeroed too,
+#     and after herdr recovers the cell must stay non-working for a full
+#     threshold again before it can be reported stalled.
+#     Consequence: if herdr fails intermittently (say, one failed round
+#     every few rounds), a reviewer that is truly stuck can keep having its
+#     clock zeroed and never reach the threshold, so event=stalled does not
+#     fire; the strict check from minute 45 in SKILL.md has to take over
+#     in that case.
+# Every other cell is handled as usual. `unknown` (array confirmed, pane
+# absent; or no .pane-<cli> file) is NOT a query failure: it may still be
+# reported stalled, which is how the orchestrator detects a vanished agent.
+# The behaviour of working, blocked, idle and done is unchanged.
+#
+# Why this way: the issue listed two candidates -- (1) skip the blocked and
+# stalled judgements for a failed cell and reset its stalled clock; (2) the same, plus a new event after some number of
+# consecutive failed rounds. Both meet the criterion "under a malformed
+# response no false event=stalled at second 300, and no silent `unknown`".
+# (1) was chosen. If herdr stays broken the signal still surfaces: SKILL.md
+# requires the orchestrator to pass --heartbeat-at on every wait call (one
+# heartbeat per 15 minutes); on each heartbeat the orchestrator runs the
+# same projection per cell itself, and an empty result is reported as
+# "status query unavailable" per SKILL.md's query-failure handling. (2)
+# would add an event kind and a SKILL.md handling branch, which pulls
+# against not adding signal kinds, so it was not chosen. Cost: while herdr
+# stays broken, a script-side stalled can never fire; noticing relies only
+# on that heartbeat path. An empty-string agent_status counts as a failure
+# because $(...) capture already makes it indistinguishable from no output.
+# The judgement is per cell because _wait_agent_states queries herdr once
+# per cell.
 #
 # The 5-second poll interval is not a latency target: reviews and the merge
 # both take minutes, so this only bounds how long a signal waits to be
@@ -5624,6 +5666,17 @@ cmd_wait() {
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       cli="${line%% *}"; status="${line##* }"
+      # Empty status = herdr query failure for this cell (see this
+      # function's docstring, "QUERY FAILURE"): no blocked/stalled
+      # judgement, and the clock is RESET to now -- stalled time already
+      # accumulated before this failure is zeroed too, not merely paused
+      # (so intermittent failures can keep a truly stuck cell from ever
+      # reaching the threshold; see the docstring). Same `|| true` guard
+      # as the working branch below, for the same reason.
+      if [ -z "$status" ]; then
+        printf '%s\n' "$now" > "$base_dir/.last-working-$cli" || true
+        continue
+      fi
       if [ "$status" = working ]; then
         # Resets this cli's own elapsed-time clock (see this function's
         # own docstring) -- the mechanism that lets a reviewer which
@@ -5731,7 +5784,9 @@ _wait_already_reported() {
 # Prints one `<cli> <agent_status>` line per reviewer this run dispatched.
 # Reads the cli list from .roster (written at prepare time) rather than
 # from whatever herdr happens to report, so a pane that vanished still
-# appears -- with whatever status herdr gives for it, or `unknown`.
+# appears -- with whatever status herdr gives for it, `unknown`, or an
+# empty status field when the query itself failed (see "QUERY FAILURE VS
+# `unknown`" below).
 #
 # This function reads ONLY status fields. It must never read pane content:
 # a reviewer's rendered output is attacker-influenced text (it has been
@@ -5766,8 +5821,46 @@ _wait_already_reported() {
 # (a base_dir predating this file, or a cli whose dispatch write itself
 # failed) has no pane id to match against and reads back `unknown` here --
 # the same value a cli that has simply fallen out of `herdr agent list`
-# already reads back as, since neither cmd_wait's blocked nor its stalled
-# check acts on `unknown` as a status of its own.
+# reads back as (see the next section for when that is, and is not, the
+# value printed).
+#
+# QUERY FAILURE VS `unknown` (issue #49). The status projection separates
+# three outcomes that an earlier version (`[.result.agents[]? | select(
+# .pane_id == $p) | .agent_status] | first // "unknown"`) collapsed into
+# one:
+#   - matched, with a non-empty string agent_status: printed as-is
+#     (working, blocked, idle, done, ...). The first match wins when one
+#     pane_id appears more than once, as before. A native `unknown` from
+#     herdr is printed as-is too (herdr documents `unknown` as "an agent
+#     is present but Herdr cannot classify it confidently; it does not
+#     prove completion"), so it cannot be told apart from the next bullet's
+#     `unknown`. That limitation predates this change and is not fixed
+#     here; for cmd_wait both take the same path (may be reported stalled).
+#   - .result.agents is confirmed to be an array, but no element has this
+#     pane_id (an empty array included): `unknown`. This is the only
+#     jq-side source of `unknown`; the other is the no-.pane-<cli>-file
+#     case above.
+#   - anything else is a QUERY FAILURE and the projection prints nothing:
+#     agents missing, null, an object, or renamed; .result missing; a
+#     matched entry whose agent_status is missing, renamed, null, false,
+#     a number, an array, an object, or an empty string; a non-JSON or
+#     empty herdr output; a top-level array; agents holding a non-object,
+#     non-null element such as a string or number (jq errors, exit 5, no
+#     output -- null elements are merely skipped: [null, {matching entry}]
+#     still prints that entry's status). The `[]?` operator and the `// "unknown"`
+#     fallback used to turn every one of these into either a silent
+#     `unknown` or a fake status (agents as an object yielded the inner
+#     entry's `working`; agent_status 3 yielded `3`).
+# A query failure is printed as `<cli> ` followed by an EMPTY status field
+# -- the `%s %s` shape this function's printf already produced when jq
+# printed nothing. No new status string is introduced for it, and it must
+# never be printed as `unknown` or any invented status. An empty-string
+# agent_status is classed as a query failure because `$(...)` capture makes
+# it indistinguishable from "no output" anyway. The judgement is per cell,
+# because this function asks herdr once per cell.
+# cmd_wait acts on that empty field (see its docstring, "QUERY FAILURE");
+# `unknown` keeps its old handling there (it can still be reported stalled,
+# which is how the orchestrator learns an agent has disappeared).
 #
 # No `(.name // "")`-style guard is needed for `.pane_id`, unlike `.name`
 # before it: confirmed against a real jq 1.8.2 binary, comparing a missing
@@ -5787,8 +5880,13 @@ _wait_agent_states() {
       continue
     fi
     printf '%s %s\n' "$cli" \
-      "$(herdr agent list 2>/dev/null | jq -r --arg p "$pane_id" \
-          '[.result.agents[]? | select(.pane_id == $p) | .agent_status] | first // "unknown"')"
+      "$(herdr agent list 2>/dev/null | jq -r --arg p "$pane_id" '
+          if (.result.agents|type) == "array" then
+            ([.result.agents[] | select(.pane_id == $p)]
+             | if length == 0 then "unknown"
+               elif (.[0].agent_status|type) == "string" and .[0].agent_status != "" then .[0].agent_status
+               else empty end)
+          else empty end')"
   done < "$base_dir/.roster"
 }
 
