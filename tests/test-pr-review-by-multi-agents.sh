@@ -1714,6 +1714,22 @@ fi
 # _write_codex_home_interactive
 # ==============================================================
 
+# 受控的假 HOME：_write_codex_home_interactive 會經 resolve_model codex 讀
+# $HOME/.codex/config.toml 的頂層 model，並用 $HOME/.codex/auth.json 建
+# 符號連結；整個區塊因此改跑在 fixture HOME 上，不碰執行者真實的 codex 設定。
+codex_real_home_i="$HOME"
+codex_fake_home_i="$T/codex-fake-home-with-model"
+mkdir -p "$codex_fake_home_i/.codex"
+cat > "$codex_fake_home_i/.codex/config.toml" <<'TOML'
+personality = "friendly"
+model = "fixture-model-x"
+model_reasoning_effort = "high"
+
+[projects."/somewhere/else"]
+trust_level = "trusted"
+TOML
+HOME="$codex_fake_home_i"
+
 codex_home_i="$T/codex-home-interactive"
 codex_workdir_i="$T/codex-workdir-interactive"
 mkdir -p "$codex_workdir_i"
@@ -1732,12 +1748,43 @@ else
 fi
 
 cct="$codex_home_i/.codex/config.toml"
-expected_cct="$(printf '[projects."%s"]\ntrust_level = "trusted"\n' "$codex_workdir_i")"
+# 整份逐字比對：fixture 有頂層 model 時，model 行必須與揭露值（resolve_model
+# codex）同源，且位於 [projects."..."] 表頭之前；其他頂層鍵（personality、
+# model_reasoning_effort）不得帶入。
+expected_cct="$(printf 'model = "fixture-model-x"\n[projects."%s"]\ntrust_level = "trusted"\n' "$codex_workdir_i")"
 if [ -f "$cct" ] && [ "$(cat "$cct")" = "$expected_cct" ]; then
-  pass "_write_codex_home_interactive 寫出正確的 config.toml"
+  pass "_write_codex_home_interactive 寫出帶頂層 model 且位於表頭之前的 config.toml"
 else
   bad "_write_codex_home_interactive 的 config.toml 內容不正確: $(cat "$cct" 2>/dev/null)"
 fi
+
+# fixture 沒有頂層 model 鍵、或根本沒有 config 檔：config.toml 與舊的兩行 trust
+# 內容逐字相同，讓 codex 用自己的預設模型。
+codex_nomodel_home_i="$T/codex-fake-home-no-model"
+mkdir -p "$codex_nomodel_home_i/.codex"
+printf 'personality = "friendly"\n\n[projects."/x"]\nmodel = "not-top-level"\n' > "$codex_nomodel_home_i/.codex/config.toml"
+codex_nocfg_home_i="$T/codex-fake-home-no-config"
+mkdir -p "$codex_nocfg_home_i"
+# 真實 config 頂層值就是字面 unknown-model（resolve_model 的未知標記）：不寫 model 行。
+codex_unkmodel_home_i="$T/codex-fake-home-unknown-model"
+mkdir -p "$codex_unkmodel_home_i/.codex"
+printf 'model = "unknown-model"\n' > "$codex_unkmodel_home_i/.codex/config.toml"
+expected_cct_plain="$(printf '[projects."%s"]\ntrust_level = "trusted"\n' "$codex_workdir_i")"
+for codex_variant_i in nomodel nocfg unkmodel; do
+  case "$codex_variant_i" in
+    unkmodel) HOME="$codex_unkmodel_home_i" ;;
+    nomodel) HOME="$codex_nomodel_home_i" ;;
+    nocfg)   HOME="$codex_nocfg_home_i" ;;
+  esac
+  codex_variant_home_i="$T/codex-home-interactive-$codex_variant_i"
+  if _write_codex_home_interactive "$codex_variant_home_i" "$codex_workdir_i" "$codex_pr_url_i" \
+    && [ "$(cat "$codex_variant_home_i/.codex/config.toml")" = "$expected_cct_plain" ]; then
+    pass "_write_codex_home_interactive $codex_variant_i 時 config.toml 與舊的兩行 trust 內容逐字相同"
+  else
+    bad "_write_codex_home_interactive $codex_variant_i 時 config.toml 不正確: $(cat "$codex_variant_home_i/.codex/config.toml" 2>/dev/null)"
+  fi
+done
+HOME="$codex_fake_home_i"
 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -s "$codex_home_i/.zshrc" ] && pass "_write_codex_home_interactive 建立非空 .zshrc" || bad "_write_codex_home_interactive 未建立非空 .zshrc"
@@ -1791,6 +1838,9 @@ fi
 [ ! -f "$codex_home_bad_i/.codex/rules/default.rules" ] \
   && pass "_write_codex_home_interactive pr_url 格式不符時沒有寫出 default.rules" \
   || bad "_write_codex_home_interactive pr_url 格式不符時仍寫出了 default.rules: $(cat "$codex_home_bad_i/.codex/rules/default.rules" 2>/dev/null)"
+
+# 還原真實 HOME，後續區塊照舊。
+HOME="$codex_real_home_i"
 
 # ==============================================================
 # _write_opencode_home_interactive
@@ -2231,7 +2281,17 @@ for idx in "${!lri_codex_argv[@]}"; do
   [ "${lri_codex_argv[$idx]}" = "--" ] && lri_codex_dashdash_idx=$idx
 done
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_codex_dashdash_idx" -ge 0 ] && [ "${lri_codex_argv[$((lri_codex_dashdash_idx + 1))]:-}" = "-C" ] && pass launch-reviewer-interactive-codex-no-duplicate-executable-name || bad "launch-reviewer-interactive-codex-no-duplicate-executable-name: $(cat "$codex_start_argv")"
+lri_codex_first_arg="${lri_codex_argv[$((lri_codex_dashdash_idx + 1))]:-}"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_codex_dashdash_idx" -ge 0 ] && [ "$lri_codex_first_arg" != "codex" ] && [ "${lri_codex_first_arg#-}" != "$lri_codex_first_arg" ] && pass launch-reviewer-interactive-codex-no-duplicate-executable-name || bad "launch-reviewer-interactive-codex-no-duplicate-executable-name: $(cat "$codex_start_argv")"
+# codex 的 agent start argv 必須帶 --no-daemon：codex-cli 0.158.0 預設會起
+# 背景 daemon，client 經隔離 HOME 下過長的 socket 路徑連線而失敗。
+lri_codex_no_daemon_found=0
+for a in "${lri_codex_argv[@]}"; do
+  [ "$a" = "--no-daemon" ] && lri_codex_no_daemon_found=1
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$lri_codex_no_daemon_found" -eq 1 ] && pass launch-reviewer-interactive-codex-no-daemon-flag || bad "launch-reviewer-interactive-codex-no-daemon-flag: $(cat "$codex_start_argv")"
 lri_codex_dash_s_found=0
 for a in "${lri_codex_argv[@]}"; do
   case "$a" in
@@ -4557,6 +4617,11 @@ grep -qF 'e2e-distinctive-design-doc-marker-content' "$E2E_PROMPT_FILE" 2>/dev/n
 grep -qxF -- '- 產出這則 review 的 CLI 名稱：codex' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-cli-name-in-place || bad main-e2e-prompt-cli-name-in-place
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qxF -- '- 產出這則 review 的 model 名稱：e2e-distinctive-model' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-model-in-place || bad main-e2e-prompt-model-in-place
+# launch 路徑寫進隔離 HOME 的 config.toml：第一行就是揭露的同一個 model
+# （頂層鍵，在 [projects."..."] 表頭之前）。
+E2E_CODEX_CFG="$E2E_BASE_DIR/reviewers/codex/home/.codex/config.toml"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(sed -n '1p' "$E2E_CODEX_CFG" 2>/dev/null)" = 'model = "e2e-distinctive-model"' ] && case "$(sed -n '2p' "$E2E_CODEX_CFG")" in '[projects."'*) true ;; *) false ;; esac && pass main-e2e-codex-config-carries-disclosed-model-before-table || bad "main-e2e-codex-config-carries-disclosed-model-before-table: $(cat "$E2E_CODEX_CFG" 2>/dev/null)"
 # No scratch-directory coordinate at all any more: the reviewer prints
 # its review to stdout (cmd_launch()'s log file) instead of writing a
 # comment-body file anywhere, so there is no longer a scratch path to
