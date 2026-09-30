@@ -1747,10 +1747,28 @@ _write_claude_home_interactive() {
 #
 # Builds an isolated HOME directory for one codex reviewer process
 # running in interactive mode. Only auth.json is symlinked in; trust is
-# granted by hand-writing a two-line .codex/config.toml that marks
-# <reviewer_workdir>'s own absolute path -- not the shared worktree path
-# -- as trusted, generated fresh on every call the same way
-# _write_claude_home_interactive's .claude.json is. Also calls
+# granted by hand-writing a .codex/config.toml whose [projects."..."]
+# table marks <reviewer_workdir>'s own absolute path -- not the shared
+# worktree path -- as trusted, generated fresh on every call the same way
+# _write_claude_home_interactive's .claude.json is. When resolve_model
+# codex (run against the real $HOME, which is still $HOME when this
+# function executes) returns a real model, config.toml additionally opens
+# with a single top-level `model = "<value>"` line ahead of that table
+# header (a TOML key after a table header belongs to that table), so the
+# model codex runs comes from the same source as the disclosed one, though
+# from a different call: the prompt coordinates and .roster take their
+# value from cmd_prepare's resolve_model call, this config.toml from a
+# second call made at launch time. Both read the same real
+# ~/.codex/config.toml, so they differ only if the user edits `model`
+# there between prepare and launch (a residual time gap, not closed by
+# any mechanism here). Without it the isolated HOME has no model setting and codex runs
+# its own built-in default, which was measured to differ from the
+# disclosed one (real config gpt-6-sol vs. pane showing "GPT-6-Astra
+# default"). On unknown-model no model line is written and the file stays
+# the two trust lines, leaving the choice to codex's default. Only the
+# `model` key is carried over; personality, model_reasoning_effort,
+# approvals_reviewer and every other top-level key of the real config are
+# deliberately not. Also calls
 # _write_env_scrubbing_zshrc to (re)write .zshrc, as a redundant,
 # idempotent backup of cmd_prepare's own earlier call (see
 # _write_claude_home_interactive's docstring for why that file matters
@@ -1914,8 +1932,17 @@ _write_codex_home_interactive() {
   fi
   mkdir -p "$dir/.codex" || return 1
   ln -sf "$HOME/.codex/auth.json" "$dir/.codex/auth.json" || return 1
-  printf '[projects."%s"]\ntrust_level = "trusted"\n' "$reviewer_workdir" \
-    > "$dir/.codex/config.toml" || return 1
+  # Same source as the disclosed model (see docstring). `|| codex_model=""`
+  # keeps a resolve_model failure from aborting under errexit.
+  local codex_model=""
+  codex_model="$(resolve_model codex)" || codex_model=""
+  {
+    # Top-level key first: anything after a [table] header belongs to it.
+    if [ -n "$codex_model" ] && [ "$codex_model" != "unknown-model" ]; then
+      printf 'model = "%s"\n' "$codex_model"
+    fi
+    printf '[projects."%s"]\ntrust_level = "trusted"\n' "$reviewer_workdir"
+  } > "$dir/.codex/config.toml" || return 1
   mkdir -p "$dir/.codex/rules" || return 1
   printf 'prefix_rule(pattern=["gh","pr","comment","%s"], decision="allow")\n' "$pr_url" \
     > "$dir/.codex/rules/default.rules" || return 1
@@ -2764,8 +2791,27 @@ launch_reviewer_interactive() {
         --append-system-prompt-file "$prompt_file" "開始")
       ;;
     codex)
+      # --no-daemon: codex-cli 0.158.0 (measured 2026-09-30) enables the
+      # daemon_auto_start feature by default, which starts a background
+      # app-server daemon and has the client connect through
+      # $HOME/.codex/app-server-control/app-server-control.sock. The daemon
+      # binds a short /tmp path and symlinks it there, but the client dials
+      # the long symlink path; under this run's isolated HOME
+      # (base_dir/reviewers/codex/home) that path was 130 bytes in a real
+      # run, past Linux's sun_path limit of 108 bytes including NUL, so
+      # codex failed with "failed to connect to <path>: path must be
+      # shorter than SUN_LEN" (and itself suggests --no-daemon). Symptom:
+      # the TUI drew and herdr's prompt landed in the input box, then after
+      # ~28s the daemon-ready timeout made codex exit 1 ("Unsent draft"
+      # plus that error). Side effects: a copy of the daemon binary under
+      # each isolated HOME (.codex/packages/app-server-daemon/...) and an
+      # orphan `codex app-server --listen unix:// --managed-daemon`
+      # process left alive. Verified fix: the same 205-byte isolated HOME
+      # with `codex --no-daemon -C <workdir>` in a real tmux terminal was
+      # still alive after 45s, answered a prompt, and spawned no daemon.
+      # Kept first after `--` (before -C), the order that was verified.
       cmd=(herdr agent start "$agent_name" --kind codex --pane "$pane_id" \
-        -- -C "$reviewer_workdir")
+        -- --no-daemon -C "$reviewer_workdir")
       ;;
     opencode)
       # --auto: auto-approves permissions that are not explicitly denied,
