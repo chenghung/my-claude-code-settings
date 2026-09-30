@@ -248,15 +248,21 @@ ensure_tool trello trello-cli  "${YAY_INSTALL[@]}"
 #    納入理由：hackmd-manager subagent、Bash(hackmd-cli:*) permission。
 #    冪等判斷：沿用 ensure_tool 通則——「對應指令已存在即略過」，不做成
 #      每次重跑都 npm install 或更新到 latest。這點與 install.sh 的
-#      install_openspec（每次都 npm install --global <pkg>@latest）不同：
+#      install_openspec（每次都 npm install --global --prefix ~/.local
+#      <pkg>@latest）不同：
 #      那是刻意選擇的更新語意，這裡回到本腳本的冪等通則——只有 codegraph
 #      與 herdr 因官方提供 upgrade/update 子指令才代跑更新（見下方第 5
 #      節），hackmd-cli 沒有這種理由，不套用那個例外。
-#    實測依據：這台機器上 ~/.npm-global/lib/node_modules/@hackmd/hackmd-cli
-#      存在，且 ~/.npm-global/bin/hackmd-cli 連到該套件目錄下的 bin/run。
+#    安裝位置：比照 install.sh 的 install_openspec，以單次安裝的 --prefix
+#      固定裝到 ~/.local（套件在 ~/.local/lib/node_modules、執行檔在
+#      ~/.local/bin），不走 npm 設定的全域 prefix。pacman 版 nodejs 的全域
+#      prefix 是 /usr，一般使用者寫入 /usr/lib/node_modules 會 EACCES；
+#      也不改用 `npm config set prefix`，因為 nvm 在 npm 設有 prefix 時會
+#      拒絕載入。~/.local/bin 需已在 PATH，ensure_tool 的冪等判斷才會生效
+#      （與下方 pipx 層相同）。
 # ------------------------------------------------------------
-echo "==> [3/5] 透過 npm 全域安裝（已存在的工具會自動略過）"
-NPM_INSTALL=(npm install --global)
+echo "==> [3/5] 透過 npm 全域安裝到 ~/.local（已存在的工具會自動略過）"
+NPM_INSTALL=(npm install --global --prefix "$HOME/.local")
 ensure_tool hackmd-cli "@hackmd/hackmd-cli" "${NPM_INSTALL[@]}"
 
 # ------------------------------------------------------------
