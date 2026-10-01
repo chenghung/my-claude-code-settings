@@ -32,7 +32,7 @@
 | `grant-peer.sh --from <> --to <> [--revoke]` | thin command 的 `grant` 落地時；漂移處置改變了介面時 | 下行通知是 best-effort，送不到只印一句提示，授權本身已經生效 |
 | `team-status.sh` | 中斷恢復核對哪些 tab 還活著；委派讀畫面前；想看全隊概況時 | 逐行 `worker=<> stage=<> status=<> seq=<> held=<> pending_resend=<> unprocessed=<>`；座標對不上本 workspace 的記錄會被跳過，不影響其餘行 |
 | `fetch-detail.sh --seq <序號>` | 某則回報需要讀細節之前，先取路徑 | 印出絕對路徑（不含內容），交給調查者去讀；結束碼 `5` 是該序號沒有細節檔 |
-| `watchdog.sh [--once]` | goal 確認之後即背景長駐；中斷恢復時最後一步才重掛；`--once` 供人工巡檢一輪 | 啟動方式與存活判讀見 `team-launch.md` 第 6 步；長駐時不會自己結束 |
+| `watchdog.sh [--once]` | goal 確認之後即背景長駐；中斷恢復時依 `session-recovery.md` 第 6 步的條件決定是否重掛（最後一步）；`--once` 供人工巡檢一輪 | 啟動方式與存活判讀見 `team-launch.md` 第 6 步；長駐時不會自己結束 |
 
 ### worker 端腳本
 
