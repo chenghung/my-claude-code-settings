@@ -452,7 +452,8 @@ readonly HAT_AUTO_PUSH_LIMIT_DEFAULT=10
 # 間 tab close／tab create／registry 寫入這些非零但通常很短的呼叫往返
 # 時間，這段往返時間本身沒有實測依據，是讀原始碼推得的上界，不是量出
 # 來的）。不做成環境變數：這是本檔內部的緩衝門檻，不是使用者要調整的
-# 業務門檻，做成可覆寫會讓 SKILL.md「門檻值」一節那張表少列一項，修表
+# 業務門檻，做成可覆寫會讓 references/script-reference.md「門檻值」一節
+# 那張表少列一項，修表
 # 不在本次職責範圍內。
 readonly HAT_IDENTITY_MISMATCH_GRACE_SECONDS=90
 

@@ -39,4 +39,4 @@
 
 ## AGENT_TEAM_STALL_SECONDS 與低保真的關聯
 
-`watchdog.sh` 的 `AGENT_TEAM_STALL_SECONDS`（預設 1800 秒，可覆寫）是低保真 kind 唯一的失效偵測手段，統一套用在四家 worker 上，不因為 kind 是低保真就另外調整門檻——目前沒有材料支持一個更精細的數字。門檻值本身沒有實測依據，是私用階段的起點，完整說明見 `SKILL.md`「門檻值」一節，本檔不重複。
+`watchdog.sh` 的 `AGENT_TEAM_STALL_SECONDS`（預設 1800 秒，可覆寫）是低保真 kind 唯一的失效偵測手段，統一套用在四家 worker 上，不因為 kind 是低保真就另外調整門檻——目前沒有材料支持一個更精細的數字。門檻值本身沒有實測依據，是私用階段的起點，完整說明見 `script-reference.md`「門檻值」一節，本檔不重複。
