@@ -12,7 +12,7 @@ disable-model-invocation: true
 
 ## 定位
 
-此 skill 是 epic 層級設計討論的統一入口，產物是一份九節設計文件。領域建模整節委派出去，本 skill 不自行建模、不自行審查。
+此 skill 是 epic 層級設計討論的統一入口，產物是一份九節設計文件。§4 只標出此處要進行 domain modeling，不指定由誰或用什麼方法執行；本 skill 不自行審查。
 
 三個立場決定了此 skill 與一般「產出設計文件」任務的差異，違反任一條就失去存在意義：
 
@@ -39,8 +39,8 @@ disable-model-invocation: true
 1. **Step 0 Framing**：閘門是使用者能否用一句話說出「哪個 actor、達成什麼結果」。說不出來就停下來問，不得代為腦補。此步驟不產出文件節次，產物是那句話，會成為 §1 目標敘述的基礎。使用者只有模糊目標、講不出有哪些 story 時，先擠出候選 story 並挑最薄、風險最高的一片，再往下。
 1. **§1 至 §3**：依 `references/sections.md` 逐節產出。
 1. **審查點一**：委派 `adversarial-thinker` 審查 §1 至 §3。
-1. **§4**：委派 `ddd-modeling`。
-1. **§5 至 §8**：依 `references/sections.md` 逐節產出，按需讀取模型檔。
+1. **§4**：進行 domain modeling，成果寫入 `design.md` §4，必填項見 `references/sections.md`。
+1. **§5 至 §8**：依 `references/sections.md` 逐節產出。
 1. **§9 對帳單**。
 1. **審查點二**：七個 lens 平行 panel，見 `references/review-lenses.md`。
 1. **收斂迴圈**：findings 退回對應節次修正後重審。回合數需有節制，多輪仍不收斂時停下，把剩餘衝突呈報使用者裁決。
@@ -57,7 +57,7 @@ disable-model-invocation: true
 1. **踩線**：碰到任何 §2 標記為硬限制的項目。
 1. **共享**：出現跨 story 共享的 aggregate 或規則。
 1. **查不到**：硬限制查證失敗。不得改以記憶或推測填值。
-1. **紅卡未清就要進昂貴階段**：紅卡還開著卻要進 §4 委派或交棒實作。
+1. **紅卡未清就要進昂貴階段**：紅卡還開著卻要進入 §4 或交棒實作。
 
 硬觸發決定的是「停不停下來問使用者」，不是「寫不寫這節」。九節永遠都寫。
 
@@ -67,7 +67,7 @@ disable-model-invocation: true
 
 | 審查點 | 位置 | 執行 |
 | --- | --- | --- |
-| 一 | §3 結束、§4 委派之前 | 單獨委派 `adversarial-thinker` |
+| 一 | §3 結束、進入 §4 之前 | 單獨委派 `adversarial-thinker` |
 | 二 | §9 結束、交棒實作之前 | 七個 lens 平行 panel |
 
 ## 產物
@@ -77,10 +77,6 @@ disable-model-invocation: true
 | 檔案 | 產出者 |
 | --- | --- |
 | `design.md` | 本 skill |
-| `domain-strategic.md` | `ddd-modeling`，**可能不存在** |
-| `domain-tactical.md` | `ddd-modeling` |
-
-戰略模型檔可能不存在，因為受託方會自行判斷需求規模並可能略過戰略建模。讀取前先確認檔案是否存在，不得假設兩份都在。
 
 過程中的中間 scratch 依 `tmp-file-usage` rule 使用暫存區。
 
@@ -104,17 +100,14 @@ disable-model-invocation: true
 
 | 受託方 | 用途 | 必須給 | 不得給 |
 | --- | --- | --- | --- |
-| `ddd-modeling` | §4 全節 | 需求脈絡、兩個目標寫檔路徑 | 建模深度、要跑哪些階段 |
 | `doc-research` | §2 硬限制查證 | 要查什麼、用途 | — |
 | `diagram-designer` | §5、§6 圖表 | 要溝通什麼 | 圖表語法 |
 | `adversarial-thinker` | 審查點一、panel lens 五 | 待審內容路徑、原始需求 | — |
 | `general-purpose` | panel 其餘六個 lens | 對應 lens prompt、待審內容路徑 | — |
 
-`ddd-modeling` 會自行評估需求規模並據此決定建模深度，指定深度會覆蓋掉它的判斷。
-
 ## 圖表
 
-只畫 §5 的 sequence 與 state machine、§6 的 C4 delta。§1 與 §8 用清單，不畫圖。§4 的圖由受託方產在模型檔內，本 skill 不重畫。
+只畫 §5 的 sequence 與 state machine、§6 的 C4 delta。§1 與 §8 用清單，不畫圖。
 
 圖表一律經 `diagram-designer` 選型與預覽，依 `diagram-output` rule 處理，不自行決定語法、不將圖表 DSL 輸出到對話。
 
@@ -143,7 +136,7 @@ disable-model-invocation: true
 
 最終回應包含：
 
-- `design.md` 與各模型檔的路徑
+- `design.md` 的路徑
 - 審查點二的判定與經修正後收斂的簡短摘要
 - 未解衝突（若有），明確標示待使用者裁決
 - 對帳單條目數，以及其中有幾條尚無 GWT（下游需轉為可執行場景的數量）

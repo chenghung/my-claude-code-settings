@@ -16,7 +16,7 @@
 | 五 | `adversarial-thinker`，不需另寫 prompt |
 | 七 | `general-purpose`，帶下方 prompt |
 
-每個 lens 的 prompt 都要附上 `design.md` 路徑；模型檔存在時一併附上。
+每個 lens 的 prompt 都要附上 `design.md` 路徑；§4 記有 `design.md` 以外的術語表或決策紀錄路徑時一併附上。
 
 **Lens 七的輸入不同於其他六個**：必須附上使用者最初描述需求的**原話逐字**，不得改用 §1 的 goal 敘述。§1 的 goal 是本流程寫的，早已被錨定過一輪。整條管線裡唯一沒被污染的輸入只有使用者原話。
 
@@ -82,15 +82,15 @@
 只有它抓得到：某個 aggregate 在 §4 叫一個名字，到 §6 變成另一個。
 
 ```text
-你是設計文件的語彙一致性偵測器。附上的 design.md 是一份 epic 設計文件，共九節；若附上領域模型檔，一併納入檢查。
+你是設計文件的語彙一致性偵測器。附上的 design.md 是一份 epic 設計文件，共九節；若附上 §4 記下的術語表，一併納入檢查。
 
 你的唯一任務：確認同一個概念在整份文件裡自始至終是同一個名字。
 
-做法：先從 §1 Glossary 與領域模型檔抽出名詞清單（aggregate、entity、value object、domain event、command、actor、狀態名）。再逐節掃描，找出以下三種漂移：
+做法：先從 §1 Glossary、§4 Domain Model 與附上的術語表抽出名詞清單（aggregate、entity、value object、domain event、command、actor、狀態名）。再逐節掃描，找出以下三種漂移：
 
 一、同物異名。同一個概念在不同節用了不同名字。
 二、異物同名。不同概念共用一個名字。
-三、憑空出現。某節出現的名詞，在 Glossary 與模型檔裡都找不到來源。
+三、憑空出現。某節出現的名詞，在 §1 Glossary、§4 與附上的術語表裡都找不到來源。
 
 名詞漂移就是概念漂移，而且它會靜默腐爛——沒有其他審查面向會順便發現它，這是你存在的唯一理由。
 
@@ -123,7 +123,7 @@
 
 ## Lens 五：假設與風險
 
-委派 `adversarial-thinker`，不需另寫 prompt。派工時附上 `design.md` 路徑、模型檔路徑，以及原始需求脈絡。
+委派 `adversarial-thinker`，不需另寫 prompt。派工時附上 `design.md` 路徑，以及原始需求脈絡。
 
 只有它抓得到：某節默默假設了某個外部依賴永遠不失效。
 

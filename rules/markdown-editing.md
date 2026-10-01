@@ -41,9 +41,9 @@ Main agent 只負責提供以下資訊給 subagent：
 
 GitHub issue 與 PR 的標題及內文雖然以 markdown 格式撰寫，但不屬於本 rule 所規範的 markdown 檔案範圍，不應觸發 `markdown-editor` 或 `obsidian-md-editor`。此類內容的撰寫由 `github-issue-pr-authoring` skill 統籌處理。
 
-領域驅動設計（DDD）建模流程產出的戰略與戰術模型檔，由該流程中負責建模的 subagent 於任務執行時直接寫入，屬領域專家的結構化產出，同樣排除於本 rule 所規範的 markdown 檔案範圍之外，不應改由 `markdown-editor` 或 `obsidian-md-editor` 代寫。此類產物的撰寫由 `ddd-modeling` skill 統籌處理。
-
 epic 設計討論流程產出的九節設計文件（`design.md`），由 `epic-design` skill 於流程中逐節迭代建構：每節之間穿插停頓閘門與審查迴圈，內容隨審查 findings 退回修正而反覆更新，屬該設計流程直接寫入的結構化產物，而非一次成形、可交由無狀態編輯者代寫的靜態內容。此文件同樣排除於本 rule 所規範的 markdown 檔案範圍之外，不經 `markdown-editor` 或 `obsidian-md-editor` 路由，其撰寫由 `epic-design` skill 統籌處理。
+
+`domain-modeling` skill 在建模討論中維護的 `GLOSSARY.md`、`GLOSSARY-MAP.md` 與 `docs/adr/` 下的 ADR，於術語定案當下逐詞即時寫入，格式釘在該 skill 自帶的格式檔，同樣排除於本 rule 範圍之外，不經 `markdown-editor` 或 `obsidian-md-editor` 路由，其撰寫由該 skill 統籌。
 
 `agents/`、`skills/`、`rules/`、`commands/`、`.claude/agents/`、`.claude/skills/`、`.claude/rules/` 目錄下的定義檔，以及各層的 `CLAUDE.md`，其撰寫與審查由 `prompt-authoring` skill 統籌：撰寫工作委派給撰寫端 subagent 產出，並接受獨立審查端 subagent 的審查，不屬於本 rule 所規範的一般 markdown 檔案範圍，不經 `markdown-editor` 或 `obsidian-md-editor` 路由。
 

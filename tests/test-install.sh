@@ -143,6 +143,9 @@ if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "list" ]; then
     printf 'No MCP servers configured.\n'
   fi
 fi
+if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "install" ] && [ "${AGY_STUB_PLUGIN_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
 exit 0
 STUB
 chmod +x "$STUB_BIN/agy"
@@ -243,6 +246,8 @@ export AGY_MCP_HAS_CODEGRAPH=0
 run_antigravity "$T/log_ag_mcp1" --no-external
 unset AGY_MCP_HAS_CODEGRAPH
 grep -qxF 'mcp add codegraph -- codegraph serve --mcp' "$AGY_STUB_LOG" && pass ag-mcp-registers-when-absent || bad ag-mcp-registers-when-absent
+# --no-external must also keep install_superpowers from reaching `agy plugin install`.
+grep -q '^plugin install' "$AGY_STUB_LOG" && bad ag-superpowers-skips-no-external || pass ag-superpowers-skips-no-external
 
 # Scenario B: codegraph already listed -> install.sh must NOT call `agy mcp add`.
 export GEMINI_HOME="$T/gemini-mcp-reg"
@@ -260,7 +265,7 @@ grep -q '^mcp add' "$AGY_STUB_LOG" && bad ag-mcp-skips-when-registered || pass a
 # end-of-script `npm install --global` — so PATH gets npx and npm stubs on
 # top of the existing claude/agy ones: npx fabricates the on-disk result
 # `skills add` would leave under GEMINI_HOME/antigravity-cli/skills for each
-# of the manifest's active entries (ten as of this manifest, e.g.
+# of the manifest's active entries (seventeen as of this manifest, e.g.
 # herdrdev/herdr@herdr), and npm is a pure no-op so install_openspec can
 # never reach the real npm on this machine.
 cat > "$STUB_BIN/npx" <<'STUB'
@@ -292,6 +297,17 @@ AGY_STUB_LOG="$T/agy-stub-bridge.log"
 : > "$AGY_STUB_LOG"
 run_antigravity "$T/log_ag_bridge"
 test -L "$T/gemini-bridge/config/skills/herdr" && pass ag-external-bridge || bad ag-external-bridge
+grep -qxF 'plugin install https://github.com/obra/superpowers' "$AGY_STUB_LOG" && pass ag-superpowers-installed || bad ag-superpowers-installed
+
+# A failing `agy plugin install` must be reported and skipped, never abort
+# the deploy under the script's `set -e`.
+export GEMINI_HOME="$T/gemini-plugin-fail"
+AGY_STUB_LOG="$T/agy-stub-plugin-fail.log"
+: > "$AGY_STUB_LOG"
+export AGY_STUB_PLUGIN_FAIL=1
+run_antigravity "$T/log_ag_plugin_fail" && pass ag-superpowers-fail-no-abort || bad ag-superpowers-fail-no-abort
+unset AGY_STUB_PLUGIN_FAIL
+grep -qF 'failed to run agy plugin install' "$T/log_ag_plugin_fail" && pass ag-superpowers-fail-warned || bad ag-superpowers-fail-warned
 
 # --all must include antigravity
 grep -qE '^\s*--all\).*want_antigravity=1' "$REPO/install.sh" && pass ag-in-all || bad ag-in-all
