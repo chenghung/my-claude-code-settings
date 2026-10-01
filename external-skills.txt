@@ -38,6 +38,10 @@ herdrdev/herdr@herdr
 #   triage                     moves issues and external PRs through a triage
 #                              state machine and writes agent-ready briefs
 #   to-spec                    turns the agreed conversation into a formal spec
+#   to-tickets                 breaks a plan, spec or conversation into
+#                              tracer-bullet tickets with blocking edges
+#   wait-what                  asks the agent to re-pitch a last message that
+#                              did not land
 mattpocock/skills@grill-me
 mattpocock/skills@grill-with-docs
 mattpocock/skills@teach
@@ -45,6 +49,8 @@ mattpocock/skills@handoff
 mattpocock/skills@resolving-merge-conflicts
 mattpocock/skills@triage
 mattpocock/skills@to-spec
+mattpocock/skills@to-tickets
+mattpocock/skills@wait-what
 humanlayer/skills@show-me
 deanpeters/product-manager-skills@incoming-request-advisor
 deanpeters/product-manager-skills@user-story-mapping
