@@ -52,6 +52,7 @@
       "Bash(markdownlint-cli2:*)",
       "Bash(rtk:*)",
       "Read(///**)",
+      "Edit(~/.tmp/**)",
       "WebSearch",
       "WebFetch(domain:*)",
       "mcp__sequentialThinking__sequentialthinking",
@@ -64,6 +65,7 @@
       "mcp__codegraph__*"
     ],
     "deny": [],
+    "additionalDirectories": ["~/.tmp"],
     "defaultMode": "auto"
   },
   "model": "opus[1m]",
