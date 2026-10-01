@@ -7256,7 +7256,8 @@ fi
 # ---- 收尾：references/provider-drivers.md 的門檻值標題與本文內容一致
 #      ----
 # 該節本文只談 AGENT_TEAM_STALL_SECONDS 一個門檻值，標題卻曾經寫「三
-# 個門檻值」——SKILL.md 現在數的是六個，「三個」純粹是跟本文對不上的殘
+# 個門檻值」——references/script-reference.md 現在數的是六個，「三個」
+# 純粹是跟本文對不上的殘
 # 留數字，不是那六個的子集說法。
 PROVIDER_DRIVERS_MD="$(dirname "$SCRIPTS")/references/provider-drivers.md"
 if grep -qF '三個門檻值與低保真的關聯' "$PROVIDER_DRIVERS_MD" 2>/dev/null; then

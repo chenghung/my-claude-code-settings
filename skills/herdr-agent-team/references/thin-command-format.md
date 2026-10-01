@@ -7,13 +7,13 @@ thin command 是其他開發者用來定義一個 team 編制的檔案：有哪�
 ## 兩條入口
 
 - **有 thin command 時**：orchestrator 直接讀取檔案內容，依下面「欄位」一節逐項取出編制。讀完之後，把這份檔案的路徑寫進 `team.json` 的 `.thin_command_source` 欄位——這個欄位沒有專屬包裝腳本，直接 `source lib/common.sh` 後呼叫 `hat_json_set "$registry_root/team.json" '.thin_command_source' '"<絕對路徑>"'`（`hat_json_set` 的欄位白名單已經納入這個路徑，見 `lib/common.sh`）。
-- **沒有 thin command 時**：由 orchestrator 在對話中把同一組欄位跟人類問出來。goal 四項（要達成、怎樣算成功、不做什麼、前提）一律經 `set-goal.sh` 寫進 `team.json`，見 `SKILL.md`「啟動流程」；其餘欄位（role、候選 provider、工作起點、grant、啟動與關閉時機、完成判準等）不是團隊層級的持久設定，只在 orchestrator 當下的判斷裡使用，直接化成呼叫 `launch-worker.sh` 時的參數。**這一版沒有附範例 command 檔可讀，所以第二條入口是預設路徑**，不是退路。
+- **沒有 thin command 時**：由 orchestrator 在對話中把同一組欄位跟人類問出來。goal 四項（要達成、怎樣算成功、不做什麼、前提）一律經 `set-goal.sh` 寫進 `team.json`，見 `team-launch.md`；其餘欄位（role、候選 provider、工作起點、grant、啟動與關閉時機、完成判準等）不是團隊層級的持久設定，只在 orchestrator 當下的判斷裡使用，直接化成呼叫 `launch-worker.sh` 時的參數。**這一版沒有附範例 command 檔可讀，所以第二條入口是預設路徑**，不是退路。
 
 兩條入口取得的是同一組欄位，差別只在來源是檔案還是對話；後續怎麼用這些欄位（哪個進 `launch-worker.sh` 的參數、哪個進啟動包、哪個進契約實例）不因入口不同而不同。
 
 ## 欄位
 
-- **team goal（預設四項）**：要達成什麼、怎樣算成功（必須是外部查得到的形式）、不做什麼、依賴哪些還沒驗證的前提。這四項只是**模板**——同一份 thin command 可能被重複觸發很多次，把目標寫死在裡面就不能重用；這一次真正生效的目標，是模板加上這次觸發時的引數與對話內容之後的實例，經 `set-goal.sh` 寫入、由人類確認（規格 §9，完整流程見 `SKILL.md`）。
+- **team goal（預設四項）**：要達成什麼、怎樣算成功（必須是外部查得到的形式）、不做什麼、依賴哪些還沒驗證的前提。這四項只是**模板**——同一份 thin command 可能被重複觸發很多次，把目標寫死在裡面就不能重用；這一次真正生效的目標，是模板加上這次觸發時的引數與對話內容之後的實例，經 `set-goal.sh` 寫入、由人類確認（規格 §9，完整流程見 `team-launch.md`）。
 - **orchestrator 的 role**：`負責`／`不負責` 兩份清單，是 orchestrator 自己internalize 的職責邊界，不寫進任何 registry 欄位。
 - **workers（每個 role 一份）**：
   - `role`：這個角色的名稱，會經 `hat_normalize_name` 正規化成實際的 agent 名稱（見下方「grant 用的是正規化後的名稱」）。
