@@ -664,6 +664,7 @@ deploy_antigravity() {
   install_external_skills "antigravity-cli"
   [ -n "$skip_external" ] || link_items_into "${GEMINI_HOME}/antigravity-cli/skills" "${AG_CONFIG_DIR}/skills"
 
+  install_superpowers "antigravity"
   register_codegraph_mcp_antigravity
 
   if [ -L "${GEMINI_HOME}/AGENTS.md" ]; then
@@ -787,13 +788,16 @@ install_openspec() {
 #     and exit-0 on repeat runs. There is no separate `codex plugin add` step:
 #     the marketplace name it would require was never registered under that
 #     identifier, so that call always failed.
+#   - Antigravity: agy has no config file to declare plugins in, so the
+#     plugin is installed straight from the obra/superpowers Git repo with
+#     `agy plugin install`, the command superpowers' own README documents
+#     for agy. Reinstalling is how it updates; confirmed by hand on agy
+#     1.2.14 that repeat runs exit 0, never prompt (stdin at /dev/null), and
+#     leave a single superpowers entry in `agy plugin list`.
 # Claude Code and opencode are intentionally not handled here; both declare
 # superpowers declaratively in their own config (settings.json enabledPlugins
 # and opencode.json plugin array respectively) so each harness installs and
-# updates it itself. Antigravity is also intentionally not handled here, for
-# a different reason: unlike the other three, it has no plugin manager (native
-# or declarative) that superpowers can hook into, so deploy_antigravity simply
-# never calls this function — there is no Antigravity case in the switch below.
+# updates it itself.
 # ---------------------------------------------------------------------------
 install_superpowers() {
   local platform="$1"
@@ -814,6 +818,19 @@ install_superpowers() {
         count_created=$(( count_created + 1 ))
       else
         printf '  WARNING  failed to run codex plugin marketplace upgrade - skipping.\n'
+        count_skipped=$(( count_skipped + 1 ))
+      fi
+      ;;
+    antigravity)
+      if ! command -v agy > /dev/null 2>&1; then
+        printf '  WARNING  agy CLI not found - skipping superpowers plugin install.\n'
+        return
+      fi
+      if agy plugin install https://github.com/obra/superpowers; then
+        printf '  INSTALLED superpowers plugin (antigravity)\n'
+        count_created=$(( count_created + 1 ))
+      else
+        printf '  WARNING  failed to run agy plugin install - skipping.\n'
         count_skipped=$(( count_skipped + 1 ))
       fi
       ;;

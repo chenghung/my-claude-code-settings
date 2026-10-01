@@ -243,6 +243,8 @@ export AGY_MCP_HAS_CODEGRAPH=0
 run_antigravity "$T/log_ag_mcp1" --no-external
 unset AGY_MCP_HAS_CODEGRAPH
 grep -qxF 'mcp add codegraph -- codegraph serve --mcp' "$AGY_STUB_LOG" && pass ag-mcp-registers-when-absent || bad ag-mcp-registers-when-absent
+# --no-external must also keep install_superpowers from reaching `agy plugin install`.
+grep -q '^plugin install' "$AGY_STUB_LOG" && bad ag-superpowers-skips-no-external || pass ag-superpowers-skips-no-external
 
 # Scenario B: codegraph already listed -> install.sh must NOT call `agy mcp add`.
 export GEMINI_HOME="$T/gemini-mcp-reg"
@@ -292,6 +294,7 @@ AGY_STUB_LOG="$T/agy-stub-bridge.log"
 : > "$AGY_STUB_LOG"
 run_antigravity "$T/log_ag_bridge"
 test -L "$T/gemini-bridge/config/skills/herdr" && pass ag-external-bridge || bad ag-external-bridge
+grep -qxF 'plugin install https://github.com/obra/superpowers' "$AGY_STUB_LOG" && pass ag-superpowers-installed || bad ag-superpowers-installed
 
 # --all must include antigravity
 grep -qE '^\s*--all\).*want_antigravity=1' "$REPO/install.sh" && pass ag-in-all || bad ag-in-all
