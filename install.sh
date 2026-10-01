@@ -826,7 +826,10 @@ install_superpowers() {
         printf '  WARNING  agy CLI not found - skipping superpowers plugin install.\n'
         return
       fi
-      if agy plugin install https://github.com/obra/superpowers; then
+      # stdin is pinned to /dev/null to match the condition the no-prompt
+      # behaviour was verified under; as with codex, any exit-0 run is
+      # counted as handled since a fresh install and a reinstall look alike.
+      if agy plugin install https://github.com/obra/superpowers < /dev/null; then
         printf '  INSTALLED superpowers plugin (antigravity)\n'
         count_created=$(( count_created + 1 ))
       else
@@ -958,9 +961,9 @@ fi
 
 # ---------------------------------------------------------------------------
 # CLI tools bootstrap — runs before any platform deploy because deploy_codex
-# needs the codex CLI (to install the superpowers plugin) and deploy_claude
-# needs the claude CLI (to register the codegraph MCP server), and both
-# binaries come from install-cli-tools.sh. A failure here is fatal: the
+# and deploy_antigravity need the codex and agy CLIs (to install the
+# superpowers plugin) and deploy_claude needs the claude CLI (to register the
+# codegraph MCP server), and all three binaries come from install-cli-tools.sh. A failure here is fatal: the
 # script's own `set -euo pipefail` is enough to abort (no `|| true` or other
 # fallback is added on purpose), because the later deploy steps depend on
 # these CLIs and would otherwise silently no-op or behave unpredictably.
