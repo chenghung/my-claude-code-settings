@@ -192,4 +192,70 @@ put "$r" p4/AGENTS.md; put "$r" pc/AGENTS.md; printf 'pc/CLAUDE.md\n' > "$r/.git
 put "$r" pc/CLAUDE.md
 if check apply-noop "$r" 1 --apply; then has apply-noop '[case 1] .'; has apply-noop '[case 4] p4'; has apply-noop 'CONFLICT pc: CLAUDE.md exists but is not tracked by git'; fi
 
+# ---- apply mode ----
+# eq <name> <file> <expected-string>: assert exact file content via cmp.
+eq() {
+  printf '%s' "$3" > "$T/expected"
+  if cmp -s "$T/expected" "$2"; then pass "$1"; else bad "$1 (content differs)"; fi
+}
+# gone / kept <name> <path>: assert a path no longer exists / still exists.
+gone() { if [ ! -e "$2" ] && [ ! -L "$2" ]; then pass "$1: gone"; else bad "$1: still exists $2"; fi; }
+kept() { if [ -e "$2" ]; then pass "$1: kept"; else bad "$1: missing $2"; fi; }
+ends_applied() { if [ "${out##*$'\n'}" = applied ]; then pass "$1: ends applied"; else bad "$1: summary in: $out"; fi; }
+
+r="$(make_repo ap5)"; put "$r" CLAUDE.md 'root rules'; put "$r" .claude/CLAUDE.md 'dot claude'
+mkdir -p "$r/.claude/rules"
+printf -- '---\ndescription: x\n---\n\n\nrule a\n\n\n' > "$r/.claude/rules/a.md"
+put "$r" .claude/rules/sub/b.md 'rule b'; commit_all "$r"
+run_script "$r" --apply
+if [ "$rc" -eq 0 ]; then pass apply5-rc; else bad "apply5-rc ($rc $err)"; fi
+eq apply5-agents "$r/AGENTS.md" $'root rules\n\n---\n\ndot claude\n\n---\n\nrule a\n\n---\n\nrule b\n'
+if [ -f "$r/AGENTS.md" ] && ! grep -q 'description: x' "$r/AGENTS.md"; then pass apply5-no-frontmatter; else bad apply5-no-frontmatter; fi
+eq apply5-claude "$r/CLAUDE.md" $'@AGENTS.md\n'
+for n in .claude/CLAUDE.md .claude/rules/a.md .claude/rules/sub .claude/rules; do gone apply5 "$r/$n"; done
+ends_applied apply5
+
+r="$(make_repo ap2)"; put "$r" CLAUDE.md 'old claude'; ln -s CLAUDE.md "$r/AGENTS.md"; commit_all "$r"
+run_script "$r" --apply
+if [ "$rc" -eq 0 ] && [ -f "$r/AGENTS.md" ] && [ ! -L "$r/AGENTS.md" ]; then pass apply2-regular; else bad "apply2-regular ($rc $err)"; fi
+eq apply2-agents "$r/AGENTS.md" $'old claude\n'
+eq apply2-claude "$r/CLAUDE.md" $'@AGENTS.md\n'
+
+r="$(make_repo ap3)"; put "$r" AGENTS.md 'existing agents'; put "$r" CLAUDE.md 'claude text'; commit_all "$r"
+run_script "$r" --apply
+eq apply3-agents "$r/AGENTS.md" $'existing agents\n\n---\n\nclaude text\n'
+
+r="$(make_repo apscoped)"; put "$r" CLAUDE.md; mkdir -p "$r/.claude/rules"
+printf -- '---\npaths:\n  - src/**\n---\nbody\n' > "$r/.claude/rules/scoped.md"; commit_all "$r"
+cp "$r/.claude/rules/scoped.md" "$T/scoped.orig"
+run_script "$r" --apply
+if cmp -s "$T/scoped.orig" "$r/.claude/rules/scoped.md"; then pass apply-scoped-identical; else bad apply-scoped-identical; fi
+kept apply-scoped "$r/.claude/rules"
+
+# CLAUDE.local.md is gitignored (ignore file committed first so the tree is clean)
+r="$(make_repo aplocal)"; put "$r" CLAUDE.md; printf 'CLAUDE.local.md\n' > "$r/.gitignore"; commit_all "$r"
+put "$r" CLAUDE.local.md 'private'
+run_script "$r" --apply
+eq apply-local "$r/CLAUDE.local.md" $'private\n'
+
+r="$(make_repo apidem)"; put "$r" CLAUDE.md 'one'; put "$r" .claude/rules/a.md 'rule a'; commit_all "$r"
+run_script "$r" --apply; commit_all "$r"
+run_script "$r" --apply
+if [ "$rc" -eq 0 ] && [ -z "$(git -C "$r" status --porcelain)" ] \
+  && [ "$out" = $'[case 1] .\n  skip (already migrated)\napplied' ]; then pass apply-idempotent; else bad "apply-idempotent ($rc $out)"; fi
+
+r="$(make_repo apign)"; put "$r" CLAUDE.md; put "$r" .claude/rules/a.md; printf '.claude/rules/local.md\n' > "$r/.gitignore"; commit_all "$r"
+put "$r" .claude/rules/local.md 'mine'
+run_script "$r" --apply
+eq apply-ignored-rule "$r/.claude/rules/local.md" $'mine\n'
+kept apply-ignored-rule "$r/.claude/rules"
+gone apply-ignored-rule "$r/.claude/rules/a.md"
+
+r="$(make_repo apconf)"; put "$r" other.md; ln -s other.md "$r/CLAUDE.md"; put "$r" pkg/CLAUDE.md 'pkg text'; commit_all "$r"
+run_script "$r" --apply
+if [ "$rc" -eq 1 ] && [ -L "$r/CLAUDE.md" ] && [ "$(readlink "$r/CLAUDE.md")" = other.md ]; then pass apply-conflict-untouched; else bad "apply-conflict-untouched ($rc)"; fi
+eq apply-conflict-pkg-agents "$r/pkg/AGENTS.md" $'pkg text\n'
+eq apply-conflict-pkg-claude "$r/pkg/CLAUDE.md" $'@AGENTS.md\n'
+ends_applied apply-conflict
+
 exit "$fail"

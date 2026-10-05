@@ -21,7 +21,6 @@ die() {
 APPLY=0
 project_arg=""
 have_project=0
-# shellcheck disable=SC2034  # APPLY is consumed by apply mode (Task 3), not yet written
 for arg in "$@"; do
   case "$arg" in
     --apply) APPLY=1 ;;
@@ -256,7 +255,6 @@ plan_dir() {
     fi
   done
 
-  # shellcheck disable=SC2034  # PLAN_PARTS is consumed by apply mode (Task 3), not yet written
   PLAN_PARTS[$rel]="${parts%$'\n'}"
   PLAN_ACTIONS[$rel]="${actions%$'\n'}"
   PLAN_WARNINGS[$rel]="${warnings%$'\n'}"
@@ -289,8 +287,85 @@ for d in "${DIRS[@]+"${DIRS[@]}"}"; do
   esac
 done
 
-# Task 2 never writes: --apply is wired up in Task 3, so both modes print the dry-run line.
-printf 'dry-run: no files changed; re-run with --apply to write\n'
+# ---- 8. apply: execute exactly the planned actions, in order ----
+TMP_AGENTS="" # temp file awaiting mv; removed on any exit so no stray file is left behind
+trap '[ -z "$TMP_AGENTS" ] || rm -f "$TMP_AGENTS"' EXIT INT TERM
+
+# read_part <rel-path>: print one merge part with frontmatter removed (rules only) and
+# leading/trailing blank lines dropped. Command substitution drops trailing newlines.
+read_part() {
+  local rel="$1" i start=0 end line
+  local -a lines=()
+  mapfile -t lines < "$PROJECT_DIR/$rel"
+  end=${#lines[@]}
+  case "$rel" in
+    *.claude/rules/*)
+      if [ "$end" -gt 0 ] && [ "${lines[0]}" = "---" ]; then
+        for ((i = 1; i < end; i++)); do
+          if [ "${lines[i]}" = "---" ]; then
+            start=$((i + 1))
+            break
+          fi
+        done
+      fi
+      ;;
+  esac
+  # blank = empty or whitespace only
+  while [ "$start" -lt "$end" ]; do
+    line="${lines[start]}"
+    [ -z "${line//[[:space:]]/}" ] || break
+    start=$((start + 1))
+  done
+  while [ "$end" -gt "$start" ]; do
+    line="${lines[end - 1]}"
+    [ -z "${line//[[:space:]]/}" ] || break
+    end=$((end - 1))
+  done
+  for ((i = start; i < end; i++)); do
+    printf '%s\n' "${lines[i]}"
+  done
+}
+
+# apply_dir <rel-dir>: build AGENTS.md from PLAN_PARTS, then run PLAN_ACTIONS in order.
+apply_dir() {
+  local rel="$1" abs part content merged="" first=1 mode action target
+  if [ "$rel" = "." ]; then abs="$PROJECT_DIR"; else abs="$PROJECT_DIR/$rel"; fi
+  # Read every part before touching any file (CLAUDE.md is rewritten later).
+  while IFS= read -r part; do
+    content="$(read_part "$part")"
+    if [ "$first" -eq 1 ]; then first=0; else merged+=$'\n\n---\n\n'; fi
+    merged+="$content"
+  done <<< "${PLAN_PARTS[$rel]}"
+  # Temp file in the same directory, then mv: a failed write never leaves a truncated AGENTS.md.
+  TMP_AGENTS="$(mktemp "$abs/.AGENTS.md.XXXXXX")"
+  printf '%s\n' "$merged" > "$TMP_AGENTS"
+  mode="$(printf '%04o' $((0666 & ~$(umask))))"
+  chmod "$mode" "$TMP_AGENTS"
+  while IFS= read -r action; do
+    target="$PROJECT_DIR/${action#* }"
+    case "$action" in
+      "remove-symlink "*) rm -f "$target" ;;
+      "write "*)
+        mv -f "$TMP_AGENTS" "$target"
+        TMP_AGENTS=""
+        ;;
+      "rewrite "* | "create "*) printf '@AGENTS.md\n' > "$target" ;;
+      "delete "*) rm -f "$target" ;;
+      "rmdir "*) rmdir "$target" ;;
+    esac
+  done <<< "${PLAN_ACTIONS[$rel]}"
+}
+
+if [ "$APPLY" -eq 1 ]; then
+  for d in "${DIRS[@]+"${DIRS[@]}"}"; do
+    case "${PLAN_CASE[$d]}" in
+      2 | 3 | 5) apply_dir "$d" ;;
+    esac
+  done
+  printf 'applied\n'
+else
+  printf 'dry-run: no files changed; re-run with --apply to write\n'
+fi
 if [ "$conflicts" -ne 0 ]; then exit 1; fi
 exit 0
 
