@@ -62,6 +62,214 @@ fi
 status="$(git -C "$PROJECT_DIR" status --porcelain)"
 [ -z "$status" ] || die "working tree is not clean: $PROJECT_DIR"
 
-# Task 1 stops here: PROJECT_DIR and APPLY are set for later tasks.
+# ---- 5. discovery: directories that hold a tracked CLAUDE.md or AGENTS.md ----
+# A path ending in .claude/CLAUDE.md maps to the parent of that .claude directory.
+# The root is the key "." (always processed first, so no sort-order surprises).
+declare -A seen_dir=()
+while IFS= read -r -d '' tracked; do
+  base="$(basename "$tracked")"
+  case "$base" in
+    CLAUDE.md | AGENTS.md) ;;
+    *) continue ;;
+  esac
+  d="$(dirname "$tracked")"
+  if [ "$base" = "CLAUDE.md" ] && [ "$(basename "$d")" = ".claude" ]; then
+    d="$(dirname "$d")"
+  fi
+  seen_dir["$d"]=1
+done < <(git -C "$PROJECT_DIR" ls-files -z)
+
+DIRS=()
+[ -z "${seen_dir[.]+x}" ] || DIRS+=(".")
+unset 'seen_dir[.]'
+if [ "${#seen_dir[@]}" -gt 0 ]; then
+  while IFS= read -r -d '' d; do DIRS+=("$d"); done \
+    < <(printf '%s\0' "${!seen_dir[@]}" | LC_ALL=C sort -z)
+fi
+
+# ---- 6. classification and the per-directory planned-action list ----
+# The plan is computed once here; Task 3 executes these same tables.
+# All are keyed by directory (relative to the project root, "." = root):
+#   PLAN_CASE[d]     1-5, or "conflict"
+#   PLAN_ACTIONS[d]  newline-separated action lines, e.g. "write AGENTS.md",
+#                    in execution order, paths relative to the project root
+#   PLAN_PARTS[d]    newline-separated merge parts in merge order (paths relative
+#                    to the project root); AGENTS.md is listed only in case 3
+#   PLAN_WARNINGS[d] newline-separated path-scoped rule paths kept in place
+#   PLAN_REASON[d]   conflict reason (conflict only)
+# Paths containing newlines are not supported by this encoding.
+declare -A PLAN_CASE=() PLAN_ACTIONS=() PLAN_PARTS=() PLAN_WARNINGS=() PLAN_REASON=()
+
+# has_import_line <file>: true if a line equals @AGENTS.md or @./AGENTS.md after trimming.
+has_import_line() {
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    if [ "$line" = "@AGENTS.md" ] || [ "$line" = "@./AGENTS.md" ]; then return 0; fi
+  done < "$1"
+  return 1
+}
+
+# is_path_scoped <file>: true if the file has frontmatter (first line ---, closed by a
+# later --- line) containing a line starting with "paths:" at column 0.
+is_path_scoped() {
+  local line first=1 found=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$first" -eq 1 ]; then
+      first=0
+      [ "$line" = "---" ] || return 1
+      continue
+    fi
+    if [ "$line" = "---" ]; then
+      [ "$found" -eq 1 ]
+      return
+    fi
+    if [[ "$line" == paths:* ]]; then found=1; fi
+  done < "$1"
+  return 1 # no closing line: no frontmatter
+}
+
+# plan_dir <rel-dir>: classify one directory and fill the PLAN_* tables.
+plan_dir() {
+  local rel="$1" abs claude agents dotclaude rules_dir pre
+  if [ "$rel" = "." ]; then
+    abs="$PROJECT_DIR"
+    pre=""
+  else
+    abs="$PROJECT_DIR/$rel"
+    pre="$rel/" # prefix for report paths
+  fi
+  claude="$abs/CLAUDE.md"
+  agents="$abs/AGENTS.md"
+  dotclaude="$abs/.claude/CLAUDE.md"
+  rules_dir="$abs/.claude/rules"
+
+  if [ -L "$claude" ]; then
+    PLAN_CASE[$rel]=conflict
+    PLAN_REASON[$rel]="CLAUDE.md is a symlink"
+    return 0
+  fi
+  if [ -L "$dotclaude" ]; then
+    PLAN_CASE[$rel]=conflict
+    PLAN_REASON[$rel]=".claude/CLAUDE.md is a symlink"
+    return 0
+  fi
+  local agents_is_link=0
+  if [ -L "$agents" ]; then
+    agents_is_link=1
+    if [ "$(realpath -m "$agents")" != "$(realpath -m "$claude")" ]; then
+      PLAN_CASE[$rel]=conflict
+      PLAN_REASON[$rel]="AGENTS.md is a symlink not pointing to sibling CLAUDE.md"
+      return 0
+    fi
+  fi
+
+  if [ -f "$claude" ] && has_import_line "$claude"; then
+    PLAN_CASE[$rel]=1
+    return 0
+  fi
+  local kind
+  if [ "$agents_is_link" -eq 1 ]; then
+    kind=2
+  elif [ -f "$agents" ] && [ ! -e "$claude" ] && [ ! -e "$dotclaude" ]; then
+    PLAN_CASE[$rel]=4
+    return 0
+  elif [ -f "$agents" ]; then
+    kind=3
+  else
+    kind=5
+  fi
+  PLAN_CASE[$rel]="$kind"
+
+  # Merge parts, in merge order.
+  local parts="" actions="" warnings="" merged_rules="" f relf
+  [ "$kind" -ne 3 ] || parts+="${pre}AGENTS.md"$'\n'
+  [ ! -e "$claude" ] || parts+="${pre}CLAUDE.md"$'\n'
+  [ ! -e "$dotclaude" ] || parts+="${pre}.claude/CLAUDE.md"$'\n'
+
+  # Rules: recursive, LC_ALL=C sorted; path-scoped ones are kept and warned about.
+  local -a rule_files=() rule_dirs=()
+  if [ -d "$rules_dir" ]; then
+    while IFS= read -r -d '' f; do rule_files+=("$f"); done \
+      < <(find "$rules_dir" -type f -name '*.md' -print0 | LC_ALL=C sort -z)
+    # reverse C order lists every directory deeper-first
+    while IFS= read -r -d '' f; do rule_dirs+=("$f"); done \
+      < <(find "$rules_dir" -type d -print0 | LC_ALL=C sort -z -r)
+  fi
+  local -A gone=()
+  for f in "${rule_files[@]+"${rule_files[@]}"}"; do
+    relf="${f#"$PROJECT_DIR"/}"
+    if is_path_scoped "$f"; then
+      warnings+="$relf"$'\n'
+    else
+      parts+="$relf"$'\n'
+      merged_rules+="delete $relf"$'\n'
+      gone["$f"]=1
+    fi
+  done
+
+  [ "$kind" -ne 2 ] || actions+="remove-symlink ${pre}AGENTS.md"$'\n'
+  actions+="write ${pre}AGENTS.md"$'\n'
+  if [ -e "$claude" ]; then
+    actions+="rewrite ${pre}CLAUDE.md"$'\n'
+  else
+    actions+="create ${pre}CLAUDE.md"$'\n'
+  fi
+  [ ! -e "$dotclaude" ] || actions+="delete ${pre}.claude/CLAUDE.md"$'\n'
+  actions+="$merged_rules"
+
+  # rmdir every rules directory left empty, deepest first.
+  local d entry empty
+  for d in "${rule_dirs[@]+"${rule_dirs[@]}"}"; do
+    empty=1
+    while IFS= read -r -d '' entry; do
+      if [ -z "${gone[$entry]+x}" ]; then
+        empty=0
+        break
+      fi
+    done < <(find "$d" -mindepth 1 -maxdepth 1 -print0)
+    if [ "$empty" -eq 1 ]; then
+      gone["$d"]=1
+      actions+="rmdir ${d#"$PROJECT_DIR"/}"$'\n'
+    fi
+  done
+
+  # shellcheck disable=SC2034  # PLAN_PARTS is consumed by apply mode (Task 3), not yet written
+  PLAN_PARTS[$rel]="${parts%$'\n'}"
+  PLAN_ACTIONS[$rel]="${actions%$'\n'}"
+  PLAN_WARNINGS[$rel]="${warnings%$'\n'}"
+}
+
+conflicts=0
+for d in "${DIRS[@]+"${DIRS[@]}"}"; do
+  plan_dir "$d"
+  if [ "${PLAN_CASE[$d]}" = conflict ]; then conflicts=$((conflicts + 1)); fi
+done
+
+# ---- 7. report (stdout) ----
+for d in "${DIRS[@]+"${DIRS[@]}"}"; do
+  shown="$d"
+  c="${PLAN_CASE[$d]}"
+  if [ "$c" = conflict ]; then
+    printf 'CONFLICT %s: %s\n' "$shown" "${PLAN_REASON[$d]}"
+    continue
+  fi
+  printf '[case %s] %s\n' "$c" "$shown"
+  case "$c" in
+    1) printf '  skip (already migrated)\n' ;;
+    4) printf '  skip (nothing to migrate)\n' ;;
+    *)
+      printf '%s\n' "${PLAN_ACTIONS[$d]}" | sed 's/^/  /'
+      if [ -n "${PLAN_WARNINGS[$d]}" ]; then
+        printf '%s\n' "${PLAN_WARNINGS[$d]}" | sed 's/^/  WARNING path-scoped rule kept: /'
+      fi
+      ;;
+  esac
+done
+
+# Task 2 never writes: --apply is wired up in Task 3, so both modes print the dry-run line.
 printf 'dry-run: no files changed; re-run with --apply to write\n'
+if [ "$conflicts" -ne 0 ]; then exit 1; fi
 exit 0
+
