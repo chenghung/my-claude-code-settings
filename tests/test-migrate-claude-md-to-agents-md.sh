@@ -59,6 +59,12 @@ expect_fail git-subdir 'not a git repository root' "$sub/sub"
 # ---- settings repo guard ----
 expect_fail settings-repo 'refusing to migrate the settings repository' "$REPO"
 
+# invoked through a symlink outside the repo (e.g. ~/.local/bin) the guard must still fire
+ln -s "$SCRIPT" "$T/linked-migrate.sh"
+rc=0; "$T/linked-migrate.sh" "$REPO" > "$T/out" 2> "$T/err" || rc=$?
+err="$(cat "$T/err")"
+if [ "$rc" -eq 2 ] && [[ "$err" == *'refusing to migrate the settings repository'* ]]; then pass settings-repo-via-symlink; else bad "settings-repo-via-symlink (rc=$rc err=$err)"; fi
+
 # ---- clean tree ----
 dirty="$(make_repo dirty-untracked)"
 printf 'a\n' > "$dirty/CLAUDE.md"
@@ -71,6 +77,15 @@ printf 'a\n' > "$mod/CLAUDE.md"
 commit_all "$mod"
 printf 'b\n' >> "$mod/CLAUDE.md"
 expect_fail modified-file 'working tree is not clean' "$mod"
+
+# skip-worktree / assume-unchanged files hide local edits from git status
+sw="$(make_repo skipwt)"; printf 'a\n' > "$sw/CLAUDE.md"; commit_all "$sw"
+git -C "$sw" update-index --skip-worktree CLAUDE.md
+printf 'local edit\n' >> "$sw/CLAUDE.md"
+expect_fail skip-worktree 'skip-worktree or assume-unchanged' "$sw"
+au="$(make_repo assumeun)"; printf 'a\n' > "$au/CLAUDE.md"; commit_all "$au"
+git -C "$au" update-index --assume-unchanged CLAUDE.md
+expect_fail assume-unchanged 'skip-worktree or assume-unchanged' "$au"
 
 # ---- success path ----
 ok="$(make_repo clean)"
@@ -146,6 +161,19 @@ if check subdir "$r"; then has subdir '[case 5] .'; has subdir '[case 5] pkg'; b
 r="$(make_repo scoped)"; put "$r" CLAUDE.md; mkdir -p "$r/.claude/rules"
 printf -- '---\npaths:\n  - src/**\n---\nbody\n' > "$r/.claude/rules/scoped.md"; commit_all "$r"
 if check scoped "$r"; then has scoped 'WARNING path-scoped rule kept: .claude/rules/scoped.md'; lacks scoped 'delete .claude/rules/scoped.md'; lacks scoped 'rmdir'; fi
+
+# CRLF frontmatter is still recognised as path-scoped
+r="$(make_repo crlf)"; put "$r" CLAUDE.md; mkdir -p "$r/.claude/rules"
+printf -- '---\r\npaths:\r\n  - src/**\r\n---\r\nbody\r\n' > "$r/.claude/rules/crlf.md"; commit_all "$r"
+if check crlf "$r"; then has crlf 'WARNING path-scoped rule kept: .claude/rules/crlf.md'; lacks crlf 'delete .claude/rules/crlf.md'; fi
+
+# symlinked rule: never merged or deleted, warned about, keeps its directory
+r="$(make_repo symrule)"; put "$r" CLAUDE.md; put "$r" .claude/rules/a.md 'rule a'; put "$r" outside.txt 'secret'
+mkdir -p "$r/.claude/rules/sub"; ln -s ../../../outside.txt "$r/.claude/rules/sub/link.md"; commit_all "$r"
+if check symrule "$r"; then
+  has symrule 'delete .claude/rules/a.md'; has symrule '  WARNING symlinked rule kept: .claude/rules/sub/link.md'
+  lacks symrule 'delete .claude/rules/sub/link.md'; lacks symrule 'rmdir .claude/rules'
+fi
 
 r="$(make_repo bodypaths)"; put "$r" CLAUDE.md; put "$r" .claude/rules/body.md; printf 'paths: foo\n' >> "$r/.claude/rules/body.md"; commit_all "$r"
 if check bodypaths "$r"; then has bodypaths 'delete .claude/rules/body.md'; lacks bodypaths WARNING; fi
@@ -231,6 +259,24 @@ cp "$r/.claude/rules/scoped.md" "$T/scoped.orig"
 run_script "$r" --apply
 if cmp -s "$T/scoped.orig" "$r/.claude/rules/scoped.md"; then pass apply-scoped-identical; else bad apply-scoped-identical; fi
 kept apply-scoped "$r/.claude/rules"
+
+# symlinked rule in apply: target content never reaches AGENTS.md, the link survives
+r="$(make_repo apsym)"; put "$r" CLAUDE.md 'main'; put "$r" outside.txt 'secret'; mkdir -p "$r/.claude/rules"
+ln -s ../../outside.txt "$r/.claude/rules/link.md"; put "$r" .claude/rules/a.md 'rule a'; commit_all "$r"
+run_script "$r" --apply
+eq apply-symlink-agents "$r/AGENTS.md" $'main\n\n---\n\nrule a\n'
+if [ -L "$r/.claude/rules/link.md" ] && [ "$(readlink "$r/.claude/rules/link.md")" = ../../outside.txt ]; then pass apply-symlink-kept; else bad apply-symlink-kept; fi
+gone apply-symlink "$r/.claude/rules/a.md"
+if [[ "$out" == *'  WARNING symlinked rule kept: .claude/rules/link.md'* ]]; then pass apply-symlink-warning; else bad "apply-symlink-warning: $out"; fi
+
+# unreadable source: abort non-zero before any file changes
+if [ "$(id -u)" -ne 0 ]; then
+  r="$(make_repo apunread)"; put "$r" CLAUDE.md 'main'; put "$r" .claude/rules/a.md 'rule a'; commit_all "$r"
+  chmod 000 "$r/.claude/rules/a.md"
+  run_script "$r" --apply
+  chmod 644 "$r/.claude/rules/a.md"
+  if [ "$rc" -ne 0 ] && [ ! -e "$r/AGENTS.md" ] && [ "$(cat "$r/CLAUDE.md")" = main ] && [ -f "$r/.claude/rules/a.md" ]; then pass apply-read-failure-aborts; else bad "apply-read-failure-aborts (rc=$rc err=$err)"; fi
+fi
 
 # CLAUDE.local.md is gitignored (ignore file committed first so the tree is clean)
 r="$(make_repo aplocal)"; put "$r" CLAUDE.md; printf 'CLAUDE.local.md\n' > "$r/.gitignore"; commit_all "$r"

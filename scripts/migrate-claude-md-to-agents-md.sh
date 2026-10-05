@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Migrate one project's CLAUDE.md, .claude/CLAUDE.md and .claude/rules/*.md into AGENTS.md.
+# Migrate one project's CLAUDE.md, .claude/CLAUDE.md and .claude/rules/**/*.md (recursive) into
+# AGENTS.md. Path-scoped and symlinked rules are kept in place with a warning.
 # Shell: bash (4.3+ floor) -- uses [[ ]] and arrays, which POSIX sh lacks.
 #
 # Usage: migrate-claude-md-to-agents-md.sh <project-dir> [--apply]
@@ -9,7 +10,8 @@
 #             2 usage error or preflight failure (nothing changed).
 set -euo pipefail
 
-USAGE='usage: migrate-claude-md-to-agents-md.sh <project-dir> [--apply]'
+USAGE='usage: migrate-claude-md-to-agents-md.sh <project-dir> [--apply]
+Default is dry-run; the script never commits.'
 
 # die <message>: print a diagnostic to stderr and exit 2 (usage/preflight failure).
 die() {
@@ -50,7 +52,8 @@ abs_common_dir() {
   # --git-common-dir may be relative to <dir>.
   (cd "$1" && realpath "$common")
 }
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks first so an invocation through e.g. ~/.local/bin still finds the real repo.
+script_dir="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 project_common="$(abs_common_dir "$PROJECT_DIR")"
 script_common="$(abs_common_dir "$script_dir")"
 if [ -n "$script_common" ] && [ "$project_common" = "$script_common" ]; then
@@ -58,8 +61,19 @@ if [ -n "$script_common" ] && [ "$project_common" = "$script_common" ]; then
 fi
 
 # ---- 4. working tree must be clean (includes untracked files) ----
-status="$(git -C "$PROJECT_DIR" status --porcelain)"
+status="$(git -C "$PROJECT_DIR" status --porcelain)" \
+  || die "git status failed: $PROJECT_DIR"
 [ -z "$status" ] || die "working tree is not clean: $PROJECT_DIR"
+
+# status does not show skip-worktree (tag S) or assume-unchanged (lowercase tag) files, so
+# local edits to them would be merged invisibly: refuse.
+hidden_tags="$(git -C "$PROJECT_DIR" ls-files -v)" \
+  || die "git ls-files failed: $PROJECT_DIR"
+while IFS= read -r entry; do
+  case "${entry:0:1}" in
+    [[:lower:]] | S) die "files marked skip-worktree or assume-unchanged are not supported: $PROJECT_DIR" ;;
+  esac
+done <<< "$hidden_tags"
 
 # ---- 5. discovery: directories that hold a tracked CLAUDE.md or AGENTS.md ----
 # A path ending in .claude/CLAUDE.md maps to the parent of that .claude directory.
@@ -88,7 +102,7 @@ if [ "${#seen_dir[@]}" -gt 0 ]; then
 fi
 
 # ---- 6. classification and the per-directory planned-action list ----
-# The plan is computed once here; Task 3 executes these same tables.
+# The plan is computed once here; the apply section below executes these same tables.
 # All are keyed by directory (relative to the project root, "." = root):
 #   PLAN_CASE[d]     1-5, or "conflict"
 #   PLAN_ACTIONS[d]  newline-separated action lines, e.g. "write AGENTS.md",
@@ -96,9 +110,10 @@ fi
 #   PLAN_PARTS[d]    newline-separated merge parts in merge order (paths relative
 #                    to the project root); AGENTS.md is listed only in case 3
 #   PLAN_WARNINGS[d] newline-separated path-scoped rule paths kept in place
+#   PLAN_SYMLINKS[d] newline-separated symlinked rule paths kept in place
 #   PLAN_REASON[d]   conflict reason (conflict only)
 # Paths containing newlines are not supported by this encoding.
-declare -A PLAN_CASE=() PLAN_ACTIONS=() PLAN_PARTS=() PLAN_WARNINGS=() PLAN_REASON=()
+declare -A PLAN_CASE=() PLAN_ACTIONS=() PLAN_PARTS=() PLAN_WARNINGS=() PLAN_SYMLINKS=() PLAN_REASON=()
 
 # has_import_line <file>: true if a line equals @AGENTS.md or @./AGENTS.md after trimming.
 has_import_line() {
@@ -116,6 +131,7 @@ has_import_line() {
 is_path_scoped() {
   local line first=1 found=0
   while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}" # tolerate CRLF files
     if [ "$first" -eq 1 ]; then
       first=0
       [ "$line" = "---" ] || return 1
@@ -196,7 +212,7 @@ plan_dir() {
   PLAN_CASE[$rel]="$kind"
 
   # Merge parts, in merge order.
-  local parts="" actions="" warnings="" merged_rules="" f relf
+  local parts="" actions="" warnings="" symlinks="" merged_rules="" f relf
   [ "$kind" -ne 3 ] || parts+="${pre}AGENTS.md"$'\n'
   [ "$has_claude" -eq 0 ] || parts+="${pre}CLAUDE.md"$'\n'
   [ "$has_dot" -eq 0 ] || parts+="${pre}.claude/CLAUDE.md"$'\n'
@@ -220,7 +236,10 @@ plan_dir() {
   local -A gone=()
   for f in "${rule_files[@]+"${rule_files[@]}"}"; do
     relf="${f#"$PROJECT_DIR"/}"
-    if is_path_scoped "$f"; then
+    if [ -L "$f" ]; then
+      # never read, merge or delete: it could point outside the repo; it keeps its dir non-empty
+      symlinks+="$relf"$'\n'
+    elif is_path_scoped "$f"; then
       warnings+="$relf"$'\n'
     else
       parts+="$relf"$'\n'
@@ -258,6 +277,7 @@ plan_dir() {
   PLAN_PARTS[$rel]="${parts%$'\n'}"
   PLAN_ACTIONS[$rel]="${actions%$'\n'}"
   PLAN_WARNINGS[$rel]="${warnings%$'\n'}"
+  PLAN_SYMLINKS[$rel]="${symlinks%$'\n'}"
 }
 
 conflicts=0
@@ -283,6 +303,9 @@ for d in "${DIRS[@]+"${DIRS[@]}"}"; do
       if [ -n "${PLAN_WARNINGS[$d]}" ]; then
         printf '%s\n' "${PLAN_WARNINGS[$d]}" | sed 's/^/  WARNING path-scoped rule kept: /'
       fi
+      if [ -n "${PLAN_SYMLINKS[$d]}" ]; then
+        printf '%s\n' "${PLAN_SYMLINKS[$d]}" | sed 's/^/  WARNING symlinked rule kept: /'
+      fi
       ;;
   esac
 done
@@ -298,13 +321,14 @@ trap 'exit 143' TERM
 read_part() {
   local rel="$1" i start=0 end line
   local -a lines=()
-  mapfile -t lines < "$PROJECT_DIR/$rel"
+  # set -e is off inside command substitution, so a failed read must return explicitly.
+  mapfile -t lines < "$PROJECT_DIR/$rel" || return 1
   end=${#lines[@]}
   case "$rel" in
     *.claude/rules/*)
-      if [ "$end" -gt 0 ] && [ "${lines[0]}" = "---" ]; then
+      if [ "$end" -gt 0 ] && [ "${lines[0]%$'\r'}" = "---" ]; then
         for ((i = 1; i < end; i++)); do
-          if [ "${lines[i]}" = "---" ]; then
+          if [ "${lines[i]%$'\r'}" = "---" ]; then
             start=$((i + 1))
             break
           fi
@@ -328,21 +352,29 @@ read_part() {
   done
 }
 
-# apply_dir <rel-dir>: build AGENTS.md from PLAN_PARTS, then run PLAN_ACTIONS in order.
-apply_dir() {
-  local rel="$1" abs part content merged="" first=1 mode action target
-  if [ "$rel" = "." ]; then abs="$PROJECT_DIR"; else abs="$PROJECT_DIR/$rel"; fi
-  # Read every part before touching any file (CLAUDE.md is rewritten later).
+# build_dir <rel-dir>: read every part of one directory into MERGED[d] (HAS_MERGED[d]=1 when
+# any part is non-empty). Aborts the run on a read failure; runs before any file is changed.
+declare -A MERGED=() HAS_MERGED=()
+build_dir() {
+  local rel="$1" part content merged="" first=1
   while IFS= read -r part; do
-    content="$(read_part "$part")"
+    content="$(read_part "$part")" || die "failed to read $part; nothing was changed"
     [ -n "$content" ] || continue # empty parts get no segment and no separator
     if [ "$first" -eq 1 ]; then first=0; else merged+=$'\n\n---\n\n'; fi
     merged+="$content"
   done <<< "${PLAN_PARTS[$rel]}"
+  MERGED[$rel]="$merged"
+  HAS_MERGED[$rel]=$((1 - first))
+}
+
+# apply_dir <rel-dir>: write the prebuilt AGENTS.md, then run PLAN_ACTIONS in order.
+apply_dir() {
+  local rel="$1" abs mode action target
+  if [ "$rel" = "." ]; then abs="$PROJECT_DIR"; else abs="$PROJECT_DIR/$rel"; fi
   # Temp file in the same directory, then mv: a failed write never leaves a truncated AGENTS.md.
   TMP_AGENTS="$(mktemp "$abs/.AGENTS.md.XXXXXX")"
   # all parts empty: zero-byte file; otherwise exactly one trailing newline
-  if [ "$first" -eq 1 ]; then : > "$TMP_AGENTS"; else printf '%s\n' "$merged" > "$TMP_AGENTS"; fi
+  if [ "${HAS_MERGED[$rel]}" -eq 0 ]; then : > "$TMP_AGENTS"; else printf '%s\n' "${MERGED[$rel]}" > "$TMP_AGENTS"; fi
   mode="$(printf '%04o' $((0666 & ~$(umask))))"
   chmod "$mode" "$TMP_AGENTS"
   while IFS= read -r action; do
@@ -361,6 +393,12 @@ apply_dir() {
 }
 
 if [ "$APPLY" -eq 1 ]; then
+  # read everything first so a read failure aborts before any directory is changed
+  for d in "${DIRS[@]+"${DIRS[@]}"}"; do
+    case "${PLAN_CASE[$d]}" in
+      2 | 3 | 5) build_dir "$d" ;;
+    esac
+  done
   for d in "${DIRS[@]+"${DIRS[@]}"}"; do
     case "${PLAN_CASE[$d]}" in
       2 | 3 | 5) apply_dir "$d" ;;
