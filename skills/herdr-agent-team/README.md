@@ -572,7 +572,7 @@ flowchart TD
 認錯升級的代價不對稱：把升級讀成 worker 的 `fyi`，會走到「不必回覆，worker 會繼續做」，而升級講的那個 worker 正好不會繼續做。
 
 - `done` 關閉前 stage 不能是 `delivered`，否則 `shutdown-worker.sh` 以結束碼 `4` 拒絕，要先撥回 `running`（見第 8 節）。
-- `fyi` 若是看門狗升級，不套漂移判準，依五種升級條件處置（見第 9 節末的對照表）。
+- `fyi` 若是看門狗升級，不套漂移判準，依五種升級條件處置（見第 9.4 節的對照表）。
 
 ## 8. worker 的 stage 狀態機
 
@@ -621,7 +621,63 @@ flowchart LR
     class r1,r2,r3,r4,r5,r6,r7 kDuty
 ```
 
-### 9.2 運作機制
+### 9.2 自動推進
+
+看門狗發現某個 worker 做完一回合後停下來等輸入，就直接送它一句「繼續」，讓它接著做；這個動作不經過 orchestrator，orchestrator 完全不知情。
+
+為什麼需要：AI CLI 的天性是每做完一回合就停下來等人輸入。orchestrator 被禁止主動等待或輪詢，而且由它來推每一次都要耗掉固定的 context，所以這件事交給背景的看門狗。
+
+下圖表達一段時間軸：worker 每次閒下來都被推一次，計數遞增，直到 worker 自己回報 done，orchestrator 只收到最後那一則。
+
+```mermaid
+sequenceDiagram
+    participant W as worker
+    participant D as watchdog.sh
+    participant O as orchestrator
+
+    W->>W: working 一段時間後 idle
+    D->>W: 下一輪巡檢（每 AGENT_TEAM_POLL_SECONDS 秒）看到 idle，送「繼續」
+    D->>D: 推進計數變 1，寫 watchdog.log 的 auto-push 行
+    W->>W: 再 working，再 idle
+    D->>W: 下一輪巡檢送「繼續」
+    D->>D: 推進計數變 2，寫 auto-push 行
+    W->>O: 完成後用 report.sh 回報 done
+    Note over W,O: 推進過程中 orchestrator 什麼都沒收到，只收到這一則 done
+```
+
+全部條件同時成立才推：
+
+| 條件 | 不成立時為什麼不推 |
+| --- | --- |
+| 狀態是 idle 或 done | `working` 是在忙；`unknown` 不證明工作已停下，推了可能打斷正在做事的 worker |
+| 不在 blocked | 文字下行會被 herdr 以 `agent_blocked` 拒絕，改為升級 |
+| `.stage` 是 `running` | `delivered` 是交付後待命的正常靜止 |
+| 沒有未回覆的 need-you | worker 在等 orchestrator 定案，停著是合理的 |
+| 持有旗標 `held` 不是 true | orchestrator 正在對話，再插一句可能兩則併進同一回合，造成混合意圖 |
+| 推進計數未達 `AGENT_TEAM_AUTO_PUSH_LIMIT` | 達到上限改為升級 |
+
+推進直接呼叫 `herdr agent prompt` 送出，不走 `instruct.sh`：`instruct.sh` 會設持有旗標，走它等於每推一次都把下一輪的自己擋掉。
+
+**上限與歸零**：上限預設 10，推滿就改發「自動推進已達上限」升級。這是用次數代替判斷：被推 10 次仍沒做完也沒回報，很可能在原地繞圈。計數只有兩種情況會歸零：
+
+- orchestrator 成功送出一則下行（`instruct.sh`；`--kind halt` 除外，halt 不寫 `.last_delivered_at`）。
+- 看門狗補投待補送的下行成功。
+
+計數不隨時間衰減，所以達上限的升級等待解不了，出口只有改派或結束。當初「回報 delivered 就歸零」造成的 livelock，見 9.3 的守衛說明。
+
+**對長任務的意義**：需要很多回合才做得完的任務，在 orchestrator 兩次下行之間最多只能被自動推 10 回合。有兩種做法：
+
+- 調高 `AGENT_TEAM_AUTO_PUSH_LIMIT`。代價是繞圈的 worker 會多燒回合與 token 才被發現，agy 與 opencode 這類低保真 provider 風險更高。
+- 把任務切成階段，在里程碑由 orchestrator 送一則下行交代下一階段，計數因此歸零，orchestrator 也能在階段之間核對進度。這個做法較安全。
+
+操作注意事項：
+
+- 門檻值只在看門狗啟動時讀一次，改值要重啟；重啟前先確認舊實例已停，因為腳本沒有防多實例機制。
+- 中斷恢復重掛時要帶同一組環境變數，否則會靜默回到預設值。
+- thin command 沒有欄位可以宣告這些門檻，目前只能在啟動看門狗的指令前帶環境變數。
+- 單一工具呼叫跑很久時，worker 的狀態是 `working`，不受自動推進與停滯偵測影響，不需要調這些參數。
+
+### 9.3 運作機制
 
 這張圖表達 `watchdog.sh` 每一輪的處理順序，順序以 `hat_wd_process_worker` 的實際程式碼為準。
 
@@ -692,7 +748,7 @@ flowchart LR
 - **升級去重**：同一個條件只在剛成立的那一輪發一次，之後最多每 `AGENT_TEAM_ESCALATION_REPEAT_SECONDS` 重提一次；條件解除或換成另一種條件時立即再發。
 - **單一 worker 致命失敗隔離**：保護放在逐筆呼叫點的子殼，詳見 `watchdog.sh` 檔頭。
 
-### 9.3 存活判讀與門檻
+### 9.4 存活判讀與門檻
 
 看門狗必須背景 detach 啟動、不帶 `--once`。前景呼叫逾時被工具收掉時是靜默消失：自動推進、升級、停滯偵測、重試補投全部停止，且沒有任何錯誤訊息。
 
