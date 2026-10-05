@@ -65,8 +65,9 @@ status="$(git -C "$PROJECT_DIR" status --porcelain)"
 # ---- 5. discovery: directories that hold a tracked CLAUDE.md or AGENTS.md ----
 # A path ending in .claude/CLAUDE.md maps to the parent of that .claude directory.
 # The root is the key "." (always processed first, so no sort-order surprises).
-declare -A seen_dir=()
+declare -A seen_dir=() TRACKED=() # TRACKED: every git-tracked path; only these are ever read or changed
 while IFS= read -r -d '' tracked; do
+  TRACKED["$tracked"]=1
   base="$(basename "$tracked")"
   case "$base" in
     CLAUDE.md | AGENTS.md) ;;
@@ -145,6 +146,19 @@ plan_dir() {
   dotclaude="$abs/.claude/CLAUDE.md"
   rules_dir="$abs/.claude/rules"
 
+  # Only git-tracked files count as existing. A file on disk that is not tracked
+  # (gitignored, given the clean-tree check) cannot be restored by git: CONFLICT.
+  local name has_claude=0 has_dot=0
+  for name in CLAUDE.md .claude/CLAUDE.md AGENTS.md; do
+    if { [ -e "$abs/$name" ] || [ -L "$abs/$name" ]; } && [ -z "${TRACKED[${pre}$name]+x}" ]; then
+      PLAN_CASE[$rel]=conflict
+      PLAN_REASON[$rel]="$name exists but is not tracked by git"
+      return 0
+    fi
+  done
+  [ -z "${TRACKED[${pre}CLAUDE.md]+x}" ] || has_claude=1
+  [ -z "${TRACKED[${pre}.claude/CLAUDE.md]+x}" ] || has_dot=1
+
   if [ -L "$claude" ]; then
     PLAN_CASE[$rel]=conflict
     PLAN_REASON[$rel]="CLAUDE.md is a symlink"
@@ -172,7 +186,7 @@ plan_dir() {
   local kind
   if [ "$agents_is_link" -eq 1 ]; then
     kind=2
-  elif [ -f "$agents" ] && [ ! -e "$claude" ] && [ ! -e "$dotclaude" ]; then
+  elif [ -f "$agents" ] && [ "$has_claude" -eq 0 ] && [ "$has_dot" -eq 0 ]; then
     PLAN_CASE[$rel]=4
     return 0
   elif [ -f "$agents" ]; then
@@ -185,14 +199,21 @@ plan_dir() {
   # Merge parts, in merge order.
   local parts="" actions="" warnings="" merged_rules="" f relf
   [ "$kind" -ne 3 ] || parts+="${pre}AGENTS.md"$'\n'
-  [ ! -e "$claude" ] || parts+="${pre}CLAUDE.md"$'\n'
-  [ ! -e "$dotclaude" ] || parts+="${pre}.claude/CLAUDE.md"$'\n'
+  [ "$has_claude" -eq 0 ] || parts+="${pre}CLAUDE.md"$'\n'
+  [ "$has_dot" -eq 0 ] || parts+="${pre}.claude/CLAUDE.md"$'\n'
 
   # Rules: recursive, LC_ALL=C sorted; path-scoped ones are kept and warned about.
   local -a rule_files=() rule_dirs=()
+  # Only tracked rule files are rule candidates; untracked ones stay and keep their dir non-empty.
   if [ -d "$rules_dir" ]; then
-    while IFS= read -r -d '' f; do rule_files+=("$f"); done \
-      < <(find "$rules_dir" -type f -name '*.md' -print0 | LC_ALL=C sort -z)
+    local tp
+    while IFS= read -r -d '' f; do rule_files+=("$f"); done < <(
+      for tp in "${!TRACKED[@]}"; do
+        case "$tp" in
+          "${pre}.claude/rules/"*.md) printf '%s\0' "$PROJECT_DIR/$tp" ;;
+        esac
+      done | LC_ALL=C sort -z
+    )
     # reverse C order lists every directory deeper-first
     while IFS= read -r -d '' f; do rule_dirs+=("$f"); done \
       < <(find "$rules_dir" -type d -print0 | LC_ALL=C sort -z -r)
@@ -211,12 +232,12 @@ plan_dir() {
 
   [ "$kind" -ne 2 ] || actions+="remove-symlink ${pre}AGENTS.md"$'\n'
   actions+="write ${pre}AGENTS.md"$'\n'
-  if [ -e "$claude" ]; then
+  if [ "$has_claude" -eq 1 ]; then
     actions+="rewrite ${pre}CLAUDE.md"$'\n'
   else
     actions+="create ${pre}CLAUDE.md"$'\n'
   fi
-  [ ! -e "$dotclaude" ] || actions+="delete ${pre}.claude/CLAUDE.md"$'\n'
+  [ "$has_dot" -eq 0 ] || actions+="delete ${pre}.claude/CLAUDE.md"$'\n'
   actions+="$merged_rules"
 
   # rmdir every rules directory left empty, deepest first.

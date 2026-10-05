@@ -89,12 +89,25 @@ put() {
   printf '%s\n' "${3:-text}" > "$1/$2"
 }
 
-# check <name> <repo> [expected-rc]: run dry-run, assert rc and a clean tree afterwards.
+# snap <repo>: print every path outside .git (including gitignored ones) with its type,
+# symlink link text, or file content, so two snapshots compare byte for byte.
+snap() {
+  (cd "$1" && find . -path ./.git -prune -o \
+    -type l -printf 'L %p -> %l\n' -o \
+    -type f -printf 'F %p\n' -exec cat {} \; -o \
+    -type d -printf 'D %p\n')
+}
+
+# check <name> <repo> [expected-rc] [extra-arg]: run the script, assert rc, a clean
+# porcelain status, and an identical before/after snapshot (porcelain misses ignored files).
 check() {
-  local want="${3:-0}"
-  run_script "$2"
+  local want="${3:-0}" before_snap after_snap
+  before_snap="$(snap "$2")"
+  run_script "$2" ${4:+"$4"}
+  after_snap="$(snap "$2")"
   if [ "$rc" -ne "$want" ]; then bad "$1 rc (rc=$rc want=$want out=$out err=$err)"; return 1; fi
   if [ -n "$(git -C "$2" status --porcelain)" ]; then bad "$1 changed files"; return 1; fi
+  if [ "$before_snap" != "$after_snap" ]; then bad "$1 contents changed"; return 1; fi
   return 0
 }
 
@@ -160,5 +173,23 @@ if check conflict-continues "$r" 1; then has conflict-continues '[case 5] pkg'; 
 r="$(make_repo ign)"; put "$r" CLAUDE.md; printf 'node_modules\n' > "$r/.gitignore"; commit_all "$r"
 put "$r" node_modules/x/CLAUDE.md
 if check ignored "$r"; then lacks ignored node_modules; fi
+
+# gitignored rule file: never mentioned, never deleted, keeps .claude/rules from rmdir
+r="$(make_repo ignrule)"; put "$r" CLAUDE.md; put "$r" .claude/rules/a.md; printf '.claude/rules/local.md\n' > "$r/.gitignore"; commit_all "$r"
+put "$r" .claude/rules/local.md
+if check ignored-rule "$r"; then
+  has ignored-rule 'delete .claude/rules/a.md'; lacks ignored-rule local.md; lacks ignored-rule 'rmdir .claude/rules'
+fi
+
+# gitignored CLAUDE.md next to a tracked AGENTS.md is a conflict
+r="$(make_repo ignclaude)"; put "$r" AGENTS.md; printf 'CLAUDE.md\n' > "$r/.gitignore"; commit_all "$r"
+put "$r" CLAUDE.md
+if check ignored-claude "$r" 1; then has ignored-claude 'CONFLICT .: CLAUDE.md exists but is not tracked by git'; fi
+
+# --apply must not change any file in this task (fixture has only case 1 / 4 / CONFLICT dirs)
+r="$(make_repo applynoop)"; put "$r" AGENTS.md; put "$r" CLAUDE.md a; printf '@AGENTS.md\n' >> "$r/CLAUDE.md"
+put "$r" p4/AGENTS.md; put "$r" pc/AGENTS.md; printf 'pc/CLAUDE.md\n' > "$r/.gitignore"; commit_all "$r"
+put "$r" pc/CLAUDE.md
+if check apply-noop "$r" 1 --apply; then has apply-noop '[case 1] .'; has apply-noop '[case 4] p4'; has apply-noop 'CONFLICT pc: CLAUDE.md exists but is not tracked by git'; fi
 
 exit "$fail"
