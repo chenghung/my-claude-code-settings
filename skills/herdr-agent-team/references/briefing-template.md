@@ -26,6 +26,7 @@ worker 是一個全新的 session，對這個任務、這個團隊、這份協�
 怎樣算成功（外部查得到）：{{goal.success}}
 
 你這個角色的完成判準：{{completion_criteria}}
+你的交付點：{{delivery_point 或「無」}}
 
 權威來源：{{authority_locator}}
 有牴觸時以它為準。
@@ -34,6 +35,8 @@ worker 是一個全新的 session，對這個任務、這個團隊、這份協�
 ```
 
 **只給 goal 四項裡的前兩項**（要達成什麼、怎樣算成功），不給「不做什麼」與「前提」。worker 需要知道自己在為什麼服務，才判得出撞到的落差是不是全局性的；但「不做什麼」與「前提」是 orchestrator 的裁決材料，給了等於邀請 worker 自己判斷什麼對團隊最好，而啟動包整段都在劃它的職責界線，不是在給它裁決權。
+
+「你的交付點」照抄 thin command（或沒有 thin command 時對話中問出的）該 role 的「交付點」，與經 `set-worker-field.sh` 寫進 `.delivery_point` 的是同一個值；只有沒寫交付點時填「無」，不要因為自己判斷任務不需要 review 而把寫了的交付點改成「無」——那會讓 worker 讀到的值與 registry 不一致。要不要寫交付點是撰寫 thin command 時的決定，見 `thin-command-format.md`。回報契約靠這一行決定 worker 要不要回報 `delivered`（見 `worker-contract.md`「完成與交付」）；交付點只經 `set-worker-field.sh` 寫進 `workers/<name>.json` 的話，worker 讀不到。
 
 ## 03 協定
 

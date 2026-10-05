@@ -69,6 +69,23 @@ export HERDR_ENV=1 HERDR_WORKSPACE_ID=w3N
 # shellcheck source=/dev/null
 source "$LIB"
 
+# ===== HAT_AUTO_PUSH_TEXT 前置檢查 =====
+# 後面所有「有沒有送出推進訊息」的斷言都以固定字串比對這個常數。它若意外
+# 變成空值（source 路徑錯、常數被改名或刪除），pattern 會退化成
+# "agent prompt w3n-backend "，正向斷言可能被別的 prompt 蒙混而誤判通過，
+# 所以先確認它非空且只有一行。
+case "$HAT_AUTO_PUSH_TEXT" in
+  "" | *$'\n'*) bad "HAT_AUTO_PUSH_TEXT 是空值或不只一行，後面的推進訊息斷言不可信" ;;
+  *) pass "HAT_AUTO_PUSH_TEXT 非空且只有一行" ;;
+esac
+# 競態節（搜尋 wd-race-victim）的 herdr 測試樁用未加引號的 heredoc 把它展開進雙引號，
+# 含雙引號、$、反引號、反斜線時展開結果會壞掉，把 common.sh 註解裡的這
+# 項約束變成會失敗的檢查。
+case "$HAT_AUTO_PUSH_TEXT" in
+  *'"'* | *'$'* | *'`'* | *\\*) bad "HAT_AUTO_PUSH_TEXT 含雙引號、\$、反引號或反斜線，heredoc 測試樁無法安全展開" ;;
+  *) pass "HAT_AUTO_PUSH_TEXT 不含雙引號、\$、反引號、反斜線" ;;
+esac
+
 # ===== 命名正規化 =====
 # 這幾條斷言改寫成 if/then/else/fi，不是任務簡報原始給的
 # `[ cond ] && pass ... || bad ...`：pass 一定回 0，這裡的 `&&/||` 鏈
@@ -3127,11 +3144,11 @@ esac
 # 上面「發出即撥回」的判準原本沒有排除 --kind halt：叫停一個 .stage
 # 是 delivered 的 worker 一樣會被撥回 running，重新進入看門狗三項照
 # 看的範圍。後果是漂移處置第 3 步逐一送出叫停之後，那個 worker 停手
-# 回報、轉成閒置，看門狗會在下一個輪詢間隔開始送「繼續」——一邊叫它
+# 回報、轉成閒置，看門狗會在下一個輪詢間隔開始送推進訊息——一邊叫它
 # 停手、一邊叫它繼續，正是「發出即撥回」原本要消滅的失效形狀，換了個
 # 觸發路徑重新出現。一個剛被叫停的 worker 停著不動是正確狀態，跟交付
 # 後待命同一個性質：它欠的是 orchestrator 的下一個新指令，不是一句
-# 「繼續」。
+# 推進訊息。
 #
 # 沿用上一段仍在生效的 agent_blocked 樁，驗證 --kind halt 進待補送佇
 # 列（rc=7）時不撥回 .stage。
@@ -3182,7 +3199,7 @@ fi
 # watchdog.sh 判斷要不要把 .auto_push_count 歸零的唯一依據；叫停不是
 # 下發新任務，寫了它會被下一輪看門狗誤判成「orchestrator 剛送出一則
 # 新下行」，把已經逼近上限的推進預算重新續杯——疊上達上限升級之後，
-# orchestrator 每叫停一次反而多送一輪「繼續」的資格，達上限升級永遠
+# orchestrator 每叫停一次反而多送一輪推進訊息的資格，達上限升級永遠
 # 觸發不了。構造一個已經推了 9 次、.last_delivered_at／.auto_push_
 # reset_seen_at 固定在同一個舊時間戳（模擬看門狗已經看過這次「下
 # 行」，不會再誤觸發一次歸零）的 worker，送一則成功送達的 --kind
@@ -5021,7 +5038,7 @@ hat_assert_herdr_stubbed "$STUB_BIN" watchdog-auto-push-done
 jq '.held=false | .auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
 : > "$HERDR_CALL_LOG"
 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
-if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+if grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
   pass "watchdog：done 狀態（背景工作結束後的更常見觸發條件）也會自動推進"
 else
   bad "watchdog：done 狀態沒有自動推進"
@@ -5058,10 +5075,10 @@ if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "10" ]; the
 else
   bad "watchdog：超過上限仍在推進"
 fi
-if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
-  bad "watchdog：達上限後仍對 worker 送出繼續"
+if grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
+  bad "watchdog：達上限後仍對 worker 送出推進訊息"
 else
-  pass "watchdog：達上限後不再對 worker 送出繼續"
+  pass "watchdog：達上限後不再對 worker 送出推進訊息"
 fi
 # ---- 本任務自行補上：把簡報留下的 n_inbox_before 變數用起來（簡報字
 #      面上算完就沒用到，是遺漏的斷言，見任務報告）：達上限後改為升
@@ -5166,7 +5183,7 @@ else
   bad "watchdog：把等定案誤判成停住"
 fi
 if grep -q 'agent prompt w3n-backend' "$HERDR_CALL_LOG"; then
-  bad "watchdog：等定案的 worker 仍然收到繼續（豁免沒有生效）"
+  bad "watchdog：等定案的 worker 仍然收到推進訊息（豁免沒有生效）"
 else
   pass "watchdog：等定案的 worker 沒有收到任何下行文字"
 fi
@@ -5187,7 +5204,7 @@ if [ "$n_inbox_after" -gt "$n_inbox_before" ]; then
 else
   bad "watchdog：等定案豁免超過上限仍然沒有升級（before=$n_inbox_before after=$n_inbox_after）"
 fi
-if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+if grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
   bad "watchdog：豁免到期時仍對 worker 自動推進了"
 else
   pass "watchdog：豁免到期時沒有對 worker 自動推進"
@@ -5365,7 +5382,7 @@ if [ "$(jq -r '.auto_push_count' "$REG/workers/w3n-backend.json")" = "0" ]; then
 else
   bad "watchdog：自動推進計數被推動了（Critical 回歸）"
 fi
-if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+if grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
   bad "watchdog：旗標為真且佇列已空時仍送出了自動推進（Critical 回歸）"
 else
   pass "watchdog：旗標為真且佇列已空時沒有送出任何自動推進"
@@ -5885,7 +5902,7 @@ hat_assert_herdr_stubbed "$STUB_BIN" watchdog-auto-push-limit-override
 printf '{"pane_id":"w3N:p2","held":false,"role":"backend","auto_push_count":1}' > "$REG/workers/w3n-backend.json"
 : > "$HERDR_CALL_LOG"
 AGENT_TEAM_AUTO_PUSH_LIMIT=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
-if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+if grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
   bad "watchdog：AGENT_TEAM_AUTO_PUSH_LIMIT=1 沒有生效，計數 1 仍被推進"
 else
   pass "watchdog：AGENT_TEAM_AUTO_PUSH_LIMIT 可覆寫，調到 1 之後計數 1 就改為升級"
@@ -6379,7 +6396,7 @@ if [ "$n_inbox_after" -eq "$n_inbox_before" ]; then
 else
   bad "watchdog：第一輪就升級了，緩衝沒有生效（before=$n_inbox_before after=$n_inbox_after）"
 fi
-if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+if grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
   bad "watchdog：身分不符緩衝期間仍對這個 worker 自動推進了"
 else
   pass "watchdog：身分不符緩衝期間這一輪不對這個 worker 自動推進"
@@ -6439,7 +6456,7 @@ case "$identity_summary" in
   *w3n-backend*briefings*w3n-backend.md*) pass "watchdog：身分消失升級訊息含 worker 名字、briefings 字樣，且檔名帶 .md 副檔名" ;;
   *) bad "watchdog：升級訊息不如預期：$identity_summary" ;;
 esac
-if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+if grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
   bad "watchdog：身分消失時仍對這個 worker 自動推進了"
 else
   pass "watchdog：身分消失時這一輪不對這個 worker 自動推進"
@@ -6623,7 +6640,7 @@ if [ "$rc" -eq 0 ]; then
 else
   bad "watchdog：得到 rc=$rc"
 fi
-if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+if grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
   pass "watchdog：agent list 恢復成功後，第二輪確實執行了正常動作（自動推進）"
 else
   bad "watchdog：第二輪沒有看到預期的自動推進：$(cat "$HERDR_CALL_LOG")"
@@ -6653,7 +6670,7 @@ hat_assert_herdr_stubbed "$STUB_BIN" watchdog-stage-guard-delivered
 
 : > "$HERDR_CALL_LOG"
 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
-if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+if grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
   bad "watchdog：.stage=delivered 時仍被自動推進（worker 依契約靜止的正常狀態被誤判成卡住）"
 else
   pass "watchdog：.stage=delivered 時不自動推進"
@@ -6680,7 +6697,7 @@ fi
 jq '.stage="closed" | .auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
 : > "$HERDR_CALL_LOG"
 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
-if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+if grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
   bad "watchdog：.stage=closed 時仍被自動推進"
 else
   pass "watchdog：.stage=closed 時不自動推進"
@@ -6690,7 +6707,7 @@ fi
 jq 'del(.stage) | .auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
 : > "$HERDR_CALL_LOG"
 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
-if grep -q 'agent prompt w3n-backend 繼續' "$HERDR_CALL_LOG"; then
+if grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
   pass "watchdog：.stage 欄位缺席時視同 running，照常自動推進"
 else
   bad "watchdog：.stage 缺席卻沒有自動推進（launch-worker.sh 啟動時本來就不寫這個欄位，缺席不該被當成已交付）"
@@ -6859,7 +6876,7 @@ rm -f "$REG/workers/w3n-nopane-watchdog.json"
 # 走，自動推進／停滯偵測／投遞重試三項一起靜默停止（見 watchdog.sh 檔
 # 頭「單一 worker 的致命失敗不得帶走整個行程」一節）。
 #
-# 時序怎麼造出來：樁在收到第一則自動推進（agent prompt <worker> 繼續）
+# 時序怎麼造出來：樁在收到第一則自動推進（agent prompt <worker> 加上推進訊息）
 # 時就地把那個 worker 的記錄與鎖檔刪掉——呼叫端正是
 # hat_wd_process_worker 送出推進之後、緊接著寫 .auto_push_count 之前的
 # 那一行，所以這是真的時序，不是等價替身。誰先被處理由 find 的目錄順
@@ -6881,7 +6898,7 @@ if [ "\$1 \$2" = "agent list" ]; then
   printf '{"result":{"agents":[{"name":"w3n-racea","workspace_id":"w3N","agent_status":"idle","state_change_seq":21000,"pane_id":"w3N:p6","tab_id":"w3N:t6"},{"name":"w3n-raceb","workspace_id":"w3N","agent_status":"idle","state_change_seq":21001,"pane_id":"w3N:p7","tab_id":"w3N:t7"}]}}'
   exit 0
 fi
-if [ "\$1 \$2" = "agent prompt" ] && [ "\$4" = "繼續" ] && [ ! -f "$T/wd-race-victim" ]; then
+if [ "\$1 \$2" = "agent prompt" ] && [ "\$4" = "$HAT_AUTO_PUSH_TEXT" ] && [ ! -f "$T/wd-race-victim" ]; then
   printf '%s' "\$3" > "$T/wd-race-victim"
   rm -f "$REG/workers/\$3.json" "$REG/workers/\$3.json.lock"
 fi
@@ -6923,7 +6940,7 @@ else
   bad "watchdog：watchdog.log 沒有 $wd_race_victim 的 skip 行，被跳過的一筆追不出來：$(cat "$REG/watchdog.log")"
 fi
 
-if grep -q "agent prompt $wd_race_survivor 繼續" "$HERDR_CALL_LOG"; then
+if grep -Fq "agent prompt $wd_race_survivor $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
   pass "watchdog：壞掉的那一筆之後，迴圈繼續處理下一個 worker（$wd_race_survivor 仍收到自動推進）"
 else
   bad "watchdog：$wd_race_survivor 沒有被處理到，被前一筆連累中止了：$(cat "$HERDR_CALL_LOG")"
@@ -7276,7 +7293,7 @@ fi
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=617
+HAT_EXPECTED_ASSERTIONS=619
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

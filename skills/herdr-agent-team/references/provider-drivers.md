@@ -2,7 +2,7 @@
 
 本檔記載 `herdr-agent-team` 支援的四家 provider 的實測事實：偵測規則的保真度、快速核准旗標、以及啟動就緒的已知落差。這些都是規格 §5、2.1、2.5 對真實 herdr 0.8.2 與四家 CLI 的量測結果，不是理論推導。orchestrator 在挑選或驗證某個 role 的 provider、或處理啟動框代按時載入本檔；thin command 作者在決定某個 role 要開放哪些候選 provider 時也應該讀這裡，而不是自己去猜每家的旗標。
 
-清單外的 kind（herdr 認得的其餘十八種）一律在啟動之前就被 `lib/common.sh` 的 `hat_assert_supported_kind` 拒絕，結束碼 4，訊息點名這四家。原因不是保守：`omp`、`mastracode` 這類 kind 連狀態偵測規則檔都沒有，它們的 worker 會永遠顯示 `idle`，而 watchdog 會持續對一個其實卡住的 worker 送出「繼續」——使用者只看得到一個一直被推卻沒有進展的東西，看不出原因。四家之外沒有例外，thin command 寫了不支援的 kind 就是啟動失敗，不是靜默降級。
+清單外的 kind（herdr 認得的其餘十八種）一律在啟動之前就被 `lib/common.sh` 的 `hat_assert_supported_kind` 拒絕，結束碼 4，訊息點名這四家。原因不是保守：`omp`、`mastracode` 這類 kind 連狀態偵測規則檔都沒有，它們的 worker 會永遠顯示 `idle`，而 watchdog 會持續對一個其實卡住的 worker 送出推進訊息——使用者只看得到一個一直被推卻沒有進展的東西，看不出原因。四家之外沒有例外，thin command 寫了不支援的 kind 就是啟動失敗，不是靜默降級。
 
 ## 驅動表
 

@@ -172,6 +172,7 @@ flowchart LR
     d4 -.->|"args 直通不解讀<br/>kind 不是四家之一則結束碼 4"| d4
     f5 --> d5["launch-worker.sh --cwd"]
     f6 --> d6["啟動包 02 任務"]
+    f7 --> d6
     f7 --> d7["set-worker-field.sh"] --> d7b["workers 的 worker 記錄"]
     f8 --> d8["grant-peer.sh<br/>雙方都啟動後用正規化名稱呼叫"]
     f9 --> d9["worker-contract<br/>契約實例"]
@@ -187,7 +188,7 @@ flowchart LR
     class d1b,d7b kDisk
 ```
 
-**完成判準必須是外部查得到的形式**（檔案存在、PR 已合併、測試通過）。寫不出來代表這個 role 無法被安全關閉：orchestrator 看不到開發內容，「完成」不能靠 worker 自我宣告，得先改設計讓產物落到查得到的地方。
+**完成判準必須是外部查得到的形式**，而且代表 ticket 已 closed，不是產物已交出（產物交出對應的是交付點）。例如 ticket 已 closed、PR 已合併且 CI 通過；「檔案存在」「測試通過」只是產物交出的證據，單獨不能當完成判準。寫不出來代表這個 role 無法被安全關閉：orchestrator 看不到開發內容，「完成」不能靠 worker 自我宣告，得先改設計讓產物落到查得到的地方。
 
 以下三個範例的 provider 參數只使用 `references/` 中出現過的寫法。
 
@@ -335,7 +336,7 @@ role: reproducer
   權威來源: github://issue/456
   交付點: 失敗測試已 commit
   終點: 失敗測試被 fixer 採用
-  完成判準: tests/regression/issue-456.test.ts 存在，且在目前 main 上執行結果為失敗
+  完成判準: github://issue/456 下 reproducer 的 sub-issue 已 closed（失敗測試經 review 確認真的重現問題）
 
 role: fixer
   providers:
@@ -348,7 +349,7 @@ role: fixer
   參考材料: github://issue/456
   交付點: 修正已 push
   終點: 修正合併
-  完成判準: tests/regression/issue-456.test.ts 通過，且既有測試全部通過
+  完成判準: github://issue/456 下 fixer 的 sub-issue 已 closed（修正經 review 確認，測試通過）
 
 # 啟動時機
 - 先啟動 reproducer
@@ -434,7 +435,7 @@ role: researcher-claude
   權威來源: github://issue/789
   交付點: 報告初稿寫出
   終點: 比較結論定稿
-  完成判準: docs/survey/claude.md 存在且含「評估準則」「各方案優缺點」「建議」三個小節
+  完成判準: github://issue/789 下 researcher-claude 的 sub-issue 已 closed（報告經整合者 review 確認）
 
 role: researcher-agy
   providers:
@@ -444,7 +445,7 @@ role: researcher-agy
   權威來源: github://issue/789
   交付點: 報告初稿寫出
   終點: 比較結論定稿
-  完成判準: docs/survey/agy.md 存在且含「評估準則」「各方案優缺點」「建議」三個小節
+  完成判準: github://issue/789 下 researcher-agy 的 sub-issue 已 closed（報告經整合者 review 確認）
 
 role: researcher-opencode
   providers:
@@ -454,7 +455,7 @@ role: researcher-opencode
   權威來源: github://issue/789
   交付點: 報告初稿寫出
   終點: 比較結論定稿
-  完成判準: docs/survey/opencode.md 存在且含「評估準則」「各方案優缺點」「建議」三個小節
+  完成判準: github://issue/789 下 researcher-opencode 的 sub-issue 已 closed（報告經整合者 review 確認）
 
 # 啟動時機
 - goal 確認後，同時啟動三位研究員
@@ -606,7 +607,7 @@ stateDiagram-v2
 ```mermaid
 flowchart LR
     p1["orchestrator 不能主動等"] --> c1["需要被喚醒"] --> r1["升級機制"]
-    p2["worker CLI 每結束一個回合就 idle"] --> c2["沒人推會停住"] --> r2["自動推進<br/>送「繼續」不經 orchestrator"]
+    p2["worker CLI 每結束一個回合就 idle"] --> c2["沒人推會停住"] --> r2["自動推進<br/>送推進訊息不經 orchestrator"]
     p3["worker 違約沒回報就停下或原地繞圈<br/>低保真 kind 的 idle 沒有正向證據"] --> c3["停住而沒人知道"] --> r3["停滯偵測"]
     p4["worker 卡在核准框"] --> c4["文字下行被 herdr<br/>以 agent_blocked 拒絕"] --> r4["blocked 升級<br/>附待補送筆數"]
     p5["投遞失敗<br/>上行時 orchestrator 卡框或名稱遺失<br/>下行時 worker 卡框"] --> c5["訊息沒送達"] --> r5["投遞重試與待補送補投"]
@@ -623,7 +624,9 @@ flowchart LR
 
 ### 9.2 自動推進
 
-看門狗發現某個 worker 做完一回合後停下來等輸入，就直接送它一句「繼續」，讓它接著做；這個動作不經過 orchestrator，orchestrator 完全不知情。
+看門狗發現某個 worker 做完一回合後停下來等輸入，就直接送它一則推進訊息，讓它接著做；這個動作不經過 orchestrator，orchestrator 完全不知情。
+
+推進訊息請 worker 依目前的進度與回報契約決定下一步：已經完成或已到交付點、但還沒回報的，先回報；其餘情況照常繼續手上的任務。它只提醒，不新增任何回報條件。訊息文字定義在 `scripts/lib/common.sh` 的 `HAT_AUTO_PUSH_TEXT`，這裡不複製全文。這則提醒能否減少 worker 忘記回報，尚未實測。
 
 為什麼需要：AI CLI 的天性是每做完一回合就停下來等人輸入。orchestrator 被禁止主動等待或輪詢，而且由它來推每一次都要耗掉固定的 context，所以這件事交給背景的看門狗。
 
@@ -636,10 +639,10 @@ sequenceDiagram
     participant O as orchestrator
 
     W->>W: working 一段時間後 idle
-    D->>W: 下一輪巡檢（每 AGENT_TEAM_POLL_SECONDS 秒）看到 idle，送「繼續」
+    D->>W: 下一輪巡檢（每 AGENT_TEAM_POLL_SECONDS 秒）看到 idle，送推進訊息
     D->>D: 推進計數變 1，寫 watchdog.log 的 auto-push 行
     W->>W: 再 working，再 idle
-    D->>W: 下一輪巡檢送「繼續」
+    D->>W: 下一輪巡檢送推進訊息
     D->>D: 推進計數變 2，寫 auto-push 行
     W->>O: 完成後用 report.sh 回報 done
     Note over W,O: 推進過程中 orchestrator 什麼都沒收到，只收到這一則 done
@@ -704,7 +707,7 @@ flowchart TD
     lim -->|"否"| pend{"有待回 need-you"}
     pend -->|"是 不推"| fin
     pend -->|"否"| run{"stage 為 running"}
-    run -->|"是"| push["送「繼續」<br/>計數加一 寫 watchdog.log"]
+    run -->|"是"| push["送推進訊息<br/>計數加一 寫 watchdog.log"]
     run -->|"否"| fin
     push --> fin
     eid --> fin
@@ -762,7 +765,7 @@ flowchart LR
 | --- | --- | --- |
 | `AGENT_TEAM_POLL_SECONDS` | 20 | 每輪掃描的間隔 |
 | `AGENT_TEAM_STALL_SECONDS` | 1800 | stage 為 `running` 的 worker，`state_change_seq` 多久沒變就判定停滯 |
-| `AGENT_TEAM_AUTO_PUSH_LIMIT` | 10 | 對同一個 worker 自動推進「繼續」的次數上限 |
+| `AGENT_TEAM_AUTO_PUSH_LIMIT` | 10 | 對同一個 worker 自動推進訊息的次數上限 |
 | `AGENT_TEAM_NEEDYOU_LIMIT_SECONDS` | 停滯門檻的三倍 | need-you 未回覆多久視為豁免到期 |
 | `AGENT_TEAM_ESCALATION_REPEAT_SECONDS` | 同停滯門檻 | 同一個升級條件兩次升級之間的最短間隔 |
 | `AGENT_TEAM_LOCK_TIMEOUT_SECONDS` | 30 | registry 檔案鎖的等待上限，逾時以結束碼 `5` 失敗；定義在 `lib/common.sh` |
@@ -803,7 +806,7 @@ flowchart TD
     class keep kHuman
 ```
 
-- 叫停一定要帶 `--kind halt`：一般下行會把 `delivered` 撥回 `running`，被叫停的 worker 閒下來後會被看門狗推「繼續」。`--kind halt` 同時不寫 `.last_delivered_at`，不會替自動推進預算續杯。
+- 叫停一定要帶 `--kind halt`：一般下行會把 `delivered` 撥回 `running`，被叫停的 worker 閒下來後會被看門狗送推進訊息。`--kind halt` 同時不寫 `.last_delivered_at`，不會替自動推進預算續杯。
 - `instruct.sh` 以結束碼 `7` 結束（收件方卡在核准框）時不能放著，要去處理那個框，否則補投等不到。
 - 要結束的 worker 若停在 `delivered`，要先撥回 `running` 再關。
 

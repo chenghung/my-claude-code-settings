@@ -50,7 +50,7 @@
 | --- | --- | --- |
 | `AGENT_TEAM_POLL_SECONDS` | 20 | `watchdog.sh` 每輪掃描的間隔 |
 | `AGENT_TEAM_STALL_SECONDS` | 1800 | `running` worker 的 `state_change_seq` 多久沒變就判定停滯並升級 |
-| `AGENT_TEAM_AUTO_PUSH_LIMIT` | 10 | 對同一個 worker 自動推進「繼續」的次數上限，達上限改為升級 |
+| `AGENT_TEAM_AUTO_PUSH_LIMIT` | 10 | 對同一個 worker 自動送出推進訊息（`lib/common.sh` 的 `HAT_AUTO_PUSH_TEXT`）的次數上限，達上限改為升級 |
 | `AGENT_TEAM_NEEDYOU_LIMIT_SECONDS` | 當次生效的 `AGENT_TEAM_STALL_SECONDS` 的三倍 | `need-you` 自 `.created_at` 起未回覆多久視為豁免到期 |
 | `AGENT_TEAM_ESCALATION_REPEAT_SECONDS` | 當次生效的 `AGENT_TEAM_STALL_SECONDS`（該變數自身預設 1800） | 同一個升級條件兩次升級之間的最短間隔 |
 | `AGENT_TEAM_LOCK_TIMEOUT_SECONDS` | 30 | registry 檔案鎖的等待上限，逾時以結束碼 `5` 失敗；定義在 `lib/common.sh`，不在 `watchdog.sh` 檔頭 |
