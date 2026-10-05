@@ -289,7 +289,9 @@ done
 
 # ---- 8. apply: execute exactly the planned actions, in order ----
 TMP_AGENTS="" # temp file awaiting mv; removed on any exit so no stray file is left behind
-trap '[ -z "$TMP_AGENTS" ] || rm -f "$TMP_AGENTS"' EXIT INT TERM
+trap '[ -z "$TMP_AGENTS" ] || rm -f "$TMP_AGENTS"' EXIT
+trap 'exit 130' INT # exit so the EXIT cleanup runs and nothing resumes
+trap 'exit 143' TERM
 
 # read_part <rel-path>: print one merge part with frontmatter removed (rules only) and
 # leading/trailing blank lines dropped. Command substitution drops trailing newlines.
@@ -333,18 +335,20 @@ apply_dir() {
   # Read every part before touching any file (CLAUDE.md is rewritten later).
   while IFS= read -r part; do
     content="$(read_part "$part")"
+    [ -n "$content" ] || continue # empty parts get no segment and no separator
     if [ "$first" -eq 1 ]; then first=0; else merged+=$'\n\n---\n\n'; fi
     merged+="$content"
   done <<< "${PLAN_PARTS[$rel]}"
   # Temp file in the same directory, then mv: a failed write never leaves a truncated AGENTS.md.
   TMP_AGENTS="$(mktemp "$abs/.AGENTS.md.XXXXXX")"
-  printf '%s\n' "$merged" > "$TMP_AGENTS"
+  # all parts empty: zero-byte file; otherwise exactly one trailing newline
+  if [ "$first" -eq 1 ]; then : > "$TMP_AGENTS"; else printf '%s\n' "$merged" > "$TMP_AGENTS"; fi
   mode="$(printf '%04o' $((0666 & ~$(umask))))"
   chmod "$mode" "$TMP_AGENTS"
   while IFS= read -r action; do
     target="$PROJECT_DIR/${action#* }"
     case "$action" in
-      "remove-symlink "*) rm -f "$target" ;;
+      "remove-symlink "*) ;; # no-op: the later mv replaces the symlink atomically
       "write "*)
         mv -f "$TMP_AGENTS" "$target"
         TMP_AGENTS=""

@@ -258,4 +258,27 @@ eq apply-conflict-pkg-agents "$r/pkg/AGENTS.md" $'pkg text\n'
 eq apply-conflict-pkg-claude "$r/pkg/CLAUDE.md" $'@AGENTS.md\n'
 ends_applied apply-conflict
 
+# no_temp <name> <dir>: assert no .AGENTS.md.* temp file remains in a directory.
+no_temp() {
+  if compgen -G "$2/.AGENTS.md.*" > /dev/null; then bad "$1: temp file left"; else pass "$1: no temp file"; fi
+}
+no_temp apply5 "$T/ap5"
+no_temp apply2 "$T/ap2"
+
+# empty parts: frontmatter-only rule between two non-empty parts, and an all-blank .claude/CLAUDE.md
+r="$(make_repo apempty)"; put "$r" CLAUDE.md 'first'; mkdir -p "$r/.claude/rules"
+printf '\n  \n\n' > "$r/.claude/CLAUDE.md"
+printf -- '---\ndescription: only\n---\n' > "$r/.claude/rules/a.md"
+put "$r" .claude/rules/b.md 'last'; commit_all "$r"
+run_script "$r" --apply
+eq apply-empty-parts "$r/AGENTS.md" $'first\n\n---\n\nlast\n'
+gone apply-empty-parts "$r/.claude/rules/a.md"
+gone apply-empty-parts "$r/.claude/CLAUDE.md"
+
+# every part empty: zero-byte AGENTS.md
+r="$(make_repo apallempty)"; printf '\n\n' > "$r/CLAUDE.md"; commit_all "$r"
+run_script "$r" --apply
+eq apply-all-empty "$r/AGENTS.md" ''
+eq apply-all-empty-claude "$r/CLAUDE.md" $'@AGENTS.md\n'
+
 exit "$fail"
