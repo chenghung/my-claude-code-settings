@@ -55,8 +55,9 @@
 #
 # 1. 自動推進：worker 狀態是 idle 或 done、`.stage` 是 running（見下方
 #    「.stage 守衛」一節）、沒有未回覆的 need-you、持有旗標為 false、
-#    自動推進計數未達上限 → 直接經 `hat_herdr agent prompt` 送出一則
-#    「繼續」，計數加一，orchestrator 完全不知情。不走 instruct.sh：那
+#    自動推進計數未達上限 → 直接經 `hat_herdr agent prompt` 送出
+#    HAT_AUTO_PUSH_TEXT（lib/common.sh）這則附帶回報提醒的推進訊息，
+#    計數加一，orchestrator 完全不知情。不走 instruct.sh：那
 #    支腳本會設持有旗標，語意是「orchestrator 正在跟這個 worker 對
 #    話」，自動推進正是給沒有人在對話的 worker 用的，走 instruct.sh 會
 #    讓每一次自動推進都自己把自己擋掉下一輪。看門狗自己在 registry 根
@@ -898,7 +899,7 @@ hat_wd_retry_blocked_inbox() {
 # 不收全由下行腳本自己決定，不是「待補送佇列還沒清空」的衍生欄位。舊
 # 版把兩者混為一談的後果：審查者用樁重現過——旗標為真、佇列為空、狀態
 # 閒置這個組合下跑一輪，旗標被清成 false、自動推進計數加一、且真的送
-# 出了一則「繼續」，直接踩爛下行腳本剛設下的持有窗口。修法是本函式完
+# 出了一則推進訊息，直接踩爛下行腳本剛設下的持有窗口。修法是本函式完
 # 全不寫 .held，讓這個欄位回到單一語意：orchestrator 端腳本設它，中斷
 # 恢復由 team-init.sh --recover 收回殘留（規格 §13 第 3 步），看門狗
 # 不再是第三個寫入端（連帶更新 lib/common.sh 欄位白名單一節的分配表註
@@ -1227,7 +1228,7 @@ hat_wd_process_worker() {
   #      closing／closed 時 worker 依契約靜止是正常狀態，不推）----
   if [ "$stage" = "running" ]; then
     rc=0
-    hat_herdr agent prompt "$worker" "繼續" >/dev/null || rc=$?
+    hat_herdr agent prompt "$worker" "$HAT_AUTO_PUSH_TEXT" >/dev/null || rc=$?
     if [ "$rc" -eq 0 ]; then
       new_count=$((auto_push_count + 1))
       hat_json_set "$worker_file" '.auto_push_count' "$new_count"

@@ -7,7 +7,7 @@ thin command 是其他開發者用來定義一個 team 編制的檔案：有哪�
 ## 兩條入口
 
 - **有 thin command 時**：orchestrator 直接讀取檔案內容，依下面「欄位」一節逐項取出編制。讀完之後，把這份檔案的路徑寫進 `team.json` 的 `.thin_command_source` 欄位——這個欄位沒有專屬包裝腳本，直接 `source lib/common.sh` 後呼叫 `hat_json_set "$registry_root/team.json" '.thin_command_source' '"<絕對路徑>"'`（`hat_json_set` 的欄位白名單已經納入這個路徑，見 `lib/common.sh`）。
-- **沒有 thin command 時**：由 orchestrator 在對話中把同一組欄位跟人類問出來。goal 四項（要達成、怎樣算成功、不做什麼、前提）一律經 `set-goal.sh` 寫進 `team.json`，見 `team-launch.md`；其餘欄位（role、候選 provider、工作起點、grant、啟動與關閉時機、完成判準等）不是團隊層級的持久設定，只在 orchestrator 當下的判斷裡使用，直接化成呼叫 `launch-worker.sh` 時的參數。**這一版沒有附範例 command 檔可讀，所以第二條入口是預設路徑**，不是退路。
+- **沒有 thin command 時**：由 orchestrator 在對話中把同一組欄位跟人類問出來。goal 四項（要達成、怎樣算成功、不做什麼、前提）一律經 `set-goal.sh` 寫進 `team.json`，見 `team-launch.md`；其餘欄位（role、候選 provider、工作起點、grant、啟動與關閉時機、交付點、完成判準等）不是團隊層級的持久設定，不寫進 `team.json`；各自的去向與有 thin command 時相同，見下面「欄位」一節——例如 provider 與工作起點化成 `launch-worker.sh` 的參數，交付點、終點、完成判準經 `set-worker-field.sh` 寫進 `workers/<name>.json`（交付點與完成判準另寫進啟動包「02 任務」），grant 化成 `grant-peer.sh` 呼叫，啟動與關閉時機只在 orchestrator 當下的判斷裡使用。**這一版沒有附範例 command 檔可讀，所以第二條入口是預設路徑**，不是退路。
 
 兩條入口取得的是同一組欄位，差別只在來源是檔案還是對話；後續怎麼用這些欄位（哪個進 `launch-worker.sh` 的參數、哪個進啟動包、哪個進契約實例）不因入口不同而不同。
 
@@ -21,7 +21,8 @@ thin command 是其他開發者用來定義一個 team 編制的檔案：有哪�
   - `工作起點`：對應 `launch-worker.sh` 的 `--cwd`。要不要另開工作隔離區（worktree 或其他），由 worker 自己決定，thin command 只給起點目錄。
   - `權威來源`：一個 locator（規格 §7：中性字串，skill 從不打開它），有牴觸時以它為準。寫進啟動包「02 任務」一節，見 `briefing-template.md`。
   - `參考材料`：選填、不具約束力的 locator，同樣寫進啟動包「02 任務」。
-  - `交付點`、`終點`、`完成判準`：worker 啟動成功之後，由 orchestrator 呼叫 `set-worker-field.sh --to <worker> --field <delivery_point|end_point|completion_criteria> --value <內容>`，把這三項分別寫進 `workers/<name>.json` 對應的 `.delivery_point`、`.end_point`、`.completion_criteria`。這支腳本帶完整入口守衛（workspace 邊界、名稱格式驗證），且自己再帶一層只放行這三個欄位加 `.stage` 的白名單，不透過任何繞過守衛的路徑寫入。**完成判準必須是外部查得到的形式**，理由見下方 callout。
+  - `交付點`、`終點`、`完成判準`：worker 啟動成功之後，由 orchestrator 呼叫 `set-worker-field.sh --to <worker> --field <delivery_point|end_point|completion_criteria> --value <內容>`，把這三項分別寫進 `workers/<name>.json` 對應的 `.delivery_point`、`.end_point`、`.completion_criteria`。其中交付點與完成判準也會寫進啟動包「02 任務」，見 `briefing-template.md`。這支腳本帶完整入口守衛（workspace 邊界、名稱格式驗證），且自己再帶一層只放行這三個欄位加 `.stage` 的白名單，不透過任何繞過守衛的路徑寫入。**完成判準必須是外部查得到的形式**，理由見下方 callout。
+  - 交付點寫不寫：產物交出後還要經過 orchestrator 或人類 review 才關閉 ticket 的任務，寫交付點；不需要 review 的任務（交出產物或 merge PR 就能關閉 ticket）不寫，這種 worker 只會回報 `done`。不寫的前提是關閉 ticket 這一步不必等別人：它是這個 worker 職責內的動作，或 ticket 會隨這個 worker 自己有權執行的 merge 自動關閉。兩者都不成立時要寫交付點：產物交出之後 ticket 仍要等別人關，沒寫交付點的 worker 交出產物後完成判準還沒成立、又沒有交付點可回報，只會閒置到被看門狗推到上限才升級。
   - `啟動時機`、`關閉時機`：orchestrator 自己的排程判斷，不持久化。
 - **grant**：哪個 role 可以聯繫哪個 role，格式是一組雙向或單向的配對（範例用 `↔` 表示雙向）。落地時對每一邊各呼叫一次 `grant-peer.sh --from <A> --to <B>`。
 - **回報前的嘗試次數 N**：整數，餵給 `worker-contract.md` 組裝這個 role 的契約實例時代入 `{{N=3}}` 的位置；沒有指定時沿用契約全文預設的 3。
@@ -30,7 +31,9 @@ thin command 是其他開發者用來定義一個 team 編制的檔案：有哪�
 >
 > **「完成判準」那一行必須是外部查得到的形式。**
 >
-> 寫不出來本身就是訊號——orchestrator 看不到開發內容，所以「完成」不能靠自我宣告；那代表這個 role 沒辦法被安全關閉，得先改設計讓產物落到查得到的地方（例如一個檔案存在、一個 PR 已合併、一個測試套件通過），而不是「worker 自己說做完了」。
+> 寫不出來本身就是訊號——orchestrator 看不到開發內容，所以「完成」不能靠自我宣告；那代表這個 role 沒辦法被安全關閉，得先改設計讓「完成」落到查得到的地方（例如對應的 ticket 已關閉），而不是「worker 自己說做完了」。
+>
+> 完成判準代表 ticket 關閉，不是產物交出；產物交出對應的是交付點。產物要經過 review 的任務，產物交出當下 ticket 還沒關，完成判準若寫成「某個檔案存在」，交付點一到就提前成立，worker 會回報 `done`，這個 role 也就在 review 回來之前被關掉。
 
 ## grant 用的是正規化後的名稱
 
@@ -42,7 +45,7 @@ thin command 裡的 `grant` 配對寫的是 role 名稱（例如 `ux-designer`�
 
 ## 範例
 
-以下取自規格 §14 的範例，一個從產品構想產出 PRD 與 mockup 的團隊，整份檔案沒有一個字提到 herdr、腳本、狀態偵測、訊息格式或 token 詞彙。**與規格原文有一處刻意的出入**：ux-designer 的 agy 候選項補上了 `--dangerously-skip-permissions`——`provider-drivers.md`「agy alias 陷阱」一節明講不給這個旗標，agy worker 會卡在啟動後第一個權限框，而且因為 agy 沒有正向 idle 規則，那個狀態在 herdr 眼中只是「閒置」，不會有任何錯誤訊息。這份範例是留給人抄的範本，照抄規格原文的版本就是把自己文件裡警告過的陷阱原樣複製一次，因此這裡直接補上，其餘部分維持逐字：
+以下取自規格 §14 的範例，一個從產品構想產出 PRD 與 mockup 的團隊，整份檔案沒有一個字提到 herdr、腳本、狀態偵測、訊息格式或 token 詞彙。**與規格原文有兩處刻意的出入**。第一處，兩個 worker 的完成判準從規格原文的「文件存在」改成各自 ticket（即權威來源那個 locator）已關閉：文件存在在交付點當下就已成立，與關閉時機「交付點到了不關」矛盾，理由見上方 callout。第二處，ux-designer 的 agy 候選項補上了 `--dangerously-skip-permissions`——`provider-drivers.md`「agy alias 陷阱」一節明講不給這個旗標，agy worker 會卡在啟動後第一個權限框，而且因為 agy 沒有正向 idle 規則，那個狀態在 herdr 眼中只是「閒置」，不會有任何錯誤訊息。這份範例是留給人抄的範本，照抄規格原文的版本就是把自己文件裡警告過的陷阱原樣複製一次，因此這裡直接補上，其餘部分維持逐字：
 
 ```text
 ---
@@ -74,7 +77,7 @@ role: ux-designer
   參考材料: docs/research/*.md
   交付點: mockup 產出
   終點: PM 宣告 PRD 定稿
-  完成判準: docs/prd/mockup.md 存在且含「畫面清單」一節
+  完成判準: trello://card/8fK2 已關閉
 
 role: architect
   providers:
@@ -86,7 +89,7 @@ role: architect
   權威來源: github://issue/412
   交付點: 技術邊界文件產出
   終點: PM 宣告 PRD 定稿
-  完成判準: docs/prd/tech-scope.md 存在且含四個小節
+  完成判準: github://issue/412 已關閉
 
 # 啟動時機
 - 構想確立後，同時啟動 ux-designer 與 architect

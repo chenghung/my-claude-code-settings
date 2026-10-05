@@ -41,6 +41,22 @@
 #   7  握手未取得憑據，含逾時與 agent_prompt_stalled，本檔不產生
 #   8  啟動未就緒，本檔不產生
 
+# ---- 看門狗自動推進文字（唯一來源）----
+# watchdog.sh 自動推進時送給 worker 的訊息，以及測試對「有沒有送出推進
+# 訊息」的正向與反向斷言，都引用這一個變數，不各自寫死字面。反向斷言
+# 尤其依賴它：若測試改回寫死字面，之後改了這裡的文字，反向斷言比對的
+# 是一句永遠不會被送出的舊字串，會恆通過、什麼都守不住。
+# 訊息只把回報契約（references/worker-contract.md）拉回 worker 的注意
+# 力，只點到「已完成或到交付點、還沒回報就先回報」這個最容易被忽略的
+# 時機，不展開其他回報條件——何時該回報一律以契約為準，這裡多複述就會
+# 讓兩處說法漂移。訊息含全形「：」「；」，同樣不是 shell 或 herdr 的
+# 特殊字元。必須維持單行，且不含會被 shell 或 herdr 誤解的字元
+# （引號、$、反引號、反斜線、換行等），因為它會原樣經 hat_herdr 傳給
+# herdr agent prompt。刻意不宣告 readonly：本檔沒有這個慣例，且各腳本
+# 與測試都會 source 本檔。
+# shellcheck disable=SC2034 # 由 watchdog.sh 與測試 source 本檔後讀取，本檔自己不消費它
+HAT_AUTO_PUSH_TEXT='根據你目前的進度與回報契約決定下一步：如果已經完成或已經到了交付點、還沒回報，先回報；其餘情況繼續你手上的任務。'
+
 # hat_die <exit_code> <message>
 # 把 <message> 印到 stderr，並以 <exit_code> 結束目前的 shell。
 hat_die() {
@@ -736,7 +752,7 @@ hat_require_goal_confirmed() {
 # herdr 自己認得二十二種 agent kind，但本 skill 只支援四種：claude、
 # codex、agy、opencode。清單外的至少兩種 kind herdr 收得下、卻連狀態
 # 偵測規則檔都沒有——它們的 worker 會永遠顯示閒置，watchdog 會持續對一
-# 個其實卡住的 worker 送出「繼續」，而使用者只看得到一個一直被推卻沒
+# 個其實卡住的 worker 送出推進訊息，而使用者只看得到一個一直被推卻沒
 # 有進展的東西，完全不知道原因。所以寫錯 kind 必須在啟動之前就被拒
 # 絕，而不是啟動之後才發現；錯誤訊息點名支援清單，讓寫錯的人立刻知道
 # 有哪些選擇。

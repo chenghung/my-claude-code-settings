@@ -68,7 +68,7 @@ worker 只有一個回報動作（`report.sh`），六個 token 固定不開放�
 | `fyi` | 會；worker 發的不需回覆，看門狗發的要處置 | **先分岔**：是 `watchdog.sh` 的升級嗎（識別訊號見「認出一則升級」）？是的話不套漂移判準，讀 `references/watchdog-escalations.md` 依升級表處置。不是才讀前綴之後的摘要，判斷是不是漂移（判準一）：照 goal 原本的敘述做會失敗，或做出與所述不同的結果；「有更好的做法」不算。是則讀 `references/drift-handling.md` 走漂移處置；不是就不必回覆，worker 會繼續做 |
 | `need-you` | 會，需要回覆 | 從前綴取出 inbox 序號（見「上行前綴」），呼叫 `instruct.sh --to <worker> --text <定案文字> --reply-to <序號>`。這一步同時把那筆 inbox 記錄標成已處理 |
 | `delivered` | 會 | 呼叫 `set-worker-field.sh --to <worker> --field stage --value delivered`。需要 locator 的精確值時，讀 `inbox/<序號>-<worker>.json` 的 `.locator`。**不呼叫 `shutdown-worker.sh`**：交付點不等於終點，review 回來要改就回到執行中 |
-| `done` | 會 | 對照該 worker 的完成判準（若先前經 `set-worker-field.sh --field completion_criteria` 寫入過，可直接讀 `workers/<name>.json` 確認內容），確認外部可查證的證據確實存在（一個檔案、一個已合併的 PR、一次測試通過的紀錄），才呼叫 `shutdown-worker.sh --to <worker> --reason done --evidence <外部可查證的事實>`；證據不足就當成需要進一步核對的 `fyi` 處理，不關閉。關閉前 `.stage` 不能是 `delivered`，否則以結束碼 `4` 拒絕。成功發出（結束碼 `0` 或 `7`）的非 halt 下行都會把 `delivered` 撥回 `running`，撞得到的只有兩條路徑：交付之後再也沒收過任何下行，或收到的最後一則是叫停——那時先 `set-worker-field.sh --to <worker> --field stage --value running` 撥回再關 |
+| `done` | 會 | 對照該 worker 的完成判準（若先前經 `set-worker-field.sh --field completion_criteria` 寫入過，可直接讀 `workers/<name>.json` 確認內容），確認外部可查證的證據確實存在（通常是對應的 ticket 已關閉；產物本身存在只代表到了交付點，不算），才呼叫 `shutdown-worker.sh --to <worker> --reason done --evidence <外部可查證的事實>`；證據不足就當成需要進一步核對的 `fyi` 處理，不關閉。關閉前 `.stage` 不能是 `delivered`，否則以結束碼 `4` 拒絕。成功發出（結束碼 `0` 或 `7`）的非 halt 下行都會把 `delivered` 撥回 `running`，撞得到的只有兩條路徑：交付之後再也沒收過任何下行，或收到的最後一則是叫停——那時先 `set-worker-field.sh --to <worker> --field stage --value running` 撥回再關 |
 
 ### 上行前綴
 
@@ -97,8 +97,9 @@ orchestrator 自己不讀畫面、不打開回報的細節檔、不讀 `peer-log
   衰減，放著解除不了。任何叫停（含真的卡住時）都帶 `--kind halt`（理由見 `references/drift-handling.md`
   第 3 步），改派或結束的做法見同檔第 5 步
 - 需要讀 `peer-log/` 了解兩個 worker 之間談了什麼
-- 一則 `done`／`delivered` 回報所附的完成判準指向一個 GitHub issue、PR 或本機檔案，需要核對外部權威
-  是否真的吻合
+- 需要核對外部權威是否真的吻合：一則 `done` 回報要核對完成判準的證據（例如 ticket 是否已關閉）；
+  一則 `delivered` 回報要核對交付的產物是否確實存在（例如一個 PR 或本機檔案）。交付點原文讀
+  `workers/<name>.json` 的 `.delivery_point`，委派時一併提供
 
 委派牽涉讀某個 worker 畫面或判讀核准框時，先呼叫一次 `team-status.sh`，把這次輸出（或至少其中的
 worker 名稱清單）連同目標 worker 的 agent 名稱一起交給調查者：調查者本身沒有 workspace 邊界守衛，
