@@ -11,12 +11,14 @@
 #
 # ---- 一個迴圈、一個資料來源、兩個時間視野 ----
 # 每輪只呼叫一次 `herdr agent list`，經 hat_whitelist_agents 投影後才
-# 使用。自動推進看的是「這一輪」的即時狀態；停滯偵測看的是同一份輪詢
-# 歷史累積出來的 state_change_seq 變化——兩者共用同一次呼叫，不是兩個
-# 各自輪詢的機制。理由：自動推進不能等停滯門檻那麼久，worker 的 CLI 每
-# 結束一個回合就閒置，要是等半小時才被推一把，整個團隊會慢到不能用；
-# 但停滯偵測本來就需要跨輪比較，沒有第二個獨立輪詢的必要，用同一份歷
-# 史算就好。
+# 使用。自動推進先看「這一輪」的即時狀態是 idle 或 done，再看同一份輪
+# 詢歷史算出來的閒置停留時間（見下方「自動推進的閒置停留門檻」一節）；
+# 停滯偵測看的是同一份輪詢歷史累積出來的 state_change_seq 變化——兩者
+# 共用同一次呼叫，不是兩個各自輪詢的機制。理由：自動推進的等待時間要
+# 比停滯門檻短得多，worker 的 CLI 每結束一個回合就閒置，要是等半小時
+# 才被推一把，整個團隊會慢到不能用；但完全不等（舊版每個輪詢都推）又
+# 會推到正在等背景工作的 worker，所以才有停留門檻；停滯偵測本來就需要
+# 跨輪比較，沒有第二個獨立輪詢的必要，用同一份歷史算就好。
 #
 # ---- 為什麼只用 agent list，不用 agent get 或 api snapshot ----
 # 三者都拿得到 agent_status 與 state_change_seq 這兩個判斷要用的欄
@@ -33,17 +35,27 @@
 # 「有沒有增加」這個讀法會讓停滯偵測恆真式地失效。跟 wait-peer.sh 的
 # 死鎖防護判準是同一個成因，這裡是它的多 worker 版本。
 #
-# ---- 五個門檻值都能覆寫，而且都沒有實測依據 ----
+# ---- 七個門檻值都能覆寫，而且都沒有實測依據 ----
 # AGENT_TEAM_POLL_SECONDS（預設 20）、AGENT_TEAM_STALL_SECONDS（預設
-# 1800）、AGENT_TEAM_AUTO_PUSH_LIMIT（預設 10）、AGENT_TEAM_NEEDYOU_
+# 1800）、AGENT_TEAM_AUTO_PUSH_LIMIT（預設 4）、AGENT_TEAM_NEEDYOU_
 # LIMIT_SECONDS（預設 AGENT_TEAM_STALL_SECONDS 的三倍，見下方「豁免的
 # 時間上限」一節）、AGENT_TEAM_ESCALATION_REPEAT_SECONDS（預設同
-# AGENT_TEAM_STALL_SECONDS，見下方「升級去重」一節）五者皆可用同名環境
-# 變數覆寫；五個數字都是私用階段的起點，沒有任何實測依據（規格 §15 未
-# 驗清單「摘要長度上限、自動推進上限、空轉判定秒數都是估的」；三倍這
-# 個倍數是最終審查修正時拍的，同樣沒有實測依據；重提間隔沿用 AGENT_
-# TEAM_STALL_SECONDS 當預設值是線上故障修正時的判斷，同樣沒有實測依
-# 據）。
+# AGENT_TEAM_STALL_SECONDS，見下方「升級去重」一節）、AGENT_TEAM_AUTO_
+# PUSH_IDLE_SECONDS（預設 360）、AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_
+# SECONDS（預設 1500，這兩個見下方「自動推進的閒置停留門檻」一節）七者
+# 皆可用同名環境變數覆寫；七個數字都是私用階段的起點，沒有任何實測依
+# 據（規格 §15 未驗清單「摘要長度上限、自動推進上限、空轉判定秒數都是
+# 估的」；三倍這個倍數是最終審查修正時拍的，同樣沒有實測依據；重提間
+# 隔沿用 AGENT_TEAM_STALL_SECONDS 當預設值是線上故障修正時的判斷，同樣
+# 沒有實測依據；自動推進上限從 10 降到 4 與停留門檻 360／1500 秒是使用
+# 者拍板的起點，同樣沒有實測依據）。
+#
+# 兩個新增的值之間、以及它們跟輪詢間隔與停滯門檻之間有啟動時就檢查、
+# 不符以 2 結束的關係：AUTO_PUSH_IDLE_SECONDS（N）與 AUTO_PUSH_MAX_
+# INTERVAL_SECONDS（CAP）、AGENT_TEAM_POLL_SECONDS、AGENT_TEAM_STALL_
+# SECONDS 各自要是純數字且不超過 9 位數；1 <= N <= CAP；
+# 且 CAP + AGENT_TEAM_POLL_SECONDS <= AGENT_TEAM_STALL_SECONDS（都用覆
+# 寫後的有效值）——理由見下方「自動推進的閒置停留門檻」一節。
 #
 # ---- 停滯門檻的代價 ----
 # worker 靜默停住，最壞情況要等滿一個 AGENT_TEAM_STALL_SECONDS 週期才
@@ -55,7 +67,8 @@
 #
 # 1. 自動推進：worker 狀態是 idle 或 done、`.stage` 是 running（見下方
 #    「.stage 守衛」一節）、沒有未回覆的 need-you、持有旗標為 false、
-#    自動推進計數未達上限 → 直接經 `hat_herdr agent prompt` 送出
+#    自動推進計數未達上限、且已經連續閒置夠久（見下方「自動推進的閒置
+#    停留門檻」一節）→ 直接經 `hat_herdr agent prompt` 送出
 #    HAT_AUTO_PUSH_TEXT（lib/common.sh）這則附帶回報提醒的推進訊息，
 #    計數加一，orchestrator 完全不知情。不走 instruct.sh：那
 #    支腳本會設持有旗標，語意是「orchestrator 正在跟這個 worker 對
@@ -63,20 +76,83 @@
 #    讓每一次自動推進都自己把自己擋掉下一輪。看門狗自己在 registry 根
 #    目錄（跟 peer-log/ 同層，不是它裡面）落一行日誌記下推進了誰。
 #
-#    計數重置（線上故障修正重寫）：舊版看「worker 有沒有回報
-#    delivered」，但這正是 livelock 的成因——worker 在 delivered 關卡
-#    靜止是契約要求的正常狀態，卻被當成卡住而持續推進，推滿上限後
-#    worker 只好再回報一次 delivered，這一報又把計數歸零、重新開始
-#    推，形成自我維持的迴圈。正確的歸零時機只有一個：orchestrator 真
-#    的送出了一則下行。實作上，instruct.sh 成功送出下行時寫
-#    .last_delivered_at（它自己擁有的欄位）；本腳本的 hat_wd_apply_
-#    delivery_reset 讀到這個欄位跟自己的水位線 .auto_push_reset_seen_
-#    at 不同時，才歸零 .auto_push_count 並把水位線推到這個新值，避免
-#    同一次下行在後續每一輪都被重複判定成「新的」而把計數重置到 0，讓
-#    上限形同虛設（見 lib/common.sh 欄位白名單一節對這兩個欄位的說
-#    明）。hat_wd_retry_pending_resend 補投待補送佇列成功時視同一次下
-#    行送達，直接歸零 .auto_push_count（那是看門狗自己的程式碼，不透
-#    過這兩個欄位間接觸發，見該函式檔頭說明）。
+#    ---- 自動推進的閒置停留門檻（線上故障修正新增）----
+#    故障：Claude Code 的 worker 回合結束、卻在等背景 shell／Monitor 跑
+#    完時，herdr 看到的就是 idle；舊版只要狀態是 idle／done 就每個輪詢
+#    （預設 20 秒）推一次，十次推完升級給 orchestrator，orchestrator 一
+#    回覆計數歸零、整個循環重來（watchdog.log 實測：count=1..10 間隔
+#    20～21 秒，然後又從 count=1 開始）。
+#
+#    修法：第 k 次推進（k 是目前的 .auto_push_count，從 0 起算）只在
+#    worker 已經連續閒置至少 min(N * 2^k, CAP) 秒時才送；閒置時間是
+#    「現在」減 .last_seq_changed_at（下方 stamp 追蹤維護的，同一個欄位
+#    也是停滯偵測的依據），N 是 AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS（預設
+#    360）、CAP 是 AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS（預設
+#    1500），預設的推進時機因此是閒置滿 6、12、24、25 分鐘（累計約 6、
+#    18、42、67 分鐘）。兩個預設數字都沒有實測依據，是使用者拍板的起
+#    點。其餘推進前提不變；達上限升級的時機也不變（計數一到上限，第一
+#    個閒置輪詢就升級，不另外等停留時間）。
+#
+#    啟動驗證（不符以 2 結束）：N 與 CAP 各自要是純數字、且不超過 9 位
+#    數（超過會讓後面的算術溢位）；1 <= N <= CAP（否則 min(N * 2^k, CAP)
+#    沒有意義）；CAP + AGENT_TEAM_POLL_SECONDS <= AGENT_TEAM_STALL_
+#    SECONDS。最後一條的理由：停滯偵測（第 3 項）在控制流程裡排在自動推
+#    進之前，要求的停留時間一旦到達停滯門檻，停滯升級會先 `return`，那
+#    一次推進永遠送不出去（CAP=1800=停滯預設時第 4 次推進就是這樣）；而
+#    停留時間是每個輪詢才檢查一次，要求的停留在 [CAP, CAP + 輪詢間隔) 之
+#    間才第一次被滿足，所以光是 CAP < STALL 不夠，要把輪詢間隔算進去。預
+#    設值 1500 + 20 <= 1800 通過。使用者選擇「CAP 取 1500 加啟動驗證」而
+#    不是調換兩項檢查的順序，所以本腳本不動既有的檢查順序。
+#
+#    計數重置（線上故障修正重寫，之後又增加一條路徑）：舊版看「worker
+#    有沒有回報 delivered」，但這正是 livelock 的成因——worker 在
+#    delivered 關卡靜止是契約要求的正常狀態，卻被當成卡住而持續推進，
+#    推滿上限後 worker 只好再回報一次 delivered，這一報又把計數歸零、
+#    重新開始推，形成自我維持的迴圈。歸零的觸發源因此一律不得是「推進
+#    本身造成的結果」。現在有三條路徑：
+#    a) orchestrator 真的送出了一則下行。實作上，instruct.sh 成功送出
+#       下行時寫 .last_delivered_at（它自己擁有的欄位）；本腳本的
+#       hat_wd_apply_delivery_reset 讀到這個欄位跟自己的水位線
+#       .auto_push_reset_seen_at 不同時，才歸零 .auto_push_count 並把水
+#       位線推到這個新值，避免同一次下行在後續每一輪都被重複判定成
+#       「新的」而把計數重置到 0，讓上限形同虛設（見 lib/common.sh 欄位
+#       白名單一節對這兩個欄位的說明）。
+#    b) hat_wd_retry_pending_resend 補投待補送佇列成功時視同一次下行送
+#       達，直接歸零 .auto_push_count（那是看門狗自己的程式碼，不透過
+#       這兩個欄位間接觸發，見該函式檔頭說明）；被補投的那一筆若是
+#       --kind halt 則不歸零（叫停不是續杯，見 instruct.sh 檔頭同名一
+#       節）。
+#    c) worker 自己恢復活動（線上故障修正新增）。規則，逐字：每個輪詢，
+#       worker 的 state_change_seq 跟 .last_seq_stamp 不同（第一次觀察、
+#       .last_seq_stamp 還是空的不算，只記錄）時——.auto_push_inflight
+#       是 true：這次活動屬於推進或下行引發的回合，計數不動；新觀察到的
+#       狀態是 idle 或 done 時把 .auto_push_inflight 清成 false，其他狀
+#       態維持 true。.auto_push_inflight 不是 true：只有新觀察到的狀態
+#       是 working 或 blocked（worker 進入活動狀態）才把
+#       .auto_push_count 歸零；idle／done／unknown 之間的變動（done 變
+#       idle、unknown 來回閃動）什麼都不動，因為 worker 什麼都沒做。已
+#       知而且接受的邊角：短過一個輪詢的自發回合永遠看不到活動狀態，不
+#       歸零；worker 自己的恢復活動剛好併進推進引發的回合時也不歸零，都
+#       是偏保守的一邊。另有兩個已知而且接受的邊角（細節見 lib/common.sh
+#       .auto_push_inflight 說明）：一、本輪的 agent list 快照是舊的：快照
+#       顯示 idle 且 stamp 已變動，之後 instruct.sh 才把 inflight 設成
+#       true（例如 --kind halt），看門狗用舊快照處理這個 worker，會在叫停
+#       引發的回合還沒開始前就把 inflight 清掉，之後那個回合的活動有機
+#       會被當成自發活動而歸零；窗口很窄（一個輪詢內、要剛好跟下行交
+#       錯）。二、送出失敗（instruct.sh 結束碼 6，或結束碼 7 之後長時間卡
+#       在 blocked）而 inflight 一直留著 true：下一次自發恢復的歸零會丟
+#       掉一次，計數可能高於實際值、較早觸發達上限升級；只丟一次歸零，不
+#       構成 livelock。兩者都是明知而接受的取捨。整段 stamp 追蹤加歸零／清旗標是同一次加鎖的
+#       jq 轉換（hat_json_apply），旗標「現值為 true 才清」在鎖內判斷，
+#       不會蓋掉 instruct.sh 剛寫進去的 true，部分寫入失敗也只會讓這次
+#       歸零或清旗標延後，不會誤歸零。
+#       .auto_push_inflight 在三處設成 true，一律先寫再送、送出失敗也不
+#       收回：自動推進送出「之前」（計數仍只在送出成功後加一）、
+#       instruct.sh 送出任何下行（含 halt）「之前」、補投待補送佇列每一
+#       筆送出「之前」（推進或下行引發的回合不是自發活動，否則 halt 引發
+#       的回合會把計數歸零、重現「叫停續杯」的迴圈；先寫再送是為了讓送出
+#       與寫旗標之間沒有空窗，寫入失敗時也只是這一輪沒送出）。推進本身永遠
+#       觸發不了歸零，所以不會重建舊的 livelock（推進與歸零互相餵養）。
 #
 # 2. 升級：自動推進計數達上限 → 投遞一則摘要給 orchestrator，不再自
 #    動推進。狀態是 blocked → 一律投遞給 orchestrator，不送任何文字下
@@ -167,7 +243,8 @@
 # 事實的通知」而排除在外，理由是它跟第 1 項的推進動作分開處理。這個劃
 # 分被線上實際發生的故障推翻：故障 registry 裡的 w4a-developer-1097-be
 # 當時 `.stage` 是 `delivered`、`.auto_push_count` 是 10，而它送出的
-# 「自動推進已達上限 10 次仍是 idle，改為升級」那句話在 inbox 裡重複了
+# 「自動推進已達上限 10 次仍是 idle，改為升級」（當時的歷史訊息，上限
+# 預設當時是 10，現在是 4）那句話在 inbox 裡重複了
 # 56 次、是全部訊息裡重複最多的一句。「已達上限」這句話的語意是「我推
 # 了 N 次它還是不動」，前提是還在推；`.stage` 一旦不是 running，這個前
 # 提就不成立，訊息指向一件不再發生的事——對 orchestrator 而言讀起來像
@@ -441,7 +518,11 @@ hat_require_herdr_env
 
 readonly HAT_POLL_SECONDS_DEFAULT=20
 readonly HAT_STALL_SECONDS_DEFAULT=1800
-readonly HAT_AUTO_PUSH_LIMIT_DEFAULT=10
+readonly HAT_AUTO_PUSH_LIMIT_DEFAULT=4
+# 自動推進的閒置停留門檻（檔頭「自動推進的閒置停留門檻」一節）：兩個預設
+# 值都沒有實測依據，是使用者拍板的起點。
+readonly HAT_AUTO_PUSH_IDLE_SECONDS_DEFAULT=360
+readonly HAT_AUTO_PUSH_MAX_INTERVAL_SECONDS_DEFAULT=1500
 
 # ---- worker 身分消失緩衝門檻：固定值，不比照上面三個走環境變數覆寫
 #      （獨立審查修正，見 hat_wd_process_worker「worker 身分檢查」一節
@@ -461,6 +542,8 @@ readonly HAT_IDENTITY_MISMATCH_GRACE_SECONDS=90
 poll_seconds="${AGENT_TEAM_POLL_SECONDS:-$HAT_POLL_SECONDS_DEFAULT}"
 stall_seconds="${AGENT_TEAM_STALL_SECONDS:-$HAT_STALL_SECONDS_DEFAULT}"
 auto_push_limit="${AGENT_TEAM_AUTO_PUSH_LIMIT:-$HAT_AUTO_PUSH_LIMIT_DEFAULT}"
+auto_push_idle_seconds="${AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS:-$HAT_AUTO_PUSH_IDLE_SECONDS_DEFAULT}"
+auto_push_max_interval_seconds="${AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS:-$HAT_AUTO_PUSH_MAX_INTERVAL_SECONDS_DEFAULT}"
 
 case "$poll_seconds" in
   '' | *[!0-9]*) hat_die 2 "watchdog.sh: AGENT_TEAM_POLL_SECONDS 必須是純數字秒數，收到：$poll_seconds" ;;
@@ -468,9 +551,35 @@ esac
 case "$stall_seconds" in
   '' | *[!0-9]*) hat_die 2 "watchdog.sh: AGENT_TEAM_STALL_SECONDS 必須是純數字秒數，收到：$stall_seconds" ;;
 esac
+# 兩者都會進後面「CAP + 輪詢間隔 <= 停滯門檻」與「停滯門檻的三倍」的算
+# 術；超過 9 位數的值會讓算術回繞而繞過檢查，一律拒絕（跟 N／CAP 同一個
+# 上限）。
+if [ "${#poll_seconds}" -gt 9 ]; then
+  hat_die 2 "watchdog.sh: AGENT_TEAM_POLL_SECONDS 超過 9 位數，拒絕：$poll_seconds"
+fi
+if [ "${#stall_seconds}" -gt 9 ]; then
+  hat_die 2 "watchdog.sh: AGENT_TEAM_STALL_SECONDS 超過 9 位數，拒絕：$stall_seconds"
+fi
 case "$auto_push_limit" in
   '' | *[!0-9]*) hat_die 2 "watchdog.sh: AGENT_TEAM_AUTO_PUSH_LIMIT 必須是純數字，收到：$auto_push_limit" ;;
 esac
+case "$auto_push_idle_seconds" in
+  '' | *[!0-9]*) hat_die 2 "watchdog.sh: AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS 必須是純數字秒數，收到：$auto_push_idle_seconds" ;;
+esac
+case "$auto_push_max_interval_seconds" in
+  '' | *[!0-9]*) hat_die 2 "watchdog.sh: AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS 必須是純數字秒數，收到：$auto_push_max_interval_seconds" ;;
+esac
+# 兩個值都已確認是純數字；超過 9 位數一律拒絕（`10#` 與後面的算術遇到
+# 超出範圍的值會回繞，不會報錯）；9 位數以內才去掉前導 0，避免算術把 08
+# 之類當成八進位。
+if [ "${#auto_push_idle_seconds}" -gt 9 ]; then
+  hat_die 2 "watchdog.sh: AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS 超過 9 位數，拒絕：$auto_push_idle_seconds"
+fi
+if [ "${#auto_push_max_interval_seconds}" -gt 9 ]; then
+  hat_die 2 "watchdog.sh: AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS 超過 9 位數，拒絕：$auto_push_max_interval_seconds"
+fi
+auto_push_idle_seconds=$((10#$auto_push_idle_seconds))
+auto_push_max_interval_seconds=$((10#$auto_push_max_interval_seconds))
 
 # 預設是 stall_seconds 的三倍（見檔頭「豁免的時間上限」一節）；算預設
 # 值之前 stall_seconds 已經過上面的純數字檢查，這裡的算術是安全的。
@@ -485,6 +594,22 @@ escalation_repeat_seconds="${AGENT_TEAM_ESCALATION_REPEAT_SECONDS:-$stall_second
 case "$escalation_repeat_seconds" in
   '' | *[!0-9]*) hat_die 2 "watchdog.sh: AGENT_TEAM_ESCALATION_REPEAT_SECONDS 必須是純數字秒數，收到：$escalation_repeat_seconds" ;;
 esac
+
+# 相互關係（見檔頭「自動推進的閒置停留門檻」一節）：N 至少 1 且不得大於
+# CAP；CAP + poll_seconds 必須 <= stall_seconds，否則停滯升級（排在自動
+# 推進之前）可能先於最後幾次推進觸發，那幾次推進永遠送不出去（停留時間
+# 每個輪詢才檢查一次，第一次被滿足落在 [CAP, CAP + poll) 之間）。
+# poll_seconds／stall_seconds 已經過上面的純數字檢查，這裡用的是覆寫後
+# 的有效值；用 10# 避免前導 0 被當成八進位。
+if [ "$auto_push_idle_seconds" -lt 1 ]; then
+  hat_die 2 "watchdog.sh: AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS 至少要是 1，收到：$auto_push_idle_seconds"
+fi
+if [ "$auto_push_idle_seconds" -gt "$auto_push_max_interval_seconds" ]; then
+  hat_die 2 "watchdog.sh: AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS（$auto_push_idle_seconds）不得大於 AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS（$auto_push_max_interval_seconds）"
+fi
+if [ "$((auto_push_max_interval_seconds + 10#$poll_seconds))" -gt "$((10#$stall_seconds))" ]; then
+  hat_die 2 "watchdog.sh: AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS（$auto_push_max_interval_seconds）加 AGENT_TEAM_POLL_SECONDS（$poll_seconds）必須 <= AGENT_TEAM_STALL_SECONDS（$stall_seconds）：停滯升級排在自動推進之前，要求的停留時間（第一次被滿足落在 [CAP, CAP + 輪詢間隔) 之間）到達停滯門檻時，那次推進永遠不會發生"
+fi
 
 once=0
 if [ "$#" -eq 1 ] && [ "$1" = "--once" ]; then
@@ -883,7 +1008,9 @@ hat_wd_retry_blocked_inbox() {
 # hat_wd_retry_pending_resend <worker> <worker_file> <whitelisted>
 # 見檔頭「投遞重試與待補送補投」b) 一節：<worker> 目前不是 blocked
 # 時，逐筆嘗試補投 .pending_resend 佇列，每成功一筆就移除該筆並直接
-# 把 .auto_push_count 歸零（見檔頭「計數重置」一節：補投成功視同一次
+# 把 .auto_push_count 歸零（--kind halt 那一筆除外；每一筆送出「之前」
+# 先把 .auto_push_inflight 設成 true，失敗也不收回）（見檔頭「計數重
+# 置」一節：補投成功視同一次
 # 下行送達，本函式是看門狗自己的程式碼，不需要透過 .last_delivered_
 # at／.auto_push_reset_seen_at 這兩個欄位間接觸發，直接動自己擁有的
 # 欄位即可）；一旦有一筆失敗（例如又卡進 blocked），停止處理這個
@@ -925,6 +1052,12 @@ hat_wd_retry_pending_resend() {
 
     text="$(printf '%s' "$entry" | jq -r '.text')"
 
+    # 補投引發的回合不是自發活動（跟 instruct.sh 同一個理由，見 lib/
+    # common.sh .auto_push_inflight 一節）：旗標在送出「之前」就設成
+    # true，送出失敗也不收回——送出與寫旗標之間若隔著一次輪詢，那一輪會
+    # 把補投引發的活動當成自發活動；少一次自發歸零是偏保守的一邊。
+    hat_json_set "$worker_file" '.auto_push_inflight' 'true'
+
     rc=0
     hat_herdr agent prompt "$worker" "$text" >/dev/null || rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -932,18 +1065,40 @@ hat_wd_retry_pending_resend() {
     fi
 
     hat_remove_pending_resend "$worker_file"
-    hat_json_set "$worker_file" '.auto_push_count' '0'
+    # 叫停（kind=halt）補投成功不歸零，延續 instruct.sh「叫停不是續杯」。
+    if [ "$(printf '%s' "$entry" | jq -r '.kind // empty')" != "halt" ]; then
+      hat_json_set "$worker_file" '.auto_push_count' '0'
+    fi
   done
+}
+
+# hat_wd_auto_push_required_dwell <count> <idle_seconds> <max_interval_seconds>
+# 印出第 <count> 次推進（count 從 0 起算）要求的連續閒置秒數：
+# min(idle_seconds * 2^count, max_interval_seconds)，見檔頭「自動推進的閒置
+# 停留門檻」一節。迴圈一到 CAP 就停，不會因為計數很大而讓乘法溢位。
+hat_wd_auto_push_required_dwell() {
+  local count="$1" required="$2" cap="$3" i=0
+
+  while [ "$i" -lt "$count" ] && [ "$required" -lt "$cap" ]; do
+    required=$((required * 2))
+    i=$((i + 1))
+  done
+  if [ "$required" -gt "$cap" ]; then
+    required="$cap"
+  fi
+  printf '%s' "$required"
 }
 
 # hat_wd_process_worker <registry_root> <orchestrator_name> <worker> \
 #   <whitelisted> <stall_seconds> <auto_push_limit> <needyou_limit_seconds> \
-#   <escalation_repeat_seconds>
+#   <escalation_repeat_seconds> <auto_push_idle_seconds> \
+#   <auto_push_max_interval_seconds>
 # 對單一 worker 依序執行：0) worker 身分檢查（線上故障修正新增，見檔頭
 # 「worker 身分消失」一節；pane 上的名稱換了，持續不符超過緩衝門檻才
 # 升級一次，緩衝中或已升級這一輪其餘處理都全部跳過，早於 4b） → 4b)
 # 待補送補投 → 讀取這一輪觀測值 → 更新
-# stamp 追蹤 → 豁免的時間上限到期就直接升級（檔頭同名一節，不看
+# stamp 追蹤（stamp 變動時順便處理 .auto_push_inflight 與自行恢復活動的
+# 計數歸零，見檔頭「計數重置」c)） → 豁免的時間上限到期就直接升級（檔頭同名一節，不看
 # status，不受 .stage 守衛影響） → 2a) blocked 升級（不受豁免與 .stage
 # 守衛影響；排在 3) 之前，見上方「修正迴圈：blocked 升級搬到停滯偵測
 # 之前」一節） → 3) 停滯偵測（內建豁免、受 .stage 守衛影響，見檔頭
@@ -951,7 +1106,8 @@ hat_wd_retry_pending_resend() {
 # return） → unknown 直接跳過（順便清升級閂鎖） → held 直接跳過（順便
 # 清升級閂鎖） → 2b) 達上限升級（不受豁免影響，但受 .stage 守衛影響，
 # 見檔頭「.stage 守衛」一節） → 豁免檢查（只擋第 1 項） → 清升級閂鎖
-# → 1) 自動推進（受 .stage 守衛影響）。先做補投，把上一輪卡住、這一輪
+# → 1) 自動推進（受 .stage 守衛影響，另外要閒置停留夠久，見檔頭「自動
+# 推進的閒置停留門檻」一節）。先做補投，把上一輪卡住、這一輪
 # 解除的下行儘快送出；持有旗標由下行腳本自己收放，本函式的執行順序不
 # 會改變它的值（見 hat_wd_retry_pending_resend 檔頭「最終審查
 # Critical」一節），因此這個順序跟後面的自動推進評估互不影響，純粹是
@@ -979,8 +1135,10 @@ hat_wd_process_worker() {
   local registry_root="$1" orchestrator_name="$2" worker="$3" whitelisted="$4"
   local stall_seconds="$5" auto_push_limit="$6" needyou_limit_seconds="$7"
   local escalation_repeat_seconds="$8"
+  local auto_push_idle_seconds="$9" auto_push_max_interval_seconds="${10}"
   local worker_file pane_id line status stage stamp held needyou_pending
   local last_stamp last_changed_at now elapsed auto_push_count new_count rc
+  local seq_changed seq_active seq_settled required_dwell dwell
   local needyou_expired needyou_oldest needyou_seq needyou_created_at
   local needyou_created_epoch needyou_wait_elapsed
   local pending_resend_count
@@ -1107,8 +1265,42 @@ hat_wd_process_worker() {
   last_changed_at="$(jq -r '.last_seq_changed_at // empty' "$worker_file")"
 
   if [ -z "$last_stamp" ] || [ "$stamp" != "$last_stamp" ]; then
-    hat_json_set "$worker_file" '.last_seq_stamp' "$(hat_json_string "$stamp")"
-    hat_json_set "$worker_file" '.last_seq_changed_at' "$now"
+    # ---- stamp 追蹤與計數重置 c)（檔頭「計數重置」一節），整段是同一次
+    #      加鎖的 jq 轉換（hat_json_apply），不拆成「先讀、再寫」----
+    # 規則：第一次觀察（$last_stamp 為空）沒有「上一次」可比，只記 stamp
+    # 與時間，不動計數與旗標。之後的 stamp 變動：
+    #   - .auto_push_inflight 是 true：這是推進或下行引發的回合，計數不
+    #     動；狀態是 idle／done（回合結束）才把旗標清成 false，其餘狀態維
+    #     持 true；
+    #   - 否則：新觀察到的狀態是 working 或 blocked（worker 進入活動狀態）
+    #     才算自行恢復活動，計數歸零；idle／done／unknown 之間的變動（done
+    #     變 idle、unknown 來回閃動）worker 什麼都沒做，什麼都不動。
+    # 為什麼是單次轉換：一、旗標的「現值為 true 才清」在鎖內判斷，不會
+    # 用過期的讀值蓋掉 instruct.sh 剛寫進去的 true；二、stamp／時間戳／計
+    # 數／旗標同進同退，任何一次寫入失敗都是整筆沒變，下一輪看到同一個
+    # stamp 變動、做出同一個判斷，部分失敗只會讓這次歸零或清旗標延後，
+    # 不會變成「stamp 已追上、旗標已清、歸零沒做或反過來做了不該做的」。
+    seq_changed=0
+    seq_active=0
+    seq_settled=0
+    if [ -n "$last_stamp" ]; then
+      seq_changed=1
+    fi
+    case "$status" in
+      working | blocked) seq_active=1 ;;
+      idle | done) seq_settled=1 ;;
+    esac
+    # $stamp 等是 jq 自己的 --arg／--argjson 變數，故意留給 jq 展開。
+    # shellcheck disable=SC2016
+    hat_json_apply "$worker_file" '
+      .last_seq_stamp = $stamp | .last_seq_changed_at = $now
+      | if $changed != 1 then .
+        elif .auto_push_inflight == true then
+          (if $settled == 1 then .auto_push_inflight = false else . end)
+        elif $active == 1 then .auto_push_count = 0
+        else . end' \
+      --arg stamp "$stamp" --argjson now "$now" --argjson changed "$seq_changed" \
+      --argjson active "$seq_active" --argjson settled "$seq_settled"
     last_changed_at="$now"
   fi
 
@@ -1225,8 +1417,27 @@ hat_wd_process_worker() {
   fi
 
   # ---- 1：自動推進（受 .stage 守衛影響，見檔頭同名一節：delivered／
-  #      closing／closed 時 worker 依契約靜止是正常狀態，不推）----
+  #      closing／closed 時 worker 依契約靜止是正常狀態，不推；另外要求連
+  #      續閒置夠久，見檔頭「自動推進的閒置停留門檻」一節：第 k 次推進要
+  #      min(N * 2^k, CAP) 秒，k 是目前的 .auto_push_count；.last_seq_
+  #      changed_at 缺席時視同剛變動（停留 0 秒），不推）----
   if [ "$stage" = "running" ]; then
+    required_dwell="$(hat_wd_auto_push_required_dwell "$auto_push_count" \
+      "$auto_push_idle_seconds" "$auto_push_max_interval_seconds")"
+    dwell=0
+    if [ -n "$last_changed_at" ]; then
+      dwell=$((now - last_changed_at))
+    fi
+    if [ "$dwell" -lt "$required_dwell" ]; then
+      return 0
+    fi
+    # inflight 在送出「之前」寫，跟 instruct.sh 與補投同一個順序，送出失
+    # 敗也不收回：若先送、後寫，送出成功而寫入失敗（鎖逾時、jq 失敗）時，
+    # 下一輪會在 inflight=false 下看到 working 的 stamp 變動，把推進引發
+    # 的活動當成自發活動而歸零（而且計數也沒加到）。寫入失敗則這一輪根本
+    # 沒有送出（hat_die 讓這一筆放棄），下一輪重來。計數仍然只在送出成功
+    # 之後才加一。
+    hat_json_set "$worker_file" '.auto_push_inflight' 'true'
     rc=0
     hat_herdr agent prompt "$worker" "$HAT_AUTO_PUSH_TEXT" >/dev/null || rc=$?
     if [ "$rc" -eq 0 ]; then
@@ -1299,7 +1510,8 @@ hat_wd_run_once() {
     rc=0
     ( hat_wd_process_worker "$registry_root" "$orchestrator_name" "$worker" "$whitelisted" \
         "$stall_seconds" "$auto_push_limit" "$needyou_limit_seconds" \
-        "$escalation_repeat_seconds" ) || rc=$?
+        "$escalation_repeat_seconds" "$auto_push_idle_seconds" \
+        "$auto_push_max_interval_seconds" ) || rc=$?
     if [ "$rc" -ne 0 ]; then
       printf 'skip worker=%s reason=process_failed rc=%s at=%s\n' \
         "$worker" "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \

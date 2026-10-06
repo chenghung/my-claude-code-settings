@@ -300,9 +300,11 @@ hat_whitelist_agents() {
 #
 # 寫入端分邊，欄位集合刻意不重疊——座標類欄位由 launch-worker.sh 寫；
 # 整筆記錄由 shutdown-worker.sh 移除；計數／閂鎖類欄位（.auto_push_
-# count、.last_seq_stamp、.last_seq_changed_at、.auto_push_reset_seen_at、
-# .escalation_active、.escalation_last_at、.identity_mismatch_since，最
-# 後一個是本次修正新增）由 watchdog.sh 維護；.stage、.held 與
+# count、.auto_push_inflight、.last_seq_stamp、.last_seq_changed_at、
+# .auto_push_reset_seen_at、.escalation_active、.escalation_last_at、
+# .identity_mismatch_since，.identity_mismatch_since 與 .auto_push_
+# inflight 是後來的修正新增；.auto_push_inflight 另有 instruct.sh 這個
+# 寫入端，見下方該欄位說明）由 watchdog.sh 維護；.stage、.held 與
 # .last_delivered_at 由 orchestrator 端腳本寫。
 #
 # team.json 自己的五個欄位（.orchestrator_name／.orchestrator_pane／
@@ -337,16 +339,57 @@ hat_whitelist_agents() {
 # 報 delivered」，但這正是 livelock 的成因之一——worker 在 delivered 關
 # 卡靜止是契約要求的正常狀態，卻會被看門狗當成卡住而持續推進，推滿上限
 # 後 worker 只好再回報一次 delivered，這一報又把計數歸零、重新開始推，
-# 形成自我維持的迴圈（見 watchdog.sh 檔頭「計數重置」一節）。正確的歸
-# 零時機只有一個：orchestrator 真的送出了一則下行。instruct.sh 成功送
-# 出下行時寫 .last_delivered_at（它自己擁有的欄位），watchdog.sh 讀到這
-# 個欄位變動時才歸零自己擁有的 .auto_push_count；.auto_push_reset_seen_
-# at 是 watchdog.sh 自己的水位線，記錄「上一次歸零檢查已經看過的 .last_
+# 形成自我維持的迴圈（見 watchdog.sh 檔頭「計數重置」一節）。歸零的觸發
+# 源因此不得是「推進本身造成的結果」；orchestrator 真的送出了一則下行是
+# 其中一條路徑（另有補投待補送佇列成功與 worker 自己恢復活動兩條，後者
+# 見下方 .auto_push_inflight 一段）。instruct.sh 成功送出下行時寫
+# .last_delivered_at（它自己擁有的欄位），watchdog.sh 讀到這個欄位變動
+# 時才歸零自己擁有的 .auto_push_count；.auto_push_reset_seen_at 是
+# watchdog.sh 自己的水位線，記錄「上一次歸零檢查已經看過的 .last_
 # delivered_at 值」，避免同一次下行在後續每一輪都被重複判定成「新的」
 # 而把計數重置到 0，讓上限形同虛設——跟已移除的 .auto_push_reset_seq 是
 # 同一個問題、同一個解法，只是比對依據從 inbox seq 換成下行時間戳。
 # watchdog.sh 自己補投待補送佇列成功時視同一次下行送達，直接歸零 .auto_
 # push_count（watchdog 自己的程式碼，不需要透過這兩個欄位間接觸發）。
+#
+# .auto_push_inflight（線上故障修正新增）：布林，寫入端有兩個：watchdog.
+# sh 與 instruct.sh。記「目前這個回合是推進或下行引發的」。設成 true 的
+# 時機（三處一律先寫再送、送出失敗也不收回）：watchdog.sh 自動推進送出
+# 「之前」（計數仍只在送出成功後加一）；instruct.sh 送出任何下行（含
+# --kind halt）「之前」；watchdog.sh 補投待補送佇列每一筆送出「之前」。若
+# 等送出之後才寫，送出與寫旗標之間隔著一次輪詢（或寫入失敗），那一輪會
+# 把推進／下行引發的活動當成自發活動而歸零，叫停續杯的洞就重開了；旗標
+# 多留一下的代價只是少一次自發歸零，偏保守。
+# 只有 watchdog.sh 會把它清成 false。
+#
+# 用途是區分 worker 的 state_change_seq 變動從何而來，規則（逐字）：
+# stamp 變動（第一次觀察不算，只記錄）時——旗標是 true：計數不動；新觀察
+# 到的狀態是 idle 或 done 時把旗標清成 false，其他狀態維持 true。旗標不
+# 是 true（缺席視同 false）：只有新觀察到的狀態是 working 或 blocked
+# 才把 .auto_push_count 歸零；idle／done／unknown 之間的變動什麼都不
+# 動。推進本身觸發不了歸零，所以不會重建上面那個推進與歸零互相餵養的
+# livelock。已知且接受的邊角：
+#   - 短過一個輪詢的自發回合看不到活動狀態、不歸零；worker 自己的恢復活
+#     動併進推進引發的回合時不歸零，都偏保守。
+#   - 舊快照清旗標：看門狗每輪只呼叫一次 agent list，後面逐一處理各
+#     worker 時用的是那份快照。快照顯示 idle 且 stamp 已變動，之後
+#     instruct.sh 才把旗標設成 true（例如 --kind halt），看門狗用舊快照處
+#     理這個 worker，會在叫停引發的回合還沒開始之前就把旗標清掉，那個回
+#     合之後的活動有機會被當成自發活動而歸零。窗口很窄（一個輪詢內、要
+#     剛好跟下行交錯）。可能的修法（不實作）：清旗標前針對這個 worker 重
+#     新讀一次狀態（agent get），或讓 instruct.sh 另記一個時間戳，看門狗
+#     只清「比快照更早」設下的旗標；兩者都增加往返或欄位，這裡不為一個窄
+#     窗口付出。
+#   - 旗標因送出失敗而一直留著 true（instruct.sh 結束碼 6，或結束碼 7 之
+#     後長時間卡在 blocked）：下一次自發恢復的歸零會被丟掉一次，計數可能
+#     高於實際值、較早觸發達上限升級。只丟一次，不構成 livelock，是
+#     「失敗不收回」這個保守選擇的已知代價。
+#
+# 這個欄位的 watchdog.sh 端寫入走 hat_json_apply（同一次加鎖的 jq 轉
+# 換，跟 stamp 追蹤同進同退）：「現值為 true 才清」在鎖內判斷，不會用過
+# 期的讀值蓋掉 instruct.sh 剛寫進去的 true；不經 hat_json_set 的白名
+# 單檢查，所以 .auto_push_inflight 仍須列在下面的 worker 白名單裡，供
+# instruct.sh 與其他呼叫端的 hat_json_set 使用。
 #
 # .escalation_active／.escalation_last_at（線上故障修正新增）：升級摘要
 # 原本沒有去重，只要觸發條件還成立，下一輪 poll 就原封不動再發一次（線
@@ -369,8 +412,8 @@ hat_whitelist_agents() {
 # 被觀察到的時間」（epoch 秒），watchdog.sh 讀到持續不符時比對經過的秒
 # 數是否已經超過內部門檻才真的升級，見該檔 hat_wd_process_worker「worker
 # 身分消失」一節；名稱對上時清成 null，不留殘影。這個門檻刻意不做成環
-# 境變數可覆寫（不比照其餘五個門檻值）：references/script-reference.md
-# 「門檻值」一節的六個環
+# 境變數可覆寫（不比照其餘七個門檻值）：references/script-reference.md
+# 「門檻值」一節的八個環
 # 境變數表格是受管路徑，本次修正不改它；若把這個門檻也做成可覆寫，那張
 # 表就會少列一項本該存在的環境變數，而修表不在本次職責範圍內。
 #
@@ -394,8 +437,8 @@ _HAT_TEAM_JSON_FIELDS=(
 _HAT_WORKER_JSON_FIELDS=(
   '.role' '.kind' '.args' '.tab_id' '.pane_id' '.agent_name' '.cwd'
   '.completion_criteria' '.delivery_point' '.end_point' '.stage' '.held'
-  '.auto_push_count' '.last_seq_stamp' '.last_seq_changed_at'
-  '.auto_push_reset_seen_at' '.last_delivered_at' '.escalation_active'
+  '.auto_push_count' '.auto_push_inflight' '.last_seq_stamp'
+  '.last_seq_changed_at' '.auto_push_reset_seen_at' '.last_delivered_at' '.escalation_active'
   '.escalation_last_at' '.identity_mismatch_since' '.ack_reconciliation'
   '.grants' '.pending_resend'
 )
@@ -458,7 +501,7 @@ hat_json_get() {
 
 # hat_lock_timeout_seconds
 # 印出 AGENT_TEAM_LOCK_TIMEOUT_SECONDS（未設時預設 30），純數字驗證慣
-# 例同其餘門檻值（見 watchdog.sh 檔頭「五個門檻值都能覆寫」一節），非
+# 例同其餘門檻值（見 watchdog.sh 檔頭「七個門檻值都能覆寫」一節），非
 # 數字以 2 結束。供 hat_json_set／_hat_pending_resend_apply 兩處
 # `flock -x` 共用——兩者原本是無界等待，持鎖者若異常死亡，任何碰同一個
 # 檔案的腳本會永久卡住；改成有上限的等待，逾時視為呼叫端無法安全繼續
@@ -670,6 +713,19 @@ _hat_pending_resend_apply() {
 
   exec {lock_fd}>&-
   return 0
+}
+
+# hat_json_apply <file> <jq_filter> [jq 選項與引數...]
+# 對 <file> 在 <file>.lock 的鎖保護下做一次「讀-轉換-置換」，是
+# _hat_pending_resend_apply 的公開別名（它的實作本來就不綁 .pending_resend：
+# 單一加鎖 jq 轉換，鎖檔路徑與 hat_json_set 相同）。用途是需要「依檔案當
+# 下內容決定要不要改」的條件式更新（例如 watchdog.sh 的 stamp 追蹤：同一
+# 次轉換裡依 .auto_push_inflight 的現值決定清旗標或歸零計數）——若拆成
+# 「先讀、再用 hat_json_set 寫」，讀與寫之間 instruct.sh 剛寫進去的
+# .auto_push_inflight=true 會被過期的讀值蓋掉。不做白名單檢查：呼叫端自己
+# 負責只動自己擁有的欄位。
+hat_json_apply() {
+  _hat_pending_resend_apply "$@"
 }
 
 # hat_append_pending_resend <file> <text> <kind>
