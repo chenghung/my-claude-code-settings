@@ -49,8 +49,10 @@
 | 環境變數 | 預設值 | 影響 |
 | --- | --- | --- |
 | `AGENT_TEAM_POLL_SECONDS` | 20 | `watchdog.sh` 每輪掃描的間隔 |
-| `AGENT_TEAM_STALL_SECONDS` | 1800 | `running` worker 的 `state_change_seq` 多久沒變就判定停滯並升級 |
-| `AGENT_TEAM_AUTO_PUSH_LIMIT` | 10 | 對同一個 worker 自動送出推進訊息（`lib/common.sh` 的 `HAT_AUTO_PUSH_TEXT`）的次數上限，達上限改為升級 |
+| `AGENT_TEAM_STALL_SECONDS` | 1800 | `running` worker 的 `state_change_seq` 多久沒變就判定停滯並升級；必須不小於 `AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS` 加 `AGENT_TEAM_POLL_SECONDS`，否則 `watchdog.sh` 啟動即以結束碼 `2` 結束 |
+| `AGENT_TEAM_AUTO_PUSH_LIMIT` | 4 | 對同一個 worker 自動送出推進訊息（`lib/common.sh` 的 `HAT_AUTO_PUSH_TEXT`）的次數上限，達上限改為升級。計數歸零有三條路徑：worker 自己恢復活動（看門狗觀察到 `state_change_seq` 變動且新狀態是 `working` 或 `blocked`；推進或下行引發的回合不算，短於一個輪詢間隔、沒被看到進入活動狀態的回合也不算）、orchestrator 成功送達一則非 halt 下行、看門狗成功補投一筆非 halt 的待補送 |
+| `AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS` | 360 | 自動推進前要求的連續閒置秒數基數 N：第 k 次推進（k 為目前計數，從 0 起）要等 worker 連續閒置滿 min(N×2^k, CAP) 秒，預設即閒置滿 6、12、24、25 分鐘才推；須為至少 1、至多 9 位數的純數字且不大於 CAP，否則啟動即以結束碼 `2` 結束 |
+| `AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS` | 1500 | 上一列公式的上限 CAP；須為至多 9 位數的純數字，且 CAP 加當次生效的 `AGENT_TEAM_POLL_SECONDS` 不得大於當次生效的 `AGENT_TEAM_STALL_SECONDS`（停留時間每輪才檢查一次，推進實際落在 CAP 到 CAP 加一個輪詢間隔之間；停滯偵測排在自動推進之前，閒置一到停滯門檻，那次推進就送不出去），否則啟動即以結束碼 `2` 結束 |
 | `AGENT_TEAM_NEEDYOU_LIMIT_SECONDS` | 當次生效的 `AGENT_TEAM_STALL_SECONDS` 的三倍 | `need-you` 自 `.created_at` 起未回覆多久視為豁免到期 |
 | `AGENT_TEAM_ESCALATION_REPEAT_SECONDS` | 當次生效的 `AGENT_TEAM_STALL_SECONDS`（該變數自身預設 1800） | 同一個升級條件兩次升級之間的最短間隔 |
 | `AGENT_TEAM_LOCK_TIMEOUT_SECONDS` | 30 | registry 檔案鎖的等待上限，逾時以結束碼 `5` 失敗；定義在 `lib/common.sh`，不在 `watchdog.sh` 檔頭 |

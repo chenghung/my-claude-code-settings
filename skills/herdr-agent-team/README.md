@@ -630,7 +630,7 @@ flowchart LR
 
 為什麼需要：AI CLI 的天性是每做完一回合就停下來等人輸入。orchestrator 被禁止主動等待或輪詢，而且由它來推每一次都要耗掉固定的 context，所以這件事交給背景的看門狗。
 
-下圖表達一段時間軸：worker 每次閒下來都被推一次，計數遞增，直到 worker 自己回報 done，orchestrator 只收到最後那一則。
+下圖表達一段時間軸：worker 閒置滿一段時間才被推一次，計數遞增，且每推一次下一次要等的閒置時間加倍，直到 worker 自己回報 done，orchestrator 只收到最後那一則。
 
 ```mermaid
 sequenceDiagram
@@ -639,10 +639,10 @@ sequenceDiagram
     participant O as orchestrator
 
     W->>W: working 一段時間後 idle
-    D->>W: 下一輪巡檢（每 AGENT_TEAM_POLL_SECONDS 秒）看到 idle，送推進訊息
+    D->>W: 巡檢（每 AGENT_TEAM_POLL_SECONDS 秒）看到連續 idle 滿 N 秒（預設 360），送推進訊息
     D->>D: 推進計數變 1，寫 watchdog.log 的 auto-push 行
     W->>W: 再 working，再 idle
-    D->>W: 下一輪巡檢送推進訊息
+    D->>W: 連續 idle 滿 min(N×2，CAP) 秒後送推進訊息
     D->>D: 推進計數變 2，寫 auto-push 行
     W->>O: 完成後用 report.sh 回報 done
     Note over W,O: 推進過程中 orchestrator 什麼都沒收到，只收到這一則 done
@@ -657,20 +657,26 @@ sequenceDiagram
 | `.stage` 是 `running` | `delivered` 是交付後待命的正常靜止 |
 | 沒有未回覆的 need-you | worker 在等 orchestrator 定案，停著是合理的 |
 | 持有旗標 `held` 不是 true | orchestrator 正在對話，再插一句可能兩則併進同一回合，造成混合意圖 |
+| 自 `state_change_seq` 最後一次變動起，連續 idle 已滿 min(N × 2^k，CAP) 秒（k 為目前推進計數） | 還沒閒置夠久：worker 可能只是在等背景工作；每推一次門檻加倍 |
 | 推進計數未達 `AGENT_TEAM_AUTO_PUSH_LIMIT` | 達到上限改為升級 |
 
 推進直接呼叫 `herdr agent prompt` 送出，不走 `instruct.sh`：`instruct.sh` 會設持有旗標，走它等於每推一次都把下一輪的自己擋掉。
 
-**上限與歸零**：上限預設 10，推滿就改發「自動推進已達上限」升級。這是用次數代替判斷：被推 10 次仍沒做完也沒回報，很可能在原地繞圈。計數只有兩種情況會歸零：
+**閒置門檻與加倍**：第 k 次推進（k 為目前推進計數，從 0 起算）要等 worker 自 `state_change_seq` 最後一次變動起連續 idle 至少 min(N × 2^k，CAP) 秒才送。N 是 `AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS`（預設 360），CAP 是 `AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS`（預設 1500）。預設排程是在閒置 6、12、24、25 分鐘時各推一次，累計約第 6、18、42、67 分鐘。這是為了讓「回合結束後在等背景 shell 或 monitor」的 worker 不再每 20 秒被推一次。啟動時看門狗以結束碼 2 拒絕不合法的組合：兩者都要是純數字且各至多 9 位、N 至少 1、N 不得大於 CAP，且 CAP 加上 `AGENT_TEAM_POLL_SECONDS` 必須不大於（覆寫後的）`AGENT_TEAM_STALL_SECONDS`。原因是推進會在 [CAP，CAP + POLL) 之間的某一輪到期，而停滯偵測先於自動推進檢查，到期時若已達停滯門檻，停滯升級就會搶在推進之前發出。
+
+**上限與歸零**：上限預設 4，推滿就改發「自動推進已達上限」升級（升級時機不變）。這是用次數代替判斷：被推 4 次仍沒做完也沒回報，很可能在原地繞圈。計數會在三種情況歸零：
 
 - orchestrator 成功送出一則下行（`instruct.sh`；`--kind halt` 除外，halt 不寫 `.last_delivered_at`）。
-- 看門狗補投待補送的下行成功。
+- 看門狗補投待補送的下行成功，且該筆的 kind 不是 halt（補投 halt 不歸零）。
+- worker 自己恢復活動，例如背景工作做完後自行繼續。偵測方式是在 worker 欄位 `.auto_push_inflight` 不是 true 時，觀察到 `state_change_seq` 變動，且新觀察到的狀態是 working 或 blocked（worker 進入活動狀態）。變動成 idle、done 或 unknown 時不歸零。已接受的邊界：短於一輪巡檢的自發回合不會被看到進入活動狀態，因此不歸零。
 
-計數不隨時間衰減，所以達上限的升級等待解不了，出口只有改派或結束。當初「回報 delivered 就歸零」造成的 livelock，見 9.3 的守衛說明。
+`.auto_push_inflight` 在推進成功時設為 true；`instruct.sh` 的任何下行（含 halt）與待補送補投（含 halt）則是在送出之前就設為 true，送出失敗（含 `instruct.sh` 的結束碼 7）也維持 true；之後再觀察到 `state_change_seq` 變動且狀態為 idle 或 done 時清除。所以由推進或 orchestrator 下行（含 halt）引發的回合都不算自發活動，halt 仍然不續杯，舊的 livelock 也不會復發（見 9.3 的守衛說明）。
 
-**對長任務的意義**：需要很多回合才做得完的任務，在 orchestrator 兩次下行之間最多只能被自動推 10 回合。有兩種做法：
+達上限的升級由 orchestrator 處理：派調查者回答背景工作或 monitor 是否仍在跑（達上限時 worker 必然是 idle 或 done，問的不是長工具呼叫）。調查者能指出畫面上明確、可辨識的背景工作或 monitor 仍在執行的正向證據時，送一則非 halt 的 `instruct.sh` 下行，請 worker 繼續等待、完成後回報，這會經 `.last_delivered_at` 水位線讓計數歸零並解除升級；否則（含無法判定）改派或結束。單獨叫停（halt）解不開這個升級，因為 halt 既不寫水位線，也不算自發活動。附帶一提，worker 自己恢復活動時條件也可能自行消失，但不保證。
 
-- 調高 `AGENT_TEAM_AUTO_PUSH_LIMIT`。代價是繞圈的 worker 會多燒回合與 token 才被發現，agy 與 opencode 這類低保真 provider 風險更高。
+**對長任務的意義**：需要很多回合才做得完的任務，在計數歸零之間最多只能被自動推 4 回合。有兩種做法：
+
+- 調高 `AGENT_TEAM_AUTO_PUSH_LIMIT`，或調整 `AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS` 與 `AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS`。代價是繞圈的 worker 會多燒回合與 token 才被發現，agy 與 opencode 這類低保真 provider 風險更高。
 - 把任務切成階段，在里程碑由 orchestrator 送一則下行交代下一階段，計數因此歸零，orchestrator 也能在階段之間核對進度。這個做法較安全。
 
 操作注意事項：
@@ -691,7 +697,7 @@ flowchart TD
     retryO --> each["對每個 worker 依序處理<br/>各自包在子殼中"]
     each --> idc{"pane 佔用者名稱不符<br/>且超過緩衝期"}
     idc -->|"是"| eid["identity_lost 升級並跳過"]
-    idc -->|"否"| resend["補投待補送<br/>worker 不在 blocked 時<br/>成功一筆移除一筆並歸零推進計數"]
+    idc -->|"否"| resend["補投待補送<br/>worker 不在 blocked 時<br/>成功一筆移除一筆<br/>非 halt 才歸零推進計數"]
     resend --> ny{"need-you 超過上限"}
     ny -->|"是"| eny["豁免到期升級"]
     ny -->|"否"| bl{"worker 是 blocked"}
@@ -706,7 +712,7 @@ flowchart TD
     lim -->|"是"| elim["達上限升級"]
     lim -->|"否"| pend{"有待回 need-you"}
     pend -->|"是 不推"| fin
-    pend -->|"否"| run{"stage 為 running"}
+    pend -->|"否"| run{"stage 為 running<br/>且連續 idle 已滿<br/>min(N×2^計數，CAP) 秒"}
     run -->|"是"| push["送推進訊息<br/>計數加一 寫 watchdog.log"]
     run -->|"否"| fin
     push --> fin
@@ -735,7 +741,7 @@ flowchart TD
 flowchart LR
     g1["stage 守衛"] --> e1["delivered 是契約要求的正常靜止<br/>不被當成卡住"]
     g2["持有旗標 held"] --> e2["兩則下行不會併進同一回合<br/>造成混合意圖"]
-    g3["推進計數只在真的送出下行時歸零"] --> e3["不再有<br/>delivered 與自動推進的 livelock"]
+    g3["推進計數只在三種路徑歸零<br/>非 halt 下行 非 halt 補投 worker 自發恢復"] --> e3["不再有<br/>delivered 與自動推進的 livelock"]
     g4["升級去重"] --> e4["同一句升級不再洗版"]
     g5["單一 worker 致命失敗隔離"] --> e5["一筆壞掉不讓看門狗整個消失"]
 
@@ -747,13 +753,15 @@ flowchart LR
 
 - **stage 守衛**：只有 stage 為 `running` 的 worker 會被推、被判停滯、被發達上限升級。
 - **持有旗標**：`instruct.sh` 送出前把 `held` 設為 true，所有離開路徑都放掉，避免兩則下行併進同一回合造成混合意圖。看門狗的自動推進不走 `instruct.sh`，以免自己擋自己。
-- **推進計數只在 orchestrator 真的送出下行時歸零**：`instruct.sh` 寫 `.last_delivered_at`，看門狗比對水位線；`--kind halt` 不寫，叫停不是續杯。當初「回報 delivered 就歸零」造成了 livelock：worker 在 delivered 靜止卻被推，推滿上限只好再報 delivered，計數又歸零，同一句升級在 inbox 重複了 56 次。
+- **推進計數只在三種路徑歸零：非 halt 下行、非 halt 待補送補投、worker 自發恢復活動**（見 9.2 的清單）：`instruct.sh` 寫 `.last_delivered_at`，看門狗比對水位線；`--kind halt` 不寫，叫停不是續杯。自發活動的判定是：在 `.auto_push_inflight` 不是 true 時觀察到 `state_change_seq` 變動且新狀態為 working 或 blocked 來判定：推進成功、`instruct.sh` 下行（含 halt）與待補送補投（含 halt）都會把它設為 true（後兩者在送出前就設，送出失敗也維持 true），由它們引發的回合不算自發，所以 halt 不續杯、也不會回到舊的 livelock。當初「回報 delivered 就歸零」造成了 livelock：worker 在 delivered 靜止卻被推，推滿上限只好再報 delivered，計數又歸零，同一句升級在 inbox 重複了 56 次。
 - **升級去重**：同一個條件只在剛成立的那一輪發一次，之後最多每 `AGENT_TEAM_ESCALATION_REPEAT_SECONDS` 重提一次；條件解除或換成另一種條件時立即再發。
 - **單一 worker 致命失敗隔離**：保護放在逐筆呼叫點的子殼，詳見 `watchdog.sh` 檔頭。
 
 ### 9.4 存活判讀與門檻
 
 看門狗必須背景 detach 啟動、不帶 `--once`。前景呼叫逾時被工具收掉時是靜默消失：自動推進、升級、停滯偵測、重試補投全部停止，且沒有任何錯誤訊息。
+
+覆寫了任何門檻環境變數時，不合法的值會讓 `watchdog.sh` 以結束碼 2 立刻退出，背景啟動看起來與成功無異。背景啟動前，先用同一組環境變數在前景跑一次 `watchdog.sh --once`：值不合法會以結束碼 2 在 stderr 印出訊息，合法則正常跑完一輪。
 
 - 剛掛上時 `watchdog.log` 是空的，這是正常的。
 - 之後有新行代表它活著；但沒有新行不代表停了，因為升級、補投成功、停滯追蹤都不寫這個檔案。可以看 inbox 有沒有新的升級記錄，或 `team-status.sh` 的欄位有沒有變化。
@@ -765,7 +773,9 @@ flowchart LR
 | --- | --- | --- |
 | `AGENT_TEAM_POLL_SECONDS` | 20 | 每輪掃描的間隔 |
 | `AGENT_TEAM_STALL_SECONDS` | 1800 | stage 為 `running` 的 worker，`state_change_seq` 多久沒變就判定停滯 |
-| `AGENT_TEAM_AUTO_PUSH_LIMIT` | 10 | 對同一個 worker 自動推進訊息的次數上限 |
+| `AGENT_TEAM_AUTO_PUSH_LIMIT` | 4 | 對同一個 worker 自動推進訊息的次數上限 |
+| `AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS` | 360 | 第一次推進前要連續 idle 的秒數 N；第 k 次推進要滿 min(N × 2^k，CAP) 秒。啟動時要求為純數字（至多 9 位）、至少 1 且不大於 CAP，否則結束碼 2 |
+| `AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS` | 1500 | 推進所需連續 idle 秒數的上限 CAP；必須使 CAP 加 `AGENT_TEAM_POLL_SECONDS` 不大於 `AGENT_TEAM_STALL_SECONDS`，否則結束碼 2 |
 | `AGENT_TEAM_NEEDYOU_LIMIT_SECONDS` | 停滯門檻的三倍 | need-you 未回覆多久視為豁免到期 |
 | `AGENT_TEAM_ESCALATION_REPEAT_SECONDS` | 同停滯門檻 | 同一個升級條件兩次升級之間的最短間隔 |
 | `AGENT_TEAM_LOCK_TIMEOUT_SECONDS` | 30 | registry 檔案鎖的等待上限，逾時以結束碼 `5` 失敗；定義在 `lib/common.sh` |
@@ -778,7 +788,7 @@ flowchart LR
 | --- | --- |
 | 卡在核准框（摘要含 `agent_status=blocked` 與待補送筆數） | 派調查者讀畫面判讀；可代按的呼叫 `press-approval.sh`；工作區信任框與放行範圍大於當次動作的「總是允許」不代按，交給人類 |
 | 已停滯（摘要含「已停滯 Xs」） | 派調查者判斷是真卡住還是在跑很長的工具呼叫；後者不動；真卡住就叫停（帶 `--kind halt`）、改派或結束 |
-| 達上限（摘要含「已達上限」） | 派調查者判斷；出口只有改派或結束，不是再等 |
+| 達上限（摘要含「已達上限」） | 派調查者回答背景工作或 monitor 是否仍在跑；有畫面上明確可辨識的正向證據，就送非 halt 的 `instruct.sh` 下行請 worker 繼續等待並在完成後回報（計數經水位線歸零、升級解除）；否則含無法判定，改派或結束。單獨 halt 解不開這個升級 |
 | 豁免到期（摘要含「有一則你還沒回的定案請求」） | 不必派人；補一則 `instruct.sh --reply-to`，序號照抄摘要結尾那一個，不要填升級自己那筆記錄的序號 |
 | 身分消失（摘要含 `briefings` 字樣） | 不必派人；先把 `briefings/<worker>.md` 複製到另一個路徑，再對同一個 role 重新跑 `launch-worker.sh`；不要對舊 pane 送指令或代按 |
 

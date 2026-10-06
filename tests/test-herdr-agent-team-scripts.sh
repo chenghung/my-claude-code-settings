@@ -3144,7 +3144,8 @@ esac
 # 上面「發出即撥回」的判準原本沒有排除 --kind halt：叫停一個 .stage
 # 是 delivered 的 worker 一樣會被撥回 running，重新進入看門狗三項照
 # 看的範圍。後果是漂移處置第 3 步逐一送出叫停之後，那個 worker 停手
-# 回報、轉成閒置，看門狗會在下一個輪詢間隔開始送推進訊息——一邊叫它
+# 回報、轉成閒置，看門狗會在閒置停留門檻（預設 6 分鐘起算）到了之後開
+# 始送推進訊息——一邊叫它
 # 停手、一邊叫它繼續，正是「發出即撥回」原本要消滅的失效形狀，換了個
 # 觸發路徑重新出現。一個剛被叫停的 worker 停著不動是正確狀態，跟交付
 # 後待命同一個性質：它欠的是 orchestrator 的下一個新指令，不是一句
@@ -3196,9 +3197,10 @@ fi
 #      （本任務修正，獨立審查抓到的問題）=====
 # 見 instruct.sh 檔頭「叫停不是續杯」一節：成功送達（rc=0）分支原本無
 # 條件寫 .last_delivered_at，--kind halt 沒被排除。這個欄位是
-# watchdog.sh 判斷要不要把 .auto_push_count 歸零的唯一依據；叫停不是
-# 下發新任務，寫了它會被下一輪看門狗誤判成「orchestrator 剛送出一則
-# 新下行」，把已經逼近上限的推進預算重新續杯——疊上達上限升級之後，
+# watchdog.sh 判斷「orchestrator 有沒有送出新下行、要不要因此把
+# .auto_push_count 歸零」的唯一依據；叫停不是下發新任務，寫了它會被
+# 下一輪看門狗誤判成「orchestrator 剛送出一則新下行」，把已經逼近上限
+# 的推進預算重新續杯——疊上達上限升級之後，
 # orchestrator 每叫停一次反而多送一輪推進訊息的資格，達上限升級永遠
 # 觸發不了。構造一個已經推了 9 次、.last_delivered_at／.auto_push_
 # reset_seen_at 固定在同一個舊時間戳（模擬看門狗已經看過這次「下
@@ -4970,6 +4972,22 @@ HERDR_CALL_LOG="$T/herdr-call-log-watchdog"
 rm -rf "$REG/workers"
 mkdir -p "$REG/workers"
 
+# ---- 自動推進的閒置停留門檻（見後面「自動推進的閒置停留門檻」小節）之
+#      後，第一個閒置輪詢不再立刻推進：要推進得先讓 .last_seq_stamp 等於
+#      樁回傳的值（否則這一輪被當成 stamp 變動，停留重新起算，還可能觸發
+#      自行恢復活動的歸零），並讓 .last_seq_changed_at 落在夠久以前。
+#      wd_seed_dwell <worker> <stamp> 把這兩個欄位寫好：1600 秒前，高於預
+#      設 CAP（1500，任何計數都夠）、低於預設停滯門檻（1800，不會先觸發
+#      停滯升級）。既有的推進測試用它把「已經閒置夠久」的前提補回來，其
+#      餘斷言原樣保留 ----
+wd_seed_dwell() {
+  local worker="$1" stamp="$2" now
+  now="$(date +%s)"
+  jq --arg stamp "$stamp" --argjson at "$((now - 1600))" \
+    '.last_seq_stamp = $stamp | .last_seq_changed_at = $at' \
+    "$REG/workers/$worker.json" > "$T/t" && mv "$T/t" "$REG/workers/$worker.json"
+}
+
 # ---- 本任務自行補上的前置設定：重置 w3n-backend 為本節共同起點 ----
 printf '{"pane_id":"w3N:p2","held":false,"role":"backend"}' > "$REG/workers/w3n-backend.json"
 
@@ -4991,6 +5009,7 @@ chmod +x "$STUB_BIN/herdr"
 hat_assert_herdr_stubbed "$STUB_BIN" watchdog-auto-push
 
 jq '.held=false | .auto_push_count=0 | .stage="running"' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+wd_seed_dwell w3n-backend 1000
 : > "$HERDR_CALL_LOG"
 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
 if grep -q 'agent prompt' "$HERDR_CALL_LOG"; then
@@ -5036,6 +5055,7 @@ chmod +x "$STUB_BIN/herdr"
 hat_assert_herdr_stubbed "$STUB_BIN" watchdog-auto-push-done
 
 jq '.held=false | .auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+wd_seed_dwell w3n-backend 2000
 : > "$HERDR_CALL_LOG"
 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
 if grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
@@ -5066,6 +5086,7 @@ chmod +x "$STUB_BIN/herdr"
 hat_assert_herdr_stubbed "$STUB_BIN" watchdog-auto-push-limit-setup
 
 jq '.auto_push_count=10' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+wd_seed_dwell w3n-backend 1000
 n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
 : > "$HERDR_CALL_LOG"
 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
@@ -5737,6 +5758,7 @@ hat_assert_herdr_stubbed "$STUB_BIN" watchdog-reset-on-delivery
 
 jq '.auto_push_count=3 | .held=false | del(.last_delivered_at) | del(.auto_push_reset_seen_at)' \
   "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+wd_seed_dwell w3n-backend 9000
 # orchestrator 真的送出一則下行：instruct.sh 成功送出後寫
 # .last_delivered_at（stub 對 agent prompt 一律回成功）。
 bash "$SCRIPTS/instruct.sh" --to w3n-backend --text '繼續處理' >/dev/null 2>&1
@@ -5850,15 +5872,15 @@ chmod +x "$STUB_BIN/herdr"
 hat_assert_herdr_stubbed "$STUB_BIN" watchdog-stall
 
 n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
-AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+AGENT_TEAM_STALL_SECONDS=2 AGENT_TEAM_POLL_SECONDS=1 AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=1 AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
 n_inbox_mid=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
 if [ "$n_inbox_mid" -eq "$n_inbox_before" ]; then
   pass "watchdog：第一次觀測到這個 stamp 只是建立基準，還不算停滯"
 else
   bad "watchdog：第一輪就升級了，門檻沒有生效（before=$n_inbox_before mid=$n_inbox_mid）"
 fi
-sleep 2
-AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+sleep 3
+AGENT_TEAM_STALL_SECONDS=2 AGENT_TEAM_POLL_SECONDS=1 AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=1 AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
 n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
 if [ "$n_inbox_after" -gt "$n_inbox_mid" ]; then
   pass "watchdog：stamp 不動的 worker（w3n-backend）連續超過門檻時升級（AGENT_TEAM_STALL_SECONDS 可覆寫）"
@@ -5944,6 +5966,623 @@ else
   bad "watchdog：得到 rc=$rc"
 fi
 
+# ===== watchdog.sh：自動推進的閒置停留門檻與倍增間隔（線上故障修正）=====
+# 見 watchdog.sh 檔頭「自動推進的閒置停留門檻」一節：第 k 次推進（k 是
+# 目前的 .auto_push_count，從 0 起算）要求 worker 連續閒置（現在減
+# .last_seq_changed_at）至少 min(N * 2^k, CAP) 秒；N 預設 360、CAP 預設
+# 1500（AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS／AGENT_TEAM_AUTO_PUSH_MAX_
+# INTERVAL_SECONDS）。故障形狀：背景工作等待中的 worker 回合結束顯示為
+# idle，舊版每個輪詢（20 秒）都推一次，十次推完升級、orchestrator 一回
+# 覆又重來。
+# 本節共用的小工具：wd_dwell_stub 寫樁（狀態、state_change_seq 由參數給）、
+# wd_dwell_worker 重建 w3n-backend 記錄（count、inflight、stamp、已停留秒
+# 數由參數給；stamp 空字串代表從未觀察過）。
+wd_dwell_stub() {
+  local status="$1" seq="$2"
+  cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"$status","state_change_seq":$seq,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+  chmod +x "$STUB_BIN/herdr"
+}
+wd_dwell_worker() {
+  local count="$1" inflight="$2" stamp="$3" dwell="$4" now
+  now="$(date +%s)"
+  jq -n --argjson c "$count" --arg inflight "$inflight" --arg stamp "$stamp" --argjson at "$((now - dwell))" \
+    '{pane_id:"w3N:p2",held:false,role:"backend",stage:"running",auto_push_count:$c}
+     | if $inflight != "" then .auto_push_inflight = ($inflight == "true") else . end
+     | if $stamp != "" then .last_seq_stamp = $stamp | .last_seq_changed_at = $at else . end' \
+    > "$REG/workers/w3n-backend.json"
+}
+wd_pushed() { grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; }
+wd_field() { jq -r ".$1 | if . == null then \"absent\" else . end" "$REG/workers/w3n-backend.json"; }
+
+wd_dwell_stub idle 7000
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-idle
+
+# ---- 故障本身：剛變成 idle（dwell 0 < N）不得推進 ----
+wd_dwell_worker 0 "" 7000 0
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if wd_pushed; then
+  bad "watchdog：剛閒置（停留 0 秒，低於 N=360）就被推進了——沒有停留門檻"
+else
+  pass "watchdog：閒置停留低於 N 時不推進"
+fi
+if [ "$(wd_field auto_push_count)" = "0" ]; then
+  pass "watchdog：停留不足時計數維持 0"
+else
+  bad "watchdog：停留不足時計數變成 $(wd_field auto_push_count)"
+fi
+
+# ---- 停留達 N、計數 0：推進，計數 1，inflight 變 true ----
+wd_dwell_worker 0 "" 7000 400
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if wd_pushed; then
+  pass "watchdog：停留達 N（計數 0）時推進"
+else
+  bad "watchdog：停留 400 秒、計數 0 沒有推進"
+fi
+if [ "$(wd_field auto_push_count)" = "1" ]; then
+  pass "watchdog：推進後計數為 1"
+else
+  bad "watchdog：推進後計數是 $(wd_field auto_push_count)"
+fi
+if [ "$(wd_field auto_push_inflight)" = "true" ]; then
+  pass "watchdog：推進成功後 .auto_push_inflight 為 true"
+else
+  bad "watchdog：推進後 .auto_push_inflight 是 $(wd_field auto_push_inflight)"
+fi
+
+# ---- 計數 1 要 2N=720 秒：N 與 2N 之間不推，達 2N 才推 ----
+wd_dwell_worker 1 false 7000 400
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if wd_pushed; then
+  bad "watchdog：計數 1、停留 400 秒（介於 N 與 2N 之間）就推進了"
+else
+  pass "watchdog：計數 1 時停留介於 N 與 2N 之間不推進"
+fi
+wd_dwell_worker 1 false 7000 730
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if wd_pushed && [ "$(wd_field auto_push_count)" = "2" ]; then
+  pass "watchdog：計數 1 時停留達 2N 推進，計數變 2"
+else
+  bad "watchdog：計數 1、停留 730 秒沒有推進（count=$(wd_field auto_push_count)）"
+fi
+
+# ---- CAP：計數 3 時 N*2^3=2880 超過 CAP=1500，以 CAP 為準 ----
+wd_dwell_worker 3 false 7000 1400
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if wd_pushed; then
+  bad "watchdog：計數 3、停留 1400 秒（低於 CAP）就推進了"
+else
+  pass "watchdog：計數 3 時停留低於 CAP 不推進"
+fi
+wd_dwell_worker 3 false 7000 1510
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if wd_pushed && [ "$(wd_field auto_push_count)" = "4" ]; then
+  pass "watchdog：計數 3 時 N*2^k 超過 CAP，停留達 CAP 即推進（不必等 2880 秒）"
+else
+  bad "watchdog：計數 3、停留 1510 秒沒有推進（count=$(wd_field auto_push_count)）"
+fi
+
+# ---- 環境變數可覆寫：N=10 時停留 15 秒（計數 0）即推進 ----
+wd_dwell_worker 0 "" 7000 15
+: > "$HERDR_CALL_LOG"
+AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=10 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if wd_pushed; then
+  pass "watchdog：AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS 可覆寫"
+else
+  bad "watchdog：AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=10 沒有生效"
+fi
+wd_dwell_worker 3 false 7000 15
+: > "$HERDR_CALL_LOG"
+AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=1 AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS=10 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if wd_pushed; then
+  pass "watchdog：AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS 可覆寫（計數 3、CAP=10、停留 15 秒即推進）"
+else
+  bad "watchdog：AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS=10 沒有生效"
+fi
+
+# ---- 預設上限是 4：計數 4 在沒有環境變數覆寫時升級，且不必等停留時間
+#      （達上限升級維持原本的時機）----
+wd_dwell_worker 4 false 7000 0
+n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
+if [ "$n_inbox_after" -gt "$n_inbox_before" ] && ! wd_pushed; then
+  pass "watchdog：預設上限 4——計數 4 的第一個閒置輪詢就升級，不再推進、不等停留時間"
+else
+  bad "watchdog：計數 4 沒有照預設上限升級（before=$n_inbox_before after=$n_inbox_after）"
+fi
+
+# ---- 自行恢復活動歸零：沒有 inflight 時，stamp 變動且新狀態是 working
+#      或 blocked（worker 進入活動狀態）才把計數歸零 ----
+wd_dwell_stub working 7000
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-self-resume
+wd_dwell_worker 3 false 6000 5000
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "0" ]; then
+  pass "watchdog：非推進造成的 stamp 變動（inflight=false）把計數歸零"
+else
+  bad "watchdog：自行恢復活動後計數是 $(wd_field auto_push_count)，預期 0"
+fi
+wd_dwell_worker 3 "" 6000 5000
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "0" ]; then
+  pass "watchdog：.auto_push_inflight 欄位缺席時視同 false，stamp 變動同樣歸零"
+else
+  bad "watchdog：inflight 缺席時計數是 $(wd_field auto_push_count)，預期 0"
+fi
+wd_dwell_stub idle 7000
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-after-self-resume
+
+# ---- stamp 沒變就不歸零（歸零只由 stamp 變動觸發）----
+wd_dwell_worker 2 false 7000 100
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "2" ]; then
+  pass "watchdog：stamp 沒變時計數不被歸零"
+else
+  bad "watchdog：stamp 沒變計數卻變成 $(wd_field auto_push_count)"
+fi
+
+# ---- 第一次觀察（.last_seq_stamp 缺席）不歸零：安全選項 ----
+wd_dwell_worker 3 false "" 0
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "3" ]; then
+  pass "watchdog：第一次觀察到 worker（沒有舊 stamp）不歸零"
+else
+  bad "watchdog：第一次觀察就把計數歸零成 $(wd_field auto_push_count)"
+fi
+
+# ---- 推進造成的活動不歸零：inflight=true、stamp 變、狀態 working → 計數
+#      與 inflight 都不動；之後 stamp 再變成 idle → 計數不動、inflight 清
+#      掉 ----
+wd_dwell_stub working 7001
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-working
+wd_dwell_worker 2 true 7000 100
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "2" ] && [ "$(wd_field auto_push_inflight)" = "true" ]; then
+  pass "watchdog：推進造成的活動（inflight=true、working）不歸零，inflight 維持 true"
+else
+  bad "watchdog：推進造成的活動後 count=$(wd_field auto_push_count) inflight=$(wd_field auto_push_inflight)"
+fi
+wd_dwell_stub idle 7002
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-working-then-idle
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "2" ] && [ "$(wd_field auto_push_inflight)" = "false" ]; then
+  pass "watchdog：推進造成的回合結束（stamp 變、idle）計數不動、inflight 清成 false"
+else
+  bad "watchdog：回合結束後 count=$(wd_field auto_push_count) inflight=$(wd_field auto_push_inflight)"
+fi
+if wd_pushed; then
+  bad "watchdog：回合剛結束（停留 0 秒）就又推進了"
+else
+  pass "watchdog：回合剛結束時停留重新起算，不立刻再推"
+fi
+# 清掉 inflight 之後，下一次自行恢復才歸零。
+wd_dwell_stub working 7003
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-spontaneous-after-clear
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "0" ]; then
+  pass "watchdog：inflight 清掉之後的下一次活動才被視為自行恢復而歸零"
+else
+  bad "watchdog：inflight 清掉後的活動沒有歸零，計數 $(wd_field auto_push_count)"
+fi
+# ---- 審查 I3：idle／done／unknown 之間的 stamp 變動不是自行恢復活動 ----
+# inflight=false、stamp 變動、新狀態不是 working／blocked：什麼都不動。
+for wd_flap_status in idle "done" unknown; do
+  wd_dwell_stub "$wd_flap_status" 7005
+  hat_assert_herdr_stubbed "$STUB_BIN" "watchdog-dwell-flap-$wd_flap_status"
+  wd_dwell_worker 3 false 7000 100
+  bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+  if [ "$(wd_field auto_push_count)" = "3" ]; then
+    pass "watchdog：inflight=false、stamp 變動、狀態 $wd_flap_status 不歸零（worker 什麼都沒做）"
+  else
+    bad "watchdog：狀態 $wd_flap_status 的 stamp 變動把計數變成 $(wd_field auto_push_count)，預期維持 3"
+  fi
+done
+# blocked 是活動狀態：歸零（同一輪接著走 blocked 升級，不影響計數斷言）。
+wd_dwell_stub blocked 7006
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-self-resume-blocked
+wd_dwell_worker 3 false 7000 100
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "0" ]; then
+  pass "watchdog：inflight=false、stamp 變動、狀態 blocked（進入活動狀態）把計數歸零"
+else
+  bad "watchdog：blocked 的 stamp 變動後計數是 $(wd_field auto_push_count)，預期 0"
+fi
+
+# ---- 自行恢復活動歸零時，升級閂鎖同一輪清掉（working 不是升級條件）----
+wd_dwell_stub working 7007
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-latch-clear
+wd_dwell_worker 4 false 7000 100
+jq '.escalation_active="auto_push_limit"' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "0" ] && [ "$(wd_field escalation_active)" = "absent" ]; then
+  pass "watchdog：已被閂鎖的達上限升級，自行恢復活動歸零後同一輪閂鎖清空"
+else
+  bad "watchdog：閂鎖中自行恢復活動後 count=$(wd_field auto_push_count) escalation_active=$(wd_field escalation_active)"
+fi
+
+# ---- 推進造成的回合期間 blocked：旗標維持 true、計數不動 ----
+wd_dwell_stub blocked 7008
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-inflight-blocked
+wd_dwell_worker 2 true 7000 100
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "2" ] && [ "$(wd_field auto_push_inflight)" = "true" ]; then
+  pass "watchdog：推進造成的回合期間 blocked，計數不動、inflight 維持 true"
+else
+  bad "watchdog：inflight 期間 blocked 後 count=$(wd_field auto_push_count) inflight=$(wd_field auto_push_inflight)"
+fi
+
+# ---- done 的 stamp 變動同樣清掉 inflight、計數不動 ----
+wd_dwell_stub "done" 7009
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-inflight-done
+wd_dwell_worker 2 true 7000 100
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "2" ] && [ "$(wd_field auto_push_inflight)" = "false" ]; then
+  pass "watchdog：inflight=true、stamp 變動、狀態 done 清掉 inflight，計數不動"
+else
+  bad "watchdog：done 的 stamp 變動後 count=$(wd_field auto_push_count) inflight=$(wd_field auto_push_inflight)"
+fi
+
+# ---- 審查 I2：stamp 追蹤是單次轉換，寫入失敗不得造成歸零或清旗標 ----
+# 用 jq 樁只在轉換式含 .last_seq_stamp 時失敗（其餘呼叫轉給真的 jq），模
+# 擬「stamp 追蹤寫入失敗」；情境：inflight=true、stamp 變動、狀態 idle——
+# 正常會清旗標、計數不動；失敗那一輪什麼都不該變（尤其不能出現「旗標已
+# 清、stamp 沒追上」，否則下一輪同一個 stamp 變動會在 inflight=false 下
+# 被判成自行恢復活動而誤歸零），失敗排除後下一輪照常清旗標、計數仍不歸零。
+wd_dwell_stub working 7010
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-stamp-write-fail
+wd_dwell_worker 3 true 7000 100
+cat > "$STUB_BIN/jq" <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    *'.last_seq_stamp = $stamp'*)
+      echo "stub jq: 模擬 stamp 追蹤寫入失敗" >&2
+      exit 1
+      ;;
+  esac
+done
+exec /usr/bin/jq "$@"
+STUB
+chmod +x "$STUB_BIN/jq"
+hash -r
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+wd_fail_count="$(wd_field auto_push_count)"
+wd_fail_inflight="$(wd_field auto_push_inflight)"
+wd_fail_stamp="$(wd_field last_seq_stamp)"
+rm -f "$STUB_BIN/jq"
+hash -r
+if [ "$wd_fail_count" = "3" ] && [ "$wd_fail_inflight" = "true" ] && [ "$wd_fail_stamp" = "7000" ]; then
+  pass "watchdog：stamp 追蹤寫入失敗的那一輪，計數、inflight、stamp 都維持原樣（整筆沒變）"
+else
+  bad "watchdog：寫入失敗那一輪 count=$wd_fail_count inflight=$wd_fail_inflight stamp=$wd_fail_stamp，預期 3／true／7000"
+fi
+wd_dwell_stub idle 7011
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-stamp-write-retry
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "3" ] && [ "$(wd_field auto_push_inflight)" = "false" ]; then
+  pass "watchdog：失敗排除後下一輪照常清掉 inflight，計數沒有被誤歸零"
+else
+  bad "watchdog：重試那一輪 count=$(wd_field auto_push_count) inflight=$(wd_field auto_push_inflight)，預期 3／false"
+fi
+
+# ---- 再審 Important：自動推進也是先寫 inflight、再送 ----
+# (a) inflight 寫入失敗（jq 樁只在寫 .auto_push_inflight 時失敗）：這一輪不
+#     得送出（否則送出成功、旗標沒寫，下一輪 working 的 stamp 變動會被當
+#     成自發活動而誤歸零），計數不動；失敗排除後下一輪正常推進。
+wd_dwell_stub idle 7000
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-inflight-write-fail
+wd_dwell_worker 1 false 7000 730
+cat > "$STUB_BIN/jq" <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = '.auto_push_inflight = $v' ]; then
+    echo "stub jq: 模擬 .auto_push_inflight 寫入失敗" >&2
+    exit 1
+  fi
+done
+exec /usr/bin/jq "$@"
+STUB
+chmod +x "$STUB_BIN/jq"
+hash -r
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+wd_pushed_during_fail=0
+if wd_pushed; then wd_pushed_during_fail=1; fi
+wd_fail_count="$(wd_field auto_push_count)"
+wd_fail_inflight="$(wd_field auto_push_inflight)"
+rm -f "$STUB_BIN/jq"
+hash -r
+if [ "$wd_pushed_during_fail" -eq 0 ] && [ "$wd_fail_count" = "1" ] && [ "$wd_fail_inflight" != "true" ]; then
+  pass "watchdog：自動推進的 inflight 寫入失敗時這一輪不送出、計數不動（沒有「送出了卻沒設旗標」）"
+else
+  bad "watchdog：inflight 寫入失敗那一輪 pushed=$wd_pushed_during_fail count=$wd_fail_count inflight=$wd_fail_inflight"
+fi
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if wd_pushed && [ "$(wd_field auto_push_count)" = "2" ] && [ "$(wd_field auto_push_inflight)" = "true" ]; then
+  pass "watchdog：失敗排除後下一輪照常推進，計數 2、inflight 為 true"
+else
+  bad "watchdog：重試那一輪 count=$(wd_field auto_push_count) inflight=$(wd_field auto_push_inflight)"
+fi
+# (b) 送出失敗：旗標在送出之前已設、不收回，計數不加。
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":7000,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+if [ "\$1 \$2" = "agent prompt" ]; then
+  printf '{"error":{"code":"unknown_error","message":"送出失敗"}}' >&2
+  exit 1
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-push-send-fails
+wd_dwell_worker 1 false 7000 730
+: > "$HERDR_CALL_LOG"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if wd_pushed && [ "$(wd_field auto_push_inflight)" = "true" ] && [ "$(wd_field auto_push_count)" = "1" ]; then
+  pass "watchdog：自動推進送出失敗時 inflight 已是 true（先寫再送、不收回），計數仍不加"
+else
+  bad "watchdog：推進送出失敗後 inflight=$(wd_field auto_push_inflight) count=$(wd_field auto_push_count)"
+fi
+wd_dwell_stub idle 7000
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-after-push-send-fails
+
+# ---- 審查 I1：旗標在送出「之前」就已經是 true ----
+# 樁在收到 agent prompt 的當下把 worker 記錄裡的 .auto_push_inflight 抄到
+# 檔案裡，事後比對；instruct.sh 與補投兩條路徑各驗一次。
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
+if [ "\$1 \$2" = "agent list" ]; then
+  printf '{"result":{"agents":[{"name":"w3n-backend","workspace_id":"w3N","agent_status":"idle","state_change_seq":7012,"pane_id":"w3N:p2","tab_id":"w3N:t2"}]}}'
+  exit 0
+fi
+if [ "\$1 \$2" = "agent prompt" ]; then
+  /usr/bin/jq -r '.auto_push_inflight // "absent"' "$REG/workers/w3n-backend.json" > "$T/inflight-at-send"
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-before-send
+rm -f "$T/inflight-at-send"
+wd_dwell_worker 3 false 7012 100
+bash "$SCRIPTS/instruct.sh" --to w3n-backend --text '停手' --kind halt >/dev/null 2>&1
+if [ "$(cat "$T/inflight-at-send" 2>/dev/null)" = "true" ]; then
+  pass "instruct：agent prompt 送出的當下 .auto_push_inflight 已經是 true（先寫再送）"
+else
+  bad "instruct：送出當下 inflight 是 '$(cat "$T/inflight-at-send" 2>/dev/null)'，預期 true"
+fi
+rm -f "$T/inflight-at-send"
+wd_dwell_worker 3 false 7012 100
+jq '.pending_resend=[{"text":"補投","kind":"instruct"}]' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(cat "$T/inflight-at-send" 2>/dev/null)" = "true" ]; then
+  pass "watchdog：補投送出的當下 .auto_push_inflight 已經是 true（先寫再送）"
+else
+  bad "watchdog：補投送出當下 inflight 是 '$(cat "$T/inflight-at-send" 2>/dev/null)'，預期 true"
+fi
+# 同一個補投：非 halt 補投成功後計數歸零、inflight 為 true。
+if [ "$(wd_field auto_push_count)" = "0" ] && [ "$(wd_field auto_push_inflight)" = "true" ]; then
+  pass "watchdog：非 halt 補投成功後計數歸零，inflight 為 true"
+else
+  bad "watchdog：非 halt 補投後 count=$(wd_field auto_push_count) inflight=$(wd_field auto_push_inflight)"
+fi
+
+# ---- instruct.sh 結束碼 7（進待補送佇列）：旗標已經在送出之前設成 true，
+#      失敗也不收回，最終仍是 true ----
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"code":"agent_blocked","message":"blocked"}}' >&2
+exit 1
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" instruct-exit7-inflight
+wd_dwell_worker 3 false 7012 100
+rc=0; bash "$SCRIPTS/instruct.sh" --to w3n-backend --text '停手' --kind halt >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 7 ] && [ "$(wd_field auto_push_inflight)" = "true" ]; then
+  pass "instruct：結束碼 7（進待補送佇列）時 .auto_push_inflight 仍是 true（送出之前已設、失敗不收回）"
+else
+  bad "instruct：結束碼 7 路徑 rc=$rc inflight=$(wd_field auto_push_inflight)，預期 7／true"
+fi
+wd_dwell_stub idle 7000
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-after-exit7
+
+# ---- 叫停不是續杯（延續 instruct.sh「叫停不是續杯」）：成功送達的下行引
+#      發的回合不是自發活動——--kind halt 送達後 .auto_push_inflight 為
+#      true，之後 stamp 變成 working、再變成 idle，計數都不得歸零 ----
+wd_dwell_stub idle 7000
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-halt
+wd_dwell_worker 3 false 7000 100
+bash "$SCRIPTS/instruct.sh" --to w3n-backend --text '停手' --kind halt >/dev/null 2>&1
+if [ "$(wd_field auto_push_inflight)" = "true" ] && [ "$(wd_field last_delivered_at)" = "absent" ]; then
+  pass "instruct：成功送達 --kind halt 後 .auto_push_inflight 為 true，且仍不寫 .last_delivered_at"
+else
+  bad "instruct：halt 送達後 inflight=$(wd_field auto_push_inflight) last_delivered_at=$(wd_field last_delivered_at)"
+fi
+wd_dwell_stub working 7001
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-halt-working
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "3" ] && [ "$(wd_field auto_push_inflight)" = "true" ]; then
+  pass "watchdog：halt 引發的回合（stamp 變、working）不歸零計數，inflight 維持 true"
+else
+  bad "watchdog：halt 後 working 輪 count=$(wd_field auto_push_count) inflight=$(wd_field auto_push_inflight)"
+fi
+wd_dwell_stub idle 7002
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-halt-idle
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "3" ] && [ "$(wd_field auto_push_inflight)" = "false" ]; then
+  pass "watchdog：halt 引發的回合結束（stamp 變、idle）計數仍不歸零，inflight 清成 false"
+else
+  bad "watchdog：halt 後 idle 輪 count=$(wd_field auto_push_count) inflight=$(wd_field auto_push_inflight)（計數被歸零代表叫停續杯的洞重開了）"
+fi
+
+# ---- 非 halt 下行：計數照舊由 .last_delivered_at 水位線歸零 ----
+wd_dwell_stub idle 7000
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-nonhalt
+wd_dwell_worker 3 false 7000 100
+bash "$SCRIPTS/instruct.sh" --to w3n-backend --text '繼續處理' >/dev/null 2>&1
+if [ "$(wd_field auto_push_inflight)" = "true" ] && [ "$(wd_field last_delivered_at)" != "absent" ]; then
+  pass "instruct：成功送達非 halt 下行後寫 .last_delivered_at，且 .auto_push_inflight 為 true"
+else
+  bad "instruct：非 halt 送達後 inflight=$(wd_field auto_push_inflight) last_delivered_at=$(wd_field last_delivered_at)"
+fi
+wd_dwell_stub working 7001
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-nonhalt-working
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+# 水位線歸零只在 idle／done 的輪詢才跑（working 時看門狗在更早處就返回），
+# 所以回合結束（idle）那一輪才看得到歸零。
+wd_dwell_stub idle 7002
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-nonhalt-idle
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(wd_field auto_push_count)" = "0" ]; then
+  pass "watchdog：非 halt 下行仍經 .last_delivered_at 水位線把計數歸零"
+else
+  bad "watchdog：非 halt 下行後計數是 $(wd_field auto_push_count)，預期 0"
+fi
+
+# ---- 補投：halt 那一筆補投成功不歸零計數，但 inflight 設成 true ----
+wd_dwell_stub idle 7000
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-resend-halt
+wd_dwell_worker 3 false 7000 100
+jq '.pending_resend=[{"text":"停手","kind":"halt"}]' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+if [ "$(jq -r '.pending_resend | length' "$REG/workers/w3n-backend.json")" = "0" ] \
+  && [ "$(wd_field auto_push_count)" = "3" ] && [ "$(wd_field auto_push_inflight)" = "true" ]; then
+  pass "watchdog：補投 halt 成功後計數不歸零，inflight 為 true"
+else
+  bad "watchdog：補投 halt 後 count=$(wd_field auto_push_count) inflight=$(wd_field auto_push_inflight)"
+fi
+
+wd_dwell_stub idle 7000
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-dwell-validation
+
+# ---- 啟動驗證：新環境變數同樣要純數字（且不超過 9 位數）、1 <= N <= CAP、
+#      CAP + 輪詢間隔 <= stall ----
+rc=0; AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=abc bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS 非數字時以 2 結束"
+else
+  bad "watchdog：IDLE_SECONDS=abc 得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS=abc bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS 非數字時以 2 結束"
+else
+  bad "watchdog：MAX_INTERVAL_SECONDS=abc 得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=0 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=0 時以 2 結束（N 至少 1）"
+else
+  bad "watchdog：IDLE_SECONDS=0 得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=1600 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：N 大於 CAP（1600 > 預設 1500）時以 2 結束"
+else
+  bad "watchdog：N>CAP 得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS=1800 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：CAP 等於預設 stall（1800）時以 2 結束（否則第 4 次推進永遠搶不過停滯升級）"
+else
+  bad "watchdog：CAP=stall 得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_STALL_SECONDS=1000 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：CAP（預設 1500）大於覆寫後的 stall（1000）時以 2 結束"
+else
+  bad "watchdog：CAP>stall 得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_STALL_SECONDS=1520 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "watchdog：CAP + 輪詢間隔剛好等於 stall（1500 + 20 = 1520）時通過驗證"
+else
+  bad "watchdog：CAP+POLL=stall 邊界得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_STALL_SECONDS=1519 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：CAP + 輪詢間隔比 stall 大 1（1500 + 20 > 1519）時以 2 結束"
+else
+  bad "watchdog：CAP+POLL>stall 邊界得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_POLL_SECONDS=300 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "watchdog：覆寫輪詢間隔 300 使 CAP + 輪詢間隔剛好等於預設 stall（1800）時通過驗證"
+else
+  bad "watchdog：POLL=300 得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_POLL_SECONDS=301 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：輪詢間隔 301 使 CAP + 輪詢間隔超過預設 stall 時以 2 結束"
+else
+  bad "watchdog：POLL=301 得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=12345678901234567890 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS 為 20 位數時以 2 結束（不回繞）"
+else
+  bad "watchdog：IDLE_SECONDS 20 位數得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS=12345678901234567890 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS 為 20 位數時以 2 結束（不回繞）"
+else
+  bad "watchdog：MAX_INTERVAL_SECONDS 20 位數得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=0360 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "watchdog：AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=0360（前導 0）仍通過驗證，不被當成八進位"
+else
+  bad "watchdog：IDLE_SECONDS=0360 得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_POLL_SECONDS=12345678901234567890 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：AGENT_TEAM_POLL_SECONDS 為 20 位數時以 2 結束（不讓 CAP + 輪詢間隔的算術回繞）"
+else
+  bad "watchdog：POLL_SECONDS 20 位數得到 rc=$rc"
+fi
+rc=0; AGENT_TEAM_STALL_SECONDS=12345678901234567890 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "watchdog：AGENT_TEAM_STALL_SECONDS 為 20 位數時以 2 結束（不讓停滯門檻的算術回繞）"
+else
+  bad "watchdog：STALL_SECONDS 20 位數得到 rc=$rc"
+fi
+# 9 位數的邊界：N、CAP、STALL 都是 9 位數且彼此滿足關係（999999000 + 20 <=
+# 999999999），三倍預設（NEEDYOU 上限）的算術也不出問題。
+rc=0; AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=100000000 AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS=999999000 \
+  AGENT_TEAM_STALL_SECONDS=999999999 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "watchdog：N、CAP、STALL 恰好 9 位數且滿足關係時通過驗證（含 STALL * 3 的預設算術）"
+else
+  bad "watchdog：9 位數邊界得到 rc=$rc"
+fi
+
 # ===== watchdog.sh：升級去重（線上故障修正）=====
 # 見 watchdog.sh 檔頭「升級去重」一節：同一個條件只在「從不成立變成成
 # 立」的那一輪發出一次；持續成立時最多每隔 AGENT_TEAM_ESCALATION_
@@ -6011,6 +6650,9 @@ chmod +x "$STUB_BIN/herdr"
 hat_assert_herdr_stubbed "$STUB_BIN" watchdog-escalation-dedup-switch
 
 jq '.auto_push_count=99' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+# stamp 對齊樁（30001），否則這一輪會被當成 worker 自己恢復活動而把計數歸零，
+# 測不到「條件從 blocked 換成達上限」。
+wd_seed_dwell w3n-backend 30001
 n_inbox_before_switch=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
 AGENT_TEAM_ESCALATION_REPEAT_SECONDS=100 AGENT_TEAM_AUTO_PUSH_LIMIT=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
 n_inbox_after_switch=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
@@ -6064,10 +6706,12 @@ fi
 # worker 正是積壓最可能已經很可觀的那一個。
 #
 # state_change_seq 全程固定不動，模擬「真的卡在同一個核准框，沒有任何
-# 狀態轉換」；AGENT_TEAM_STALL_SECONDS 覆寫成 1 秒、
+# 狀態轉換」；AGENT_TEAM_STALL_SECONDS 覆寫成 2 秒（自動推進停留門檻
+# 的兩個環境變數同時壓到 1 秒、輪詢間隔也壓到 1 秒：啟動驗證要求 CAP +
+# 輪詢間隔 <= stall、N 至少 1，所以 stall 最小只能是 2）、
 # AGENT_TEAM_ESCALATION_REPEAT_SECONDS 未設時預設等於覆寫後的
 # stall_seconds（見 watchdog.sh `escalation_repeat_seconds="${AGENT_
-# TEAM_ESCALATION_REPEAT_SECONDS:-$stall_seconds}"`），中間夾一個 2 秒
+# TEAM_ESCALATION_REPEAT_SECONDS:-$stall_seconds}"`），中間夾一個 3 秒
 # 的真實 sleep，確保第二輪的 elapsed 同時超過兩個門檻——不論是哪一項
 # 搶到，第二輪都一定會落一筆新的升級訊息，斷言因此能直接比對「這筆新
 # 訊息是哪個措辭」，不必用推論代替。
@@ -6090,7 +6734,7 @@ hat_assert_herdr_stubbed "$STUB_BIN" watchdog-blocked-vs-stall
 # 第一輪：建立 state_change_seq 基準，`.last_seq_changed_at` 剛寫入，
 # 停滯偵測的 elapsed 是 0，不會誤觸；blocked 升級本身不看 elapsed，這
 # 一輪會先落一筆帶佇列筆數的 blocked 訊息，供後面確認前置狀態正確。
-AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+AGENT_TEAM_STALL_SECONDS=2 AGENT_TEAM_POLL_SECONDS=1 AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=1 AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
 first_seq="$(hat_last_seq_for_worker w3n-blockedstall)"
 first_summary="$(jq -r '.summary' "$REG/inbox/${first_seq}-w3n-blockedstall.json")"
 case "$first_summary" in
@@ -6106,9 +6750,9 @@ case "$first_summary" in
   *) bad "watchdog：第一輪 blocked 升級摘要沒有精確帶出待補送筆數 3：$first_summary" ;;
 esac
 
-sleep 2
+sleep 3
 n_inbox_before="$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)"
-AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+AGENT_TEAM_STALL_SECONDS=2 AGENT_TEAM_POLL_SECONDS=1 AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=1 AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
 n_inbox_after="$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)"
 if [ "$n_inbox_after" -gt "$n_inbox_before" ]; then
   pass "watchdog：blocked 且已超過停滯門檻時，第二輪仍然落了一筆新的升級訊息"
@@ -6596,6 +7240,7 @@ printf '{"pane_id":"w3N:p2","held":false,"role":"backend","stage":"running","aut
 # 輪確實執行了正常動作。
 printf '{"pane_id":"w3N:p2","held":false,"role":"backend","stage":"running","auto_push_count":0}' \
   > "$REG/workers/w3n-backend.json"
+wd_seed_dwell w3n-backend 3000
 rm -f "$T/watchdog-agent-list-counter"
 cat > "$STUB_BIN/herdr" <<STUB
 #!/usr/bin/env bash
@@ -6683,9 +7328,9 @@ fi
 
 # ---- stage=delivered：即使 state_change_seq 長時間不動也不判停滯 ----
 n_inbox_before=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
-AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
-sleep 2
-AGENT_TEAM_STALL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+AGENT_TEAM_STALL_SECONDS=2 AGENT_TEAM_POLL_SECONDS=1 AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=1 AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
+sleep 3
+AGENT_TEAM_STALL_SECONDS=2 AGENT_TEAM_POLL_SECONDS=1 AGENT_TEAM_AUTO_PUSH_IDLE_SECONDS=1 AGENT_TEAM_AUTO_PUSH_MAX_INTERVAL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
 n_inbox_after=$(find "$REG/inbox" -maxdepth 1 -type f -name '*.json' ! -name '*.lock' | wc -l)
 if [ "$n_inbox_after" -eq "$n_inbox_before" ]; then
   pass "watchdog：.stage=delivered 時即使超過停滯門檻也不升級"
@@ -6705,6 +7350,7 @@ fi
 
 # ---- .stage 欄位缺席：視同 running，照常自動推進 ----
 jq 'del(.stage) | .auto_push_count=0' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+wd_seed_dwell w3n-backend 40000
 : > "$HERDR_CALL_LOG"
 bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1
 if grep -Fq "agent prompt w3n-backend $HAT_AUTO_PUSH_TEXT" "$HERDR_CALL_LOG"; then
@@ -6768,11 +7414,14 @@ rm -f "$REG/inbox/91-w3n-backend.json"
 # ---- stage=delivered 疊加達上限：達上限升級也受 .stage 守衛影響（線
 #      上故障修正：這正是線上實際發生的形狀，故障 registry 裡的
 #      w4a-developer-1097-be 當時 .stage=delivered、.auto_push_
-#      count=10，「自動推進已達上限 10 次仍是 idle，改為升級」這句話
+#      count=10，「自動推進已達上限 10 次仍是 idle，改為升級」（當時的歷
+#      史訊息，當時預設上限是 10，現在是 4）這句話
 #      卻仍在 inbox 裡重複了 56 次、是全部訊息裡重複最多的一句——
 #      worker 已經不會被推進時，「已達上限」這句話語意失效，指向一件
 #      不再發生的事）----
 jq '.stage="delivered" | .auto_push_count=10' "$REG/workers/w3n-backend.json" > "$T/t" && mv "$T/t" "$REG/workers/w3n-backend.json"
+# stamp 對齊樁（40030），避免 stamp 變動被當成自行恢復活動而把計數 10 歸零。
+wd_seed_dwell w3n-backend 40030
 cat > "$STUB_BIN/herdr" <<STUB
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
@@ -6827,6 +7476,7 @@ hat_assert_herdr_stubbed "$STUB_BIN" watchdog-workspace-guard
 
 printf '{"pane_id":"otherws:p9","held":false}' > "$REG/workers/w3n-otherws-watchdog.json"
 printf '{"pane_id":"w3N:p2","held":false,"role":"backend","auto_push_count":0}' > "$REG/workers/w3n-backend.json"
+wd_seed_dwell w3n-backend 12000
 : > "$HERDR_CALL_LOG"
 rc=0; bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 0 ]; then
@@ -6848,6 +7498,7 @@ rm -f "$REG/workers/w3n-otherws-watchdog.json"
 #      stderr，見那裡同名一節） ----
 printf '{"held":false}' > "$REG/workers/w3n-nopane-watchdog.json"
 printf '{"pane_id":"w3N:p2","held":false,"role":"backend","auto_push_count":0}' > "$REG/workers/w3n-backend.json"
+wd_seed_dwell w3n-backend 12000
 : > "$HERDR_CALL_LOG"
 : > "$REG/watchdog.log"
 rc=0; bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
@@ -6891,6 +7542,8 @@ rm -f "$REG/workers/w3n-nopane-watchdog.json"
 rm -f "$T/wd-race-victim"
 printf '{"pane_id":"w3N:p6","held":false,"role":"race-a","auto_push_count":0}' > "$REG/workers/w3n-racea.json"
 printf '{"pane_id":"w3N:p7","held":false,"role":"race-b","auto_push_count":0}' > "$REG/workers/w3n-raceb.json"
+wd_seed_dwell w3n-racea 21000
+wd_seed_dwell w3n-raceb 21001
 cat > "$STUB_BIN/herdr" <<STUB
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$HERDR_CALL_LOG"
@@ -7293,7 +7946,7 @@ fi
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=619
+HAT_EXPECTED_ASSERTIONS=677
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
