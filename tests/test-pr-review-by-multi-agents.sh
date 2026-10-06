@@ -1622,10 +1622,15 @@ ccj="$claude_home_i/.claude.json"
 # left `herdr agent start` failing with agent_not_ready (the pane stopped on
 # claude's own "Quick safety check" trust dialog), while the same home
 # carrying the .projects form started cleanly. The top-level assertion this
-# replaces passed for a shape claude never reads.
+# replaces passed for a shape claude never reads. The two
+# hasClaudeMdExternalIncludes* keys sit in the same object, both true: they
+# approve the user's ~/.claude/rules imports up front so the "Allow external
+# CLAUDE.md file imports?" dialog never blocks the pane.
 if [ -f "$ccj" ] && [ ! -L "$ccj" ] \
   && jq -e '.hasCompletedOnboarding == true' "$ccj" >/dev/null \
   && jq -e --arg cwd "$reviewer_workdir_i" '.projects[$cwd].hasTrustDialogAccepted == true' "$ccj" >/dev/null \
+  && jq -e --arg cwd "$reviewer_workdir_i" '.projects[$cwd].hasClaudeMdExternalIncludesApproved == true' "$ccj" >/dev/null \
+  && jq -e --arg cwd "$reviewer_workdir_i" '.projects[$cwd].hasClaudeMdExternalIncludesWarningShown == true' "$ccj" >/dev/null \
   && jq -e '.projects | length == 1' "$ccj" >/dev/null \
   && jq -e 'has("hasTrustDialogAccepted") | not' "$ccj" >/dev/null; then
   pass "_write_claude_home_interactive 寫出以 .projects[workdir] 記錄信任的 .claude.json"

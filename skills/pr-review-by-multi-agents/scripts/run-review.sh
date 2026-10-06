@@ -1688,10 +1688,11 @@ ZRC
 # the pane logged in cleanly. The user's real ~/.claude.json
 # (roughly 116KB, carrying real project history) is never linked in
 # wholesale. Instead a minimal .claude.json is written by hand with just
-# the two things claude's interactive startup checks: hasCompletedOnboarding,
-# and .projects["<reviewer_workdir>"].hasTrustDialogAccepted -- keyed by
-# <reviewer_workdir>'s own absolute path, not the shared worktree path --
-# generated fresh on every call since the caller creates a new
+# what claude's interactive startup checks: hasCompletedOnboarding, and
+# under .projects["<reviewer_workdir>"] -- keyed by <reviewer_workdir>'s own
+# absolute path, not the shared worktree path -- hasTrustDialogAccepted plus
+# the two hasClaudeMdExternalIncludes* keys (see the paragraph on them
+# below), generated fresh on every call since the caller creates a new
 # reviewer_workdir per run.
 #
 # That nesting is load-bearing and was measured, not read off any doc. An
@@ -1715,8 +1716,30 @@ ZRC
 # findings do not conflict: this section is still about which JSON shape
 # `hasTrustDialogAccepted` needs, not about how a stuck pane is reported.
 # Re-verify this key's shape against a real binary if claude's own config
-# layout ever moves again; nothing in this script can detect the drift. Also
-# writes .zshrc via _write_env_scrubbing_zshrc (see that function's own
+# layout ever moves again; nothing in this script can detect the drift.
+#
+# The two hasClaudeMdExternalIncludes* keys, both true, pre-approve a
+# second dialog, "Allow external CLAUDE.md file imports?", so the reviewer
+# loads the user's ~/.claude/CLAUDE.md and ~/.claude/rules/*.md -- the
+# user's own choice: those are general rules they want claude reviewers to
+# follow. How they get loaded is indirect: cmd_prepare puts each run under
+# $HOME/.tmp/..., so with HOME swapped to <dir> the real ~/.claude is no
+# longer claude's config dir but an ancestor of cwd, and claude loads it as
+# project memory. ~/.claude/rules is a symlink into another repo, so its
+# files resolve outside cwd and claude asks before importing them; the
+# unattended pane would block on that dialog. Measured against claude
+# 2.1.289, isolated home built by this function, launched by herdr with
+# this script's own flags, checked with /memory: no keys -> the dialog;
+# Approved true + WarningShown true -> no dialog, CLAUDE.md plus all
+# rules files loaded; Approved false + WarningShown true -> no dialog,
+# only CLAUDE.md loaded (CLAUDE.md is not gated by this approval); cwd
+# under /tmp instead -> no dialog and nothing loaded. So this loading
+# depends on base_dir staying under the real $HOME: move it elsewhere and
+# these files silently stop loading. Both key names came from the claude
+# binary's strings, not any documentation; re-verify them against a real
+# binary if claude's config layout ever moves.
+#
+# Also writes .zshrc via _write_env_scrubbing_zshrc (see that function's own
 # docstring for what the file now contains and why -- it is no longer the
 # empty placeholder it used to be). The call that actually protects the
 # pane is cmd_prepare's own, written into <dir> right after mkdir -p first
@@ -1736,7 +1759,9 @@ _write_claude_home_interactive() {
   mkdir -p "$dir/.claude" || return 1
   ln -sf "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json" "$dir/.claude/.credentials.json" || return 1
   jq -n --arg cwd "$reviewer_workdir" \
-    '{hasCompletedOnboarding: true, projects: {($cwd): {hasTrustDialogAccepted: true}}}' \
+    '{hasCompletedOnboarding: true, projects: {($cwd): {hasTrustDialogAccepted: true,
+      hasClaudeMdExternalIncludesApproved: true,
+      hasClaudeMdExternalIncludesWarningShown: true}}}' \
     > "$dir/.claude.json" || return 1
   mkdir -p "$dir/.config" || return 1
   ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
