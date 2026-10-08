@@ -58,6 +58,20 @@ set -euo pipefail
 ZSHRC="${HOME}/.zshrc"
 BEGIN_MARK="# >>> cli-tools aliases (managed) >>>"
 END_MARK="# <<< cli-tools aliases (managed) <<<"
+# repo 內的 clauth 區段（託管區塊以 source 載入，見第 6 節）；路徑由本腳本
+# 自身位置推得，repo 放在哪裡都成立。
+CLAUTH_REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLAUTH_ZSH="${CLAUTH_REPO_DIR}/platforms/claude/clauth.zsh"
+# 在 linked git worktree 跑本腳本時，~/.zshrc 會指向該 worktree 的路徑；
+# worktree 一旦刪除，新 shell 會讀不到 clauth.zsh（見第 6 節的防護寫法）。
+# 只警告、不改路徑。判斷：linked worktree 的 --git-dir 與 --git-common-dir
+# 不同；非 git 環境或 git 不存在時靜默略過。
+_wt_gitdir="$(git -C "$CLAUTH_REPO_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null || true)"
+_wt_commondir="$(git -C "$CLAUTH_REPO_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [ -n "$_wt_gitdir" ] && [ -n "$_wt_commondir" ] && [ "$_wt_gitdir" != "$_wt_commondir" ]; then
+  echo "    [警告] ${CLAUTH_REPO_DIR} 是 linked git worktree，不是主 checkout；" >&2
+  echo "           ${ZSHRC} 將指向此 worktree 內的 ${CLAUTH_ZSH}，worktree 刪除後該行會失效。" >&2
+fi
 
 echo "==> 開始安裝 CLI 工具（此腳本可安全重複執行）"
 
@@ -370,11 +384,13 @@ fi
 #      二進位，絕不額外呼叫 codegraph 官方 CLI 提供的 install 子指令——
 #      已實測驗證：`codegraph install -t opencode` 會把
 #      ~/.config/opencode/opencode.json 從 symlink 換成實體檔；
-#      `codegraph install -t claude` 會把 ~/.claude/settings.json 從
-#      symlink 換成實體檔；即使加上 --no-permissions 旗標，settings.json
-#      仍會被換掉（它還是要寫入 codegraph 的 prompt-hook）。檔案內容是
-#      merge 的，repo 原始檔不會被改壞，但 symlink 一旦消失，該檔案就永久
-#      脫離 repo 管理，之後 install.sh 只會回報 CONFLICT 並跳過。本 repo
+#      `codegraph install -t claude` 會改寫 ~/.claude/settings.json（實測
+#      當時它還是指向 repo 的 symlink，被換成實體檔；現在 install.sh 已不
+#      再 symlink 它，改由 clauth 擁有、repo 版本靠 `--settings` 載入，見
+#      platforms/claude/clauth.zsh）；即使加上 --no-permissions 旗標，仍會
+#      寫入 codegraph 的 prompt-hook。檔案內容是 merge 的，repo 原始檔不會
+#      被改壞，但 opencode.json 的 symlink 一旦消失，該檔案就永久脫離 repo
+#      管理，之後 install.sh 只會回報 CONFLICT 並跳過。本 repo
 #      的 codegraph MCP 接線改採宣告式：codex 走
 #      platforms/codex/config.toml、opencode 走
 #      platforms/opencode/opencode.json、Claude Code 走 install.sh 裡的
@@ -472,10 +488,15 @@ fi
 #      前置空行只屬於「附加」路徑、且永遠落在區塊之外。重生路徑替換的
 #      範圍恰為 BEGIN..END，因此區塊外既有的分隔空行不會被動到，也不會
 #      每次重跑就多長一行。
-#    literal 保留：clw / clre 等含
-#      $() 的函式與行，皆以 quoted heredoc 產生，寫入後字面與來源完全
-#      一致，寫入時不會被本腳本的 shell 展開，留待 ~/.zshrc 載入時
-#      才由 zsh 於執行期展開。
+#    literal 保留：區塊內含 $() 的函式與行，皆以 quoted heredoc 產生，
+#      寫入後字面與來源完全一致，寫入時不會被本腳本的 shell 展開，留待
+#      ~/.zshrc 載入時才由 zsh 於執行期展開。
+#    clauth 區段不內嵌於區塊：clauto、_clauth_smart_pick 與 cl* / clp*
+#      alias（含 clw / clre 等含 $() 者）都放在 repo 的
+#      platforms/claude/clauth.zsh，區塊只寫入一行防護式 source（可讀才
+#      `source '<絕對路徑>'`，否則在 stderr 印警告）
+#      （路徑為本腳本執行時由自身位置推得，見 CLAUTH_ZSH）。編輯該檔後新開
+#      的 shell 即生效，不需重跑本腳本。
 # ------------------------------------------------------------
 echo "==> 同步 alias 至 ${ZSHRC}"
 touch "$ZSHRC"
@@ -497,127 +518,20 @@ alias tree="eza --long --tree"
 alias md="glow -lt"
 #alias glow="glow -lt"
 alias csv="csvlens --color-columns --ignore-case --wrap words"
-## clauth 智慧選 profile（claude 啟動前自動判斷要用哪個 profile）
-# _clauth_smart_pick 依 `clauth status --json` 中每個 auth_status=="ok" profile
-# 的 7d／5h 用量視窗計算分數 S，挑最適合現在使用的 profile；claude 改呼叫
-# clauto，不再固定寫死 onramplab 或 personal。
-#   w  = 100 - 7d 視窗 utilization_pct（缺 7d 視窗視為已用滿，w=0）
-#   T  = 距 7d resets_at 的小時數，下限鎖 0.25 小時
-#   r5 = 100 - 5h 視窗 utilization_pct（缺 5h 視窗視為尚未使用，r5=100）
-#   t5 = 距 5h resets_at 的小時數（缺視窗或已過期記為 0）
-#   c(t) = 台北時間週一至週五 09:00–19:00（不含 19:00）每小時耗用 40%，其餘 25%
-#   E  = now 到 5h 重置這段時間，逐 15 分鐘 slot 累加 c(slot 起點)，最後不足
-#        15 分鐘的 slot 依剩餘比例加權（t5=0 時 E=0）
-#   F  = E=0 時為 1，否則 min(1, r5/E)；U = max(w-2, 0)/T；S = U * F
-# 篩選：先剔除 r5<=2 或 w<=2 者；剩餘中若有 2<w<=5 且 F>=0.5（即將用完 7d 配額、
-# 但 5h 還撐得住）者，取其中 S 最高者；否則取剩餘中 S 最高者；全數被剔除時
-# 回退 .active_profile。CLAUTH_PICK_NOW（epoch 秒）可覆寫「現在時間」，供測試
-# 用固定時間注入，未設定時才用系統當下時間。
-_clauth_smart_pick() {
-  local now target
-  now="${CLAUTH_PICK_NOW:-$(date +%s)}"
-  target=$(clauth status --json 2>/dev/null | jq -r --argjson now "$now" '
-    def parse_epoch:
-      sub("(\\.[0-9]+)?(Z|\\+00:00)$"; "Z") | fromdateiso8601;
-    def rate($t):
-      ($t + 8*3600 | gmtime) as $tp
-      | ($tp[6]) as $wday
-      | ($tp[3]*3600 + $tp[4]*60 + $tp[5]) as $secofday
-      | if ($wday >= 1 and $wday <= 5 and $secofday >= 9*3600 and $secofday < 19*3600)
-        then 40 else 25 end;
-    def win($p; $label):
-      ($p.windows // []) | map(select(.label == $label)) | first;
-    def expected_consumption($now; $reset_epoch):
-      if $reset_epoch == null then 0
-      else ([0, ($reset_epoch - $now)] | max) as $total
-        | ($total / 900 | floor) as $nfull
-        | ($total - $nfull*900) as $rem
-        | (if $rem > 0 then $nfull + 1 else $nfull end) as $nslots
-        | reduce range(0; $nslots) as $i
-            (0; . + (rate($now + $i*900) * 0.25 * (if $i < $nfull then 1 else ($rem/900) end)))
-      end;
-    def score($p):
-      win($p; "7d") as $w7
-      | win($p; "5h") as $w5
-      | (if $w7 == null then 100 else $w7.utilization_pct end) as $u7
-      | (100 - $u7) as $w
-      | (if $w7.resets_at == null then null else ($w7.resets_at | parse_epoch) end) as $r7e
-      | (if $r7e == null then 0.25 else ([0.25, (($r7e - $now) / 3600)] | max) end) as $T
-      | (if $w5 == null then 0 else $w5.utilization_pct end) as $u5
-      | (100 - $u5) as $r5
-      | (if $w5.resets_at == null then null else ($w5.resets_at | parse_epoch) end) as $r5e
-      | expected_consumption($now; $r5e) as $e
-      | (if $e == 0 then 1 else ([1, ($r5 / $e)] | min) end) as $f
-      | (([$w - 2, 0] | max) / $T) as $u
-      | { name: $p.name, w: $w, r5: $r5, f: $f, s: ($u * $f) };
-    . as $root
-    | ($root.profiles // [])
-    | map(select(.auth_status == "ok"))
-    | map(score(.))
-    | map(select(.r5 > 2 and .w > 2)) as $remain
-    | ($remain | map(select(.w > 2 and .w <= 5 and .f >= 0.5))) as $finish
-    | (if ($finish | length) > 0 then $finish else $remain end) as $pool
-    | if ($pool | length) > 0 then ($pool | max_by(.s) | .name)
-      else ($root.active_profile // empty)
-      end
-  ')
-  echo "${target:-onramplab}"
-}
-clauto() { local profile; profile=$(_clauth_smart_pick); echo "==> [clauth] 選定 profile: $profile" >&2; clauth start "$profile" -- --permission-mode auto "$@"; }
-alias claude='clauto'
-## aliases for claude code
-# 統一透過 clauth 的 profile 啟動 claude，不再直接呼叫 claude、也不再走
-# 自製的 _ccp_launch config-dir 切換函式（已移除）。clauth start 執行期間
-# 對 CLAUDE_CONFIG_DIR=~/.clauth/profiles/<profile>/runtime-<pid>-0
-# （數字隨每次執行改變）做完整列舉，已實測驗證這不是複製、而是「幾乎全部
-# symlink、僅兩個實體檔」的混合結構：47 個 symlink、剛好 2 個實體檔、0 個
-# 實體目錄。
-#   - symlink 回 /home/eddie/.claude/<同名>：agents、rules、hooks、
-#     skills、commands、CLAUDE.md、projects、session-env、file-history、
-#     tasks、settings.local.json、remote-settings.json。
-#   - 唯二的實體檔：.claude.json（119k，user-scope MCP 設定如 codegraph
-#     所在處；本體是與 ~/.claude 同層的手足檔案 $HOME/.claude.json，不在
-#     ~/.claude 目錄內——已確認 ~/.claude/.claude.json 並不存在）與
-#     settings.json（7.0k，clauth 應是為了注入自己的欄位才複製而非直接
-#     symlink）。
-# 已實測驗證 clauth 把 .claude.json 這份手足檔案的內容也帶進了 runtime
-# 目錄：`clauth start personal -- mcp list` 的輸出與全域 `claude mcp list`
-# 完全一致，包含 `codegraph: codegraph serve --mcp - ✔ Connected`。
-# 更重要的是：projects、session-env、file-history、tasks 這四個 session
-# 資料目錄全部是 symlink 回 ~/.claude 本體，根本不住在會隨 session 結束
-# 而消失的暫時目錄裡——「移除 --claude-personal 後 session 仍然共享」這
-# 件事因此有了直接證據，不再只是推論；這正是 --claude-personal 機制原本
-# 存在的兩個目的（第二組憑證隔離、跨訂閱共享 session）裡，第二個目的能
-# 被 clauth 直接承接的依據。
-# clauth 的 usage 建議把它自己的旗標放在 profile 名之前，但那只是建議的
-# 擺放位置，不等於解析器的實際攔截範圍——兩者不可混為一談。已逐一實測：
-# `clauth start <profile> --help`（不加 `--`）會印出 clauth 自己的 start
-# 說明、claude 根本沒被執行；`--theme` 給無效值會噴 clauth 自己的
-# "invalid value ... for '--theme <TIER>'"，代表它同樣在 profile 名之後
-# 仍被 clauth 解析；但 `--version` 不會被攔截，照樣轉交 claude（印出
-# claude 的版本而非 clauth 的）。因此攔截範圍實測為 `--help`／`-h`／
-# `--theme`，不含 `--version`。
-# 每個 alias 一律以 `--` 分隔 clauth 與 claude 的引數，即使該 alias 目前
-# 沒有任何與 clauth 同名的旗標——理由是使用者在 alias 後面自行追加的引數
-# （例如 `cla --model opus`）也會落在 `--` 之後；一旦追加到上述會被攔截
-# 的旗標，不加 `--` 就會被 clauth 吃掉，而非原樣轉交給 claude。
-# 已實測確認 `clauth start <profile> --` 這種尾端
-# 只有 `--`、後面沒有任何引數的形式不會被拒絕：clap 會把它解析為空的
-# CLAUDE_ARGS，仍正常轉交 claude 執行（exit code 0）。
-# cl* 對應 onramplab profile（Team 方案），clp* 對應 personal profile
-# （Max 方案）——兩個 profile 名稱皆取自 `clauth list` 的實際輸出，非
-# 隨意命名。
-alias cl='clauth start onramplab --'
-alias cla='clauth start onramplab -- --permission-mode auto'
-alias clc='clauth start onramplab -- --permission-mode auto --continue'
-alias clr='clauth start onramplab -- --permission-mode auto --resume'
-alias clw='clauth start onramplab -- --permission-mode auto --worktree "$(basename $(git rev-parse --show-toplevel))/wt/$(date +%Y%m%d-%H%M%S)"'
-alias clre='clauth start onramplab -- --permission-mode auto --remote-control --name remote-control-onr-notebook-$(date +%Y%m%d-%H%M%S)'
-alias clp='clauth start personal -- --permission-mode auto'
-alias clpc='clauth start personal -- --permission-mode auto --continue'
-alias clpr='clauth start personal -- --permission-mode auto --resume'
-alias clpw='clauth start personal -- --permission-mode auto --worktree "$(basename $(git rev-parse --show-toplevel))/wt/$(date +%Y%m%d-%H%M%S)"'
-alias clpre='clauth start personal -- --permission-mode auto --remote-control --name remote-control-personal-notebook-$(date +%Y%m%d-%H%M%S)'
+EOF
+  # clauth 區段（_clauth_smart_pick、clauto、alias claude、cl*/clp* alias）
+  # 已移到 repo 內的 platforms/claude/clauth.zsh；託管區塊只放一行 source
+  # 它的指令，所以修改該檔在新開的 shell 即生效，不需重跑本腳本。路徑為本
+  # 腳本執行當下由自身位置推得的絕對路徑，以單引號包住並轉義路徑內的單引
+  # 號，含空白的路徑在 zsh 端不會被拆開。寫入的是一行防護式寫法：檔案可讀
+  # 才 source，否則（repo 搬動、或從已刪除的 worktree 安裝）改在 stderr 印
+  # 一行警告並點名缺少的路徑，不讓每個新 shell 噴 source 錯誤、也不靜默失效。
+  # 轉義用變數 q 持有單引號，再以 ${p//$q/$q\\$q$q} 把每個 ' 換成 '\''，避免
+  # 依賴 ${var//pat/rep} 內對引號的版本相依處理（bash 4.3 下行為與 5.x 不同）。
+  q="'"
+  p="${CLAUTH_ZSH//$q/$q\\$q$q}"
+  printf "if [ -r '%s' ]; then source '%s'; else print -ru2 -- 'cli-tools: clauth.zsh not found, claude/cl* aliases unavailable (re-run install-cli-tools.sh): %s'; fi\n" "$p" "$p" "$p"
+  cat <<'EOF'
 ## aliases for lf (terminal file manager)
 # lfcd：離開 lf 時 cd 到瀏覽時所在目錄，透過 -last-dir-path 寫出的暫存檔傳遞。
 lfcd() {
@@ -680,9 +594,10 @@ else
 fi
 
 # ------------------------------------------------------------
-# 殘留副本檢查：託管區塊內已含 _clauth_smart_pick() 定義，若使用者自己在
-# 區塊之外（無論之前或之後）也留了一份同名函式，zsh 載入 ~/.zshrc 時後定義
-# 的那份會覆蓋掉先前的定義，可能悄悄蓋掉託管區塊剛同步進來的新版演算法。
+# 殘留副本檢查：託管區塊 source 的 platforms/claude/clauth.zsh 已含
+# _clauth_smart_pick() 定義，若使用者自己在區塊之外（無論之前或之後）也留
+# 了一份同名函式，zsh 載入 ~/.zshrc 時後定義的那份會覆蓋掉先前的定義，可能
+# 悄悄蓋掉 clauth.zsh 裡的新版演算法。
 # 只掃描 BEGIN/END 之外的行（用與上方合併邏輯相同的 awk 狀態機找出範圍），
 # 偵測到就提醒使用者手動移除，絕不代為修改託管區塊以外的內容。兩種函式
 # 宣告寫法都要抓：POSIX 風格 `_clauth_smart_pick()` 與 bash/zsh 的
@@ -697,7 +612,7 @@ OUTSIDE_SMART_PICK="$(awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
 ' "$ZSHRC")"
 if [ -n "$OUTSIDE_SMART_PICK" ]; then
   echo "    [警告] ${ZSHRC} 內託管區塊之外仍有 _clauth_smart_pick() 定義，" >&2
-  echo "           該份定義會覆蓋託管區塊內的版本，請手動移除：" >&2
+  echo "           該份定義會覆蓋託管區塊 source 的 clauth.zsh 內的版本，請手動移除：" >&2
   while IFS= read -r _outside_line; do
     echo "           $_outside_line" >&2
   done <<<"$OUTSIDE_SMART_PICK"

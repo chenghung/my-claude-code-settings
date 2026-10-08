@@ -126,6 +126,118 @@ CLAUDE_STUB_LOG="$T/claude-stub-reg.log"
 ( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude --no-external > "$T/log_claude_reg" 2>&1 )
 grep -q '^mcp add' "$CLAUDE_STUB_LOG" && bad codegraph-mcp-skips-when-registered || pass codegraph-mcp-skips-when-registered
 
+# ---- settings.json is no longer symlinked: migration cases ----
+# install.sh stops symlinking ~/.claude/settings.json (clauth owns it; the
+# repo copy is loaded with `--settings`, see platforms/claude/clauth.zsh).
+# Devices deployed by an older install.sh still hold the symlink, so each
+# starting state gets a fresh CLAUDE_CONFIG_DIR and the stubbed claude (the
+# codegraph registration step must never reach the real CLI):
+#   symlink to the repo file -> real-file copy; real file -> untouched;
+#   missing -> nothing created; symlink elsewhere -> untouched.
+REPO_SETTINGS="$REPO/platforms/claude/settings.json"
+REPO_SETTINGS_SUM="$(sha256sum "$REPO_SETTINGS" | cut -d' ' -f1)"
+run_settings_deploy() { # $1 = log path; uses the current CLAUDE_CONFIG_DIR
+  CLAUDE_STUB_LOG="$T/claude-stub-settings.log"
+  : > "$CLAUDE_STUB_LOG"
+  # Shadow guard (gating): `claude` is the only external program the --claude
+  # deploy runs that could reach a real, stateful binary. It must resolve to
+  # the stub under the exact PATH the subshell below uses; otherwise the
+  # deploy is NOT run at all and the case fails loudly.
+  # shellcheck disable=SC2031  # PATH is only ever set per-command/subshell here; reading the outer PATH is intended
+  if [ "$(PATH="$STUB_BIN:$PATH" command -v claude 2>/dev/null || true)" != "$STUB_BIN/claude" ]; then
+    bad settings-deploy-claude-shadow-guard
+    : > "$1"
+    return 0
+  fi
+  # shellcheck disable=SC2030,SC2031  # PATH is deliberately modified only inside this subshell (same idiom as the scenarios above)
+  ( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude --no-external > "$1" 2>&1 )
+}
+
+# Case 1: symlink to the repo file -> replaced by a real-file copy.
+export CLAUDE_CONFIG_DIR="$T/claude-settings-link"
+mkdir -p "$CLAUDE_CONFIG_DIR"
+ln -s "$REPO_SETTINGS" "$CLAUDE_CONFIG_DIR/settings.json"
+run_settings_deploy "$T/log_settings_link"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+test -f "$CLAUDE_CONFIG_DIR/settings.json" && test ! -L "$CLAUDE_CONFIG_DIR/settings.json" && pass settings-symlink-becomes-real-file || bad settings-symlink-becomes-real-file
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(sha256sum "$CLAUDE_CONFIG_DIR/settings.json" | cut -d' ' -f1)" = "$REPO_SETTINGS_SUM" ] && pass settings-migrated-copy-matches-repo || bad settings-migrated-copy-matches-repo
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q "MIGRATED $CLAUDE_CONFIG_DIR/settings.json" "$T/log_settings_link" && pass settings-migrated-reported || bad settings-migrated-reported
+# no backup file, no leftover temp copy
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+compgen -G "$CLAUDE_CONFIG_DIR/settings.json.*" >/dev/null && bad settings-migration-leaves-no-extra-files || pass settings-migration-leaves-no-extra-files
+# the repo file itself is neither replaced nor modified
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+{ test -f "$REPO_SETTINGS" && test ! -L "$REPO_SETTINGS" && [ "$(sha256sum "$REPO_SETTINGS" | cut -d' ' -f1)" = "$REPO_SETTINGS_SUM" ]; } && pass settings-repo-file-untouched || bad settings-repo-file-untouched
+# CLAUDE.md keeps its backup_migrate_link symlink behaviour
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+test -L "$CLAUDE_CONFIG_DIR/CLAUDE.md" && pass settings-claude-md-still-symlinked || bad settings-claude-md-still-symlinked
+# A second run sees a real file: reported OK, content unchanged, no CONFLICT
+run_settings_deploy "$T/log_settings_link2"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q "OK       $CLAUDE_CONFIG_DIR/settings.json" "$T/log_settings_link2" && ! grep -q 'CONFLICT' "$T/log_settings_link2" && pass settings-migration-idempotent || bad settings-migration-idempotent
+
+# Case 2: a real file is left untouched (content and not replaced).
+export CLAUDE_CONFIG_DIR="$T/claude-settings-real"
+mkdir -p "$CLAUDE_CONFIG_DIR"
+printf '{"hand":"written"}\n' > "$CLAUDE_CONFIG_DIR/settings.json"
+run_settings_deploy "$T/log_settings_real"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+{ test ! -L "$CLAUDE_CONFIG_DIR/settings.json" && [ "$(cat "$CLAUDE_CONFIG_DIR/settings.json")" = '{"hand":"written"}' ]; } && pass settings-real-file-untouched || bad settings-real-file-untouched
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q "OK       $CLAUDE_CONFIG_DIR/settings.json" "$T/log_settings_real" && pass settings-real-file-reported-ok || bad settings-real-file-reported-ok
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+compgen -G "$CLAUDE_CONFIG_DIR/settings.json.*" >/dev/null && bad settings-real-file-no-backup || pass settings-real-file-no-backup
+
+# Case 3: missing -> nothing is created and nothing is reported about it.
+export CLAUDE_CONFIG_DIR="$T/claude-settings-missing"
+run_settings_deploy "$T/log_settings_missing"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+{ test ! -e "$CLAUDE_CONFIG_DIR/settings.json" && test ! -L "$CLAUDE_CONFIG_DIR/settings.json"; } && pass settings-missing-stays-missing || bad settings-missing-stays-missing
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q "$CLAUDE_CONFIG_DIR/settings.json" "$T/log_settings_missing" && bad settings-missing-not-reported || pass settings-missing-not-reported
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qE '^  (MIGRATED|CONFLICT|OK) .*settings\.json' "$T/log_settings_missing" && bad settings-missing-no-status-line || pass settings-missing-no-status-line
+
+# Extra: a symlink pointing somewhere other than any repo settings.json is not ours to
+# replace; it is reported as CONFLICT and left as is.
+export CLAUDE_CONFIG_DIR="$T/claude-settings-foreign"
+mkdir -p "$CLAUDE_CONFIG_DIR"
+printf '{"foreign":true}\n' > "$T/foreign-settings.json"
+ln -s "$T/foreign-settings.json" "$CLAUDE_CONFIG_DIR/settings.json"
+run_settings_deploy "$T/log_settings_foreign"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+{ test -L "$CLAUDE_CONFIG_DIR/settings.json" && [ "$(readlink "$CLAUDE_CONFIG_DIR/settings.json")" = "$T/foreign-settings.json" ]; } && pass settings-foreign-symlink-untouched || bad settings-foreign-symlink-untouched
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q "CONFLICT $CLAUDE_CONFIG_DIR/settings.json" "$T/log_settings_foreign" && pass settings-foreign-symlink-reported || bad settings-foreign-symlink-reported
+# The CONFLICT message says clauth will replace the link at runtime.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q 'clauth will replace this symlink at runtime' "$T/log_settings_foreign" && pass settings-foreign-conflict-explains || bad settings-foreign-conflict-explains
+
+# A symlink to a DIFFERENT copy of this repo (another clone / git worktree)
+# is also migrated, to a copy of THIS repo's file - never of the other one.
+export CLAUDE_CONFIG_DIR="$T/claude-settings-otherclone"
+mkdir -p "$CLAUDE_CONFIG_DIR" "$T/other clone/platforms/claude"
+printf '{"other":"clone"}\n' > "$T/other clone/platforms/claude/settings.json"
+ln -s "$T/other clone/platforms/claude/settings.json" "$CLAUDE_CONFIG_DIR/settings.json"
+run_settings_deploy "$T/log_settings_otherclone"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+{ test -f "$CLAUDE_CONFIG_DIR/settings.json" && test ! -L "$CLAUDE_CONFIG_DIR/settings.json" && [ "$(sha256sum "$CLAUDE_CONFIG_DIR/settings.json" | cut -d' ' -f1)" = "$REPO_SETTINGS_SUM" ]; } && pass settings-otherclone-symlink-migrated-to-this-repo || bad settings-otherclone-symlink-migrated-to-this-repo
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$T/other clone/platforms/claude/settings.json")" = '{"other":"clone"}' ] && pass settings-otherclone-file-untouched || bad settings-otherclone-file-untouched
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q "MIGRATED $CLAUDE_CONFIG_DIR/settings.json" "$T/log_settings_otherclone" && pass settings-otherclone-reported || bad settings-otherclone-reported
+
+# A relative symlink target (resolving to a repo copy) is migrated too.
+export CLAUDE_CONFIG_DIR="$T/claude-settings-relative"
+mkdir -p "$CLAUDE_CONFIG_DIR"
+ln -s "../other clone/platforms/claude/settings.json" "$CLAUDE_CONFIG_DIR/settings.json"
+run_settings_deploy "$T/log_settings_relative"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+{ test -f "$CLAUDE_CONFIG_DIR/settings.json" && test ! -L "$CLAUDE_CONFIG_DIR/settings.json" && [ "$(sha256sum "$CLAUDE_CONFIG_DIR/settings.json" | cut -d' ' -f1)" = "$REPO_SETTINGS_SUM" ]; } && pass settings-relative-symlink-migrated || bad settings-relative-symlink-migrated
+
+
 # ---- Antigravity CLI ----
 # Stub `agy` before any --antigravity run: once register_codegraph_mcp_antigravity
 # exists, an unstubbed run would reach the real agy on this machine and mutate

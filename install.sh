@@ -5,14 +5,20 @@
 # Target shell: bash — requires arrays, process substitution, and bash-specific
 #               string ops that are not available in POSIX sh.
 #
-# DESTRUCTIVE OPERATIONS: three exceptions. The script never deletes or
+# DESTRUCTIVE OPERATIONS: four exceptions. The script never deletes or
 # overwrites any existing file, directory, or symlink outright — conflicts
 # are reported and skipped. The exceptions are:
 #   - backup_migrate_link: renames a pre-existing real file to a
 #     "<path>.pre-symlink.bak" path before replacing it with a symlink, as a
-#     one-time migration. Used for CLAUDE.md, settings.json, and
-#     opencode.json — all three are repo-owned files, so there is no
-#     hand-written version that should ever win over the repo's.
+#     one-time migration. Used for CLAUDE.md and opencode.json — both are
+#     repo-owned files, so there is no hand-written version that should ever
+#     win over the repo's.
+#   - migrate_settings_json: replaces ~/.claude/settings.json with a
+#     real-file copy of the repo file, but ONLY when it is a symlink to that
+#     exact repo file (left by older install.sh versions; nothing is lost,
+#     the content is the repo's own). A real file or any other symlink is
+#     never touched. settings.json is no longer symlink-managed: clauth owns
+#     it and the repo copy is loaded via `--settings` (platforms/claude/clauth.zsh).
 #   - seed_managed_file: when called with its force flag set (only from
 #     --force-config), backs up a pre-existing Codex-owned real file to a
 #     "<path>.pre-force-config.bak" path before overwriting it with a fresh
@@ -195,6 +201,57 @@ backup_migrate_link() {
 }
 
 # ---------------------------------------------------------------------------
+# settings.json is deliberately NOT symlinked any more. Reason (inferred, not
+# directly reproduced): clauth appears to copy it into its per-run runtime dir
+# and sync it back to ~/.claude/settings.json, replacing a symlink with a
+# real file. Evidence is indirect: clauth binary strings ("settings.json
+# sync", "final settings.json sync"), 8 *.pre-symlink.bak backups that began
+# 2 minutes after clauth was first run on 2026-09-30, and the env {}
+# fingerprint. So the user-layer file is left for clauth / Claude Code to
+# own, and the repo copy is loaded at launch via `--settings` instead (see
+# platforms/claude/clauth.zsh).
+#   $1 = user-layer settings.json path
+#   $2 = this repo's platforms/claude/settings.json
+# One-time migration for devices deployed by an older install.sh:
+#   - symlink whose target ends in platforms/claude/settings.json (any copy
+#     of this repo: another clone or git worktree, a relative target, a
+#     symlinked repo path) -> replaced by a real-file copy of THIS repo's file
+#   - symlink to anywhere else -> left untouched, reported as CONFLICT
+#   - real file                -> left untouched
+#   - missing                  -> nothing to do (Claude Code creates it)
+# ---------------------------------------------------------------------------
+migrate_settings_json() {
+  local settings_path="$1"
+  local repo_file="$2"
+
+  if [ -L "$settings_path" ]; then
+    local existing_target
+    existing_target="$(readlink "$settings_path")"
+    case "$existing_target" in
+    */platforms/claude/settings.json | platforms/claude/settings.json)
+      # Copy to a sibling temp file, then rename over the symlink: rename
+      # replaces the link itself (never writes through it into any repo file).
+      local tmp_copy="${settings_path}.install-tmp.$$"
+      cp -- "$repo_file" "$tmp_copy"
+      mv -f -- "$tmp_copy" "$settings_path"
+      printf '  MIGRATED %s\n           was a symlink to %s; replaced with a real-file copy of %s\n           this file is now owned by clauth / Claude Code, not install.sh\n' \
+        "$settings_path" "$existing_target" "$repo_file"
+      count_created=$(( count_created + 1 ))
+      ;;
+    *)
+      printf '  CONFLICT %s\n           symlink to: %s (not a repo settings.json) — leaving untouched;\n           clauth will replace this symlink at runtime\n' \
+        "$settings_path" "$existing_target"
+      count_skipped=$(( count_skipped + 1 ))
+      ;;
+    esac
+  elif [ -e "$settings_path" ]; then
+    printf '  OK       %s\n           real file, owned by clauth / Claude Code — leaving untouched\n' \
+      "$settings_path"
+    count_ok=$(( count_ok + 1 ))
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # One-time seed of a platform-owned real file from a repo template — for
 # config files that the platform itself rewrites at runtime (e.g. Codex
 # writes plugin/marketplace snapshot fields and TUI state back into
@@ -259,7 +316,7 @@ deploy_claude() {
   done
 
   backup_migrate_link "${CLAUDE_CONFIG_DIR}/CLAUDE.md" "${REPO_DIR}/CLAUDE.md"
-  backup_migrate_link "${CLAUDE_CONFIG_DIR}/settings.json" "${REPO_DIR}/platforms/claude/settings.json"
+  migrate_settings_json "${CLAUDE_CONFIG_DIR}/settings.json" "${REPO_DIR}/platforms/claude/settings.json"
 
   install_external_skills "claude-code"
   # superpowers for Claude Code is declared in settings.json (enabledPlugins),
@@ -919,10 +976,9 @@ fi
 #     write only happens for a repo item ~/.claude doesn't already have a
 #     link for at all.
 #   - settings.json: the ONLY one of these 7 paths whose mirror entry is a
-#     real file (clauth's own copy), so backup_migrate_link renames it to
-#     *.pre-symlink.bak and replaces it with a symlink to the repo, entirely
-#     inside the mirror — both the backup and the new symlink vanish with
-#     the session.
+#     real file (clauth's own copy). migrate_settings_json leaves a real file
+#     untouched (reported OK), so nothing is written and nothing leaks; the
+#     repo copy is not deployed here at all, it is loaded via `--settings`.
 #
 # CLAUDE_CONFIG_DIR_FROM_ENV was captured before the default was applied, so
 # it only reflects a value actually supplied by the user or by clauth — not
@@ -935,8 +991,8 @@ if [ -n "$want_claude" ] \
   printf 'Deploy target: %s (default would be: %s)\n' "$CLAUDE_CONFIG_DIR" "${HOME}/.claude" >&2
   printf 'This usually means install.sh is running inside a session launched by\n' >&2
   printf 'clauth start (any profile). This is not a clean deploy target: some\n' >&2
-  printf 'writes can land in your real ~/.claude and persist, and settings.json\n' >&2
-  printf 'vanishes with the session. Re-run install.sh from a plain shell.\n\n' >&2
+  printf 'writes can land in your real ~/.claude and persist.\n' >&2
+  printf 'Re-run install.sh from a plain shell.\n\n' >&2
 fi
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_SH="$REPO/install-cli-tools.sh"
+CLAUTH_ZSH="$REPO/platforms/claude/clauth.zsh"
+SETTINGS_FILE="$REPO/platforms/claude/settings.json"
 fail=0
 pass() { printf 'PASS %s\n' "$1"; }
 bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
@@ -102,24 +104,35 @@ T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 
 # ------------------------------------------------------------
+# The clauth section lives in platforms/claude/clauth.zsh (zsh-only: it uses
+# zsh's `${${(%):-%x}:A:h}` to find its own directory), so everything below
+# runs it under real zsh, not bash. zsh is therefore a hard prerequisite.
+# ------------------------------------------------------------
+if ! command -v zsh >/dev/null 2>&1; then
+  bad zsh-available
+  exit 1
+fi
+pass zsh-available
+
+# ------------------------------------------------------------
 # Dynamic check: every claude-launcher alias must, once actually run,
 # invoke `clauth` (never `claude` directly, and never the old _ccp_launch
 # config-dir wrapper — both retired in favor of clauth profiles) with the
-# right profile name and the right trailing claude args.
+# right profile name, `--settings <repo settings.json>` right after the `--`
+# separator, and the right trailing claude args.
 #
 # Extraction: pull the literal "## aliases for claude code" section straight
-# out of install-cli-tools.sh's heredoc — the exact text ~/.zshrc ends up
-# with — instead of retyping the expected alias bodies by hand. A
-# hand-retyped copy would silently drift the next time an alias is edited in
-# install-cli-tools.sh without this test being touched, which is exactly the
-# kind of gap this test exists to catch.
+# out of clauth.zsh (it runs to end of file) instead of retyping the expected
+# alias bodies by hand. A hand-retyped copy would silently drift the next time
+# an alias is edited in clauth.zsh without this test being touched, which is
+# exactly the kind of gap this test exists to catch.
 # ------------------------------------------------------------
 ALIAS_SRC="$T/claude-aliases.sh"
-awk '/^## aliases for claude code$/,/^## aliases for lf /{ if (!/^## aliases for lf /) print }' "$INSTALL_SH" > "$ALIAS_SRC"
+awk '/^## aliases for claude code$/ { on = 1 } on' "$CLAUTH_ZSH" > "$ALIAS_SRC"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 test -s "$ALIAS_SRC" && pass extract-claude-aliases || bad extract-claude-aliases
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-bash -n "$ALIAS_SRC" && pass claude-aliases-syntax || bad claude-aliases-syntax
+zsh -n "$CLAUTH_ZSH" && pass claude-aliases-syntax || bad claude-aliases-syntax
 
 # ------------------------------------------------------------
 # Isolation: `clauth` is a real, already-installed binary on this machine
@@ -141,6 +154,9 @@ if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
   exit 0
 fi
 printf '%s\n' "$*" > "${CLAUTH_STUB_LOG:?}"
+# One argv element per line, so a test can tell "one argument containing
+# spaces" apart from several arguments (the $* join above cannot).
+printf '%s\n' "$@" > "${CLAUTH_STUB_LOG:?}.argv"
 exit 0
 STUB
 chmod +x "$CLAUTH_BIN/clauth"
@@ -222,50 +238,64 @@ fi
 # hand-typed guess.
 EXPECTED_WT_BASENAME="$(basename "$(cd "$REPO" && git rev-parse --show-toplevel)")"
 
-# run_alias <alias-name>: sources the extracted alias definitions into a
-# throwaway bash -c, then runs the single named alias against the stub PATH,
-# and prints whatever the stub `clauth` logged (empty if it was never
-# invoked at all). `shopt -s expand_aliases` plus the `source` must happen
-# in an earlier line of the SAME script than the alias invocation: bash
-# decides whether to expand an alias at parse time, per line, so the alias
-# must already be defined by the time this script's parser reaches the
-# invocation line. Passing the alias name as a literal token substituted
-# into the bash -c string (rather than invoking it via a shell variable at
-# runtime) is what makes that possible — a variable holding the name would
-# not trigger alias expansion at all, since bash never re-parses an
-# already-substituted argument to check whether it names an alias.
+# run_alias <alias-name> [clauth.zsh path]: sources clauth.zsh (the whole
+# file, not just the extracted section: _CLAUTH_SETTINGS_FILE is derived at
+# source time from the file's own location) into a throwaway `zsh -fc`
+# (-f: no user rc files), then runs the single named alias against the stub
+# PATH, and prints whatever the stub `clauth` logged (empty if it was never
+# invoked at all). The alias is invoked through `eval`: zsh parses the whole
+# -c string before executing any of it, so a bare `$alias_name` on a later
+# line would be parsed before `source` had defined the alias and fail with
+# "command not found"; `eval` parses its argument only when it runs. The
+# real settings.json path in the log is masked to @SETTINGS@ so the
+# expectations below stay independent of where this checkout lives; the
+# stub's one-arg-per-line log is left at "<log>.argv" for exact-argument
+# assertions.
 run_alias() {
-  local alias_name="$1" log="$T/clauth-out-${1}.log"
+  local alias_name="$1" zsh_file="${2:-$CLAUTH_ZSH}" log="$T/clauth-out-${1}.log" logged
   : > "$log"
-  PATH="$CLAUTH_TEST_PATH" CLAUTH_STUB_LOG="$log" bash -c "
-    cd '$REPO' || exit 1
-    shopt -s expand_aliases
-    source '$ALIAS_SRC'
-    $alias_name >/dev/null 2>&1
-  "
-  cat "$log" 2>/dev/null
+  : > "${log}.argv"
+  PATH="$CLAUTH_TEST_PATH" CLAUTH_STUB_LOG="$log" ZSH_FILE="$zsh_file" REPO_CD="$REPO" zsh -fc '
+    cd "$REPO_CD" || exit 1
+    source "$ZSH_FILE"
+    eval '"$alias_name"' >/dev/null 2>&1
+  ' || true  # a failed launch is reported by the assertions on its log, not by aborting under set -e
+  logged="$(cat "$log" 2>/dev/null)"
+  printf '%s' "${logged//"$SETTINGS_FILE"/@SETTINGS@}"
 }
 
 # Expected argv `clauth` receives for each alias, as an anchored ERE. The
 # worktree/remote-control variants include the dynamic $(...) pieces
 # (basename + timestamp) that the alias definitions evaluate at run time —
-# see the `literal 保留` note in install-cli-tools.sh for why those are
-# quoted heredoc text rather than something this script could expand ahead
-# of time.
+# they stay unexpanded text in clauth.zsh because they are alias bodies
+# evaluated per invocation, not something this script could expand ahead of
+# time. Every entry carries `--settings @SETTINGS@` immediately after `--`.
 TS_RE='[0-9]{8}-[0-9]{6}'
 declare -A EXPECTED=(
-  [cl]="start onramplab --"
-  [cla]="start onramplab -- --permission-mode auto"
-  [clc]="start onramplab -- --permission-mode auto --continue"
-  [clr]="start onramplab -- --permission-mode auto --resume"
-  [clw]="start onramplab -- --permission-mode auto --worktree ${EXPECTED_WT_BASENAME}/wt/${TS_RE}"
-  [clre]="start onramplab -- --permission-mode auto --remote-control --name remote-control-onr-notebook-${TS_RE}"
-  [clp]="start personal -- --permission-mode auto"
-  [clpc]="start personal -- --permission-mode auto --continue"
-  [clpr]="start personal -- --permission-mode auto --resume"
-  [clpw]="start personal -- --permission-mode auto --worktree ${EXPECTED_WT_BASENAME}/wt/${TS_RE}"
-  [clpre]="start personal -- --permission-mode auto --remote-control --name remote-control-personal-notebook-${TS_RE}"
+  [cl]="start onramplab -- --settings @SETTINGS@"
+  [cla]="start onramplab -- --settings @SETTINGS@ --permission-mode auto"
+  [clc]="start onramplab -- --settings @SETTINGS@ --permission-mode auto --continue"
+  [clr]="start onramplab -- --settings @SETTINGS@ --permission-mode auto --resume"
+  [clw]="start onramplab -- --settings @SETTINGS@ --permission-mode auto --worktree ${EXPECTED_WT_BASENAME}/wt/${TS_RE}"
+  [clre]="start onramplab -- --settings @SETTINGS@ --permission-mode auto --remote-control --name remote-control-onr-notebook-${TS_RE}"
+  [clp]="start personal -- --settings @SETTINGS@ --permission-mode auto"
+  [clpc]="start personal -- --settings @SETTINGS@ --permission-mode auto --continue"
+  [clpr]="start personal -- --settings @SETTINGS@ --permission-mode auto --resume"
+  [clpw]="start personal -- --settings @SETTINGS@ --permission-mode auto --worktree ${EXPECTED_WT_BASENAME}/wt/${TS_RE}"
+  [clpre]="start personal -- --settings @SETTINGS@ --permission-mode auto --remote-control --name remote-control-personal-notebook-${TS_RE}"
 )
+
+# settings_argv_ok <argv log>: the argument right after `--` is `--settings`
+# and the one after that is exactly the repo settings.json path (compared
+# as a whole line, so a path split on whitespace cannot pass).
+settings_argv_ok() {
+  awk -v s="$SETTINGS_FILE" '
+    $0 == "--" && !d { d = NR; next }
+    d && NR == d + 1 { a = ($0 == "--settings") }
+    d && NR == d + 2 { b = ($0 == s) }
+    END { exit !(a && b) }
+  ' "$1"
+}
 
 if [ "$CLAUTH_SHADOW_OK" -eq 1 ]; then
   for alias_name in cl cla clc clr clw clre clp clpc clpr clpw clpre; do
@@ -276,6 +306,8 @@ if [ "$CLAUTH_SHADOW_OK" -eq 1 ]; then
       bad "alias-${alias_name}-via-clauth"
       printf '     expected (ERE): %s\n     got:            %s\n' "${EXPECTED[$alias_name]}" "$logged" >&2
     fi
+    # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+    settings_argv_ok "$T/clauth-out-${alias_name}.log.argv" && pass "alias-${alias_name}-settings-after-separator" || bad "alias-${alias_name}-settings-after-separator"
   done
 else
   # The shadow guard above already failed and reported why; do not run a
@@ -285,6 +317,7 @@ else
   # the stub. Every alias check is marked failed without ever running one.
   for alias_name in cl cla clc clr clw clre clp clpc clpr clpw clpre; do
     bad "alias-${alias_name}-via-clauth"
+    bad "alias-${alias_name}-settings-after-separator"
   done
 fi
 
@@ -295,35 +328,45 @@ fi
 # mechanism.
 # ------------------------------------------------------------
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qi 'abduco' "$INSTALL_SH" && bad no-abduco-left || pass no-abduco-left
+grep -qi 'abduco' "$INSTALL_SH" "$CLAUTH_ZSH" && bad no-abduco-left || pass no-abduco-left
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q '_cc_launch' "$INSTALL_SH" && bad no-cc-launch-left || pass no-cc-launch-left
+grep -q '_cc_launch' "$INSTALL_SH" "$CLAUTH_ZSH" && bad no-cc-launch-left || pass no-cc-launch-left
 # Anchored to an actual function definition (not just the substring):
-# install-cli-tools.sh's own alias-block comment names "_ccp_launch" by
+# clauth.zsh's own alias-section comment names "_ccp_launch" by
 # design, to explain what was removed and why — an unanchored grep -q here
 # would stay red forever even with the function itself long gone.
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE '^_ccp_launch\(\)' "$INSTALL_SH" && bad no-ccp-launch-left || pass no-ccp-launch-left
+grep -qE '^_ccp_launch\(\)' "$INSTALL_SH" "$CLAUTH_ZSH" && bad no-ccp-launch-left || pass no-ccp-launch-left
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF '.claude-personal' "$INSTALL_SH" && bad no-claude-personal-dir-left || pass no-claude-personal-dir-left
+grep -qF '.claude-personal' "$INSTALL_SH" "$CLAUTH_ZSH" && bad no-claude-personal-dir-left || pass no-claude-personal-dir-left
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q 'CC_SESSION_TAG' "$INSTALL_SH" && bad no-session-tag-left || pass no-session-tag-left
+grep -q 'CC_SESSION_TAG' "$INSTALL_SH" "$CLAUTH_ZSH" && bad no-session-tag-left || pass no-session-tag-left
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q "^alias cll=" "$INSTALL_SH" && bad no-cll-alias || pass no-cll-alias
+grep -q "^alias cll=" "$INSTALL_SH" "$CLAUTH_ZSH" && bad no-cll-alias || pass no-cll-alias
 
+# The launch args every entry point must carry right after `--`: the repo's
+# settings.json passed by variable (expanded and quoted at run time, so a
+# path with spaces survives), as an ERE fragment for the static line checks.
+# shellcheck disable=SC2016  # literal $ for the ERE: this must NOT expand
+SETTINGS_REF_RE='-- --settings "\$_CLAUTH_SETTINGS_FILE"'
 # Cheap static companion to the dynamic alias-via-clauth checks above: each
 # alias's source line must literally start with `clauth start <profile>`, so
 # a future edit that reverts an alias back to a bare `claude` call (or to
 # the wrong profile) fails here even before the dynamic check runs.
 for a in cl cla clc clr clw clre; do
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  grep -qE "^alias ${a}='clauth start onramplab" "$INSTALL_SH" && pass "alias-${a}-onramplab-line" || bad "alias-${a}-onramplab-line"
+  grep -qE "^alias ${a}='clauth start onramplab ${SETTINGS_REF_RE}" "$CLAUTH_ZSH" && pass "alias-${a}-onramplab-line" || bad "alias-${a}-onramplab-line"
 done
 
 for a in clp clpc clpr clpw clpre; do
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  grep -qE "^alias ${a}='clauth start personal" "$INSTALL_SH" && pass "alias-${a}-personal-line" || bad "alias-${a}-personal-line"
+  grep -qE "^alias ${a}='clauth start personal ${SETTINGS_REF_RE}" "$CLAUTH_ZSH" && pass "alias-${a}-personal-line" || bad "alias-${a}-personal-line"
 done
+
+# clauto (what the `claude` alias runs) launches clauth too, so it needs the
+# same `-- --settings "$_CLAUTH_SETTINGS_FILE"` after the profile.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qE "^clauto\(\) \{.*clauth start \"\\\$profile\" ${SETTINGS_REF_RE} " "$CLAUTH_ZSH" && pass clauto-settings-line || bad clauto-settings-line
 
 # Regression guard: the managed-block sentinels must never change, or install
 # leaves an orphaned block behind on the next run.
@@ -336,18 +379,19 @@ grep -qF '# <<< cli-tools aliases (managed) <<<' "$INSTALL_SH" && pass sentinel-
 # Case set 3: _clauth_smart_pick's selection algorithm.
 #
 # Extraction: pull the literal `_clauth_smart_pick() { ... } / clauto() {
-# ... } / alias claude='clauto'` trio straight out of install-cli-tools.sh's
-# heredoc (anchored on the exact function-open and alias lines the brief
-# requires to stay unchanged), instead of retyping the jq algorithm here -
-# a hand-retyped copy would silently drift from the real algorithm the next
-# time it is edited without this test being touched.
+# ... } / alias claude='clauto'` trio straight out of clauth.zsh (anchored on
+# the exact function-open and alias lines) to check it is still present and
+# parses, instead of retyping the jq algorithm here - a hand-retyped copy
+# would silently drift from the real algorithm. The behavioural cases below
+# source the whole clauth.zsh (not just this trio) because clauto needs
+# _CLAUTH_SETTINGS_FILE, which the file derives from its own location.
 # ------------------------------------------------------------
 SMART_PICK_SRC="$T/clauth-smart-pick.sh"
-awk '/^_clauth_smart_pick\(\) \{$/,/^alias claude=.clauto.$/' "$INSTALL_SH" > "$SMART_PICK_SRC"
+awk '/^_clauth_smart_pick\(\) \{$/,/^alias claude=.clauto.$/' "$CLAUTH_ZSH" > "$SMART_PICK_SRC"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 test -s "$SMART_PICK_SRC" && pass extract-smart-pick || bad extract-smart-pick
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-bash -n "$SMART_PICK_SRC" && pass smart-pick-syntax || bad smart-pick-syntax
+zsh -n "$SMART_PICK_SRC" && pass smart-pick-syntax || bad smart-pick-syntax
 
 # Shadow note: this section's only external command is `clauth` (called both
 # by `_clauth_smart_pick`'s `clauth status --json` and by `clauto`'s `clauth
@@ -407,19 +451,19 @@ build_fixture() {
 JSON
 }
 
-# run_claude_pick <now epoch> <fixture path>: sources the extracted picker
-# trio into a throwaway bash -c (expand_aliases must be on before the source,
-# same ordering constraint as run_alias above) and invokes the `claude` alias
-# against the stubbed PATH, returning whatever `clauth start ...` logged.
+# run_claude_pick <now epoch> <fixture path>: sources clauth.zsh into a
+# throwaway `zsh -fc` and invokes the `claude` alias (via eval, same reason
+# as run_alias above) against the stubbed PATH, returning whatever `clauth
+# start ...` logged, with the real settings.json path masked to @SETTINGS@.
 run_claude_pick() {
-  local now="$1" fixture="$2" log="$T/clauth-pick-out.log"
+  local now="$1" fixture="$2" log="$T/clauth-pick-out.log" logged
   : >"$log"
-  PATH="$CLAUTH_TEST_PATH" CLAUTH_STUB_LOG="$log" CLAUTH_PICK_NOW="$now" CLAUTH_STATUS_FIXTURE="$fixture" bash -c "
-    shopt -s expand_aliases
-    source '$SMART_PICK_SRC'
-    claude >/dev/null 2>&1
-  "
-  cat "$log" 2>/dev/null
+  PATH="$CLAUTH_TEST_PATH" CLAUTH_STUB_LOG="$log" CLAUTH_PICK_NOW="$now" CLAUTH_STATUS_FIXTURE="$fixture" ZSH_FILE="$CLAUTH_ZSH" zsh -fc '
+    source "$ZSH_FILE"
+    eval claude >/dev/null 2>&1
+  ' || true  # same: report via the assertion, never abort
+  logged="$(cat "$log" 2>/dev/null)"
+  printf '%s' "${logged//"$SETTINGS_FILE"/@SETTINGS@}"
 }
 
 # run_case <label> <now> <expected profile> <active profile> <onr w T r5 t5> <per w T r5 t5>
@@ -429,11 +473,11 @@ run_case() {
   build_fixture "$fixture" "$now" "$active" "${@:5}"
   local got
   got="$(run_claude_pick "$now" "$fixture")"
-  if [ "$got" = "start ${expected} -- --permission-mode auto" ]; then
+  if [ "$got" = "start ${expected} -- --settings @SETTINGS@ --permission-mode auto" ]; then
     pass "smart-pick-${label}"
   else
     bad "smart-pick-${label}"
-    printf '     expected: start %s -- --permission-mode auto\n     got:      %s\n' "$expected" "$got" >&2
+    printf '     expected: start %s -- --settings @SETTINGS@ --permission-mode auto\n     got:      %s\n' "$expected" "$got" >&2
   fi
 }
 
@@ -477,11 +521,11 @@ if [ "$CLAUTH_SHADOW_OK" -eq 1 ]; then
 }
 JSON
   got="$(run_claude_pick "$WED" "$FIXTURE_Z")"
-  if [ "$got" = "start personal -- --permission-mode auto" ]; then
+  if [ "$got" = "start personal -- --settings @SETTINGS@ --permission-mode auto" ]; then
     pass smart-pick-z-suffix
   else
     bad smart-pick-z-suffix
-    printf '     expected: start personal -- --permission-mode auto\n     got:      %s\n' "$got" >&2
+    printf '     expected: start personal -- --settings @SETTINGS@ --permission-mode auto\n     got:      %s\n' "$got" >&2
   fi
 
   # Regression: a window whose resets_at is JSON null (present window, no
@@ -510,11 +554,11 @@ JSON
 }
 JSON
   got="$(run_claude_pick "$WED" "$FIXTURE_NULL")"
-  if [ "$got" = "start personal -- --permission-mode auto" ]; then
+  if [ "$got" = "start personal -- --settings @SETTINGS@ --permission-mode auto" ]; then
     pass smart-pick-null-resets
   else
     bad smart-pick-null-resets
-    printf '     expected: start personal -- --permission-mode auto\n     got:      %s\n' "$got" >&2
+    printf '     expected: start personal -- --settings @SETTINGS@ --permission-mode auto\n     got:      %s\n' "$got" >&2
   fi
 else
   for c in case1 case2 case3 case4 case5 case6 case8 case9a case9b case10 case11 z-suffix null-resets; do
@@ -586,5 +630,137 @@ EOF
 out="$(run_outside_check "$ZSHRC_STRAY_FN")"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 printf '%s' "$out" | grep -qF '_clauth_smart_pick' && pass outside-check-warns-on-stray-function-form || bad outside-check-warns-on-stray-function-form
+
+
+# ------------------------------------------------------------
+# Managed block: the clauth section must no longer be inlined in
+# install-cli-tools.sh's heredoc; the block must instead `source` the repo's
+# clauth.zsh by absolute path, while the unrelated aliases stay inline.
+#
+# Extraction: the exact block-generation snippet (from `NEW_BLOCK=$(mktemp)`
+# through the closing `} >"$NEW_BLOCK"`), run standalone in its own bash with
+# a synthetic CLAUTH_ZSH, so install-cli-tools.sh itself (sudo package
+# installs, the real ~/.zshrc) is never executed. CLAUTH_ZSH is set to a
+# path containing a space AND a single quote to prove the generated line
+# quotes correctly end to end under zsh.
+# ------------------------------------------------------------
+BLOCK_GEN_SRC="$T/block-gen.sh"
+{
+  awk '/^NEW_BLOCK="\$\(mktemp\)"$/,/^} >"\$NEW_BLOCK"$/' "$INSTALL_SH"
+  # shellcheck disable=SC2016  # literal text appended to the generated script: expands there, not here
+  printf 'cat "$NEW_BLOCK"\n'
+} > "$BLOCK_GEN_SRC"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q '^NEW_BLOCK=' "$BLOCK_GEN_SRC" && bash -n "$BLOCK_GEN_SRC" && pass extract-block-gen || bad extract-block-gen
+
+FAKE_REPO="$T/fake repo/it's here"
+mkdir -p "$FAKE_REPO/platforms/claude"
+cp "$CLAUTH_ZSH" "$SETTINGS_FILE" "$FAKE_REPO/platforms/claude/"
+FAKE_CLAUTH_ZSH="$FAKE_REPO/platforms/claude/clauth.zsh"
+BLOCK_OUT="$T/managed-block.zsh"
+BEGIN_MARK="$TEST_BEGIN_MARK" END_MARK="$TEST_END_MARK" CLAUTH_ZSH="$FAKE_CLAUTH_ZSH" bash "$BLOCK_GEN_SRC" > "$BLOCK_OUT"
+
+# Exactly one guarded source line: source when readable, else warn on stderr
+# naming the path. The expected text is built here with sed for the quote
+# escaping (' -> '\''), independent of the script's own bash substitution.
+ESC_FAKE_PATH="$(printf '%s' "$FAKE_CLAUTH_ZSH" | sed "s/'/'\\\\''/g")"
+EXPECTED_SOURCE_LINE="if [ -r '${ESC_FAKE_PATH}' ]; then source '${ESC_FAKE_PATH}'; else print -ru2 -- 'cli-tools: clauth.zsh not found, claude/cl* aliases unavailable (re-run install-cli-tools.sh): ${ESC_FAKE_PATH}'; fi"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(grep -cxF "$EXPECTED_SOURCE_LINE" "$BLOCK_OUT")" -eq 1 ] && pass block-sources-clauth-zsh || bad block-sources-clauth-zsh
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(grep -c 'clauth\.zsh' "$BLOCK_OUT")" -eq 1 ] && pass block-single-clauth-zsh-line || bad block-single-clauth-zsh-line
+
+# The clauth section is no longer inlined...
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qE '_clauth_smart_pick|^clauto\(|^alias (claude|cl[a-z]*)=' "$BLOCK_OUT" && bad block-has-no-inlined-clauth || pass block-has-no-inlined-clauth
+# ...and the unrelated aliases stay in the heredoc, inside the sentinels.
+for needle in 'alias cat="bat"' 'alias csv=' 'lfcd()' "alias f='lfcd'" 'alias skills=' "alias sk="; do
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  grep -qF "$needle" "$BLOCK_OUT" && pass "block-keeps-${needle%%[=(]*}" || bad "block-keeps-${needle%%[=(]*}"
+done
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+{ [ "$(head -1 "$BLOCK_OUT")" = "$TEST_BEGIN_MARK" ] && [ "$(tail -1 "$BLOCK_OUT")" = "$TEST_END_MARK" ]; } && pass block-sentinels-wrap-content || bad block-sentinels-wrap-content
+
+# Missing clauth.zsh (repo moved / worktree deleted after install): loading
+# the block must not error out, must name the missing path on stderr, and
+# must leave the block's other aliases working.
+MISSING_ZSH="$T/gone dir/it's/platforms/claude/clauth.zsh"
+MISSING_BLOCK="$T/managed-block-missing.zsh"
+BEGIN_MARK="$TEST_BEGIN_MARK" END_MARK="$TEST_END_MARK" CLAUTH_ZSH="$MISSING_ZSH" bash "$BLOCK_GEN_SRC" > "$MISSING_BLOCK"
+missing_err="$T/missing.err"
+missing_rc=0
+BLOCK_OUT="$MISSING_BLOCK" zsh -fc 'source "$BLOCK_OUT"; whence -w sk >&2' >/dev/null 2>"$missing_err" || missing_rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$missing_rc" -eq 0 ] && grep -qF "$MISSING_ZSH" "$missing_err" && grep -qF 'cli-tools: clauth.zsh not found' "$missing_err" && pass block-missing-clauth-zsh-warns-by-path || bad block-missing-clauth-zsh-warns-by-path
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -q 'sk: alias' "$missing_err" && pass block-missing-clauth-zsh-keeps-other-aliases || bad block-missing-clauth-zsh-keeps-other-aliases
+
+# Linked-worktree warning: extract the CLAUTH_REPO_DIR..fi snippet and run it
+# from a copy placed inside (a) a plain repo and (b) a linked worktree of it.
+# Only (b) may warn on stderr; both must keep CLAUTH_ZSH under their own dir.
+WT_SNIP="$T/wt-snippet.sh"
+# shellcheck disable=SC2016  # literal text appended to the generated script: expands there, not here
+{ awk '/^CLAUTH_REPO_DIR=/,/^fi$/' "$INSTALL_SH"; printf 'echo "CLAUTH_ZSH=$CLAUTH_ZSH"\n'; } > "$WT_SNIP"
+WT_MAIN="$T/wt-main"
+WT_LINKED="$T/wt-linked"
+git init -q "$WT_MAIN"
+git -C "$WT_MAIN" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$WT_MAIN" worktree add -q "$WT_LINKED" -b wt-test
+cp "$WT_SNIP" "$WT_MAIN/snip.sh"
+cp "$WT_SNIP" "$WT_LINKED/snip.sh"
+main_out="$(ZSHRC=/x/.zshrc bash "$WT_MAIN/snip.sh" 2>"$T/wt-main.err")"
+linked_out="$(ZSHRC=/x/.zshrc bash "$WT_LINKED/snip.sh" 2>"$T/wt-linked.err")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$T/wt-main.err" ] && pass worktree-warning-silent-in-main-checkout || bad worktree-warning-silent-in-main-checkout
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF "$WT_LINKED" "$T/wt-linked.err" && grep -qF 'worktree' "$T/wt-linked.err" && pass worktree-warning-in-linked-worktree || bad worktree-warning-in-linked-worktree
+# the chosen path is NOT changed by the warning
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+{ [ "$main_out" = "CLAUTH_ZSH=$WT_MAIN/platforms/claude/clauth.zsh" ] && [ "$linked_out" = "CLAUTH_ZSH=$WT_LINKED/platforms/claude/clauth.zsh" ]; } && pass worktree-warning-keeps-path || bad worktree-warning-keeps-path
+
+# Reached through a symlinked repo directory: _CLAUTH_SETTINGS_FILE must be
+# the resolved real path (:A resolves symlinks), not the symlink path.
+LINK_REPO="$T/link-to-fake-repo"
+ln -s "$FAKE_REPO" "$LINK_REPO"
+REAL_FAKE_SETTINGS="$(cd -P "$FAKE_REPO" && pwd)/platforms/claude/settings.json"
+via_link="$(LINK_ZSH="$LINK_REPO/platforms/claude/clauth.zsh" zsh -fc 'source "$LINK_ZSH"; print -r -- "$_CLAUTH_SETTINGS_FILE"' 2>/dev/null || true)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$via_link" = "$REAL_FAKE_SETTINGS" ] && pass settings-path-resolved-through-symlinked-repo || bad settings-path-resolved-through-symlinked-repo
+
+# End to end under zsh: load the generated block (not the repo's clauth.zsh
+# directly) and launch via an alias. Requires the shadow guard from above,
+# since this runs the stub-backed aliases again.
+if [ "$CLAUTH_SHADOW_OK" -eq 1 ]; then
+  e2e_log="$T/clauth-e2e.log"
+  : > "$e2e_log"; : > "${e2e_log}.argv"
+  PATH="$CLAUTH_TEST_PATH" CLAUTH_STUB_LOG="$e2e_log" BLOCK_OUT="$BLOCK_OUT" zsh -fc '
+    source "$BLOCK_OUT"
+    eval cla >/dev/null 2>&1
+  ' || true  # same: report via the assertion, never abort
+  # The settings path must come from the sourced file's own location (the
+  # fake repo copy, containing a space and a quote), as ONE argument.
+  EXPECTED_FAKE_SETTINGS="$FAKE_REPO/platforms/claude/settings.json"
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  awk -v s="$EXPECTED_FAKE_SETTINGS" '
+    $0 == "--" && !d { d = NR; next }
+    d && NR == d + 1 { a = ($0 == "--settings") }
+    d && NR == d + 2 { b = ($0 == s) }
+    END { exit !(a && b) }
+  ' "${e2e_log}.argv" && pass block-e2e-settings-path-from-own-location || bad block-e2e-settings-path-from-own-location
+
+  # A relative source path must resolve to the same absolute file.
+  rel_log="$T/clauth-rel.log"
+  : > "$rel_log"; : > "${rel_log}.argv"
+  PATH="$CLAUTH_TEST_PATH" CLAUTH_STUB_LOG="$rel_log" FAKE_DIR="$FAKE_REPO/platforms/claude" zsh -fc '
+    cd "$FAKE_DIR/.." || exit 1
+    source claude/clauth.zsh
+    eval cl >/dev/null 2>&1
+  ' || true  # same: report via the assertion, never abort
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  grep -qxF "$EXPECTED_FAKE_SETTINGS" "${rel_log}.argv" && pass settings-path-absolute-from-relative-source || bad settings-path-absolute-from-relative-source
+else
+  bad block-e2e-settings-path-from-own-location
+  bad settings-path-absolute-from-relative-source
+fi
 
 exit $fail
