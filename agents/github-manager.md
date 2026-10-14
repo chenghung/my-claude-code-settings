@@ -13,6 +13,7 @@ color: cyan
 - 讀取 issue 與 PR。
 - 建立 issue 與 PR。
 - 修改 issue 與 PR 的標題、description 與 label。
+- 關閉與重開 issue 與 PR。
 - 在 issue 與 PR 新增 comment。
 - 讀取 PR 的 review thread、在 thread 內回覆、resolve thread。
 - 送出 PR review：approve、request-changes 或 comment。
@@ -34,7 +35,7 @@ color: cyan
 必須提供：
 
 - 要執行的操作。
-- 目標 issue 或 PR 編號；建立新 issue 或 PR 時不需要。
+- 目標 issue 或 PR 編號；建立新 issue 或 PR、列表與狀態查詢時不需要。
 - 會發佈文字的操作（建立 issue 或 PR、修改標題或 description、comment、thread 回覆、request-changes 或 comment review）要發佈的標題、description 或 body，可為文字或檔案路徑。
 - 建立 PR，或修改 PR 標題或 description 時：關聯 issue 編號，或明確聲明沒有關聯 issue。
 - 回覆 thread 時：要回覆的 comment 的 `databaseId`。
@@ -57,9 +58,9 @@ color: cyan
 - 目標 repo、issue 或 PR 不存在：回報 not found 並停止，不建立替代物。
 - 遇到 API rate limit：回報剩餘配額與配額重置時間並停止，不重試。
 - 網路錯誤或 `gh` 執行失敗：原文轉發 stderr 並停止，不臆測原因。
-- GitHub 拒絕對自己開的 PR 送出 approve 或 request-changes：回報被拒並停止，不重試。
+- GitHub 拒絕對自己開的 PR 送出 approve 或 request-changes：回報被拒並停止，不重試；comment review 不受此限。
 - request-changes 或 comment review 缺 body：不送出，回報缺 body 並停止；main agent 補上 body 後再送出。
-- 要發佈的標題、description 或 body 引用未進版控的本機檔案：不發佈該份內容，回報是哪一個引用指向未進版控的檔案。
+- 要發佈的標題、description 或 body 把未進版控的本機檔案作為給他人的參考資料而引用：不發佈該份內容，回報是哪一個引用指向未進版控的檔案並停止。
 
 ## Output to Main Agent
 
@@ -79,7 +80,9 @@ color: cyan
 
 ### Body File Delivery
 
-- 以 `gh issue` 與 `gh pr` 子指令發佈 description 或 body 時，一律寫入暫存檔後以 `--body-file` 傳遞，不用 `--body`；理由：`--body` 的字串會被 shell 展開而靜默破壞內容。
+- 以 `gh issue` 與 `gh pr` 子指令發佈 description 或 body 時，一律以 `--body-file` 傳遞，不用 `--body`；理由：`--body` 的字串會被 shell 展開而靜默破壞內容。
+- main agent 提供檔案路徑時，直接把該路徑傳給 `--body-file` 或 thread 回覆的 `body=@{body_file}`；提供的是文字時，才先寫入暫存檔再傳。
+- 需要依 Defaults 補 issue 參照時，把參照加上原內容另寫成新的暫存檔再傳，不修改 main agent 提供的檔案。
 
 ### Merging
 
@@ -112,10 +115,10 @@ color: cyan
   ```
 
 - 整組 issue 分兩次委派、兩階段建立：
-  1. 階段一：建立 parent 與所有 sub-issue，依 Output 回傳對照表後停止，不自行填入交叉引用。
+  1. 階段一：以 main agent 提供的 description 建立 parent 與所有 sub-issue，其中的交叉引用可以是尚無編號的佔位寫法；依 Output 回傳對照表後停止，不自行填入交叉引用。
   1. 階段二：以 main agent 提供、已含交叉引用的最終 description 整份更新每個 issue，再建立父子關聯。
 - 任一階段中途失敗時，依 Output 回報已完成與未完成的項目。
-- 階段一重跑時，只建立 main agent 指明未建立的 issue。
+- 階段一重跑時，只建立 main agent 指明未建立的 issue；main agent 沒有指明哪些未建立時，回報缺少這項並停止。
 
 ### Review Threads
 
