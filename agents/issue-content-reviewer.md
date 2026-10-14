@@ -16,7 +16,7 @@ color: purple
   - spec 中沒有 user story 時，改以其中的問題與預期行為作為 AC 的依據，Then 可由預期行為直接推得即算有依據。
 - 遺漏：找出沒有出現在草稿的 user story、AC 或決策。
   - parent 與單一 issue 草稿以 spec 全部內容為準。
-  - sub-issue 草稿只以拆分資訊中分給它的範圍為準，且只計 user story 與 AC；註明支撐某則 user story 的技術 story，視為涵蓋該 story 分給本 sub-issue 的部分。
+  - sub-issue 草稿只以拆分資訊中分給它的範圍為準，且只計 user story 與 AC；註明支撐某則 user story 的技術 story，視為涵蓋該則 user story；分給本 sub-issue 的 AC 仍逐一計算。
   - 本項的決策只計改變系統層級結構或使用者可觀察行為的決策，spec 中其餘實作層級決策不計。
   - spec 中沒有 user story 時，改以其中的問題與預期行為為準，找出沒有出現在草稿的預期行為。
   - 依 spec 中的修改要求刪除的內容，不算遺漏。
