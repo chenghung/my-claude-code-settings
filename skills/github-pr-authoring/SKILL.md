@@ -109,7 +109,7 @@ description: "依本機分支相對 base branch 的 diff 撰寫 GitHub PR 的標
 - 每個視圖緊鄰支撐它的短文字。
 - 視圖只留與本次改動相關的節點、檔案、state 與邊界。
 - 可用一種或幾種視圖，不全用。
-- repo 不是 public 時，視圖只用本機工具預覽；`render.sh` 印出 kroki.io URL 時不開啟，視為略過預覽。
+- repo 不是 public 時，視圖只用本機工具預覽，本機工具不可用時略過預覽；`render.sh` 印出 kroki.io URL 時不開啟，視為略過預覽。
 - repo 不是 public 時，需算繪的視圖用 GitHub 能原生算繪的 mermaid，不以外部 renderer 的圖片 URL 嵌入 description，因為每次瀏覽都會把圖送到第三方。
 - 上兩條優先於 `diagram-output` rule 與 `diagram-designer` skill 的預覽要求與語法建議。
 

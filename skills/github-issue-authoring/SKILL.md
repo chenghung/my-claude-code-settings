@@ -24,6 +24,7 @@ description: >
 - issue 只發佈 description，不張貼結構化 comment。
 - description 不寫推導與探索過程。
 - description 不引用本機或 repo 內的 spec 檔，讀者只看 issue 就能讀懂。
+- description 的 `##` 段落標題照本檔骨架的段名原樣使用。
 
 ## 單一 issue 與 parent 的段落
 
@@ -53,9 +54,11 @@ sub-issue 只有兩段：
 - story 保留英文骨架 `As a`、`I want`、`so that`，內容用繁體中文。
 - 技術 story 的角色為開發者或下游系統。
 - AC 關鍵字 `Given`、`When`、`Then` 保留英文，描述用繁體中文。
+- AC 可用 `And` 延續 `Given` 或 `Then`。
 - 每個 AC 有一個非常簡短的名稱。
 - spec 中沒有 AC 的 user story，逐則依該 story 與 spec 中的 Testing Decisions、Implementation Decisions 等內容寫出 AC；已有 AC 的 story 只補推得出依據、卻缺少的情境類別。
 - 由此寫出的每個 AC 都能追溯到 spec 的某則 user story 或某項決策。
+- 決策指 spec 中所有決策段落的每一條，包含 Implementation Decisions 與 Testing Decisions。
 - 來源是對話且沒有 user story 時，Spec 段改為直接描述問題與預期行為，不湊 user story。
 - 來源是對話時，AC 只在對話內容能支撐時才寫。
 - 每則 user story 的 AC 涵蓋正常、邊界與失敗情境；某類情境在來源中推不出依據時才省略。
@@ -72,16 +75,16 @@ Then <可驗證的結果>
 ## 圖
 
 - Architecture 與拆解總覽用圖呈現。
-- repo 不是 public 時，圖只用本機工具預覽；`render.sh` 印出 kroki.io URL 時不開啟，視為略過預覽。
+- repo 不是 public 時，圖只用本機工具預覽，本機工具不可用時略過預覽；`render.sh` 印出 kroki.io URL 時不開啟，視為略過預覽。
 - repo 不是 public 時，圖用 GitHub 能原生算繪的 mermaid，不以外部 renderer 的圖片 URL 嵌入 issue，因為每次瀏覽都會把圖送到第三方。
 - 上兩條優先於 `diagram-output` rule 與 `diagram-designer` skill 的預覽要求與語法建議。
 
 ## 流程
 
-1. 整組時，寫草稿前先定好每個 issue 的標題；同一組 issue 的標題互不重複，重複時停下回報。
-1. 每個 issue 的草稿各寫入一個暫存檔。
+1. 整組時，寫草稿前先定好每個 issue 的標題，同一組 issue 的標題互不重複。自行訂定的標題重複時改名使其互不重複，不停下；拆分資訊給定的標題重複時，停下回報。
+1. 每個 issue 的草稿各寫入一個暫存檔，草稿檔只放 description，不含標題；標題另交 `github-manager`。
 1. 整組時，草稿中的交叉引用先以 `{{ref:<issue 標題>}}` 佔位。
-1. 整組時，另把拆分資訊寫入暫存檔，標明每個 issue 的標題，以及每個草稿檔對應 parent 或哪一個 sub-issue。
+1. 整組時，另把拆分資訊寫入暫存檔，標明每個 issue 的標題、每個草稿檔對應 parent 或哪一個 sub-issue，以及每個 sub-issue 負責的 AC 名稱。
 1. 沒有 spec 時，把對話中的來源內容寫成來源暫存檔，只用來作為 spec 交給 `issue-content-reviewer`。
 1. 交 `issue-content-reviewer` 審一輪，傳入全部草稿檔與 spec 檔的絕對路徑；整組時一併傳入拆分資訊檔的絕對路徑。
 1. 同一任務要寫多個互不相關、非整組的 issue 時，每個 issue 各自送審一次，不一起送。
@@ -115,6 +118,6 @@ Then <可驗證的結果>
 1. 來源為最新的 spec；使用者的修改要求沒有對應 spec 時，把既有 description 與修改要求寫成一份來源暫存檔，只用來作為 spec 交給 `issue-content-reviewer`，避免既有內容被判為捏造。
 1. 此來源暫存檔比照來源是對話的規則處理：沒有 user story 時，Spec 段直接描述問題與預期行為。
 1. 依本 skill 的段落骨架整份重寫，只補齊來源有依據的段落。
-1. 整組成員另寫拆分資訊檔，內容為 parent 與全部 sub-issue 的既有編號、標題、範圍與依賴，並標明每個草稿檔對應哪一個 issue；與草稿一併傳給 `issue-content-reviewer`。
+1. 整組成員另寫拆分資訊檔，內容為 parent 與全部 sub-issue 的既有編號、標題、範圍與依賴，並標明每個草稿檔對應哪一個 issue 與每個 sub-issue 負責的 AC 名稱；與草稿一併傳給 `issue-content-reviewer`。
 1. 整組成員的交叉引用直接寫拆分資訊檔中的既有編號，不用佔位，不走兩階段發佈。
 1. 依流程審查與修正後，交 `github-manager` 整份替換 description。
