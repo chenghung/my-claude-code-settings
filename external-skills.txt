@@ -56,16 +56,13 @@ https://github.com/jwynia/agent-skills/tree/main/skills/tech/development/archite
 # Codebase design and engineering-workflow skills.
 #   codebase-design                shared vocabulary and principles for
 #                                  designing deep modules
-#   pr                             writes a PR body from a fixed template
-#                                  (Summary, Evidence, Merge Danger)
-#   retro                          user-invoked retrospective on a coding
+#   retro                         user-invoked retrospective on a coding
 #                                  session, suggesting improvements to the
 #                                  agent's environment
 #   improve-codebase-architecture  user-invoked scan for deepening
 #                                  opportunities, presented as an HTML report,
 #                                  then a grilling session on the one picked
 mattpocock/skills@codebase-design
-mattpocock/skills@pr
 mattpocock/skills@retro
 mattpocock/skills@improve-codebase-architecture
 
