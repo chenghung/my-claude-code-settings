@@ -767,7 +767,10 @@ install_external_skills() {
     # `skills add` is idempotent (a no-op if already installed), so any exit-0
     # run is counted as handled; we cannot cheaply tell "new" from "already
     # present" apart from the CLI's own interactive-style output.
-    if npx --yes skills add "$entry" -g -a "$agent_id" -y; then
+    # `skills add` reads stdin, so without `< /dev/null` it drains the rest of
+    # the manifest this loop is reading and silently ends the loop after the
+    # first active entry.
+    if npx --yes skills add "$entry" -g -a "$agent_id" -y < /dev/null; then
       printf '  INSTALLED %s (%s)\n' "$entry" "$agent_id"
       count_created=$(( count_created + 1 ))
     else
