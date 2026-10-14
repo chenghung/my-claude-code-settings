@@ -66,7 +66,7 @@ color: cyan
 
 - 變更操作成功（建立、修改、comment、回覆、resolve、review、merge）：用一句話回報結果，有 issue 或 PR 編號與 URL 時一併附上；建立一組 issue 除外。
 - 建立一組 issue 成功：回傳每個 issue 的標題、編號與 URL 對照表。
-- 多步操作中途失敗：除失敗資訊外，列出已完成與未完成的項目（issue 建立、description 更新、父子關聯）。
+- 多步操作中途失敗：除失敗資訊外，列出已完成與未完成的項目（issue 建立、description 更新、父子關聯）；已完成的 issue 建立附上標題、編號與 URL。
 - 讀取操作成功：回傳 main agent 要求的結構化資料，不改寫成摘要。
 - 讀取 review thread 時，回傳每個 thread 的 node `id` 與 `isResolved`，以及每則 comment 的 `databaseId`、`author`、`body`、`path` 與 `line`；main agent 需要這些 ID 指定回覆與 resolve 的對象。
 - 失敗：明確標示失敗，附上原文錯誤訊息。
