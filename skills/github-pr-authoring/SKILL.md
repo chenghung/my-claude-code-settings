@@ -26,25 +26,25 @@ description: "依本機分支相對 base branch 的 diff 撰寫 GitHub PR 的標
 撰寫或修改 description 時：
 
 1. 修改既有 PR 且本機分支與取回的 head 分支名不一致時，停下回報，不計算 diff、不 push。
-1. 計算 diff 前先 fetch base 分支；修改既有 PR 時一併 fetch head 分支。
+1. 計算 diff 前先 fetch base 分支；遠端已有 head 分支時一併 fetch。
 1. 遠端 head 有本機沒有的 commit 時，停下回報。
-1. 計算 diff 前，工作樹有未 commit 的改動時，停下回報；三點 diff 與 push 都不含未 commit 的改動。
+1. 計算 diff 前，tracked 檔有未 commit 的改動時，停下回報，untracked 檔不算；三點 diff 與 push 都不含未 commit 的改動。
 1. 改動描述以 `git diff <base>...<head>` 的三點 diff 為唯一來源，不依賴對話中對改動的記憶；三點 diff 與 `pr-content-reviewer` 核對的範圍相同。
 1. base 用遠端追蹤分支，例如 `origin/<base>`，不用本機 base 分支。
 1. 把 description 草稿寫入暫存檔。
 1. 委派 `pr-content-reviewer` 審一輪，提供草稿檔絕對路徑，以及與計算 diff 時相同的 base ref 與 head ref。
-1. `pr-content-reviewer` 回報失敗時（缺輸入、ref 不存在、草稿讀不到），停下回報，不發佈。
+1. `pr-content-reviewer` 回報失敗時，停下回報，不發佈。
 1. 自行判斷每項 finding 是否成立，修正成立者，不再送審。
 1. 本機 head 有遠端沒有的 commit 時，先自行 push；`github-manager` 不做 push。
 1. push 被拒或需要 force push 時，停下回報。
 1. 委派 `github-manager` 發佈，提供標題、草稿檔路徑，以及關聯 issue 編號或無關聯 issue 的聲明；建立 PR 時另提供不含 remote 前綴的 base 與 head 分支名；修改既有 PR 時另提供 PR 編號。
 
-修改既有 PR 的 description 時，依本檔骨架整份重寫並替換；保留現有 description 中無法從 diff 重現的圖片與連結，只排除 description 開頭的關聯 issue 參照，其他位置引用的 issue 照常保留。repo 不是 public 時，不保留外部 renderer 的圖片 URL。
+修改既有 PR 的 description 時，依本檔骨架整份重寫並替換；保留現有 description 中無法從 diff 重現的內容，依其性質放回對應段落；只排除 description 開頭的關聯 issue 參照，其他位置引用的 issue 照常保留。repo 不是 public 時，不保留外部 renderer 的圖片 URL。
 
 ## 撰寫規則
 
 - 標題用英文，簡潔且易於搜尋。
-- 不在標題結尾與 description 開頭寫關聯 issue 的參照，`github-manager` 收到 issue 編號後自行補上；內文其他位置的 issue 引用照常保留。
+- 不在標題結尾與 description 開頭寫關聯 issue 的參照，`github-manager` 收到 issue 編號後自行補上；description 其他位置的 issue 引用照常保留。
 - description 的 `##` 段落標題用英文，其餘內容用繁體中文；粗體標籤照骨架原樣使用。
 - 不寫開場白，文字簡短。
 - repo 有 `GLOSSARY.md` 時，使用其中的領域用語。
@@ -132,7 +132,8 @@ description: "依本機分支相對 base branch 的 diff 撰寫 GitHub PR 的標
 - 修 bug 或新增行為且 diff 含對應測試時，以 pseudocode 寫出該測試的斷言與新舊行為。
 - 有實際執行取得的結果時，測試 pseudocode 放在 Before 與 After；沒有時，放在驗證方式說明中，不放 Before 與 After。
 - 只有實際在 base 與 head 各執行過該測試時，才寫之前失敗、現在通過的執行結果。
-- base 端的失敗限於該測試斷言本身失敗；因環境、缺依賴或測試在 base 不存在而失敗時，改寫驗證方式說明。
+- base 端的失敗限於該測試斷言本身失敗；因環境或缺依賴而失敗時，改寫驗證方式說明。
+- head 新增的測試可複製到 base 的 worktree 執行，其斷言失敗算作 base 端失敗。
 - 在 base 執行測試時，另開 worktree 執行，跑完後移除，不在目前工作樹 checkout 或 stash；stash 堆疊由所有 worktree 共用。
 - 只引用存在於 head 且與 diff 相關的測試檔、測試案例或指令。
 - 不寫未實際執行取得的輸出。
