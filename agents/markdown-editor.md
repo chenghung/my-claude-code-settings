@@ -2,7 +2,8 @@
 name: markdown-editor
 description: "use this agent when you are creating or modifying general (non-Obsidian) markdown files. Do not use for notes inside an Obsidian vault."
 tools: Glob, Grep, Read, Edit, Write, Bash, TaskCreate, TaskGet, TaskUpdate, TaskList, mcp__sequentialThinking__sequentialthinking
-model: sonnet
+model: haiku
+effort: medium
 color: orange
 ---
 

@@ -2,7 +2,7 @@
 name: doc-researcher
 description: "Specialized agent for primary research on a single assigned topic scope. Searches, retrieves, curates, and writes findings to a temp file. Does not perform cross-source synthesis or draw final conclusions."
 tools: Read, Write, WebFetch, WebSearch, mcp__context7__resolve-library-id, mcp__context7__query-docs
-model: sonnet
+model: haiku
 color: cyan
 ---
 

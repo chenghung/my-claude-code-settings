@@ -2,7 +2,7 @@
 name: github-manager
 description: "use this agent when you need to manage github issues and pull requests, append comments, submit pull request reviews (approve, request changes, or comment), or merge a pull request"
 tools: Glob, Grep, Read, WebFetch, WebSearch, Bash, TaskGet, TaskUpdate, TaskList, TaskCreate, EnterWorktree, ExitWorktree, mcp__time__get_current_time
-model: sonnet
+model: haiku
 color: cyan
 ---
 
