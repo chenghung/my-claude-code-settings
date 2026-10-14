@@ -4,9 +4,8 @@ description: >
   僅當下列任一情形成立時觸發：使用者明確要求動用多個 AI agent 平台（claude、codex、opencode、agy
   這類各自獨立的 CLI）對同一個 GitHub Pull Request 各做一次完整 code review；使用者要求補貼本 skill
   先前那次執行未貼完的 review。下列相鄰情境一律不觸發：未指名跨平台交叉審查的一般 code review 請求、自主開發流程中
-  PR 送審前的 self code review 階段、只是查看或查詢 PR 的內容與 diff、回覆或收合既有的 review 留言（改用
-  github-review-comment-reply）、組裝 issue 或 PR 的標題內文與待張貼的 comment 清單（改用
-  github-issue-pr-authoring）。觸發關鍵字：多個 AI 平台審查 PR、multi-agent PR review、派出多個 agent
+  PR 送審前的 self code review 階段、只是查看或查詢 PR 的內容與 diff、回覆或收合既有的 review 留言、建立 PR、
+  撰寫或修改 issue 與 PR 的標題與內文。觸發關鍵字：多個 AI 平台審查 PR、multi-agent PR review、派出多個 agent
   審這個 PR、用 claude 與 agy 一起審 PR、跨模型交叉審查 PR、把上次沒貼完的 review 補貼到 PR 上。
 ---
 
