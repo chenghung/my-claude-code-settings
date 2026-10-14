@@ -127,9 +127,9 @@ ensure_tool() {
 #    以上 14 個新增工具的官方 repo 歸屬，皆已在本機以
 #      `LC_ALL=C pacman -Si <pkg>` 實測 Repository 欄位逐一確認。
 #    納入理由（依賴者，這是納入的唯一理由）：
-#      - gh：github-manager subagent 的全部操作、github-issue-pr-authoring
-#        與 github-review-comment-reply 兩個 skill、settings.json 的
-#        Bash(gh:*) permission。
+#      - gh：github-manager subagent 的全部操作、github-issue-authoring、
+#        github-pr-authoring 與 github-review-comment-reply 三個 skill、
+#        settings.json 的 Bash(gh:*) permission。
 #      - nodejs、npm：install.sh 的 external skills 安裝走 npx skills add、
 #        openspec 走 npm install -g、settings.json 的 statusLine 走
 #        npx ccstatusline、本腳本自己寫進 ~/.zshrc 的 skills 與 sk 兩個
