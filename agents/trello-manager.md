@@ -2,7 +2,7 @@
 name: trello-manager
 description: "use this agent when I need to manage trello cards, check card status and info, or view and manage trello notifications."
 tools: Bash
-model: sonnet
+model: haiku
 color: green
 hooks:
   PreToolUse:

@@ -2,7 +2,7 @@
 name: circleci-manager
 description: "use this agent when you need to query CircleCI pipeline, workflow, or job execution status, fetch failed job step output, artifacts, or test results, rerun a workflow, cancel a workflow or run (rerunning a run is not supported), validate or debug CircleCI config files, or look up CircleCI contexts and environment variables; it operates solely through the CircleCI CLI, which handles authentication itself"
 tools: Bash
-model: sonnet
+model: haiku
 color: yellow
 ---
 
