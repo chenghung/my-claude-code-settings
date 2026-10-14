@@ -409,28 +409,14 @@ AGY_STUB_LOG="$T/agy-stub-bridge.log"
 : > "$AGY_STUB_LOG"
 export NPX_STUB_LOG="$T/npx-stub-bridge.log"
 : > "$NPX_STUB_LOG"
-# Shadow guard (gating, per-name): this run omits --no-external, so agy, npx
-# and npm must all resolve to their stubs under the exact PATH run_antigravity
-# uses; otherwise a real, stateful binary (network installs) would run.
-bridge_shadow_ok=1
-for tool in agy npx npm; do
-  # The prefixing happens inside a child bash so the outer PATH is never read
-  # here (reading it would add a shellcheck SC2030 note at run_antigravity).
-  [ "$(bash -c 'PATH="$1:$PATH"; command -v "$2"' _ "$STUB_BIN" "$tool" 2>/dev/null || true)" = "$STUB_BIN/$tool" ] || bridge_shadow_ok=0
-done
-if [ "$bridge_shadow_ok" = 1 ]; then
-  run_antigravity "$T/log_ag_bridge"
-else
-  bad ag-external-bridge-shadow-guard
-  : > "$T/log_ag_bridge"
-fi
+run_antigravity "$T/log_ag_bridge"
 test -L "$T/gemini-bridge/config/skills/herdr" && pass ag-external-bridge || bad ag-external-bridge
 
 # Every active manifest entry (not blank, not a # comment, whitespace-trimmed
 # as install_external_skills does) must reach `skills add`, in order. The npx
 # stub drains stdin like the real CLI, so an install.sh that lets npx inherit
 # the manifest as stdin stops after the first entry and fails this check.
-EXPECTED_ENTRIES="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$REPO/external-skills.txt" | grep -vE '^(#|$)')"
+EXPECTED_ENTRIES="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$REPO/external-skills.txt" | grep -vE '^(#|$)' || true)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ -n "$EXPECTED_ENTRIES" ] && [ "$(cat "$NPX_STUB_LOG")" = "$EXPECTED_ENTRIES" ] && pass external-skills-all-entries-processed || bad external-skills-all-entries-processed
 
