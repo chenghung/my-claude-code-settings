@@ -43,6 +43,20 @@ grep -qE '^ensure_tool hackmd-cli "@hackmd/hackmd-cli" "\$\{NPM_INSTALL\[@\]\}"$
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qF 'https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh' "$INSTALL_SH" && pass codegraph-install-line || bad codegraph-install-line
 
+# rtk is fully disabled (issue #68): its PreToolUse hook, its allow rule and
+# its autoMode note must all be gone from the repo settings, while the other
+# hooks and the other Org-specific CLI notes stay.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+jq empty "$SETTINGS_FILE" 2>/dev/null && pass settings-valid-json || bad settings-valid-json
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qiw 'rtk' "$SETTINGS_FILE" && bad settings-no-rtk || pass settings-no-rtk
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+jq -e '.hooks | has("PreToolUse") | not' "$SETTINGS_FILE" >/dev/null 2>&1 && pass settings-no-pretooluse-hook || bad settings-no-pretooluse-hook
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+jq -e '(.hooks.UserPromptSubmit | length > 0) and (.hooks.SessionStart | length > 0)' "$SETTINGS_FILE" >/dev/null 2>&1 && pass settings-other-hooks-kept || bad settings-other-hooks-kept
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+jq -e '[.autoMode.environment[] | select(startswith("**Org-specific CLIs**"))] | length == 1 and (.[0] | contains("codegraph") and contains("mmdc") and contains("herdr") and contains("openspec") and contains("hackmd-cli") and contains("trello"))' "$SETTINGS_FILE" >/dev/null 2>&1 && pass settings-org-cli-notes-kept || bad settings-org-cli-notes-kept
+
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qF 'https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.sh' "$INSTALL_SH" && pass token-usage-insights-install-line || bad token-usage-insights-install-line
 
