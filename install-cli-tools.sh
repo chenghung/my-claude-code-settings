@@ -130,11 +130,12 @@ ensure_tool() {
 #      - gh：github-manager subagent 的全部操作、github-issue-authoring、
 #        github-pr-authoring 與 github-review-comment-reply 三個 skill、
 #        settings.json 的 Bash(gh:*) permission。
-#      - nodejs、npm：install.sh 的 external skills 安裝走 npx skills add、
-#        openspec 走 npm install -g、settings.json 的 statusLine 走
+#      - nodejs、npm：install.sh 呼叫的 sync-external-skills.sh 以
+#        npx skills add 安裝外部 skill，缺 npx 時同步會失敗並讓 install.sh
+#        中止；openspec 走 npm install -g、settings.json 的 statusLine 走
 #        npx ccstatusline、本腳本自己寫進 ~/.zshrc 的 skills 與 sk 兩個
-#        alias 也走 npx；這四條路徑在缺 node 時全都只是印警告後略過、不會
-#        報錯，故先前的缺失是靜默的。
+#        alias 也走 npx，這三條路徑在缺 node 時只印警告後略過、不會報錯，
+#        故這部分的缺失是靜默的。
 #      - mmdc：diagram-designer skill 的 mermaid 圖表渲染。
 #      - terraform：terraform-engineer skill；本腳本原本已裝 tflint，卻沒
 #        裝被 lint 的本體。

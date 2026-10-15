@@ -20,6 +20,22 @@ export AGY_STUB_LOG="$T/agy-stub.log"
 # Test-only escape hatch: skip install-cli-tools.sh so this suite never
 # triggers real sudo pacman/yay installs or rewrites the user's real ~/.zshrc.
 export INSTALL_CLI_TOOLS=0
+# Test-only override, same idea as INSTALL_CLI_TOOLS: install.sh runs this
+# stub instead of the real sync-external-skills.sh, which would run
+# `npx skills add/remove` against the real HOME. Exported before the first
+# install.sh run so it covers the whole file. The stub appends its argv to
+# SYNC_STUB_LOG, prints install-like lines (used to prove install.sh does not
+# count them) and exits with SYNC_STUB_EXIT (default 0).
+export SYNC_EXTERNAL_SKILLS="$T/sync-stub"
+export SYNC_STUB_LOG="$T/sync-stub.log"
+cat > "$SYNC_EXTERNAL_SKILLS" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${SYNC_STUB_LOG:?}"
+printf '  INSTALLED fake-skill (claude-code)\n'
+printf '  CREATED  fake\n'
+exit "${SYNC_STUB_EXIT:-0}"
+STUB
+chmod +x "$SYNC_EXTERNAL_SKILLS"
 
 "$REPO/install.sh" --codex --no-external > "$T/log1" 2>&1
 
@@ -262,8 +278,9 @@ chmod +x "$STUB_BIN/agy"
 # Every --antigravity invocation in this file goes through this helper, which
 # appends whatever install.sh flags the caller passes after the log path, so
 # none of them can ever escape to the real agy binary regardless of which
-# flags a given scenario needs (e.g. the external-skill bridge test below
-# intentionally omits --no-external).
+# flags a given scenario needs. (The external-skills section further down
+# deploys Antigravity through --all instead; it runs under its own closed
+# PATH, which holds this same agy stub.)
 : > "$AGY_STUB_LOG"
 run_antigravity() {
   local log="$1"
@@ -365,60 +382,180 @@ run_antigravity "$T/log_ag_mcp2" --no-external
 unset AGY_MCP_HAS_CODEGRAPH
 grep -q '^mcp add' "$AGY_STUB_LOG" && bad ag-mcp-skips-when-registered || pass ag-mcp-skips-when-registered
 
-# The external-skill bridge must symlink agy-scoped external skills into the
-# dir agy actually reads, and must obey --no-external like the other three
-# platforms. This has to exercise install_external_skills for real (no
-# --no-external), which also un-gates install_openspec's unconditional
-# end-of-script `npm install --global` — so PATH gets npx and npm stubs on
-# top of the existing claude/agy ones: npx fabricates the on-disk result
-# `skills add` would leave under GEMINI_HOME/antigravity-cli/skills for each
-# of the manifest's active entries (twenty as of this manifest, e.g.
-# herdrdev/herdr@herdr), and npm is a pure no-op so install_openspec can
-# never reach the real npm on this machine.
-cat > "$STUB_BIN/npx" <<'STUB'
+# ---- external skills: install.sh hands them to sync-external-skills.sh ----
+# These scenarios omit --no-external, so install.sh reaches the sync call,
+# install_openspec (npm) and Codex's install_superpowers (codex). Safety
+# layers, on top of the sync stub exported at the top of this file:
+#   - run_ext / run_ext_tty refuse to run install.sh unless
+#     SYNC_EXTERNAL_SKILLS still points at that stub.
+#   - HOME is a directory under $T.
+#   - PATH is closed: only test-owned dirs, nothing from the real PATH, so no
+#     name can resolve to a real binary. EXT_BIN holds an npx guard (must
+#     never be called; it logs UNEXPECTED and exits 1) and npm and codex
+#     stubs that log their calls; STUB_BIN holds the claude and agy stubs
+#     from above; PASS_BIN links the harmless real tools install.sh needs.
+#     A name missing from these dirs cannot escape: it fails as "command not
+#     found" or is skipped with install.sh's "... not found" warning, and
+#     ext_guard fails the scenario on any "not found" in its log.
+EXT="$T/ext"
+EXT_BIN="$EXT/stub-bin"
+PASS_BIN="$EXT/pass-bin"
+mkdir -p "$EXT_BIN" "$PASS_BIN" "$EXT/home"
+export NPX_GUARD_LOG="$EXT/npx-guard.log"
+export NPM_STUB_LOG="$EXT/npm-stub.log"
+export CODEX_STUB_LOG="$EXT/codex-stub.log"
+cat > "$EXT_BIN/npx" <<'STUB'
 #!/usr/bin/env bash
-set -euo pipefail
-# Simulate `npx --yes skills add <entry> -g -a <agent_id> -y`: install.sh only
-# checks the exit code, so this only needs to fabricate the skill directory
-# the real `skills` CLI would have created, without touching the network.
-# Like the real CLI it reads (and so drains) stdin, which is what swallows
-# the rest of the manifest when install.sh leaves the loop's stdin attached;
-# each processed entry is also logged so the suite can check none was dropped.
-if [ "${2:-}" = "skills" ] && [ "${3:-}" = "add" ]; then
-  cat > /dev/null
-  entry="$4"
-  printf '%s\n' "$entry" >> "${NPX_STUB_LOG:?}"
-  skill_name="${entry##*@}"
-  mkdir -p "${GEMINI_HOME:?}/antigravity-cli/skills/${skill_name}"
-  printf -- '---\nname: %s\ndescription: "x"\n---\nbody\n' "$skill_name" \
-    > "${GEMINI_HOME}/antigravity-cli/skills/${skill_name}/SKILL.md"
-fi
+printf 'UNEXPECTED %s\n' "$*" >> "${NPX_GUARD_LOG:?}"
+exit 1
+STUB
+cat > "$EXT_BIN/npm" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${NPM_STUB_LOG:?}"
 exit 0
 STUB
-chmod +x "$STUB_BIN/npx"
-cat > "$STUB_BIN/npm" <<'STUB'
+cat > "$EXT_BIN/codex" <<'STUB'
 #!/usr/bin/env bash
-# install_openspec's `npm install --global` is un-gated once --no-external is
-# omitted; stubbed here as a pure no-op so it never reaches the real npm.
+printf '%s\n' "$*" >> "${CODEX_STUB_LOG:?}"
 exit 0
 STUB
-chmod +x "$STUB_BIN/npm"
+chmod +x "$EXT_BIN/npx" "$EXT_BIN/npm" "$EXT_BIN/codex"
+for tool in bash env dirname basename mkdir ln cp mv rm find sort cat head grep wc readlink date python3; do
+  ln -s "$(command -v "$tool")" "$PASS_BIN/$tool"
+done
+EXT_PATH="$EXT_BIN:$STUB_BIN:$PASS_BIN"
+SCRIPT_CMD="$(command -v script)"
+export CLAUDE_CONFIG_DIR="$EXT/claude" CODEX_HOME="$EXT/codex" AGENTS_HOME="$EXT/agents"
+export OPENCODE_CONFIG_DIR="$EXT/opencode" GEMINI_HOME="$EXT/gemini"
 
-export GEMINI_HOME="$T/gemini-bridge"
-AGY_STUB_LOG="$T/agy-stub-bridge.log"
-: > "$AGY_STUB_LOG"
-export NPX_STUB_LOG="$T/npx-stub-bridge.log"
-: > "$NPX_STUB_LOG"
-run_antigravity "$T/log_ag_bridge"
-test -L "$T/gemini-bridge/config/skills/herdr" && pass ag-external-bridge || bad ag-external-bridge
+# ext_prep <scenario> <log>: empty every stub log and the scenario log;
+# returns 1 (scenario marked failed, install.sh must not run) when
+# SYNC_EXTERNAL_SKILLS is not the stub.
+ext_prep() {
+  : > "$SYNC_STUB_LOG"; : > "$NPX_GUARD_LOG"; : > "$NPM_STUB_LOG"; : > "$CODEX_STUB_LOG"; : > "$2"
+  [ "$SYNC_EXTERNAL_SKILLS" = "$T/sync-stub" ] && return 0
+  bad "$1-sync-stub-guard"
+  return 1
+}
 
-# Every active manifest entry (not blank, not a # comment, whitespace-trimmed
-# as install_external_skills does) must reach `skills add`, in order. The npx
-# stub drains stdin like the real CLI, so an install.sh that lets npx inherit
-# the manifest as stdin stops after the first entry and fails this check.
-EXPECTED_ENTRIES="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$REPO/external-skills.txt" | grep -vE '^(#|$)' || true)"
+# run_ext <scenario> <log> <install.sh args...>: one run, stdin /dev/null.
+# run_ext_tty <scenario> <log> <typed input> <install.sh args...>: one run
+# inside a pseudo terminal from script(1), the input typed into it.
+# Both set RC (255 when the run was refused).
+RC=0
+run_ext() {
+  local name="$1" log="$2"
+  shift 2
+  RC=255
+  ext_prep "$name" "$log" || return 0
+  RC=0
+  HOME="$EXT/home" PATH="$EXT_PATH" CLAUDE_STUB_LOG="$EXT/claude-stub.log" \
+    "$REPO/install.sh" "$@" > "$log" 2>&1 < /dev/null || RC=$?
+}
+run_ext_tty() {
+  local name="$1" log="$2" input="$3" cmd
+  shift 3
+  RC=255
+  ext_prep "$name" "$log" || return 0
+  printf -v cmd '%q ' "$REPO/install.sh" "$@"
+  RC=0
+  printf '%s' "$input" \
+    | HOME="$EXT/home" PATH="$EXT_PATH" CLAUDE_STUB_LOG="$EXT/claude-stub.log" SHELL="$PASS_BIN/bash" \
+      "$SCRIPT_CMD" -qec "$cmd" /dev/null > "$log" 2>&1 || RC=$?
+}
+
+# ext_guard <scenario> <log>: the npx guard was never called, and nothing in
+# the run fell outside the closed PATH.
+ext_guard() {
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ ! -s "$NPX_GUARD_LOG" ] && pass "$1-npx-guard-not-called" || bad "$1-npx-guard-not-called"
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  grep -q 'not found' "$2" && bad "$1-closed-path-complete" || pass "$1-closed-path-complete"
+}
+
+# Platform flags are passed to sync unchanged; success leads on to Summary.
+run_ext flags "$EXT/log_flags" --claude --codex
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$EXPECTED_ENTRIES" ] && [ "$(cat "$NPX_STUB_LOG")" = "$EXPECTED_ENTRIES" ] && pass external-skills-all-entries-processed || bad external-skills-all-entries-processed
+[ "$(cat "$SYNC_STUB_LOG")" = '--claude --codex' ] && pass sync-gets-platform-flags || bad sync-gets-platform-flags
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$RC" -eq 0 ] && grep -qF '=== Summary ===' "$EXT/log_flags" && pass sync-success-reaches-summary || bad sync-success-reaches-summary
+# Positive controls for the --no-external scenario below: without that flag,
+# openspec (npm) and Codex superpowers (codex) do run under these stubs.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -s "$NPM_STUB_LOG" ] && pass ext-runs-openspec || bad ext-runs-openspec
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qxF 'plugin marketplace upgrade' "$CODEX_STUB_LOG" && pass ext-runs-codex-superpowers || bad ext-runs-codex-superpowers
+ext_guard flags "$EXT/log_flags"
+
+# --all expands to the four platform flags; --no-confirm is passed through.
+run_ext all "$EXT/log_all" --all --no-confirm
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$SYNC_STUB_LOG")" = '--claude --codex --opencode --antigravity --no-confirm' ] && pass sync-gets-all-and-no-confirm || bad sync-gets-all-and-no-confirm
+ext_guard all "$EXT/log_all"
+
+# Interactive mode has no platform flag in "$@": the sync flags must be
+# rebuilt from the answers (only Claude Code selected here).
+run_ext_tty interactive "$EXT/log_tty" $'y\nn\nn\nn\n'
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$(cat "$SYNC_STUB_LOG")" = '--claude' ] && pass sync-gets-interactive-flags || bad sync-gets-interactive-flags
+ext_guard interactive "$EXT/log_tty"
+
+# --no-external skips sync, openspec and Codex superpowers.
+run_ext noext "$EXT/log_noext" --claude --codex --no-external
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$SYNC_STUB_LOG" ] && pass no-external-skips-sync || bad no-external-skips-sync
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$NPM_STUB_LOG" ] && pass no-external-skips-openspec || bad no-external-skips-openspec
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'plugin marketplace upgrade' "$CODEX_STUB_LOG" && bad no-external-skips-codex-superpowers || pass no-external-skips-codex-superpowers
+ext_guard noext "$EXT/log_noext"
+
+# A failed sync stops install.sh at once: exit 1, a hint naming both ways
+# out, no Summary, no openspec.
+export SYNC_STUB_EXIT=1
+run_ext syncfail "$EXT/log_syncfail" --claude --codex
+unset SYNC_STUB_EXIT
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$RC" -eq 1 ] && pass sync-fail-exits-1 || bad sync-fail-exits-1
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF './sync-external-skills.sh --claude --codex' "$EXT/log_syncfail" && pass sync-fail-hint-rerun || bad sync-fail-hint-rerun
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF -e '--no-external' "$EXT/log_syncfail" && pass sync-fail-hint-no-external || bad sync-fail-hint-no-external
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF '=== Summary ===' "$EXT/log_syncfail" && bad sync-fail-no-summary || pass sync-fail-no-summary
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -s "$NPM_STUB_LOG" ] && pass sync-fail-skips-openspec || bad sync-fail-skips-openspec
+ext_guard syncfail "$EXT/log_syncfail"
+
+# Sync output is not counted: on two fresh Claude dirs, the run with sync
+# (whose stub prints INSTALLED/CREATED lines) differs from the --no-external
+# run only by install_openspec's one created (npm stub exits 0).
+summary_value() { sed -n "s/^  $1: *//p" "$2"; } # $1 = created|skipped, $2 = log
+export CLAUDE_CONFIG_DIR="$EXT/claude-count-noext"
+run_ext count-noext "$EXT/log_count_noext" --claude --no-external
+ext_guard count-noext "$EXT/log_count_noext"
+export CLAUDE_CONFIG_DIR="$EXT/claude-count-ext"
+run_ext count-ext "$EXT/log_count_ext" --claude
+ext_guard count-ext "$EXT/log_count_ext"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'INSTALLED fake-skill' "$EXT/log_count_ext" && pass count-sync-output-present || bad count-sync-output-present
+created_noext="$(summary_value created "$EXT/log_count_noext")"
+created_ext="$(summary_value created "$EXT/log_count_ext")"
+skipped_noext="$(summary_value skipped "$EXT/log_count_noext")"
+skipped_ext="$(summary_value skipped "$EXT/log_count_ext")"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$created_noext" ] && [ -n "$created_ext" ] && [ "$created_ext" -eq $(( created_noext + 1 )) ] && pass sync-not-counted-created || bad sync-not-counted-created
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -n "$skipped_noext" ] && [ "$skipped_ext" = "$skipped_noext" ] && pass sync-not-counted-skipped || bad sync-not-counted-skipped
+export CLAUDE_CONFIG_DIR="$EXT/claude"
+
+# --help documents --no-confirm and keeps the test-only variable hidden.
+run_ext help "$EXT/log_help" --help
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF -e '--no-confirm' "$EXT/log_help" && pass help-mentions-no-confirm || bad help-mentions-no-confirm
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qF 'SYNC_EXTERNAL_SKILLS' "$EXT/log_help" && bad help-hides-sync-variable || pass help-hides-sync-variable
+ext_guard help "$EXT/log_help"
 
 # --all must include antigravity
 grep -qE '^\s*--all\).*want_antigravity=1' "$REPO/install.sh" && pass ag-in-all || bad ag-in-all
@@ -449,13 +586,5 @@ for identifier in '--claude-personal' CLAUDE_PERSONAL_CONFIG_DIR deploy_claude_p
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
   grep -qF -e "$identifier" "$REPO/install.sh" && bad "no-${identifier#--}-left-in-install-sh" || pass "no-${identifier#--}-left-in-install-sh"
 done
-
-# ---- external skills manifest ----
-# The herdr entry MUST pin the skill name: herdrdev/herdr ships four skills
-# (herdr, herdr-pre-release-audit, herdr-throwaway-repro, triage) and an
-# unpinned entry would install all four into every platform's global dir.
-MANIFEST="$REPO/external-skills.txt"
-grep -qxF 'herdrdev/herdr@herdr' "$MANIFEST" && pass herdr-skill-entry || bad herdr-skill-entry
-grep -qE '^herdrdev/herdr$' "$MANIFEST" && bad herdr-skill-pinned || pass herdr-skill-pinned
 
 exit $fail

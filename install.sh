@@ -29,6 +29,9 @@
 #     is never a candidate) and are removed only when their own SKILL.md
 #     still carries this converter's GENERATED banner (so a hand-authored or
 #     externally-owned directory can never be a candidate either).
+# External skills are handed to sync-external-skills.sh (not run with
+# --no-external), which can remove skills and symlinks; it previews and asks
+# [y/N] before changing anything unless --no-confirm is passed through.
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -47,7 +50,9 @@ AGENTS_HOME="${AGENTS_HOME:-${HOME}/.agents}"
 OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-${HOME}/.config/opencode}"
 GEMINI_HOME="${GEMINI_HOME:-${HOME}/.gemini}"
 AG_CONFIG_DIR="${GEMINI_HOME}/config"
-EXTERNAL_SKILLS_MANIFEST="${REPO_DIR}/external-skills.txt"
+# Test-only override (like INSTALL_CLI_TOOLS further down): the test suite
+# points this at a stub so it never runs the real sync. Not in --help.
+SYNC_EXTERNAL_SKILLS="${SYNC_EXTERNAL_SKILLS:-${REPO_DIR}/sync-external-skills.sh}"
 
 # ---------------------------------------------------------------------------
 # Counters
@@ -318,7 +323,6 @@ deploy_claude() {
   backup_migrate_link "${CLAUDE_CONFIG_DIR}/CLAUDE.md" "${REPO_DIR}/CLAUDE.md"
   migrate_settings_json "${CLAUDE_CONFIG_DIR}/settings.json" "${REPO_DIR}/platforms/claude/settings.json"
 
-  install_external_skills "claude-code"
   # superpowers for Claude Code is declared in settings.json (enabledPlugins),
   # so it installs/updates through Claude Code itself, not via the CLI here.
   register_codegraph_mcp
@@ -537,7 +541,7 @@ generate_opencode_subagents() {
 #
 # This directory holds three kinds of entry: symlinks to the repo's own
 # skills/, the generated command-skills written here, and symlinks bridged in
-# from the external-skills install. Pruning is therefore doubly fenced: it only
+# by sync-external-skills.sh. Pruning is therefore doubly fenced: it only
 # considers real directories (find -type d never matches a symlink), and only
 # removes one whose SKILL.md carries this converter's own banner text.
 generate_command_skills() {
@@ -676,7 +680,6 @@ deploy_codex() {
     printf '  REMOVED  %s (legacy lowercase symlink)\n' "${CODEX_HOME}/agents.md"
   fi
 
-  install_external_skills "codex"
   install_superpowers "codex"
 }
 
@@ -690,8 +693,6 @@ deploy_opencode() {
 
   generate_agents_md "${OPENCODE_CONFIG_DIR}/AGENTS.md"
   generate_opencode_subagents
-
-  install_external_skills "opencode"
 }
 
 deploy_antigravity() {
@@ -709,75 +710,12 @@ deploy_antigravity() {
 
   generate_antigravity_subagents
 
-  # The skills CLI has no agent id that writes into ${AG_CONFIG_DIR}/skills:
-  # antigravity-cli lands in ~/.gemini/antigravity-cli/skills instead. Install
-  # under that id (correct scope, and the CLI keeps managing versions), then
-  # bridge the result into the dir agy actually reads. The bridge itself must
-  # also obey --no-external: without this guard, a user who explicitly opted
-  # out of external skills would still get any pre-existing ones under
-  # antigravity-cli/skills wired into the dir agy reads, while the other
-  # three platforms stay fully inert under --no-external — this keeps the
-  # flag's meaning consistent across all four.
-  install_external_skills "antigravity-cli"
-  [ -n "$skip_external" ] || link_items_into "${GEMINI_HOME}/antigravity-cli/skills" "${AG_CONFIG_DIR}/skills"
-
   register_codegraph_mcp_antigravity
 
   if [ -L "${GEMINI_HOME}/AGENTS.md" ]; then
     printf '  NOTE     %s is a hand-made symlink that predates this deploy.\n' "${GEMINI_HOME}/AGENTS.md"
     printf '           Rules now ship via %s; remove it whenever convenient.\n' "${GEMINI_HOME}/GEMINI.md"
   fi
-}
-
-# ---------------------------------------------------------------------------
-# External skills (open agent skills ecosystem) — installed via the `skills`
-# CLI (run through npx), scoped to one agent identifier so each entry lands
-# in that platform's own global skills directory (e.g. claude-code installs
-# to ~/.claude/skills, codex installs to ~/.codex/skills). Manifest lines are
-# read from EXTERNAL_SKILLS_MANIFEST; blank lines and lines starting with #
-# are ignored. Every install attempt is independent: one bad or unreachable
-# entry is reported and skipped, it never aborts the rest of the deploy.
-#   $1 = skills CLI agent identifier (e.g. "claude-code", "codex")
-# ---------------------------------------------------------------------------
-install_external_skills() {
-  local agent_id="$1"
-
-  [ -n "$skip_external" ] && return
-
-  if [ ! -f "$EXTERNAL_SKILLS_MANIFEST" ]; then
-    printf '  SKIP     %s not found — no external skills to install for %s\n' \
-      "$EXTERNAL_SKILLS_MANIFEST" "$agent_id"
-    return
-  fi
-
-  if ! command -v npx > /dev/null 2>&1; then
-    printf '  WARNING  npx not found - skipping external skills install for %s.\n' "$agent_id"
-    return
-  fi
-
-  local entry
-  while IFS= read -r entry || [ -n "$entry" ]; do
-    # Trim leading/trailing whitespace so a whitespace-only line counts as blank
-    entry="${entry#"${entry%%[![:space:]]*}"}"
-    entry="${entry%"${entry##*[![:space:]]}"}"
-    case "$entry" in
-      ''|'#'*) continue ;;
-    esac
-
-    # `skills add` is idempotent (a no-op if already installed), so any exit-0
-    # run is counted as handled; we cannot cheaply tell "new" from "already
-    # present" apart from the CLI's own interactive-style output.
-    # `skills add` reads stdin, so without `< /dev/null` it drains the rest of
-    # the manifest this loop is reading and silently ends the loop after the
-    # first active entry.
-    if npx --yes skills add "$entry" -g -a "$agent_id" -y < /dev/null; then
-      printf '  INSTALLED %s (%s)\n' "$entry" "$agent_id"
-      count_created=$(( count_created + 1 ))
-    else
-      printf '  WARNING  failed to install %s for %s - skipping.\n' "$entry" "$agent_id"
-      count_skipped=$(( count_skipped + 1 ))
-    fi
-  done < "$EXTERNAL_SKILLS_MANIFEST"
 }
 
 # ---------------------------------------------------------------------------
@@ -893,6 +831,7 @@ want_opencode=""
 want_antigravity=""
 skip_external=""
 force_config=""
+no_confirm=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -903,12 +842,15 @@ for arg in "$@"; do
     --all)    want_claude=1; want_codex=1; want_opencode=1; want_antigravity=1 ;;
     --no-external) skip_external=1 ;;
     --force-config) force_config=1 ;;
+    --no-confirm) no_confirm=1 ;;
     -h|--help)
-      printf 'Usage: install.sh [--claude] [--codex] [--opencode] [--antigravity] [--all] [--no-external] [--force-config]\n'
+      printf 'Usage: install.sh [--claude] [--codex] [--opencode] [--antigravity] [--all] [--no-external] [--force-config] [--no-confirm]\n'
       printf '  --antigravity  deploy to the Antigravity CLI (agy) global config under ~/.gemini.\n'
       printf '  --force-config  re-seed an already-seeded Codex config.toml from the repo\n'
       printf '                  template (backs up the existing file first). Codex-only;\n'
       printf '                  no effect on Claude Code or opencode.\n'
+      printf '  --no-confirm  passed unchanged to sync-external-skills.sh, skipping its\n'
+      printf '                confirmation prompt.\n'
       exit 0
       ;;
     *) printf 'Unknown option: %s\n' "$arg" >&2; exit 2 ;;
@@ -1018,6 +960,40 @@ fi
 [ -n "$want_codex" ] && deploy_codex
 [ -n "$want_opencode" ] && deploy_opencode
 [ -n "$want_antigravity" ] && deploy_antigravity
+
+# ---------------------------------------------------------------------------
+# External skills — delegated to sync-external-skills.sh, which installs,
+# updates and removes them per external-skills.jsonc. Runs once, after every
+# selected platform is deployed. The platform flags are rebuilt from want_*
+# because interactive mode has none in "$@". Its results are not counted in
+# the Summary. Exit 0 also covers the user answering No at its prompt, so
+# install.sh carries on; any other exit stops install.sh right here (no
+# openspec, no Summary). Called inside `if !` so set -e cannot abort before
+# the hint is printed.
+# ---------------------------------------------------------------------------
+if [ -z "$skip_external" ]; then
+  platform_flags=()
+  if [ -n "$want_claude" ]; then platform_flags+=(--claude); fi
+  if [ -n "$want_codex" ]; then platform_flags+=(--codex); fi
+  if [ -n "$want_opencode" ]; then platform_flags+=(--opencode); fi
+  if [ -n "$want_antigravity" ]; then platform_flags+=(--antigravity); fi
+  sync_flags=("${platform_flags[@]}")
+  if [ -n "$no_confirm" ]; then sync_flags+=(--no-confirm); fi
+
+  if ! "$SYNC_EXTERNAL_SKILLS" "${sync_flags[@]}"; then
+    # printf ' %s' joins the flags; "${platform_flags[*]}" would join them
+    # with IFS's first character, a newline here.
+    flags_text="$(printf ' %s' "${platform_flags[@]}")"
+    {
+      printf '\nERROR  external skills sync failed - install.sh stopped here (openspec install and Summary skipped).\n'
+      printf 'Fix the problem reported above, then either:\n'
+      printf '  - re-run only the sync:  ./sync-external-skills.sh%s\n' "$flags_text"
+      printf '  - or skip external skills for now:  ./install.sh%s --no-external\n' "$flags_text"
+      printf '    (--no-external also skips the openspec install and the Codex superpowers install)\n'
+    } >&2
+    exit 1
+  fi
+fi
 
 # OpenSpec is a plain dev CLI tool with no per-platform install target, so it
 # runs once regardless of which platform(s) were selected above.
