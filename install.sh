@@ -5,7 +5,7 @@
 # Target shell: bash — requires arrays, process substitution, and bash-specific
 #               string ops that are not available in POSIX sh.
 #
-# DESTRUCTIVE OPERATIONS: four exceptions. The script never deletes or
+# DESTRUCTIVE OPERATIONS: five exceptions. The script never deletes or
 # overwrites any existing file, directory, or symlink outright — conflicts
 # are reported and skipped. The exceptions are:
 #   - backup_migrate_link: renames a pre-existing real file to a
@@ -29,9 +29,10 @@
 #     is never a candidate) and are removed only when their own SKILL.md
 #     still carries this converter's GENERATED banner (so a hand-authored or
 #     externally-owned directory can never be a candidate either).
-# External skills are handed to sync-external-skills.sh (not run with
-# --no-external), which can remove skills and symlinks; it previews and asks
-# [y/N] before changing anything unless --no-confirm is passed through.
+#   - the external-skills step (not run with --no-external): install.sh
+#     itself deletes nothing here, but the sync-external-skills.sh it calls
+#     can remove skills and symlinks. That script previews and asks [y/N]
+#     before changing anything unless --no-confirm is passed through.
 
 set -euo pipefail
 IFS=$'\n\t'
