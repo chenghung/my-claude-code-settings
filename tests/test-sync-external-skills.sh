@@ -197,6 +197,9 @@ new_case() {
   CLAUDE_SKILLS="$HOME/.claude/skills"
   AGENTS_SKILLS="$HOME/.agents/skills"
   LOCK="$HOME/.agents/.skill-lock.json"
+  BRIDGE="$HOME/.gemini/config/skills"
+  OLD_AG="$HOME/.gemini/antigravity-cli/skills"
+  CODEX_OLD="$HOME/.codex/skills"
   RUN_PATH="$STUB_DIR:$BASE_PATH"
   EXPECT_NPX="$STUB_NPX"
   EXPECT_PYTHON3=""
@@ -314,6 +317,7 @@ sandbox_without() {
   not()      { ! "$@"; }
   absent()   { [[ ! -e "$1" && ! -L "$1" ]]; }
   real_dir() { [[ -d "$1" && ! -L "$1" ]]; }
+  link_is()  { [[ -L "$1" && "$(readlink -- "$1")" == "$2" ]]; }
 }
 log_count() { grep -c -- "$1" "$NPX_STUB_LOG" || true; }
 check()    { if "${@:2}"; then pass "$1"; else bad "$1"; printf '  rc=%s output:\n%s\n' "$RC" "$OUT" >&2; fi; }
@@ -578,6 +582,216 @@ new_case verify-dedupe
 export NPX_STUB_SKIP_SKILL=gamma
 if run_sync plain verify-dedupe "$FX" --codex --opencode --no-confirm; then
   check verify-dedupe-once test "$(grep -c 'verify: gamma' <<< "$OUT")" -eq 1
+fi
+
+# ===========================================================================
+# Symlink cleanup, dangling repo symlink replacement, Antigravity bridge,
+# conflict and drift prechecks.
+# ===========================================================================
+
+# mkskill <dir>: a real skill directory with a SKILL.md.
+mkskill() { mkdir -p "$1"; printf '# skill\n' > "$1/SKILL.md"; }
+
+# ---- unmanaged items survive; repo symlinks (claude and bridge) are kept ----
+new_case untouched
+mkdir -p "$CLAUDE_SKILLS" "$BRIDGE"
+ln -s "$FX/skills/local-skill" "$CLAUDE_SKILLS/local-skill"
+mkskill "$CLAUDE_SKILLS/manual-dir"
+mkskill "$CLAUDE_SKILLS/synced"
+ln -s "$FX/skills/local-skill" "$BRIDGE/local-skill"
+if run_sync plain untouched "$FX" --all --no-confirm; then
+  check untouched-exit0 test "$RC" -eq 0
+  check untouched-repo-link link_is "$CLAUDE_SKILLS/local-skill" "$FX/skills/local-skill"
+  check untouched-manual-dir real_dir "$CLAUDE_SKILLS/manual-dir"
+  check untouched-synced real_dir "$CLAUDE_SKILLS/synced"
+  check untouched-bridge-repo-link link_is "$BRIDGE/local-skill" "$FX/skills/local-skill"
+fi
+
+# ---- alias symlink cleanup follows the selected platforms ---------------------
+new_case alias
+mkdir -p "$CLAUDE_SKILLS" "$AGENTS_SKILLS"
+ln -s "$AGENTS_SKILLS/teach" "$AGENTS_SKILLS/teach-me"
+ln -s ../../.agents/skills/teach-me "$CLAUDE_SKILLS/teach-me"
+ln -s "$FX/skills/local-skill" "$CLAUDE_SKILLS/local-skill"
+if run_sync plain alias-claude "$FX" --claude --no-confirm; then
+  check alias-claude-exit0 test "$RC" -eq 0
+  check alias-claude-preview has "將清除的 symlink: $CLAUDE_SKILLS/teach-me"
+  check alias-claude-cleaned absent "$CLAUDE_SKILLS/teach-me"
+  check alias-claude-agents-kept test -L "$AGENTS_SKILLS/teach-me"
+  check alias-claude-repo-link-kept link_is "$CLAUDE_SKILLS/local-skill" "$FX/skills/local-skill"
+fi
+if run_sync plain alias-codex "$FX" --codex --no-confirm; then
+  check alias-codex-exit0 test "$RC" -eq 0
+  check alias-codex-cleaned absent "$AGENTS_SKILLS/teach-me"
+  check alias-codex-repo-link-kept link_is "$CLAUDE_SKILLS/local-skill" "$FX/skills/local-skill"
+fi
+
+# ---- legacy dir ~/.codex/skills: scanned only when codex is selected ----------
+# alpha and teach-me exist in ~/.agents/skills, so neither old link is
+# dangling: teach-me goes only because codex does not want it.
+new_case legacy
+mkskill "$AGENTS_SKILLS/alpha"
+mkskill "$AGENTS_SKILLS/teach-me"
+mkdir -p "$CODEX_OLD"
+ln -s "$AGENTS_SKILLS/teach-me" "$CODEX_OLD/teach-me"
+ln -s "$AGENTS_SKILLS/alpha" "$CODEX_OLD/alpha"
+if run_sync plain legacy-claude "$FX" --claude --no-confirm; then
+  check legacy-claude-exit0 test "$RC" -eq 0
+  check legacy-claude-teach-me-kept link_is "$CODEX_OLD/teach-me" "$AGENTS_SKILLS/teach-me"
+  check legacy-claude-alpha-kept link_is "$CODEX_OLD/alpha" "$AGENTS_SKILLS/alpha"
+fi
+if run_sync plain legacy-codex "$FX" --codex --no-confirm; then
+  check legacy-codex-exit0 test "$RC" -eq 0
+  check legacy-codex-teach-me-cleaned absent "$CODEX_OLD/teach-me"
+  check legacy-codex-alpha-kept link_is "$CODEX_OLD/alpha" "$AGENTS_SKILLS/alpha"
+fi
+
+# ---- same-name symlinks of a removed skill go everywhere ----------------------
+new_case removed-links
+mkskill "$AGENTS_SKILLS/stale"
+mkskill "$CLAUDE_SKILLS/stale"
+mkdir -p "$CODEX_OLD" "$BRIDGE"
+ln -s "$AGENTS_SKILLS/stale" "$CODEX_OLD/stale"
+ln -s "$AGENTS_SKILLS/stale" "$BRIDGE/stale"
+printf '{"version": 3, "skills": {"stale": {"source": "o/old"}}}' > "$LOCK"
+if run_sync plain removed-links "$FX" --claude --no-confirm; then
+  check removed-links-exit0 test "$RC" -eq 0
+  check removed-links-preview-codex has "將清除的 symlink: $CODEX_OLD/stale"
+  check removed-links-preview-bridge has "將清除的 symlink: $BRIDGE/stale"
+  check removed-links-agents absent "$AGENTS_SKILLS/stale"
+  check removed-links-codex absent "$CODEX_OLD/stale"
+  check removed-links-bridge absent "$BRIDGE/stale"
+fi
+
+# ---- dangling repo symlink with an expected name is replaced; others kept ----
+new_case replace
+mkdir -p "$BRIDGE" "$AGENTS_SKILLS"
+ln -s "$FX/skills/alpha" "$BRIDGE/alpha"
+ln -s "$FX/skills/synced" "$BRIDGE/synced"
+ln -s "$FX/skills/synced" "$AGENTS_SKILLS/synced"
+if run_sync plain replace "$FX" --antigravity --no-confirm; then
+  check replace-exit0 test "$RC" -eq 0
+  check replace-preview has "將替換失效的 repo symlink: $BRIDGE/alpha"
+  check replace-bridge-alpha link_is "$BRIDGE/alpha" "$AGENTS_SKILLS/alpha"
+  check replace-bridge-synced-kept link_is "$BRIDGE/synced" "$FX/skills/synced"
+  check replace-agents-synced-kept link_is "$AGENTS_SKILLS/synced" "$FX/skills/synced"
+fi
+
+# ---- a link into a worktree copy counts as pointing into this repo ------------
+new_case worktree-copy
+WT="$T/fx-wt-bridge"
+add_fixture_worktree "$FX" "$WT"
+mkdir -p "$BRIDGE"
+ln -s "$WT/skills/beta" "$BRIDGE/beta"
+if run_sync plain worktree-copy "$FX" --antigravity --no-confirm; then
+  check worktree-copy-exit0 test "$RC" -eq 0
+  check worktree-copy-preview has "將替換失效的 repo symlink: $BRIDGE/beta"
+  check worktree-copy-replaced link_is "$BRIDGE/beta" "$AGENTS_SKILLS/beta"
+fi
+
+# ---- bridge cleanup and rebuild ---------------------------------------------
+new_case bridge
+mkdir -p "$BRIDGE"
+mkskill "$OLD_AG/gamma"
+mkskill "$AGENTS_SKILLS/extra"
+ln -s "$AGENTS_SKILLS/gone" "$BRIDGE/gone"
+ln -s "$OLD_AG/gamma" "$BRIDGE/gamma"
+ln -s "$AGENTS_SKILLS/extra" "$BRIDGE/extra"
+if run_sync plain bridge "$FX" --antigravity --no-confirm; then
+  check bridge-exit0 test "$RC" -eq 0
+  check bridge-preview-gone has "將清除的 symlink: $BRIDGE/gone"
+  check bridge-gone-cleaned absent "$BRIDGE/gone"
+  check bridge-extra-cleaned absent "$BRIDGE/extra"
+  check bridge-extra-target-kept real_dir "$AGENTS_SKILLS/extra"
+  check bridge-gamma-repointed link_is "$BRIDGE/gamma" "$AGENTS_SKILLS/gamma"
+  for n in alpha beta teach gamma; do
+    check "bridge-$n-absolute" link_is "$BRIDGE/$n" "$AGENTS_SKILLS/$n"
+  done
+  check bridge-solo-not-bridged absent "$BRIDGE/solo"
+fi
+# Second run: bridge already correct, so only updates remain - no prompt.
+if run_sync notty bridge-update-only "$FX" --antigravity; then
+  check bridge-update-only-exit0 test "$RC" -eq 0
+  check bridge-update-only-no-prompt lacks '[y/N]'
+fi
+
+# ---- bridge conflicts are precheck failures -----------------------------------
+new_case bridge-real-dir
+mkskill "$BRIDGE/alpha"
+before="$(snapshot)"
+if run_sync plain bridge-real-dir "$FX" --antigravity --no-confirm; then
+  check bridge-real-dir-exit1 test "$RC" -eq 1
+  check bridge-real-dir-names-path has "$BRIDGE/alpha"
+  check bridge-real-dir-unchanged test "$before" == "$(snapshot)"
+  check bridge-real-dir-no-call test ! -s "$NPX_STUB_LOG"
+fi
+
+new_case bridge-live-repo-link
+mkdir -p "$BRIDGE"
+ln -s "$FX/skills/local-skill" "$BRIDGE/alpha"
+before="$(snapshot)"
+if run_sync plain bridge-live-repo-link "$FX" --antigravity --no-confirm; then
+  check bridge-live-repo-link-exit1 test "$RC" -eq 1
+  check bridge-live-repo-link-names-path has "$BRIDGE/alpha"
+  check bridge-live-repo-link-unchanged test "$before" == "$(snapshot)"
+  check bridge-live-repo-link-no-call test ! -s "$NPX_STUB_LOG"
+fi
+
+# ---- lock name vs live repo symlink: conflict, and remove is never called -----
+# (the lock-recorded name is a repo skill that install.sh linked; a remove
+# would delete that link)
+new_case lock-repo-conflict
+mkdir -p "$CLAUDE_SKILLS" "$HOME/.agents"
+ln -s "$FX/skills/local-skill" "$CLAUDE_SKILLS/local-skill"
+printf '{"version": 3, "skills": {"local-skill": {"source": "o/x"}}}' > "$LOCK"
+before="$(snapshot)"
+if run_sync plain lock-repo-conflict "$FX" --claude --no-confirm; then
+  check lock-repo-conflict-exit1 test "$RC" -eq 1
+  check lock-repo-conflict-names-path has "$CLAUDE_SKILLS/local-skill"
+  check lock-repo-conflict-unchanged test "$before" == "$(snapshot)"
+  check lock-repo-conflict-no-remove test "$(log_count 'skills remove')" -eq 0
+  check lock-repo-conflict-no-call test ! -s "$NPX_STUB_LOG"
+  check lock-repo-conflict-link-kept link_is "$CLAUDE_SKILLS/local-skill" "$FX/skills/local-skill"
+fi
+
+# ---- drift --------------------------------------------------------------------
+new_case drift-agents
+mkskill "$AGENTS_SKILLS/solo"
+before="$(snapshot)"
+if run_sync plain drift-agents "$FX" --codex --no-confirm; then
+  check drift-agents-exit1 test "$RC" -eq 1
+  check drift-agents-hint has 'npx skills remove solo -g -y'
+  check drift-agents-unchanged test "$before" == "$(snapshot)"
+  check drift-agents-no-call test ! -s "$NPX_STUB_LOG"
+fi
+
+new_case drift-claude
+FX_DRIFT="$T/fx-drift"
+make_fixture_repo "$FX_DRIFT" '[
+  {"name": "alpha", "repo": "o/r1", "description": "a"},
+  {"name": "cx", "repo": "o/r4", "description": "c", "platforms": ["codex"]}
+]'
+mkskill "$CLAUDE_SKILLS/cx"
+before="$(snapshot)"
+if run_sync plain drift-claude "$FX_DRIFT" --claude --no-confirm; then
+  check drift-claude-exit1 test "$RC" -eq 1
+  check drift-claude-hint has 'npx skills remove cx -g -y'
+  check drift-claude-unchanged test "$before" == "$(snapshot)"
+  check drift-claude-no-call test ! -s "$NPX_STUB_LOG"
+fi
+
+# ---- a failed group still gets bridge, cleanup and verify ---------------------
+new_case group-fail
+mkskill "$AGENTS_SKILLS/alpha"
+mkdir -p "$CLAUDE_SKILLS"
+ln -s ../../.agents/skills/teach-me "$CLAUDE_SKILLS/teach-me"
+export NPX_STUB_FAIL_REPO=o/r1
+if run_sync plain group-fail "$FX" --claude --antigravity --no-confirm; then
+  check group-fail-exit1 test "$RC" -eq 1
+  check group-fail-bridge-alpha link_is "$BRIDGE/alpha" "$AGENTS_SKILLS/alpha"
+  check group-fail-alias-cleaned absent "$CLAUDE_SKILLS/teach-me"
+  check group-fail-verify-beta has 'verify: beta not found in ~/.agents/skills after install'
+  check group-fail-verify-bridge has 'verify: bridge ~/.gemini/config/skills/beta missing or unresolvable'
 fi
 
 # ---- path helpers (sourced, task 3 builds on them) -----------------------------

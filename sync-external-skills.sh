@@ -6,16 +6,22 @@
 # newer than bash 4.3 is used.
 #
 # DESTRUCTIVE OPERATIONS: `npx skills remove` deletes skills that the CLI's
-# lock file records but the manifest no longer lists, on ALL platforms. Every
-# run prints a preview and asks `[y/N]` (default No) on /dev/tty before any
-# install or remove; --no-confirm skips the question. Preview-and-confirm is
-# the dry-run here: answering No changes nothing.
+# lock file records but the manifest no longer lists, on ALL platforms; the
+# script also deletes symlinks (stale aliases, dangling repo symlinks it then
+# replaces, outdated Antigravity bridge links). Real directories and live
+# symlinks into this repo are never deleted by the script itself. Every run
+# prints a preview and asks `[y/N]` (default No) on /dev/tty before any
+# install, remove, replacement or symlink cleanup; --no-confirm skips the
+# question. Preview-and-confirm is the dry-run here: answering No changes
+# nothing.
 #
 # Exit codes: 0 success, or cancelled at the prompt; 1 any failure (precheck,
 # npx, verification, no terminal to ask on); 2 usage error.
 
 set -euo pipefail
 IFS=$'\n\t'
+# Directory scans use "$dir"/*; an empty or missing directory yields nothing.
+shopt -s nullglob
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST="${REPO_DIR}/external-skills.jsonc"
@@ -69,6 +75,43 @@ display_path() {
     "$HOME"/*) printf '%s/%s' '~' "${1#"$HOME"/}" ;;
     *) printf '%s' "$1" ;;
   esac
+}
+
+# load_repo_copies: REPO_COPIES = REPO_DIR plus every checkout listed by
+# `git worktree list --porcelain` (main checkout and worktrees). If git fails,
+# REPO_DIR alone.
+REPO_COPIES=()
+load_repo_copies() {
+  local out line
+  REPO_COPIES=("$REPO_DIR")
+  out="$(git -C "$REPO_DIR" worktree list --porcelain 2> /dev/null)" || return 0
+  while IFS= read -r line; do
+    if [[ "$line" == "worktree "* ]]; then REPO_COPIES+=("${line#worktree }"); fi
+  done <<< "$out"
+}
+
+# points_to_repo <normalised path>: true when the path lies in a repo copy.
+points_to_repo() {
+  local copy
+  for copy in "${REPO_COPIES[@]}"; do
+    if path_under "$1" "$copy"; then return 0; fi
+  done
+  return 1
+}
+
+# is_repo_link <path>: a symlink whose normalised target lies in a repo copy.
+is_repo_link() {
+  [[ -L "$1" ]] && points_to_repo "$(link_target "$1")"
+}
+
+# under_skill_dirs <normalised path>: below ~/.agents/skills or the claude dir.
+under_skill_dirs() {
+  path_under "$1" "$AGENTS_SKILLS" || path_under "$1" "$CLAUDE_SKILLS"
+}
+
+# present <path>: exists, or is a (possibly dangling) symlink.
+present() {
+  [[ -e "$1" || -L "$1" ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -236,33 +279,107 @@ main() {
 
   # ---- parse the plan ----
   local kind f1 f2 f3
-  local g_repo=() g_agents=() g_skills=()
+  local g_repo=() g_agents=() g_skills=() known_list=()
   declare -A want=() known=()
   while IFS=$'\t' read -r kind f1 f2 f3; do
     case "$kind" in
       group) g_repo+=("$f1"); g_agents+=("$f2"); g_skills+=("$f3") ;;
       want) want[$f1]+="${want[$f1]+ }$f2" ;;
-      known) known[$f1]=1 ;;
+      known) known[$f1]="$f2"; known_list+=("$f1") ;;
     esac
   done < "$WORK_DIR/plan.tsv"
 
+  # ---- selection, want sets, lock set, scan locations ----
+  local gemini_root="${GEMINI_HOME:-$HOME/.gemini}"
+  local bridge="$gemini_root/config/skills"
+  local old_bridge_src="$gemini_root/antigravity-cli/skills"
+  local old_codex="$HOME/.codex/skills" old_opencode="$HOME/.config/opencode/skills"
+  local names=() dir path target use_claude=0 use_agents=0 wanted_list=() ag_wants=()
+  declare -A on=() wants=() in_lock=()
+  for p in "${SELECTED[@]}"; do
+    on[$p]=1
+    if [[ "$p" == claude ]]; then use_claude=1; else use_agents=1; fi
+    [[ -n "${want[$p]+x}" ]] || continue
+    IFS=' ' read -ra names <<< "${want[$p]}"
+    for name in "${names[@]}"; do wants[$p/$name]=1; done
+  done
+  [[ -z "${on[antigravity]+x}" || -z "${want[antigravity]+x}" ]] \
+    || IFS=' ' read -ra ag_wants <<< "${want[antigravity]}"
+  for name in ${lock_names[@]+"${lock_names[@]}"}; do in_lock[$name]=1; done
+  local scan_dirs=()
+  ((!use_claude)) || scan_dirs+=("$CLAUDE_SKILLS")
+  ((!use_agents)) || scan_dirs+=("$AGENTS_SKILLS")
+  [[ -z "${on[codex]+x}" ]] || scan_dirs+=("$old_codex")
+  [[ -z "${on[opencode]+x}" ]] || scan_dirs+=("$old_opencode")
+  [[ -z "${on[antigravity]+x}" ]] || scan_dirs+=("$bridge")
+  load_repo_copies
+
+  # ---- step 1 (cont.): link prechecks - conflict, drift, bridge conflict ----
+  for name in ${lock_names[@]+"${lock_names[@]}"}; do
+    for dir in "${scan_dirs[@]}"; do
+      path="$dir/$name"
+      if is_repo_link "$path" && ! is_dangling_link "$path"; then
+        add_problem "conflict: $name is recorded in the skills lock file, but $path is a live symlink into this repo"$'\n'"(decide by hand which one to keep, then re-run sync)"
+      fi
+    done
+  done
+  local plats
+  for name in ${known_list[@]+"${known_list[@]}"}; do
+    plats=" ${known[$name]} "
+    dir=""
+    if ((use_claude)) && [[ "$plats" != *" claude "* ]] && present "$CLAUDE_SKILLS/$name"; then
+      dir="$CLAUDE_SKILLS"
+    elif ((use_agents)) && [[ "$plats" != *" codex "* && "$plats" != *" opencode "* && "$plats" != *" antigravity "* ]] \
+      && present "$AGENTS_SKILLS/$name"; then
+      dir="$AGENTS_SKILLS"
+    fi
+    if [[ -n "$dir" ]]; then
+      add_problem "drift: $name is in $(display_path "$dir"), but external-skills.jsonc does not list it for that location"$'\n'"(run \`npx skills remove $name -g -y\` by hand, then re-run sync)"
+    fi
+  done
+  for name in ${ag_wants[@]+"${ag_wants[@]}"}; do
+    path="$bridge/$name"
+    if [[ -e "$path" && ! -L "$path" ]]; then
+      add_problem "bridge conflict: $path is not a symlink and will not be overwritten"$'\n'"(move it away by hand, then re-run sync)"
+    elif is_repo_link "$path" && ! is_dangling_link "$path"; then
+      add_problem "bridge conflict: $path is a live symlink into this repo and will not be overwritten"$'\n'"(remove it by hand if the external skill should win, then re-run sync)"
+    fi
+  done
+  if ((${#PROBLEMS[@]})); then
+    print_summary
+    exit 1
+  fi
+
   # ---- step 2: compute changes ----
-  # wanted_list: selected platforms' want names, de-duplicated, in order.
-  local names=() dir use_claude=0 use_agents=0 wanted_list=()
+  # Install: wanted skill missing; antigravity also needs its bridge symlink to
+  # read exactly ~/.agents/skills/<name>.
   declare -A install=() installing=() wanted=()
   for p in "${SELECTED[@]}"; do
-    if [[ "$p" == claude ]]; then use_claude=1; else use_agents=1; fi
     [[ -n "${want[$p]+x}" ]] || continue
     dir="$(location "$p")"
     IFS=' ' read -ra names <<< "${want[$p]}"
     for name in "${names[@]}"; do
       [[ -n "${wanted[$name]+x}" ]] || wanted_list+=("$name")
       wanted[$name]=1
-      if [[ ! -e "$dir/$name" ]]; then
+      if [[ ! -e "$dir/$name" ]] || { [[ "$p" == antigravity ]] \
+        && ! [[ -L "$bridge/$name" && "$(readlink -- "$bridge/$name")" == "$AGENTS_SKILLS/$name" ]]; }; then
         install[$p]+="${install[$p]+ }$name"
         installing[$name]=1
       fi
     done
+  done
+
+  # Replace: a dangling repo symlink where a selected platform wants the name.
+  local replace=()
+  for path in "$CLAUDE_SKILLS"/* "$AGENTS_SKILLS"/* "$bridge"/*; do
+    name="${path##*/}"
+    case "$path" in
+      "$CLAUDE_SKILLS"/*) [[ -n "${wants[claude/$name]+x}" ]] || continue ;;
+      "$AGENTS_SKILLS"/*)
+        [[ -n "${wants[codex/$name]+x}${wants[opencode/$name]+x}${wants[antigravity/$name]+x}" ]] || continue ;;
+      *) [[ -n "${wants[antigravity/$name]+x}" ]] || continue ;;
+    esac
+    if is_repo_link "$path" && is_dangling_link "$path"; then replace+=("$path"); fi
   done
 
   # Remove: in the lock, not in the manifest, present on a selected location.
@@ -273,6 +390,59 @@ main() {
       || { ((use_agents)) && [[ -e "$AGENTS_SKILLS/$name" || -L "$AGENTS_SKILLS/$name" ]]; }; then
       remove+=("$name")
     fi
+  done
+
+  # Symlink cleanup, de-duplicated in first-seen order.
+  local cleanup=()
+  declare -A cleaning=()
+  add_cleanup() {
+    [[ -n "${cleaning[$1]+x}" ]] || { cleaning[$1]=1; cleanup+=("$1"); }
+  }
+  # General locations: unlisted, unlocked symlink into a skill dir, not repo.
+  for dir in "${scan_dirs[@]}"; do
+    [[ "$dir" == "$CLAUDE_SKILLS" || "$dir" == "$AGENTS_SKILLS" ]] || continue
+    for path in "$dir"/*; do
+      name="${path##*/}"
+      [[ -L "$path" && -z "${known[$name]+x}" && -z "${in_lock[$name]+x}" ]] || continue
+      target="$(link_target "$path")"
+      if under_skill_dirs "$target" && ! points_to_repo "$target"; then add_cleanup "$path"; fi
+    done
+  done
+  # Legacy dirs: link into ~/.agents/skills that is dangling or not wanted.
+  for p in codex opencode; do
+    [[ -n "${on[$p]+x}" ]] || continue
+    if [[ "$p" == codex ]]; then dir="$old_codex"; else dir="$old_opencode"; fi
+    for path in "$dir"/*; do
+      name="${path##*/}"
+      [[ -L "$path" ]] || continue
+      target="$(link_target "$path")"
+      path_under "$target" "$AGENTS_SKILLS" || continue
+      if [[ ! -e "$target" || -z "${wants[$p/$name]+x}" ]]; then add_cleanup "$path"; fi
+    done
+  done
+  # Bridge: link into ~/.agents/skills or the old bridge source, not repo;
+  # cleaned when dangling, from the old source, or not wanted.
+  if [[ -n "${on[antigravity]+x}" ]]; then
+    for path in "$bridge"/*; do
+      name="${path##*/}"
+      [[ -L "$path" ]] || continue
+      target="$(link_target "$path")"
+      { path_under "$target" "$AGENTS_SKILLS" || path_under "$target" "$old_bridge_src"; } || continue
+      ! points_to_repo "$target" || continue
+      if [[ ! -e "$target" ]] || path_under "$target" "$old_bridge_src" \
+        || [[ -z "${wants[antigravity/$name]+x}" ]]; then
+        add_cleanup "$path"
+      fi
+    done
+  fi
+  # Same-name symlinks of removed skills, in all five locations.
+  for name in ${remove[@]+"${remove[@]}"}; do
+    for dir in "$CLAUDE_SKILLS" "$AGENTS_SKILLS" "$old_codex" "$old_opencode" "$bridge"; do
+      path="$dir/$name"
+      [[ -L "$path" ]] || continue
+      target="$(link_target "$path")"
+      if under_skill_dirs "$target" && ! points_to_repo "$target"; then add_cleanup "$path"; fi
+    done
   done
 
   local updates=0
@@ -287,9 +457,11 @@ main() {
   if ((${#remove[@]})); then
     printf '將移除（所有平台）: %s\n' "$(IFS=' '; printf '%s' "${remove[*]}")"
   fi
+  for path in ${replace[@]+"${replace[@]}"}; do printf '將替換失效的 repo symlink: %s\n' "$path"; done
+  for path in ${cleanup[@]+"${cleanup[@]}"}; do printf '將清除的 symlink: %s\n' "$path"; done
   printf '將更新 %d 個既有 skill\n' "$updates"
 
-  if { ((${#installing[@]})) || ((${#remove[@]})); } && ((!no_confirm)); then
+  if ((${#installing[@]} + ${#remove[@]} + ${#replace[@]} + ${#cleanup[@]})) && ((!no_confirm)); then
     if ! { : > /dev/tty; } 2> /dev/null; then
       printf 'Error: changes need confirmation but /dev/tty cannot be opened; re-run with --no-confirm to proceed without asking.\n' >&2
       exit 1
@@ -305,6 +477,11 @@ main() {
 
   # ---- step 4: execute ----
   local i skills=() agents=()
+  for path in ${replace[@]+"${replace[@]}"}; do
+    if [[ -L "$path" ]] && ! rm -f -- "$path"; then
+      add_problem "replace $path: cannot remove the dangling symlink"
+    fi
+  done
   if ((${#remove[@]})); then
     run_npx "remove $(IFS=' '; printf '%s' "${remove[*]}")" \
       --yes skills remove "${remove[@]}" -g -y
@@ -315,6 +492,31 @@ main() {
     run_npx "add ${g_repo[$i]} -> ${g_agents[$i]}" \
       --yes skills add "${g_repo[$i]}" -s "${skills[@]}" -a "${agents[@]}" -g -y
   done
+  for path in ${cleanup[@]+"${cleanup[@]}"}; do
+    if [[ -L "$path" ]] && ! rm -f -- "$path"; then
+      add_problem "cleanup $path: cannot remove the symlink"
+    fi
+  done
+  # Bridge rebuild: absolute symlink to ~/.agents/skills/<name> for every
+  # antigravity skill that exists there; missing ones are left to verify.
+  if ((${#ag_wants[@]})); then
+    if ! mkdir -p -- "$bridge"; then
+      add_problem "bridge $bridge: cannot create the directory"
+    else
+      for name in "${ag_wants[@]}"; do
+        target="$AGENTS_SKILLS/$name"
+        path="$bridge/$name"
+        [[ -e "$target" ]] || continue
+        if [[ -L "$path" ]]; then
+          [[ "$(readlink -- "$path")" != "$target" ]] || continue
+          rm -f -- "$path" || true
+        fi
+        if ! present "$path" && ! ln -s -- "$target" "$path"; then
+          add_problem "bridge $path: cannot create the symlink"
+        fi
+      done
+    fi
+  fi
 
   # ---- verify: wanted skills present (once per location), removed ones gone ----
   declare -A checked=()
@@ -329,6 +531,11 @@ main() {
         add_problem "verify: $name not found in $(display_path "$dir") after install"$'\n'"(name misspelled in external-skills.jsonc, or removed upstream?)"
       fi
     done
+  done
+  for name in ${ag_wants[@]+"${ag_wants[@]}"}; do
+    if [[ ! -e "$bridge/$name" ]]; then
+      add_problem "verify: bridge $(display_path "$bridge/$name") missing or unresolvable"
+    fi
   done
   if ((${#remove[@]})); then
     for name in "${remove[@]}"; do
