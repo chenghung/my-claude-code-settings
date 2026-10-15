@@ -8,6 +8,16 @@ bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
+# Every install.sh run in this file - and every program it starts - sees a
+# HOME under $T, so no run can reach the real HOME even if a call site forgets
+# --no-external or one of the directory overrides below.
+export HOME="$T/home"
+mkdir -p "$HOME"
+# Safety guard: abort the whole suite if HOME is not under $T.
+if [[ "$HOME" != "$T"/* ]]; then
+  printf 'FATAL HOME=%s is not under %s - aborting\n' "$HOME" "$T" >&2
+  exit 1
+fi
 export CLAUDE_CONFIG_DIR="$T/claude"
 export CODEX_HOME="$T/codex"
 export AGENTS_HOME="$T/agents"
@@ -18,11 +28,11 @@ export GEMINI_HOME="$T/gemini"
 # below reassign this to their own log path, which keeps the export attribute.
 export AGY_STUB_LOG="$T/agy-stub.log"
 # Test-only escape hatch: skip install-cli-tools.sh so this suite never
-# triggers real sudo pacman/yay installs or rewrites the user's real ~/.zshrc.
+# triggers real sudo pacman/yay installs.
 export INSTALL_CLI_TOOLS=0
 # Test-only override, same idea as INSTALL_CLI_TOOLS: install.sh runs this
-# stub instead of the real sync-external-skills.sh, which would run
-# `npx skills add/remove` against the real HOME. Exported before the first
+# stub instead of the real sync-external-skills.sh, which would run the real
+# `npx skills add/remove` over the network. Exported before the first
 # install.sh run so it covers the whole file. The stub appends its argv to
 # SYNC_STUB_LOG, prints install-like lines (used to prove install.sh does not
 # count them) and exits with SYNC_STUB_EXIT (default 0).
