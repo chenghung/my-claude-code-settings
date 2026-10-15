@@ -20,8 +20,7 @@ set -euo pipefail
 #     duckdb、sqlite、go-yq（提供 yq 指令）、fd、uv；bats 另帶三個輔助庫
 #     bats-support、bats-assert、bats-file（僅提供 /usr/lib/bats 下的
 #     load.bash，無終端指令，以檔案存在與否判斷冪等）
-#   - 透過 yay（AUR helper）安裝 AUR 套件：rtk、claude-code、opencode、
-#     trello-cli
+#   - 透過 yay（AUR helper）安裝 AUR 套件：claude-code、opencode、trello-cli
 #   - 透過 npm 全域安裝（使用者指定來源，不屬於上方優先序）：
 #     @hackmd/hackmd-cli（提供 hackmd-cli 指令）
 #   - 透過 pipx 安裝官方 repo 與 AUR 皆無的 python 套件：markitdown[all]
@@ -215,13 +214,11 @@ done
 unset _bats_lib
 
 # ------------------------------------------------------------
-# 2) AUR 套件（yay）：rtk claude-code opencode-bin trello-cli
-#    來源依據：四者官方 repo 皆無，但 AUR 有且版本不過舊（優先序第 2 級）。
-#      - rtk：官方安裝管道為 Homebrew / install.sh / cargo / 預建二進位，
-#        官方 repo 無；AUR 套件與 pacman 整合、可追蹤、易更新移除，最穩定。
+# 2) AUR 套件（yay）：claude-code opencode-bin trello-cli
+#    來源依據：三者官方 repo 皆無，但 AUR 有且版本不過舊（優先序第 2 級）。
 #      - claude-code：官方 repo 無；AUR 套件版本與 npm 官方上游一致且近期更新。
 #      - opencode-bin：對應 opencode 指令；Arch 與 Manjaro 皆無官方 repo，
-#        與 claude-code、rtk 同走 AUR 模式。
+#        與 claude-code 同走 AUR 模式。
 #      - trello-cli：官方 repo 無（`pacman -Si trello-cli` 空輸出）；AUR
 #        已實測 v1.7.0-1、維護者 mheap、NumVotes 2、Provides 為
 #        ["trello"]——套件名與指令名不同名這件事是套件自己宣告的，不是
@@ -229,10 +226,9 @@ unset _bats_lib
 #        且 ~/.cache/yay/trello-cli 存在，可確認來源正是 AUR。納入理由：
 #        trello-manager subagent、Bash(trello:*) permission。
 #    衝突防護：同上，claude-code 可能由 claude-code-bin 等不同名套件提供，
-#      rtk 亦可能由其他變體提供；trello 同理，皆以「指令是否存在」為準，
-#      不強制改裝。
+#      trello 同理，皆以「指令是否存在」為準，不強制改裝。
 #    對應：套件名 -> 指令名
-#      rtk->rtk  claude-code->claude  opencode-bin->opencode
+#      claude-code->claude  opencode-bin->opencode
 #      trello-cli->trello
 # ------------------------------------------------------------
 echo "==> [2/5] 透過 yay 安裝 AUR 套件（已存在的工具會自動略過）"
@@ -241,7 +237,6 @@ if ! command -v yay >/dev/null 2>&1; then
   exit 1
 fi
 YAY_INSTALL=(yay -S --needed --noconfirm)
-ensure_tool rtk    rtk         "${YAY_INSTALL[@]}"
 ensure_tool claude claude-code "${YAY_INSTALL[@]}"
 ensure_tool opencode opencode-bin "${YAY_INSTALL[@]}"
 ensure_tool trello trello-cli  "${YAY_INSTALL[@]}"
