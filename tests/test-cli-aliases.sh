@@ -57,6 +57,11 @@ jq -e '(.hooks.UserPromptSubmit | length > 0) and (.hooks.SessionStart | length 
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 jq -e '[.autoMode.environment[] | select(startswith("**Org-specific CLIs**"))] | length == 1 and (.[0] | contains("codegraph") and contains("mmdc") and contains("herdr") and contains("openspec") and contains("hackmd-cli") and contains("trello"))' "$SETTINGS_FILE" >/dev/null 2>&1 && pass settings-org-cli-notes-kept || bad settings-org-cli-notes-kept
 
+# rtk is no longer installed (issue #68): no install line and no leftover
+# mention in the script's comments.
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+grep -qiw 'rtk' "$INSTALL_SH" && bad install-cli-tools-no-rtk || pass install-cli-tools-no-rtk
+
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 grep -qF 'https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.sh' "$INSTALL_SH" && pass token-usage-insights-install-line || bad token-usage-insights-install-line
 
