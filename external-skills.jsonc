@@ -33,6 +33,14 @@
     "description": "Control skill for herdr, the terminal workspace manager"
   },
 
+  // find-skills searches the open agent skills ecosystem (skills.sh) for an
+  // installable skill that covers the task at hand.
+  {
+    "name": "find-skills",
+    "repo": "vercel-labs/skills",
+    "description": "Discovers and installs agent skills from the open agent skills ecosystem"
+  },
+
   // Thinking, explaining and workflow skills. These were installed by hand and
   // so never survived a rebuild; listing them here is what makes them
   // reproducible across all four platforms.

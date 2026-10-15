@@ -450,13 +450,13 @@ known${TAB}gamma${TAB}claude
 known${TAB}delta${TAB}claude opencode
 known${TAB}eps${TAB}claude codex opencode antigravity"
 
-# Case 17: real manifest, all four platforms -> exit 0 and 6 group records
+# Case 17: real manifest, all four platforms -> exit 0 and 7 group records
 run_plan "$REAL_LIST" "$REPO" claude codex opencode antigravity
 real_groups="$(grep -c '^group'"${TAB}" <<< "$OUT" || true)"
-if [[ "$RC" -eq 0 && "$real_groups" -eq 6 ]]; then
-  pass real-list-six-groups
+if [[ "$RC" -eq 0 && "$real_groups" -eq 7 ]]; then
+  pass real-list-seven-groups
 else
-  bad real-list-six-groups
+  bad real-list-seven-groups
   printf '  rc=%s groups=%s\n  stderr: %s\n' "$RC" "$real_groups" "$ERR" >&2
 fi
 if [[ "$OUT" == *"group${TAB}amElnagdy/delegate-skills${TAB}claude-code${TAB}codex-delegate agy-delegate opencode-delegate"* ]]; then

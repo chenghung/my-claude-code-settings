@@ -460,7 +460,7 @@ FX_REAL="$T/fx-real"
 make_fixture_repo "$FX_REAL" "$(cat "$REPO/external-skills.jsonc")"
 if run_sync plain real-manifest "$FX_REAL" --all --no-confirm; then
   check real-exit0 test "$RC" -eq 0
-  check real-add-count test "$(log_count 'skills add')" -eq 6
+  check real-add-count test "$(log_count 'skills add')" -eq 7
   for d in codex-delegate agy-delegate opencode-delegate; do
     check "real-$d-claude-real-dir" real_dir "$CLAUDE_SKILLS/$d"
     check "real-$d-not-in-agents" absent "$AGENTS_SKILLS/$d"
