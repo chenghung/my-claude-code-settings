@@ -227,7 +227,7 @@ google-chrome-stable "$target" & disown
 
 遠端層所需的 zlib 壓縮 + base64 url-safe 編碼，由 render.sh 內部呼叫 `scripts/kroki-encode.py` 完成，LLM 不自行編碼、也不自行拼組 kroki URL。
 
-預覽不取代寫檔流程，最終仍須將圖表寫入 `.md` 檔案。
+預覽不取代寫檔流程；是否寫入 `.md` 檔案，依 `rules/diagram-output.md` 的判斷流程決定。
 
 ## Reference 動態載入
 
@@ -249,7 +249,7 @@ Main agent 回應使用者時應包含以下三個部分：
 
 1. **選型說明**：選用哪種服務與哪種圖表類型，以及理由（一至兩句純文字）
 1. **預覽呈現**：說明已呼叫 render.sh 取得預覽目標並在瀏覽器開啟；目標路徑或 URL 本身不貼到聊天回應，實際開啟流程依 `diagram-output` rule 執行
-1. **後續寫入說明**：若使用者要將圖表寫進 `.md` 檔，依 `markdown-editing` rule 委派處理；DSL 原始碼透過該委派流程交付，不經聊天回應中轉
+1. **後續寫入說明**：若使用者要將圖表寫進 `.md` 檔，DSL 原始碼寫入該檔，不經聊天回應中轉；寫入方式見「與其他元件的協作」一節
 
 圖表 DSL 原始碼（mermaid、d2、plantuml、graphviz、structurizr、vega-lite 等）禁止以 fenced code block 或任何其他形式直接貼入聊天回應。此規定對所有支援的服務皆適用，包含 Mermaid，不因 Mermaid 在部分 markdown 環境可原生渲染而例外。此禁令的適用範圍僅限於本 skill 被觸發後的設計產出流程；`diagram-output.md` 已劃出「使用者明示要原始碼」與「只需要 ASCII 字元圖示」這兩條例外路徑，在那兩種情境下本 skill 根本不應被觸發，故此禁令不覆蓋那兩條路徑。
 
@@ -257,9 +257,8 @@ Main agent 回應使用者時應包含以下三個部分：
 
 此 skill 只負責設計階段：提供選型建議與圖表語法草稿。
 
-圖表確認後，寫入 `.md` 檔案的工作依以下規則委派：
+圖表確認後，寫入 `.md` 檔案的工作依以下規則處理：
 
-- 依 `rules/diagram-output.md` 的規定，圖表必須寫入 `.md` 檔案，不得直接輸出到聊天訊息
-- 依 `rules/markdown-editing.md` 的規定，實際寫入由 `markdown-editor` 或 `obsidian-md-editor` 執行
-- Main agent 不得自行寫入任何 markdown 檔案
-- 六種服務的圖表草稿確認後，均透過上述委派流程寫入，不因服務不同而有差異
+- 是否寫入 `.md` 檔案，依 `rules/diagram-output.md` 的判斷流程決定
+- 目標為 Obsidian vault 筆記時，依 `obsidian-notes` skill 處理
+- 六種服務的圖表草稿確認後，均依上述規則寫入，不因服務不同而有差異
