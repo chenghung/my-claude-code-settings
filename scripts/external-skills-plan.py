@@ -133,7 +133,9 @@ def validate(
             continue
         name = item.get("name")
         label = f"entry {index}" + (
-            f' ("{name}")' if isinstance(name, str) and name.strip() else ""
+            f" ({json.dumps(name, ensure_ascii=False)})"
+            if isinstance(name, str) and name.strip()
+            else ""
         )
         texts: dict[str, str] = {}
         for field in ("name", "repo", "description"):
@@ -146,12 +148,18 @@ def validate(
             if field in texts and WHITESPACE.search(texts[field]):
                 errors.append(f"{label}: '{field}' must not contain whitespace")
         if "name" in texts:
+            quoted = json.dumps(texts["name"], ensure_ascii=False)
+            if "*" in texts["name"]:
+                errors.append(
+                    f"{label}: name {quoted} must not contain '*' "
+                    "(the skills CLI treats * as all skills)"
+                )
             if texts["name"] in seen:
-                errors.append(f'{label}: duplicate name "{texts["name"]}"')
+                errors.append(f"{label}: duplicate name {quoted}")
             seen.add(texts["name"])
             if texts["name"] in local_names:
                 errors.append(
-                    f'{label}: name "{texts["name"]}" collides with a local '
+                    f"{label}: name {quoted} collides with a local "
                     "skills/ directory or flattened commands/ name"
                 )
 
@@ -207,16 +215,18 @@ def main(argv: list[str]) -> int:
         try:
             text = jsonc_path.read_text(encoding="utf-8")
         except OSError as exc:
-            raise ManifestError(f"cannot read {jsonc_path}: {exc.strerror}") from exc
+            raise ManifestError(f"cannot read file: {exc.strerror}") from exc
+        except UnicodeDecodeError as exc:
+            raise ManifestError(f"file is not valid UTF-8: {exc.reason}") from exc
         try:
             data = json.loads(strip_comments(text))
         except json.JSONDecodeError as exc:
             raise ManifestError(
-                f"{jsonc_path.name}: invalid JSON at line {exc.lineno}, "
+                f"invalid JSON at line {exc.lineno}, "
                 f"column {exc.colno}: {exc.msg}"
             ) from exc
     except ManifestError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {jsonc_path.name}: {exc}", file=sys.stderr)
         return 1
 
     entries, errors = validate(data, repo_path)
@@ -225,8 +235,8 @@ def main(argv: list[str]) -> int:
             print(f"error: {jsonc_path.name}: {message}", file=sys.stderr)
         return 1
 
-    for line in build_plan(entries, selected):
-        print(line)
+    lines = build_plan(entries, selected)
+    sys.stdout.write("".join(f"{line}\n" for line in lines))
     return 0
 
 
