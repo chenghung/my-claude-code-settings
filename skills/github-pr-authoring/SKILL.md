@@ -11,17 +11,17 @@ description: "依本機分支相對 base branch 的 diff 撰寫 GitHub PR 的標
 
 - base branch：修改既有 PR 時，以該 PR 的 base branch 為 base；其餘情況未指定時用 repo 預設分支。
 - head：本機分支，PR 可尚未建立。
-- 關聯 issue 編號：可省略。關聯 issue 指本 PR 合併後即完整解決的 issue，合併進預設分支時會被自動關閉；只部分處理的 issue 不當成關聯 issue。
+- 關聯 issue 編號：可省略，只在建立 PR 時使用。關聯 issue 指本 PR 合併後即完整解決的 issue；只部分處理的 issue 不當成關聯 issue。
 
 ## 流程
 
 修改既有 PR 時，先委派 `github-manager` 取回現有標題、description、base branch 與 head 分支名。
 
-修改既有 PR 且使用者未提供 issue 編號時，從取回標題的結尾與 description 的開頭擷取既有的關聯 issue 參照作為 issue 編號，description 開頭的參照可能是 `Closes #N` 或舊格式的純 `#N`，兩種都擷取；兩處都沒有時才視為無關聯。
+修改既有 PR 時，標題結尾與 description 開頭既有的關聯 issue 參照原樣保留，不去掉、不改寫，舊格式的純 `#N` 也照舊保留；`github-manager` 修改既有 PR 時不補參照，去掉就會遺失。
 
-只改標題時，跳過草稿與審查，直接委派 `github-manager` 改標題，並附 issue 編號或無關聯 issue 的聲明。
+只改標題時，跳過草稿與審查，直接委派 `github-manager` 改標題；新標題保留現有標題結尾的 issue 參照。
 
-只改 description 時，沿用現有標題，不重新產生；交給 `github-manager` 前去掉標題結尾的關聯 issue 參照。
+只改 description 時，沿用現有標題，不重新產生。
 
 撰寫或修改 description 時：
 
@@ -37,14 +37,14 @@ description: "依本機分支相對 base branch 的 diff 撰寫 GitHub PR 的標
 1. 自行判斷每項 finding 是否成立，修正成立者，不再送審。
 1. 本機 head 有遠端沒有的 commit 時，先自行 push；`github-manager` 不做 push。
 1. push 被拒或需要 force push 時，停下回報。
-1. 委派 `github-manager` 發佈，提供標題、草稿檔路徑，以及關聯 issue 編號或無關聯 issue 的聲明；建立 PR 時另提供不含 remote 前綴的 base 與 head 分支名；修改既有 PR 時另提供 PR 編號。
+1. 委派 `github-manager` 發佈，提供標題與草稿檔路徑；建立 PR 時另提供關聯 issue 編號或無關聯 issue 的聲明，以及不含 remote 前綴的 base 與 head 分支名；修改既有 PR 時另提供 PR 編號。
 
-修改既有 PR 的 description 時，依本檔骨架整份重寫並替換；保留現有 description 中無法從 diff 重現的內容，依其性質放回對應段落；只排除 description 開頭的關聯 issue 參照，`Closes #N` 與舊格式的純 `#N` 皆是，其他位置引用的 issue 照常保留。repo 不是 public 時，不保留外部 renderer 的圖片 URL。
+修改既有 PR 的 description 時，依本檔骨架整份重寫並替換；保留現有 description 中無法從 diff 重現的內容，依其性質放回對應段落；description 開頭既有的關聯 issue 參照原樣留在開頭，其他位置引用的 issue 照常保留。repo 不是 public 時，不保留外部 renderer 的圖片 URL。
 
 ## 撰寫規則
 
 - 標題用英文，簡潔且易於搜尋。
-- 不在標題結尾與 description 開頭寫關聯 issue 的參照，含 `Closes #N`，`github-manager` 收到 issue 編號後自行補上；description 其他位置的 issue 引用照常保留。
+- 建立 PR 時，不在標題結尾與 description 開頭寫關聯 issue 的參照，含 `Closes #N`，`github-manager` 收到 issue 編號後自行補上；修改既有 PR 時，依流程原樣保留既有參照；description 其他位置的 issue 引用照常保留。
 - description 的 `##` 段落標題用英文，其餘內容用繁體中文；粗體標籤照骨架原樣使用。
 - 不寫開場白，文字簡短。
 - repo 有 `GLOSSARY.md` 時，使用其中的領域用語。

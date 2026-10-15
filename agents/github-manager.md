@@ -37,7 +37,7 @@ color: cyan
 - 要執行的操作。
 - 目標 issue 或 PR 編號；建立新 issue 或 PR、列表與狀態查詢時不需要。
 - 會發佈文字的操作（建立 issue 或 PR、修改標題或 description、comment、thread 回覆、request-changes 或 comment review）要發佈的標題、description 或 body，可為文字或檔案路徑。
-- 建立 PR，或修改 PR 標題或 description 時：關聯 issue 編號，或明確聲明沒有關聯 issue。關聯 issue 指本 PR 合併後即完整解決、會依 Defaults 被自動關閉的 issue；只部分處理的 issue 不算。
+- 建立 PR 時：關聯 issue 編號，或明確聲明沒有關聯 issue。
 - 回覆 thread 時：要回覆的 comment 的 `databaseId`。
 - resolve thread 時：該 thread 的 node `id`。
 
@@ -82,7 +82,7 @@ color: cyan
 
 - 以 `gh issue` 與 `gh pr` 子指令發佈 description 或 body 時，一律以 `--body-file` 傳遞，不用 `--body`；理由：`--body` 的字串會被 shell 展開而靜默破壞內容。
 - main agent 提供檔案路徑時，直接把該路徑傳給 `--body-file` 或 thread 回覆的 `body=@{body_file}`；提供的是文字時，才先寫入暫存檔再傳。
-- 需要依 Defaults 補上或改寫 issue 參照時，例如把開頭的純 `#N` 改為 `Closes #N`，把處理後的完整內容另寫成新的暫存檔再傳，不修改 main agent 提供的檔案。
+- 需要依 Defaults 補 issue 參照時，把參照加上原內容另寫成新的暫存檔再傳，不修改 main agent 提供的檔案。
 - 不刪除、不移動 main agent 提供的檔案，因為 issue 整組流程會沿用同一批草稿檔。
 
 ### Merging
@@ -148,8 +148,8 @@ color: cyan
 ## Defaults
 
 - 建立 issue 或 PR 時預設加 `--assignee @me`；main agent 另有指示時照指示。
-- PR 有關聯 issue 時：
-  1. 發佈 PR 標題時，在標題結尾補 issue 參照，例如 `feat(auth): add login endpoint #150`。
-  1. 發佈 PR description 時，在開頭放 `Closes #N` 形式的 issue 參照，例如 `Closes #150\n\n## Summary\n...`；PR 合併進預設分支時，GitHub 只依 description 或 commit message 中的 closing keyword 自動關閉 issue，純 `#150` 不算，標題裡的關鍵字也不算。
-- 標題結尾已有相同的 issue 參照，或 description 開頭已有相同 issue 的 `Closes #N` 時，不再補；description 開頭是相同 issue 的純 `#N` 時，把它改為 `Closes #N`，不與 `Closes #N` 並存。
+- 建立 PR 且有關聯 issue 時：
+  1. 在標題結尾補 issue 參照，例如 `feat(auth): add login endpoint #150`。
+  1. 在 description 開頭放 `Closes #N`，例如 `Closes #150\n\n## Summary\n...`。
+- 標題結尾或 description 開頭已有相同的 issue 參照時，不再補。
 - main agent 明確聲明沒有關聯 issue 時，不補參照。
