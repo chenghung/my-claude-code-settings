@@ -221,6 +221,22 @@ printf '%s\n' '[{"name":"*","repo":"o/r","description":"d"}]' > "$TMP/f17.jsonc"
 run_plan "$TMP/f17.jsonc" "$FAKE" claude
 expect_error name-is-asterisk '\*'
 
+# Names must match ^[A-Za-z0-9][A-Za-z0-9._-]*$: a name becomes the value of
+# `skills add -s`, where a leading - is read as a flag, and a path-like name
+# must not reach the skills directories.
+printf '%s\n' '[{"name":"-a","repo":"o/r","description":"d"}]' > "$TMP/f30.jsonc"
+run_plan "$TMP/f30.jsonc" "$FAKE" claude
+expect_error name-is-dash-a '-a'
+printf '%s\n' '[{"name":"--all","repo":"o/r","description":"d"}]' > "$TMP/f31.jsonc"
+run_plan "$TMP/f31.jsonc" "$FAKE" claude
+expect_error name-is-double-dash-all '--all'
+printf '%s\n' '[{"name":"a/b","repo":"o/r","description":"d"}]' > "$TMP/f32.jsonc"
+run_plan "$TMP/f32.jsonc" "$FAKE" claude
+expect_error name-with-slash 'a/b'
+printf '%s\n' '[{"name":"..","repo":"o/r","description":"d"}]' > "$TMP/f33.jsonc"
+run_plan "$TMP/f33.jsonc" "$FAKE" claude
+expect_error name-is-dotdot '\.\.'
+
 # Control characters in a name must not break the one-error-per-line format;
 # each problem here (whitespace in name) is exactly one line.
 printf '%s\n' '[{"name":"a\nb","repo":"o/r","description":"d"}]' > "$TMP/f18.jsonc"

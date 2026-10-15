@@ -48,6 +48,7 @@ USAGE = (
     "platforms: " + " ".join(PLATFORMS)
 )
 WHITESPACE = re.compile(r"\s")
+NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 class ManifestError(Exception):
@@ -153,6 +154,14 @@ def validate(
                 errors.append(
                     f"{label}: name {quoted} must not contain '*' "
                     "(the skills CLI treats * as all skills)"
+                )
+            elif not WHITESPACE.search(texts["name"]) and not NAME_PATTERN.fullmatch(
+                texts["name"]
+            ):
+                errors.append(
+                    f"{label}: name {quoted} must match {NAME_PATTERN.pattern} "
+                    "(it becomes the value of `-s`, so a leading '-' would be "
+                    "read as a flag)"
                 )
             if texts["name"] in seen:
                 errors.append(f"{label}: duplicate name {quoted}")
