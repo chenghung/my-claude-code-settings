@@ -5,10 +5,13 @@
 # Target shell: bash 4.3+ - needs associative arrays and arrays; no feature
 # newer than bash 4.3 is used.
 #
-# DESTRUCTIVE OPERATIONS: `npx skills remove` deletes skills that the CLI's
-# lock file records but the manifest no longer lists, on ALL platforms; the
-# script also deletes symlinks (stale aliases, dangling repo symlinks it then
-# replaces, outdated Antigravity bridge links). Real directories and live
+# DESTRUCTIVE OPERATIONS: `npx skills remove` (always run without -a) deletes
+# skills that the CLI's lock file records but the manifest no longer lists
+# from every agent skills directory the skills CLI knows about (dozens of
+# agents in skills CLI 1.7.2, not just this repo's four platforms), plus the
+# shared ~/.agents/skills copy and the lock record. The script also deletes
+# symlinks (stale aliases, dangling repo symlinks it then replaces, outdated
+# Antigravity bridge links). Real directories and live
 # symlinks into this repo are never deleted by the script itself. Every run
 # prints a preview and asks `[y/N]` (default No) on /dev/tty before any
 # install, remove, replacement or symlink cleanup; --no-confirm skips the
@@ -33,7 +36,8 @@ usage() {
   cat <<'EOF'
 Usage: sync-external-skills.sh [--claude] [--codex] [--opencode] [--antigravity] [--all] [--no-confirm] [-h|--help]
   Installs/updates the skills listed in external-skills.jsonc on the selected
-  platforms and removes lock-recorded skills no longer listed (all platforms).
+  platforms and removes lock-recorded skills no longer listed, from every agent
+  skills directory the skills CLI knows about, not only the selected ones.
   At least one platform flag is required; --all selects all four.
   --no-confirm  do not ask before installing or removing.
 EOF

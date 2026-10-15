@@ -108,7 +108,7 @@
   {
     "name": "incoming-request-advisor",
     "repo": "deanpeters/product-manager-skills",
-    "description": "Advises on how to handle an incoming product request"
+    "description": "Breaks an incoming message, assignment or escalation (Slack, email) into a structured analysis that separates the literal ask from the real job-to-be-done, to inform the reply"
   },
   {
     "name": "user-story-mapping",

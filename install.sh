@@ -31,7 +31,10 @@
 #     externally-owned directory can never be a candidate either).
 #   - the external-skills step (not run with --no-external): install.sh
 #     itself deletes nothing here, but the sync-external-skills.sh it calls
-#     can remove skills and symlinks. That script previews and asks [y/N]
+#     can remove symlinks and skills; a skill removal goes through
+#     `npx skills remove`, which deletes the skill from every agent skills
+#     directory the skills CLI knows about, not only the platforms selected
+#     here. That script previews and asks [y/N]
 #     before changing anything unless --no-confirm is passed through.
 
 set -euo pipefail

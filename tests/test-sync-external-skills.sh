@@ -24,6 +24,9 @@ BASE_PATH="$PATH"
 
 # ---------------------------------------------------------------------------
 # npx stub: imitates `npx --yes skills add|remove ...` of the skills CLI.
+# Its remove only clears the claude dir, ~/.agents/skills and the lock (what
+# the sync script verifies); the real CLI also clears the same name from every
+# other agent skills directory it knows about.
 # Logs every call (full argv on one line) to $NPX_STUB_LOG.
 # ---------------------------------------------------------------------------
 write_npx_stub() {
@@ -464,7 +467,7 @@ if run_sync plain real-manifest "$FX_REAL" --all --no-confirm; then
   done
 fi
 
-# ---- remove: lock-only skill not in manifest, removed on all platforms ----------
+# ---- remove: lock-only skill not in manifest, removed CLI-wide, not per platform
 new_case remove
 mkdir -p "$CLAUDE_SKILLS/stale" "$AGENTS_SKILLS/stale"
 printf '{"version": 3, "skills": {"stale": {"source": "o/old"}}}' > "$LOCK"
