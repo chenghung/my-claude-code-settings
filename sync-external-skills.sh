@@ -81,12 +81,6 @@ add_problem() {
   PROBLEMS+=("$1")
 }
 
-# add_problems_from <file>: one problem per line of the file.
-add_problems_from() {
-  local line
-  while IFS= read -r line; do add_problem "$line"; done < "$1"
-}
-
 print_summary() {
   local p first line
   printf 'ERROR  external skills sync failed (%d problems):\n' "${#PROBLEMS[@]}" >&2
@@ -105,10 +99,12 @@ print_summary() {
 
 # read_lock: print the lock's skill names, one per line. A missing lock file
 # means no records. Fails (message on stderr) when the file cannot be parsed
-# or a name is empty or contains '*' or whitespace - such a name must never
-# reach `skills remove`.
+# or a name does not match ^[A-Za-z0-9][A-Za-z0-9._-]*$ - such a name must
+# never reach `skills remove`, where e.g. --all or -a would be read as a flag
+# (the CLI does not honour a -- separator). -I keeps a json.py or similar in
+# the working directory from being imported.
 read_lock() {
-  python3 - "$LOCK" <<'PY'
+  python3 -I - "$LOCK" <<'PY'
 import json, re, sys
 path = sys.argv[1]
 try:
@@ -123,15 +119,30 @@ skills = data.get("skills", {}) if isinstance(data, dict) else None
 if not isinstance(skills, dict):
     print(f"cannot parse lock file {path}: 'skills' is not an object", file=sys.stderr)
     sys.exit(1)
-bad = [n for n in skills if not n or "*" in n or re.search(r"\s", n)]
+valid = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+bad = [n for n in skills if not valid.fullmatch(n)]
 for n in bad:
     print(f"lock file {path}: unsafe skill name {json.dumps(n)} "
-          "(empty, or contains '*' or whitespace)", file=sys.stderr)
+          "(must match ^[A-Za-z0-9][A-Za-z0-9._-]*$)", file=sys.stderr)
 if bad:
     sys.exit(1)
 for n in skills:
     print(n)
 PY
+}
+
+# load_lock: read the lock into LOCK_NAMES. On failure record one fixed
+# problem (with read_lock's stderr, if any, as detail lines) and return 1.
+LOCK_NAMES=()
+load_lock() {
+  local rc=0
+  LOCK_NAMES=()
+  read_lock > "$WORK_DIR/lock.txt" 2> "$WORK_DIR/lock.err" || rc=$?
+  if ((rc != 0)); then
+    add_problem "cannot read lock file $LOCK (python3 exited $rc)"$'\n'"$(cat "$WORK_DIR/lock.err")"
+    return 1
+  fi
+  mapfile -t LOCK_NAMES < "$WORK_DIR/lock.txt"
 }
 
 # location <platform>: the directory a platform's skills live in.
@@ -208,21 +219,15 @@ main() {
     add_problem "manifest not found: $MANIFEST"
   elif ((have_python)); then
     rc=0
-    python3 "$PLAN_SCRIPT" "$MANIFEST" "$REPO_DIR" "${SELECTED[@]}" \
+    python3 -I "$PLAN_SCRIPT" "$MANIFEST" "$REPO_DIR" "${SELECTED[@]}" \
       > "$WORK_DIR/plan.tsv" 2> "$WORK_DIR/plan.err" || rc=$?
     if ((rc != 0)); then
       add_problem "plan script failed (exit $rc) for $MANIFEST:"$'\n'"$(cat "$WORK_DIR/plan.err")"
     fi
   fi
   local lock_names=()
-  if ((have_python)); then
-    rc=0
-    read_lock > "$WORK_DIR/lock.txt" 2> "$WORK_DIR/lock.err" || rc=$?
-    if ((rc != 0)); then
-      add_problems_from "$WORK_DIR/lock.err"
-    else
-      mapfile -t lock_names < "$WORK_DIR/lock.txt"
-    fi
+  if ((have_python)) && load_lock; then
+    lock_names=(${LOCK_NAMES[@]+"${LOCK_NAMES[@]}"})
   fi
   if ((${#PROBLEMS[@]})); then
     print_summary
@@ -333,13 +338,9 @@ main() {
         fi
       done
     done
-    rc=0
-    read_lock > "$WORK_DIR/lock.txt" 2> "$WORK_DIR/lock.err" || rc=$?
-    if ((rc != 0)); then
-      add_problems_from "$WORK_DIR/lock.err"
-    else
+    if load_lock; then
       declare -A still_locked=()
-      while IFS= read -r name; do still_locked[$name]=1; done < "$WORK_DIR/lock.txt"
+      for name in ${LOCK_NAMES[@]+"${LOCK_NAMES[@]}"}; do still_locked[$name]=1; done
       for name in "${remove[@]}"; do
         if [[ -n "${still_locked[$name]+x}" ]]; then
           add_problem "verify: $name still recorded in $(display_path "$LOCK") after remove"

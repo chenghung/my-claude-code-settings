@@ -12,6 +12,11 @@ bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
+# git never reads or writes the real global/system config; HOME is moved under
+# $T before the first fixture repo is built.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export HOME="$T/fixture-home"
+mkdir -p "$HOME"
 
 STUB_DIR="$T/stub-bin"
 STUB_NPX="$STUB_DIR/npx"
@@ -26,6 +31,10 @@ write_npx_stub() {
   cat > "$STUB_NPX" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "$(readlink /proc/self/fd/0)" != /dev/null ]]; then
+  printf 'STDIN_NOT_DEVNULL\n' >> "${NPX_STUB_LOG:?}"
+  exit 96
+fi
 printf '%s\n' "$*" >> "${NPX_STUB_LOG:?}"
 [[ "${1-}" == --yes && "${2-}" == skills && $# -ge 3 ]] || exit 98
 sub="$3"
@@ -40,7 +49,7 @@ fi
 
 # lock_edit <add|remove> <source> <name...>: update the lock's skills object.
 lock_edit() {
-  python3 - "$lock" "$@" <<'PY'
+  python3 -I - "$lock" "$@" <<'PY'
 import json, os, sys
 path, op, source, *names = sys.argv[1:]
 try:
@@ -125,6 +134,10 @@ case "$sub" in
     take_values "$@"; names=(${VALUES[@]+"${VALUES[@]}"}); set -- ${REST[@]+"${REST[@]}"}
     ((${#names[@]})) || exit 98
     [[ "$*" == "-g -y" ]] || exit 98
+    if [[ -n "${NPX_STUB_FAIL_REMOVE:-}" ]]; then
+      printf 'stub: simulated remove failure\n'
+      exit 1
+    fi
     for name in "${names[@]}"; do
       rm -rf "${claude_dir:?}/$name" "${agents_dir:?}/$name"
       printf 'removed %s\n' "$name"
@@ -151,7 +164,7 @@ make_fixture_repo() {
   printf '# local-skill\n' > "$dir/skills/local-skill/SKILL.md"
   git -C "$dir" init -q
   git -C "$dir" add -A
-  git -C "$dir" -c user.name=t -c user.email=t@example.invalid commit -q -m fixture
+  git -C "$dir" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -q -m fixture
 }
 
 # add_fixture_worktree <repo> <worktree path>: detached worktree of a fixture.
@@ -177,7 +190,7 @@ new_case() {
   mkdir -p "$CASE"
   export HOME="$CASE/home"
   unset CLAUDE_CONFIG_DIR XDG_STATE_HOME XDG_CONFIG_HOME GEMINI_HOME AGENTS_HOME
-  unset NPX_STUB_FAIL_REPO NPX_STUB_SKIP_SKILL
+  unset NPX_STUB_FAIL_REPO NPX_STUB_SKIP_SKILL NPX_STUB_FAIL_REMOVE
   mkdir -p "$HOME/.codex" "$HOME/.gemini" "$HOME/.config/opencode"
   export NPX_STUB_LOG="$CASE/npx.log"
   : > "$NPX_STUB_LOG"
@@ -186,6 +199,7 @@ new_case() {
   LOCK="$HOME/.agents/.skill-lock.json"
   RUN_PATH="$STUB_DIR:$BASE_PATH"
   EXPECT_NPX="$STUB_NPX"
+  RUN_CWD="$CASE"
 }
 
 # Safety guard: abort the whole suite if HOME ever escapes $T.
@@ -210,7 +224,7 @@ npx_shadowed() {
 #   mode plain   stdin from /dev/null, controlling terminal inherited
 #   mode tty:X   pseudo terminal via script(1), X + newline typed into it
 #   mode notty   new session via setsid, so /dev/tty cannot be opened
-# Sets OUT (combined output) and RC. Returns 1 (case marked failed) when the
+# Runs from RUN_CWD. Sets OUT (combined output) and RC. Returns 1 (case marked failed) when the
 # shadow guard refuses to run.
 OUT="" RC=0
 run_sync() {
@@ -225,24 +239,32 @@ run_sync() {
   RC=0
   case "$mode" in
     plain)
-      OUT="$(PATH="$RUN_PATH" "$repo/sync-external-skills.sh" "$@" 2>&1 < /dev/null)" || RC=$?
+      OUT="$(cd "$RUN_CWD" && PATH="$RUN_PATH" "$repo/sync-external-skills.sh" "$@" 2>&1 < /dev/null)" || RC=$?
       ;;
     tty:*)
       printf -v cmd '%q ' "$repo/sync-external-skills.sh" "$@"
-      OUT="$(printf '%s\n' "${mode#tty:}" | PATH="$RUN_PATH" SHELL=/usr/bin/bash script -qec "$cmd" /dev/null 2>&1)" || RC=$?
+      OUT="$(cd "$RUN_CWD" && printf '%s\n' "${mode#tty:}" | PATH="$RUN_PATH" SHELL=/usr/bin/bash script -qec "$cmd" /dev/null 2>&1)" || RC=$?
       ;;
     notty)
-      OUT="$(PATH="$RUN_PATH" setsid -w "$repo/sync-external-skills.sh" "$@" 2>&1 < /dev/null)" || RC=$?
+      OUT="$(cd "$RUN_CWD" && PATH="$RUN_PATH" setsid -w "$repo/sync-external-skills.sh" "$@" 2>&1 < /dev/null)" || RC=$?
       ;;
   esac
   return 0
 }
 
-# snapshot: every path under HOME with type and symlink target, plus the lock.
+# snapshot: every path under HOME with type and symlink target, plus the
+# lock content (lock path resolved by the same rule as the script), or a fixed
+# marker when there is no lock file.
 snapshot() {
+  local lock="$HOME/.agents/.skill-lock.json"
+  [[ -z "${XDG_STATE_HOME:-}" ]] || lock="$XDG_STATE_HOME/skills/.skill-lock.json"
   find "$HOME" -printf '%p %y %l\n' | LC_ALL=C sort
-  [[ -n "${XDG_STATE_HOME:-}" ]] && cat "$XDG_STATE_HOME/skills/.skill-lock.json" 2>/dev/null
-  return 0
+  if [[ -f "$lock" ]]; then
+    printf '== lock %s\n' "$lock"
+    cat "$lock"
+  else
+    printf '== no lock file at %s\n' "$lock"
+  fi
 }
 
 # sandbox_without <tool...>: PATH dir with every /usr/bin entry except tools.
@@ -333,6 +355,7 @@ before="$(snapshot)"
 if run_sync plain lock-unparseable "$FX" --all --no-confirm; then
   check lock-unparseable-exit test "$RC" -eq 1
   check lock-unparseable-message has '.skill-lock.json'
+  check lock-unparseable-fixed-line has "  - cannot read lock file $LOCK (python3 exited 1)"
   check lock-unparseable-no-call test ! -s "$NPX_STUB_LOG"
   check lock-unparseable-unchanged test "$before" == "$(snapshot)"
 fi
@@ -345,6 +368,21 @@ if run_sync plain lock-bad-name "$FX" --all --no-confirm; then
   check lock-bad-name-star has '"a*"'
   check lock-bad-name-space has '"b c"'
   check lock-bad-name-no-call test ! -s "$NPX_STUB_LOG"
+fi
+
+# S1: names the skills CLI would read as flags, or path-like names, are
+# rejected before any change (allowed: ^[A-Za-z0-9][A-Za-z0-9._-]*$).
+new_case lock-flag-names
+mkdir -p "$CLAUDE_SKILLS/--all" "$CLAUDE_SKILLS/-a" "$HOME/.agents"
+printf '{"version": 3, "skills": {"--all": {"source": "x"}, "-a": {"source": "x"}, "..": {"source": "x"}}}' > "$LOCK"
+before="$(snapshot)"
+if run_sync plain lock-flag-names "$FX" --claude --no-confirm; then
+  check lock-flag-names-exit test "$RC" -eq 1
+  check lock-flag-names-all has '"--all"'
+  check lock-flag-names-a has '"-a"'
+  check lock-flag-names-dotdot has '".."'
+  check lock-flag-names-no-call test ! -s "$NPX_STUB_LOG"
+  check lock-flag-names-unchanged test "$before" == "$(snapshot)"
 fi
 
 # XDG_STATE_HOME moves the lock; an unparseable one there must be found.
@@ -395,6 +433,7 @@ if run_sync plain remove "$FX" --claude --no-confirm; then
   check remove-one-call test "$(log_count 'skills remove')" -eq 1
   check remove-gone-claude absent "$CLAUDE_SKILLS/stale"
   check remove-gone-agents absent "$AGENTS_SKILLS/stale"
+  check remove-lock-exists test -f "$LOCK"
   check remove-gone-lock not grep -q '"stale"' "$LOCK"
 fi
 
@@ -424,6 +463,35 @@ if run_sync tty:y answer-y "$FX" --claude; then
   check answer-y-exit0 test "$RC" -eq 0
   check answer-y-applied test -d "$CLAUDE_SKILLS/alpha"
   check answer-y-add-count test "$(log_count 'skills add')" -eq "$SMALL_GROUPS"
+  check answer-y-stdin-devnull not grep -q STDIN_NOT_DEVNULL "$NPX_STUB_LOG"
+fi
+
+# S7: remove fails -> adds still run, verify reports stale still present.
+new_case remove-fail
+mkdir -p "$CLAUDE_SKILLS/stale" "$HOME/.agents"
+printf '{"version": 3, "skills": {"stale": {"source": "o/old"}}}' > "$LOCK"
+export NPX_STUB_FAIL_REMOVE=1
+if run_sync plain remove-fail "$FX" --claude --no-confirm; then
+  check remove-fail-exit1 test "$RC" -eq 1
+  check remove-fail-problem has '  - remove stale: npx exited 1'
+  check remove-fail-tail has '      stub: simulated remove failure'
+  check remove-fail-adds-ran test "$(log_count 'skills add')" -eq "$SMALL_GROUPS"
+  check remove-fail-verify-dir has 'verify: stale still present in ~/.claude/skills after remove'
+  check remove-fail-verify-lock has 'verify: stale still recorded in ~/.agents/.skill-lock.json after remove'
+fi
+
+# S3: python3 runs isolated, so a json.py in the working directory is never
+# imported (by the script or by the stub).
+new_case python-isolated
+mkdir -p "$CLAUDE_SKILLS/stale" "$HOME/.agents"
+printf '{"version": 3, "skills": {"stale": {"source": "o/old"}}}' > "$LOCK"
+printf '%s\n' 'import os' \
+  'open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "IMPORTED"), "w").close()' \
+  > "$CASE/json.py"
+if run_sync plain python-isolated "$FX" --claude --no-confirm; then
+  check python-isolated-exit0 test "$RC" -eq 0
+  check python-isolated-not-imported test ! -e "$CASE/IMPORTED"
+  check python-isolated-removed absent "$CLAUDE_SKILLS/stale"
 fi
 
 new_case no-tty
@@ -504,5 +572,6 @@ remove_lines_have_agent_flag() { grep 'skills remove' "$ALL_LOGS" | grep -qE -- 
 check remove-called-somewhere grep -q 'skills remove' "$ALL_LOGS"
 check remove-no-agent-flag-marker not grep -q REMOVE_WITH_AGENT_FLAG "$ALL_LOGS"
 check remove-lines-no-a not remove_lines_have_agent_flag
+check npx-stdin-always-devnull not grep -q STDIN_NOT_DEVNULL "$ALL_LOGS"
 
 exit "$fail"
