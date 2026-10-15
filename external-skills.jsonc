@@ -1,0 +1,234 @@
+// external-skills.jsonc - manifest of public skills to install via
+// `npx skills add`, from the open agent skills ecosystem (skills.sh). It
+// replaces external-skills.txt and is read by sync-external-skills.sh, which
+// installs each entry with `-s <name>` so exactly one skill is added per entry.
+//
+// Format: a single JSON array; each object is one skill with these fields:
+//   name         (required) the skill name, i.e. the value passed to `-s`
+//   repo         (required) owner/repo, or a full GitHub URL
+//   description  (required) what the skill is for
+//   platforms    (optional) a subset of "claude", "codex", "opencode" and
+//                "antigravity" (the same names as install.sh's flags); omit it
+//                to install on all four platforms
+//
+// Rules:
+//   - // line comments and /* */ block comments are allowed.
+//   - Trailing commas are NOT allowed.
+//
+// Every source below was verified, never guessed from the skill name: entries
+// that were first installed by hand were read out of ~/.agents/.skill-lock.json,
+// the skills CLI's own record of where each installed skill came from; entries
+// added directly to this manifest were checked against the source repository's
+// own file tree. Pinning a single skill per entry matters: an unpinned
+// owner/repo installs every skill the repository ships, and mattpocock/skills
+// alone ships 38.
+[
+  // herdr is this setup's terminal workspace manager, installed unconditionally
+  // by install-cli-tools.sh, so its control skill ships with it. The entry pins
+  // the single skill "herdr" on purpose - herdrdev/herdr also carries three
+  // skills used only for developing herdr itself.
+  {
+    "name": "herdr",
+    "repo": "herdrdev/herdr",
+    "description": "Control skill for herdr, the terminal workspace manager"
+  },
+
+  // Thinking, explaining and workflow skills. These were installed by hand and
+  // so never survived a rebuild; listing them here is what makes them
+  // reproducible across all four platforms.
+  //   grill-me                   a relentless interview to sharpen a plan or
+  //                              design
+  //   grill-with-docs            the same interview, writing ADRs and a
+  //                              glossary as it goes
+  //   teach                      walks the user through a concept inside this
+  //                              workspace
+  //   show-me                    explains the current topic visually - diagrams,
+  //                              code-shape sketches, focused HTML
+  //   handoff                    compacts the current conversation into a
+  //                              handoff document for a fresh agent to pick up
+  //   triage                     moves issues and external PRs through a triage
+  //                              state machine and writes agent-ready briefs
+  //   to-spec                    turns the agreed conversation into a formal
+  //                              spec
+  {
+    "name": "grill-me",
+    "repo": "mattpocock/skills",
+    "description": "A relentless interview to sharpen a plan or design"
+  },
+  {
+    "name": "grill-with-docs",
+    "repo": "mattpocock/skills",
+    "description": "The same relentless interview, writing ADRs and a glossary as it goes"
+  },
+  {
+    "name": "teach",
+    "repo": "mattpocock/skills",
+    "description": "Walks the user through a concept inside this workspace"
+  },
+  {
+    "name": "handoff",
+    "repo": "mattpocock/skills",
+    "description": "Compacts the current conversation into a handoff document for a fresh agent to pick up"
+  },
+  {
+    "name": "triage",
+    "repo": "mattpocock/skills",
+    "description": "Moves issues and external PRs through a triage state machine and writes agent-ready briefs"
+  },
+  {
+    "name": "to-spec",
+    "repo": "mattpocock/skills",
+    "description": "Turns the agreed conversation into a formal spec"
+  },
+
+  // setup-matt-pocock-skills is a dependency of triage, to-spec and to-tickets:
+  // it does the initial setup of the mattpocock engineering skills that those
+  // three rely on, so dropping it breaks all three. to-tickets and wait-what
+  // are wanted for their own sake.
+  {
+    "name": "setup-matt-pocock-skills",
+    "repo": "mattpocock/skills",
+    "description": "Initial setup for the mattpocock series of engineering skills"
+  },
+  {
+    "name": "to-tickets",
+    "repo": "mattpocock/skills",
+    "description": "Breaks a plan or spec down into tickets"
+  },
+  {
+    "name": "wait-what",
+    "repo": "mattpocock/skills",
+    "description": "Asks the other side to restate the previous message that was not understood"
+  },
+  {
+    "name": "show-me",
+    "repo": "humanlayer/skills",
+    "description": "Explains the current topic visually - diagrams, code-shape sketches, focused HTML"
+  },
+  {
+    "name": "incoming-request-advisor",
+    "repo": "deanpeters/product-manager-skills",
+    "description": "Breaks an incoming message, assignment or escalation (Slack, email) into a structured analysis that separates the literal ask from the real job-to-be-done, to inform the reply"
+  },
+  {
+    "name": "user-story-mapping",
+    "repo": "deanpeters/product-manager-skills",
+    "description": "Builds a user story map for a product or feature"
+  },
+  {
+    "name": "storyboard",
+    "repo": "deanpeters/product-manager-skills",
+    "description": "Sketches a storyboard of a user scenario"
+  },
+  {
+    "name": "requirements-analysis",
+    "repo": "https://github.com/jwynia/agent-skills/tree/main/skills/tech/development/architecture/requirements-analysis",
+    "description": "Analyses and clarifies software requirements"
+  },
+
+  // Codebase design and engineering-workflow skills.
+  //   codebase-design                shared vocabulary and principles for
+  //                                  designing deep modules
+  //   retro                          user-invoked retrospective on a coding
+  //                                  session, suggesting improvements to the
+  //                                  agent's environment
+  //   improve-codebase-architecture  user-invoked scan for deepening
+  //                                  opportunities, presented as an HTML
+  //                                  report, then a grilling session on the
+  //                                  one picked
+  {
+    "name": "codebase-design",
+    "repo": "mattpocock/skills",
+    "description": "Shared vocabulary and principles for designing deep modules"
+  },
+  {
+    "name": "retro",
+    "repo": "mattpocock/skills",
+    "description": "User-invoked retrospective on a coding session, suggesting improvements to the agent's environment"
+  },
+  {
+    "name": "improve-codebase-architecture",
+    "repo": "mattpocock/skills",
+    "description": "User-invoked scan for deepening opportunities, presented as an HTML report, then a grilling session on the one picked"
+  },
+
+  // Dependencies of entries above, not wanted for their own sake. grill-me's
+  // whole body is "Run a /grilling session"; grill-with-docs adds "using the
+  // /domain-modeling skill"; triage's grill step calls the Skill tool for
+  // "grilling" and "domain-modeling" by name; improve-codebase-architecture's
+  // grilling loop calls the Skill tool for both by name too; retro's first step
+  // calls the Skill tool for "writing-for-agents". So the three entries are not
+  // interchangeable: dropping grilling silently breaks grill-me,
+  // grill-with-docs, triage and improve-codebase-architecture; dropping
+  // domain-modeling breaks grill-with-docs, triage and
+  // improve-codebase-architecture; dropping writing-for-agents breaks retro.
+  // Either way the affected entries still install fine and then skip the step
+  // that needed the missing skill. improve-codebase-architecture also calls
+  // codebase-design, which is listed above for its own sake rather than here.
+  // (setup-matt-pocock-skills is also a dependency, of triage, to-spec and
+  // to-tickets; see its entry above.)
+  {
+    "name": "grilling",
+    "repo": "mattpocock/skills",
+    "description": "The grilling interview loop that grill-me and other skills call by name"
+  },
+  {
+    "name": "domain-modeling",
+    "repo": "mattpocock/skills",
+    "description": "Domain modeling skill that grill-with-docs, triage and others call by name"
+  },
+  {
+    "name": "writing-for-agents",
+    "repo": "mattpocock/skills",
+    "description": "Guidance on writing prompts and docs that agents read; retro calls it by name"
+  },
+
+  // Delegation skills: let the host agent hand work to another agent CLI. They
+  // are installed on Claude Code only (platforms is ["claude"]), where Claude
+  // acts as the coordinator - which is also why codex-background is not
+  // installed. delegate-setup is an optional setup tool and is not installed
+  // either.
+  //
+  // Two known limitations of platforms ["claude"]:
+  //   - codex and opencode share ~/.agents/skills, so when platforms lists only
+  //     one of them, the other platform still sees the skill.
+  //   - opencode loads ~/.claude/skills automatically, so a skill whose
+  //     platforms is only "claude" is also visible to opencode.
+  {
+    "name": "codex-delegate",
+    "repo": "amElnagdy/delegate-skills",
+    "description": "Delegates a task to the Codex CLI",
+    "platforms": ["claude"]
+  },
+  {
+    "name": "agy-delegate",
+    "repo": "amElnagdy/delegate-skills",
+    "description": "Delegates a task to the Antigravity CLI",
+    "platforms": ["claude"]
+  },
+  {
+    "name": "opencode-delegate",
+    "repo": "amElnagdy/delegate-skills",
+    "description": "Delegates a task to the opencode CLI",
+    "platforms": ["claude"]
+  }
+
+  // The entries below stay commented out. They are format examples, kept so a
+  // new entry can be added without looking the syntax up again - uncomment one
+  // (and add a comma after the entry above), or add your own in the same shape.
+  // {
+  //   "name": "caveman-help",
+  //   "repo": "juliusbrussee/caveman",
+  //   "description": "Help skill for caveman"
+  // },
+  // {
+  //   "name": "convex-migration-helper",
+  //   "repo": "get-convex/agent-skills",
+  //   "description": "Helps plan and run Convex data migrations"
+  // },
+  // {
+  //   "name": "ponytail-help",
+  //   "repo": "dietrichgebert/ponytail",
+  //   "description": "Help skill for ponytail"
+  // }
+]
