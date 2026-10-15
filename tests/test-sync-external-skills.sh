@@ -415,7 +415,6 @@ if run_sync plain lock-flag-names "$FX" --claude --no-confirm; then
   check lock-flag-names-unchanged test "$before" == "$(snapshot)"
 fi
 
-# XDG_STATE_HOME moves the lock; an unparseable one there must be found.
 # S2: read_lock exits non-zero with empty stderr -> still one fixed problem.
 new_case lock-silent-fail
 write_python3_wrapper "$CASE/py-bin"
@@ -427,6 +426,7 @@ if run_sync plain lock-silent-fail "$FX" --claude --no-confirm; then
   check lock-silent-fail-no-call test ! -s "$NPX_STUB_LOG"
 fi
 
+# XDG_STATE_HOME moves the lock; an unparseable one there must be found.
 new_case lock-xdg
 export XDG_STATE_HOME="$CASE/state"
 mkdir -p "$XDG_STATE_HOME/skills"
@@ -753,6 +753,77 @@ if run_sync plain lock-repo-conflict "$FX" --claude --no-confirm; then
   check lock-repo-conflict-no-call test ! -s "$NPX_STUB_LOG"
   check lock-repo-conflict-link-kept link_is "$CLAUDE_SKILLS/local-skill" "$FX/skills/local-skill"
 fi
+
+# T1: the conflict check scans all five locations whatever is selected - the
+# removal is CLI-wide and would delete the repo symlink in ~/.agents/skills.
+new_case lock-repo-conflict-unselected
+mkskill "$CLAUDE_SKILLS/local-skill"
+mkdir -p "$AGENTS_SKILLS"
+ln -s "$FX/skills/local-skill" "$AGENTS_SKILLS/local-skill"
+printf '{"version": 3, "skills": {"local-skill": {"source": "o/x"}}}' > "$LOCK"
+before="$(snapshot)"
+if run_sync plain lock-repo-conflict-unselected "$FX" --claude --no-confirm; then
+  check lock-repo-conflict-unselected-exit1 test "$RC" -eq 1
+  check lock-repo-conflict-unselected-names-path has "$AGENTS_SKILLS/local-skill"
+  check lock-repo-conflict-unselected-no-call test ! -s "$NPX_STUB_LOG"
+  check lock-repo-conflict-unselected-unchanged test "$before" == "$(snapshot)"
+fi
+
+# T2: symlinks outside every cleanup rule's fence survive a full sync.
+new_case fence
+mkskill "$HOME/dev/mine"
+mkskill "$HOME/dev/other"
+mkskill "$HOME/.agents/skills-old/oldie"
+mkdir -p "$CLAUDE_SKILLS" "$CODEX_OLD" "$BRIDGE"
+ln -s "$HOME/dev/mine" "$CLAUDE_SKILLS/mine-link"
+ln -s "$HOME/dev/mine" "$CODEX_OLD/mine-link"
+ln -s "$HOME/dev/mine" "$BRIDGE/mine-link"
+ln -s ../../.agents/skills-old/oldie "$CLAUDE_SKILLS/oldie"
+mkskill "$CLAUDE_SKILLS/gone-skill"
+ln -s "$HOME/dev/other" "$BRIDGE/gone-skill"
+printf '{"version": 3, "skills": {"gone-skill": {"source": "o/old"}}}' > "$LOCK"
+if run_sync plain fence "$FX" --all --no-confirm; then
+  check fence-exit0 test "$RC" -eq 0
+  check fence-removed has '將移除（所有平台）: gone-skill'
+  check fence-no-cleanup-lines lacks '將清除的 symlink:'
+  check fence-claude-mine link_is "$CLAUDE_SKILLS/mine-link" "$HOME/dev/mine"
+  check fence-codex-mine link_is "$CODEX_OLD/mine-link" "$HOME/dev/mine"
+  check fence-bridge-mine link_is "$BRIDGE/mine-link" "$HOME/dev/mine"
+  check fence-claude-oldie link_is "$CLAUDE_SKILLS/oldie" ../../.agents/skills-old/oldie
+  check fence-bridge-removed-name link_is "$BRIDGE/gone-skill" "$HOME/dev/other"
+fi
+
+# T3: replacement scope - claude dir yes, legacy dir no.
+new_case replace-claude
+mkdir -p "$CLAUDE_SKILLS"
+ln -s "$FX/skills/alpha" "$CLAUDE_SKILLS/alpha"
+if run_sync plain replace-claude "$FX" --claude --no-confirm; then
+  check replace-claude-exit0 test "$RC" -eq 0
+  check replace-claude-preview has "將替換失效的 repo symlink: $CLAUDE_SKILLS/alpha"
+  check replace-claude-installed real_dir "$CLAUDE_SKILLS/alpha"
+fi
+
+new_case replace-legacy
+mkdir -p "$CODEX_OLD"
+ln -s "$FX/skills/alpha" "$CODEX_OLD/alpha"
+if run_sync plain replace-legacy "$FX" --codex --no-confirm; then
+  check replace-legacy-exit0 test "$RC" -eq 0
+  check replace-legacy-no-replace lacks "將替換失效的 repo symlink: $CODEX_OLD/alpha"
+  check replace-legacy-no-cleanup lacks "將清除的 symlink: $CODEX_OLD/alpha"
+  check replace-legacy-kept link_is "$CODEX_OLD/alpha" "$FX/skills/alpha"
+fi
+
+# T4: a bridge link that cannot be replaced is reported, not swallowed.
+new_case bridge-rm-fail
+mkskill "$HOME/elsewhere"
+mkdir -p "$BRIDGE"
+ln -s "$HOME/elsewhere" "$BRIDGE/alpha"
+chmod 555 "$BRIDGE"
+if run_sync plain bridge-rm-fail "$FX" --antigravity --no-confirm; then
+  check bridge-rm-fail-exit1 test "$RC" -eq 1
+  check bridge-rm-fail-problem has "  - bridge $BRIDGE/alpha: cannot replace the existing symlink"
+fi
+chmod 755 "$BRIDGE"
 
 # ---- drift --------------------------------------------------------------------
 new_case drift-agents

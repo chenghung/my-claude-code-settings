@@ -315,8 +315,10 @@ main() {
   load_repo_copies
 
   # ---- step 1 (cont.): link prechecks - conflict, drift, bridge conflict ----
+  # Conflict scans all five locations whatever is selected: remove is
+  # CLI-wide and would delete a repo symlink on an unselected platform too.
   for name in ${lock_names[@]+"${lock_names[@]}"}; do
-    for dir in "${scan_dirs[@]}"; do
+    for dir in "$CLAUDE_SKILLS" "$AGENTS_SKILLS" "$old_codex" "$old_opencode" "$bridge"; do
       path="$dir/$name"
       if is_repo_link "$path" && ! is_dangling_link "$path"; then
         add_problem "conflict: $name is recorded in the skills lock file, but $path is a live symlink into this repo"$'\n'"(decide by hand which one to keep, then re-run sync)"
@@ -509,7 +511,10 @@ main() {
         [[ -e "$target" ]] || continue
         if [[ -L "$path" ]]; then
           [[ "$(readlink -- "$path")" != "$target" ]] || continue
-          rm -f -- "$path" || true
+          if ! rm -f -- "$path"; then
+            add_problem "bridge $path: cannot replace the existing symlink"
+            continue
+          fi
         fi
         if ! present "$path" && ! ln -s -- "$target" "$path"; then
           add_problem "bridge $path: cannot create the symlink"
