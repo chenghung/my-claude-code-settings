@@ -814,16 +814,22 @@ if run_sync plain replace-legacy "$FX" --codex --no-confirm; then
 fi
 
 # T4: a bridge link that cannot be replaced is reported, not swallowed.
-new_case bridge-rm-fail
-mkskill "$HOME/elsewhere"
-mkdir -p "$BRIDGE"
-ln -s "$HOME/elsewhere" "$BRIDGE/alpha"
-chmod 555 "$BRIDGE"
-if run_sync plain bridge-rm-fail "$FX" --antigravity --no-confirm; then
-  check bridge-rm-fail-exit1 test "$RC" -eq 1
-  check bridge-rm-fail-problem has "  - bridge $BRIDGE/alpha: cannot replace the existing symlink"
+# A 555 directory only blocks rm for non-root users (same guard as
+# tests/test-migrate-claude-md-to-agents-md.sh), so root skips the case.
+if [ "$(id -u)" -ne 0 ]; then
+  new_case bridge-rm-fail
+  mkskill "$HOME/elsewhere"
+  mkdir -p "$BRIDGE"
+  ln -s "$HOME/elsewhere" "$BRIDGE/alpha"
+  chmod 555 "$BRIDGE"
+  if run_sync plain bridge-rm-fail "$FX" --antigravity --no-confirm; then
+    check bridge-rm-fail-exit1 test "$RC" -eq 1
+    check bridge-rm-fail-problem has "  - bridge $BRIDGE/alpha: cannot replace the existing symlink"
+  fi
+  chmod 755 "$BRIDGE"
+else
+  printf 'SKIP bridge-rm-fail (running as root: a 555 directory does not block rm)\n'
 fi
-chmod 755 "$BRIDGE"
 
 # ---- drift --------------------------------------------------------------------
 new_case drift-agents

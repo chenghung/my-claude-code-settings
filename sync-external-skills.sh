@@ -306,12 +306,10 @@ main() {
   [[ -z "${on[antigravity]+x}" || -z "${want[antigravity]+x}" ]] \
     || IFS=' ' read -ra ag_wants <<< "${want[antigravity]}"
   for name in ${lock_names[@]+"${lock_names[@]}"}; do in_lock[$name]=1; done
+  # scan_dirs: general cleanup locations of the selected platforms.
   local scan_dirs=()
   ((!use_claude)) || scan_dirs+=("$CLAUDE_SKILLS")
   ((!use_agents)) || scan_dirs+=("$AGENTS_SKILLS")
-  [[ -z "${on[codex]+x}" ]] || scan_dirs+=("$old_codex")
-  [[ -z "${on[opencode]+x}" ]] || scan_dirs+=("$old_opencode")
-  [[ -z "${on[antigravity]+x}" ]] || scan_dirs+=("$bridge")
   load_repo_copies
 
   # ---- step 1 (cont.): link prechecks - conflict, drift, bridge conflict ----
@@ -402,7 +400,6 @@ main() {
   }
   # General locations: unlisted, unlocked symlink into a skill dir, not repo.
   for dir in "${scan_dirs[@]}"; do
-    [[ "$dir" == "$CLAUDE_SKILLS" || "$dir" == "$AGENTS_SKILLS" ]] || continue
     for path in "$dir"/*; do
       name="${path##*/}"
       [[ -L "$path" && -z "${known[$name]+x}" && -z "${in_lock[$name]+x}" ]] || continue
