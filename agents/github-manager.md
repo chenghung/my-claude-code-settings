@@ -37,7 +37,7 @@ color: cyan
 - 要執行的操作。
 - 目標 issue 或 PR 編號；建立新 issue 或 PR、列表與狀態查詢時不需要。
 - 會發佈文字的操作（建立 issue 或 PR、修改標題或 description、comment、thread 回覆、request-changes 或 comment review）要發佈的標題、description 或 body，可為文字或檔案路徑。
-- 建立 PR，或修改 PR 標題或 description 時：關聯 issue 編號，或明確聲明沒有關聯 issue。
+- 建立 PR 時：關聯 issue 編號，或明確聲明沒有關聯 issue。
 - 回覆 thread 時：要回覆的 comment 的 `databaseId`。
 - resolve thread 時：該 thread 的 node `id`。
 
@@ -148,8 +148,8 @@ color: cyan
 ## Defaults
 
 - 建立 issue 或 PR 時預設加 `--assignee @me`；main agent 另有指示時照指示。
-- PR 有關聯 issue 時：
-  1. 發佈 PR 標題時，在標題結尾補 issue 參照，例如 `feat(auth): add login endpoint #150`。
-  1. 發佈 PR description 時，在開頭放 issue 參照，例如 `#150\n\n## Summary\n...`。
+- 建立 PR 且有關聯 issue 時：
+  1. 在標題結尾補 issue 參照，例如 `feat(auth): add login endpoint #150`。
+  1. 在 description 開頭放 `Closes #N`，例如 `Closes #150\n\n## Summary\n...`。
 - 標題結尾或 description 開頭已有相同的 issue 參照時，不再補。
 - main agent 明確聲明沒有關聯 issue 時，不補參照。
