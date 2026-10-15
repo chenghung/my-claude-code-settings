@@ -199,6 +199,7 @@ new_case() {
   LOCK="$HOME/.agents/.skill-lock.json"
   RUN_PATH="$STUB_DIR:$BASE_PATH"
   EXPECT_NPX="$STUB_NPX"
+  EXPECT_PYTHON3=""
   RUN_CWD="$CASE"
 }
 
@@ -211,13 +212,38 @@ assert_home_in_t() {
 }
 
 # Shadow guard: under RUN_PATH, `npx` must resolve to EXPECT_NPX (the stub),
-# or to nothing at all when EXPECT_NPX is empty (missing-npx sandbox).
+# or to nothing at all when EXPECT_NPX is empty (missing-npx sandbox). When a
+# case shadows python3 too, EXPECT_PYTHON3 names the wrapper it must resolve to.
 npx_shadowed() {
   local got
   got="$(PATH="$RUN_PATH" command -v npx || true)"
-  [[ "$got" == "$EXPECT_NPX" ]] && return 0
-  printf '  npx resolves to [%s], expected [%s] - sync not run\n' "$got" "$EXPECT_NPX" >&2
+  if [[ "$got" != "$EXPECT_NPX" ]]; then
+    printf '  npx resolves to [%s], expected [%s] - sync not run\n' "$got" "$EXPECT_NPX" >&2
+    return 1
+  fi
+  [[ -n "$EXPECT_PYTHON3" ]] || return 0
+  got="$(PATH="$RUN_PATH" command -v python3 || true)"
+  [[ "$got" == "$EXPECT_PYTHON3" ]] && return 0
+  printf '  python3 resolves to [%s], expected [%s] - sync not run\n' "$got" "$EXPECT_PYTHON3" >&2
   return 1
+}
+
+# write_python3_wrapper <dir>: python3 that fails silently (reads stdin, no
+# output, exit 3) for the lock-reading call form `python3 -I - ...`, and runs
+# the real python3 for every other call.
+write_python3_wrapper() {
+  local real
+  real="$(PATH="$BASE_PATH" command -v python3)"
+  mkdir -p "$1"
+  cat > "$1/python3" <<WRAP
+#!/usr/bin/env bash
+if [[ "\${1-}" == -I && "\${2-}" == - ]]; then
+  cat > /dev/null
+  exit 3
+fi
+exec '$real' "\$@"
+WRAP
+  chmod +x "$1/python3"
 }
 
 # run_sync <mode> <case name> <repo> <args...>: run the fixture's sync script.
@@ -386,6 +412,17 @@ if run_sync plain lock-flag-names "$FX" --claude --no-confirm; then
 fi
 
 # XDG_STATE_HOME moves the lock; an unparseable one there must be found.
+# S2: read_lock exits non-zero with empty stderr -> still one fixed problem.
+new_case lock-silent-fail
+write_python3_wrapper "$CASE/py-bin"
+RUN_PATH="$CASE/py-bin:$STUB_DIR:$BASE_PATH"
+EXPECT_PYTHON3="$CASE/py-bin/python3"
+if run_sync plain lock-silent-fail "$FX" --claude --no-confirm; then
+  check lock-silent-fail-exit1 test "$RC" -eq 1
+  check lock-silent-fail-fixed-line has "cannot read lock file $LOCK (python3 exited 3)"
+  check lock-silent-fail-no-call test ! -s "$NPX_STUB_LOG"
+fi
+
 new_case lock-xdg
 export XDG_STATE_HOME="$CASE/state"
 mkdir -p "$XDG_STATE_HOME/skills"
