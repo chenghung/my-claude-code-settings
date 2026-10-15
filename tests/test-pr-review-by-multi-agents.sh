@@ -2982,6 +2982,7 @@ STUB
 chmod +x "$F4_STUB_BIN/herdr"
 
 assert_cli_stub_only "$F4_STUB_BIN:$saved_path" "$F4_STUB_BIN" claude codex gh herdr
+F4_BEFORE_LAUNCH="$(date +%s)"
 if F4_OUT="$(HOME="$F4_HOME" PATH="$F4_STUB_BIN:$saved_path" HERDR_ENV=1 \
   bash "$RUN_SH" launch --base-dir "$F4_ROOT" \
     --agent claude=f4-pane-claude --agent codex=f4-pane-codex 2>&1)"; then
@@ -2989,6 +2990,88 @@ if F4_OUT="$(HOME="$F4_HOME" PATH="$F4_STUB_BIN:$saved_path" HERDR_ENV=1 \
 else
   bad "cmd_launch pr-url-snapshot fixture 派送失敗: $F4_OUT"
 fi
+F4_AFTER_LAUNCH="$(date +%s)"
+
+# cmd_launch 在派出第一個 reviewer 之前把派出時刻（epoch 秒）寫進
+# logs/.dispatched-at，cmd_wait 的死線與心跳都從這個檔案算出。夾在 launch
+# 前後的時間之內，且不晚於第一個 reviewer 的 .last-working-claude（那個檔
+# 是派出 claude 之後才寫的）。
+F4_DISPATCHED_AT="$(cat "$F4_ROOT/logs/.dispatched-at" 2>/dev/null)" || F4_DISPATCHED_AT=""
+case "$F4_DISPATCHED_AT" in
+  ''|*[!0-9]*) bad "cmd_launch 沒有寫出數字的 logs/.dispatched-at: '$F4_DISPATCHED_AT'" ;;
+  *)
+    # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+    [ "$F4_DISPATCHED_AT" -ge "$F4_BEFORE_LAUNCH" ] && [ "$F4_DISPATCHED_AT" -le "$F4_AFTER_LAUNCH" ] \
+      && pass "cmd_launch 把派出時刻寫入 logs/.dispatched-at（落在 launch 前後時間之內）" \
+      || bad "cmd_launch 的 logs/.dispatched-at 不在 launch 前後時間之內: $F4_DISPATCHED_AT（$F4_BEFORE_LAUNCH..$F4_AFTER_LAUNCH）"
+    # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+    [ "$F4_DISPATCHED_AT" -le "$(cat "$F4_ROOT/.last-working-claude" 2>/dev/null || printf 0)" ] \
+      && pass "cmd_launch 的 logs/.dispatched-at 不晚於第一個 reviewer 的派出基準" \
+      || bad "cmd_launch 的 logs/.dispatched-at 晚於 .last-working-claude: $F4_DISPATCHED_AT"
+    ;;
+esac
+
+# 寫入失敗屬致命：此時還沒派出任何 reviewer，所以照既有致命路徑清理（把
+# worktree 移除）並以結束碼 1 結束，且不得啟動任何 reviewer（沒有
+# .pane-claude）。用真實的檔案系統條件逼出失敗（logs 目錄先被設成唯讀，
+# 且 .dispatched-at 還不存在），不繞過它。清理要真的把 worktree 移掉，
+# 所以 .repo-path 要指向這個 fixture 的 repo，與 cmd_prepare 寫的一致。
+F5_ROOT="$T/launch-dispatched-at-write-fail-fixture"
+_make_worktree_fixture "$F5_ROOT" >/dev/null
+F5_HOME="$F5_ROOT/home"
+mkdir -p "$F5_HOME/.claude" "$F5_HOME/.config/gh" "$F5_HOME/.codex"
+mkdir -p "$F5_ROOT/logs"
+printf 'claude review prompt\n' > "$F5_ROOT/logs/claude.prompt"
+chmod a-w "$F5_ROOT/logs"
+mkdir -p "$F5_ROOT/reviewers/claude/workdir" "$F5_ROOT/reviewers/claude/home"
+printf 'claude some-model dispatched\n' > "$F5_ROOT/.roster"
+printf '%s\n' "$F5_ROOT/work" > "$F5_ROOT/.repo-path"
+if F5_OUT="$(HOME="$F5_HOME" PATH="$F4_STUB_BIN:$saved_path" HERDR_ENV=1 \
+  bash "$RUN_SH" launch --base-dir "$F5_ROOT" --agent claude=f5-pane-claude 2>&1)"; then
+  F5_RC=0
+else
+  F5_RC=$?
+fi
+chmod u+w "$F5_ROOT/logs" 2>/dev/null || true
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$F5_RC" -eq 1 ] && [ ! -e "$F5_ROOT/.pane-claude" ] && [[ "$F5_OUT" == *'.dispatched-at'* ]] \
+  && pass "cmd_launch 寫不出 logs/.dispatched-at 時以結束碼 1 失敗，且沒有派出任何 reviewer" \
+  || bad "cmd_launch 寫不出 logs/.dispatched-at 時處置不正確: rc=$F5_RC out='$F5_OUT'"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ ! -e "$F5_ROOT/worktree" ] \
+  && pass "cmd_launch 寫不出 logs/.dispatched-at 時照致命路徑清理（worktree 已移除）" \
+  || bad "cmd_launch 寫不出 logs/.dispatched-at 時沒有清理 worktree"
+
+# 重跑防護：同一個 --base-dir 第二次 launch 時 .dispatched-at 已存在（第一
+# 次 launch 之後它在唯讀的 logs 裡）。必須以結束碼 2 拒絕，且不得呼叫任何
+# 清理 -- 否則寫入 EACCES 會走致命路徑，把仍有 reviewer 在跑的 worktree
+# 強制移除。worktree 要還在，也不得派出任何 reviewer。
+F6_ROOT="$T/launch-rerun-guard-fixture"
+_make_worktree_fixture "$F6_ROOT" >/dev/null
+F6_HOME="$F6_ROOT/home"
+mkdir -p "$F6_HOME/.claude" "$F6_HOME/.config/gh" "$F6_HOME/.codex"
+mkdir -p "$F6_ROOT/logs"
+printf 'claude review prompt\n' > "$F6_ROOT/logs/claude.prompt"
+printf '1700000000\n' > "$F6_ROOT/logs/.dispatched-at"
+chmod -R a-w "$F6_ROOT/logs"
+mkdir -p "$F6_ROOT/reviewers/claude/workdir" "$F6_ROOT/reviewers/claude/home"
+printf 'claude some-model dispatched\n' > "$F6_ROOT/.roster"
+printf '%s\n' "$F6_ROOT/work" > "$F6_ROOT/.repo-path"
+if F6_OUT="$(HOME="$F6_HOME" PATH="$F4_STUB_BIN:$saved_path" HERDR_ENV=1 \
+  bash "$RUN_SH" launch --base-dir "$F6_ROOT" --agent claude=f6-pane-claude 2>&1)"; then
+  F6_RC=0
+else
+  F6_RC=$?
+fi
+chmod -R u+w "$F6_ROOT/logs" 2>/dev/null || true
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$F6_RC" -eq 2 ] && [[ "$F6_OUT" == *'.dispatched-at'* ]] && [[ "$F6_OUT" != *'dispatch failed'* ]] \
+  && pass "cmd_launch 對已派出過的執行目錄（.dispatched-at 已存在）以結束碼 2 拒絕，不走致命清理" \
+  || bad "cmd_launch 重跑防護處置不正確: rc=$F6_RC out='$F6_OUT'"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ -d "$F6_ROOT/worktree" ] && [ ! -e "$F6_ROOT/.pane-claude" ] \
+  && pass "cmd_launch 重跑防護拒絕後 worktree 仍在，且沒有派出任何 reviewer" \
+  || bad "cmd_launch 重跑防護拒絕後 worktree 被動到或有 reviewer 被派出"
 
 # 佐證：.pr-url 這時已經確實變成改寫後的值，證明竄改真的發生過 -- 不是
 # 底下那筆斷言沒踩到竄改分支才通過。
@@ -7288,6 +7371,40 @@ chmod u+rwx "$CLEANUNREADABLE" 2>/dev/null || true
 WAIT_ROOT="$T/wait"
 mkdir -p "$WAIT_ROOT"
 
+# wait_set_dispatched <base_dir> <seconds>: 寫入 <base_dir>/logs/.dispatched-at
+# （cmd_launch 派出時刻的記錄；cmd_wait 的死線 = 派出時刻 + 7200 秒），讓
+# 死線落在「現在起 <seconds> 秒後」。這取代舊版測試對 --deadline-at 旗標的
+# 用法：死線改由腳本自己從這個檔案算出，不再由呼叫端傳入。<seconds> 必須
+# 小於 900，否則第一個心跳（派出時刻 + 900*k）會比死線更早到。
+wait_set_dispatched() {
+  mkdir -p "$1/logs"
+  printf '%s\n' "$(( $(date +%s) - 7200 + $2 ))" > "$1/logs/.dispatched-at"
+}
+
+# wait_bounded <outfile> <errfile> <cmd_wait 參數...>: 在背景執行 cmd_wait，
+# 最多等 10 秒；結束碼放進 wait_bounded_rc，逾時則殺掉並設成 124。供「應該
+# 立刻以 exit 2 拒絕」的案例使用：萬一日後有回歸讓 cmd_wait 改為繼續等
+# （例如退回別的時間來源），這些案例會 FAIL，而不是阻塞約兩小時。
+wait_bounded_rc=0
+wait_bounded() {
+  local out="$1" err="$2" pid i
+  shift 2
+  cmd_wait "$@" > "$out" 2> "$err" &
+  pid=$!
+  for (( i = 0; i < 20; i++ )); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    wait_bounded_rc=124
+  else
+    wait_bounded_rc=0
+    wait "$pid" || wait_bounded_rc=$?
+  fi
+}
+
 # --- 摘要檔新增一行 → event=summary_line ---
 #
 # 這裡的摘要行必須照 _record_reviewer_result_interactive／
@@ -7302,7 +7419,8 @@ mkdir -p "$WAIT_ROOT"
 # 就足以攔下重複前綴的回歸。
 printf 'cli=claude pid=n/a exit=n/a ended_at=2026-09-05T00:00:00Z worktree_status=ok content_status=ready content_file=/tmp/x.md\n' > "$WAIT_ROOT/summary.txt"
 ( sleep 1; printf 'cli=agy pid=n/a exit=n/a ended_at=2026-09-05T00:00:01Z worktree_status=ok content_status=ready content_file=/tmp/y.md\n' >> "$WAIT_ROOT/summary.txt" ) &
-wait_out="$(cmd_wait --base-dir "$WAIT_ROOT" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_ROOT" 20
+wait_out="$(cmd_wait --base-dir "$WAIT_ROOT" 2>/dev/null)"
 case "$wait_out" in
   'event=summary_line cli=agy') pass "cmd_wait 摘要檔新增一行時回傳 summary_line 事件，cli 前綴只有一層" ;;
   *) bad "cmd_wait 摘要檔事件不正確（若含 cli=cli= 就是前綴重複的回歸）: $wait_out" ;;
@@ -7366,14 +7484,16 @@ assert_cli_stub_only "$PATH" "$STUB_BIN" herdr
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"codex-aaaaaaaaaaaa","pane_id":"pane-codex","agent_status":"blocked"},{"name":"opencode-bbbbbbbbbbbb","pane_id":"pane-opencode","agent_status":"working"},{"pane_id":"pane-anon-agent","agent_status":"blocked"}]}}'
 
 # --- 某 cli 進入 blocked → event=blocked cli=<正確的 cli 名稱> ---
-wait_blocked_out="$(cmd_wait --base-dir "$WAIT_BLOCKED" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_BLOCKED" 20
+wait_blocked_out="$(cmd_wait --base-dir "$WAIT_BLOCKED" 2>/dev/null)"
 case "$wait_blocked_out" in
   'event=blocked cli=codex') pass "cmd_wait 某 cli 進入 blocked 時回傳 blocked 事件並帶正確 cli 名稱" ;;
   *) bad "cmd_wait blocked 事件不正確（可能是 pane_id 比對沒生效，或 cli 判斷錯誤）: $wait_blocked_out" ;;
 esac
 
 # --- --reported-blocked 點名的 cli 不會再次觸發 blocked，改在死線到達 ---
-wait_blocked_filtered_out="$(cmd_wait --base-dir "$WAIT_BLOCKED" --deadline-at "$(( $(date +%s) + 3 ))" --reported-blocked codex 2>/dev/null)"
+wait_set_dispatched "$WAIT_BLOCKED" 3
+wait_blocked_filtered_out="$(cmd_wait --base-dir "$WAIT_BLOCKED" --reported-blocked codex 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_blocked_filtered_out" = 'event=deadline' ] && pass "cmd_wait --reported-blocked 點名的 cli 不會再次觸發 blocked 事件" || bad "cmd_wait --reported-blocked 過濾失敗: $wait_blocked_filtered_out"
 
@@ -7396,7 +7516,8 @@ printf 'claude some-model dispatched\n' > "$WAIT_STALLED_FIRES/.roster"
 printf 'pane-claude\n' > "$WAIT_STALLED_FIRES/.pane-claude"
 printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_FIRES/.last-working-claude"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude","agent_status":"idle"}]}}'
-wait_stalled_out="$(cmd_wait --base-dir "$WAIT_STALLED_FIRES" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_STALLED_FIRES" 20
+wait_stalled_out="$(cmd_wait --base-dir "$WAIT_STALLED_FIRES" 2>/dev/null)"
 case "$wait_stalled_out" in
   'event=stalled cli=claude') pass "cmd_wait 停滯超過門檻時回傳 stalled 事件" ;;
   *) bad "cmd_wait stalled 事件不正確: $wait_stalled_out" ;;
@@ -7410,7 +7531,8 @@ printf 'codex some-model dispatched\n' > "$WAIT_STALLED_BLOCKED_PRIORITY/.roster
 printf 'pane-codex\n' > "$WAIT_STALLED_BLOCKED_PRIORITY/.pane-codex"
 printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_BLOCKED_PRIORITY/.last-working-codex"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"codex-aaaaaaaaaaaa","pane_id":"pane-codex","agent_status":"blocked"}]}}'
-wait_stalled_blocked_out="$(cmd_wait --base-dir "$WAIT_STALLED_BLOCKED_PRIORITY" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_STALLED_BLOCKED_PRIORITY" 20
+wait_stalled_blocked_out="$(cmd_wait --base-dir "$WAIT_STALLED_BLOCKED_PRIORITY" 2>/dev/null)"
 case "$wait_stalled_blocked_out" in
   'event=blocked cli=codex') pass "cmd_wait 同時符合 blocked 與 stalled 時優先回傳 blocked" ;;
   *) bad "cmd_wait blocked 優先權失效: $wait_stalled_blocked_out" ;;
@@ -7423,7 +7545,8 @@ printf 'opencode some-model dispatched\n' > "$WAIT_STALLED_SUPPRESSED/.roster"
 printf 'pane-opencode\n' > "$WAIT_STALLED_SUPPRESSED/.pane-opencode"
 printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_SUPPRESSED/.last-working-opencode"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"opencode-aaaaaaaaaaaa","pane_id":"pane-opencode","agent_status":"idle"}]}}'
-wait_stalled_suppressed_out="$(cmd_wait --base-dir "$WAIT_STALLED_SUPPRESSED" --deadline-at "$(( $(date +%s) + 3 ))" --reported-stalled opencode 2>/dev/null)"
+wait_set_dispatched "$WAIT_STALLED_SUPPRESSED" 3
+wait_stalled_suppressed_out="$(cmd_wait --base-dir "$WAIT_STALLED_SUPPRESSED" --reported-stalled opencode 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_stalled_suppressed_out" = 'event=deadline' ] && pass "cmd_wait --reported-stalled 點名的 cli 不會再次觸發 stalled 事件" || bad "cmd_wait --reported-stalled 過濾失敗: $wait_stalled_suppressed_out"
 
@@ -7437,7 +7560,8 @@ printf 'agy some-model dispatched\n' > "$WAIT_STALLED_REARM/.roster"
 printf 'pane-agy\n' > "$WAIT_STALLED_REARM/.pane-agy"
 printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_REARM/.last-working-agy"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"agy-aaaaaaaaaaaa","pane_id":"pane-agy","agent_status":"working"}]}}'
-wait_stalled_rearm_out1="$(cmd_wait --base-dir "$WAIT_STALLED_REARM" --deadline-at "$(( $(date +%s) + 3 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_STALLED_REARM" 3
+wait_stalled_rearm_out1="$(cmd_wait --base-dir "$WAIT_STALLED_REARM" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_stalled_rearm_out1" = 'event=deadline' ] && pass "cmd_wait 觀測到 working 時不誤報 stalled" || bad "cmd_wait 觀測到 working 卻仍回報: $wait_stalled_rearm_out1"
 
@@ -7454,7 +7578,8 @@ wait_stalled_rearm_now="$(date +%s)"
 # blocked，且這次呼叫不再傳 --reported-stalled。
 printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_REARM/.last-working-agy"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"agy-aaaaaaaaaaaa","pane_id":"pane-agy","agent_status":"idle"}]}}'
-wait_stalled_rearm_out2="$(cmd_wait --base-dir "$WAIT_STALLED_REARM" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_STALLED_REARM" 20
+wait_stalled_rearm_out2="$(cmd_wait --base-dir "$WAIT_STALLED_REARM" 2>/dev/null)"
 case "$wait_stalled_rearm_out2" in
   'event=stalled cli=agy') pass "cmd_wait 重新武裝後可以再次觸發 stalled" ;;
   *) bad "cmd_wait 重新武裝後未能再次觸發 stalled: $wait_stalled_rearm_out2" ;;
@@ -7469,7 +7594,8 @@ printf 'pane-claude\n' > "$WAIT_STALLED_DONE/.pane-claude"
 printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$WAIT_STALLED_DONE/.last-working-claude"
 printf 'cli=claude pid=n/a exit=n/a ended_at=2026-09-05T00:00:00Z worktree_status=ok content_status=ready content_file=/tmp/x.md\n' > "$WAIT_STALLED_DONE/summary.txt"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude","agent_status":"idle"}]}}'
-wait_stalled_done_out="$(cmd_wait --base-dir "$WAIT_STALLED_DONE" --deadline-at "$(( $(date +%s) + 3 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_STALLED_DONE" 3
+wait_stalled_done_out="$(cmd_wait --base-dir "$WAIT_STALLED_DONE" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_stalled_done_out" = 'event=deadline' ] && pass "cmd_wait 已有摘要行的 cli 不再判定 stalled" || bad "cmd_wait 已有摘要行卻仍回報 stalled/其他事件: $wait_stalled_done_out"
 
@@ -7512,7 +7638,9 @@ wait_alias_last_working_before="$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SEC
 printf '%s\n' "$wait_alias_last_working_before" > "$WAIT_STALLED_ALIAS/.last-working-claude"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude-otherrun","agent_status":"working"},{"name":"claude-bbbbbbbbbbbb","pane_id":"pane-claude-thisrun","agent_status":"idle"}]}}'
 
-wait_alias_out="$(cmd_wait --base-dir "$WAIT_STALLED_ALIAS" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_STALLED_ALIAS" 20
+
+wait_alias_out="$(cmd_wait --base-dir "$WAIT_STALLED_ALIAS" 2>/dev/null)"
 case "$wait_alias_out" in
   'event=stalled cli=claude') pass "cmd_wait 即使清單裡有同名前綴的並行 agent 回報 working，本次這一格仍正確觸發 stalled" ;;
   *) bad "cmd_wait 被同名前綴的並行 agent 誤導（可能又退回名稱前綴比對）: $wait_alias_out" ;;
@@ -7554,7 +7682,8 @@ WAIT_LWF_OUT="$T/wait-last-working-write-fail.out"
 WAIT_LWF_ERR="$T/wait-last-working-write-fail.err"
 # 裸呼叫 -- 純 `>`/`2>` 重導向不是 if/while/&&/|| 的條件，也不是
 # `$( )`，不影響 errexit 是否套用。
-cmd_wait --base-dir "$WAIT_LWF_ROOT" --deadline-at "$(( $(date +%s) + 3 ))" >"$WAIT_LWF_OUT" 2>"$WAIT_LWF_ERR"
+wait_set_dispatched "$WAIT_LWF_ROOT" 3
+cmd_wait --base-dir "$WAIT_LWF_ROOT" >"$WAIT_LWF_OUT" 2>"$WAIT_LWF_ERR"
 # 這裡能執行到，本身就是「沒有中止」的證明。
 pass cmd-wait-last-working-write-failure-does-not-abort
 
@@ -7590,7 +7719,8 @@ rm -f "$WAIT_ARITH_MARKER"
 # shellcheck disable=SC2016  # single quotes intentional: this is the printf format string itself (the literal $(...) is the payload), only %s should expand
 printf 'now[$(touch %s)]\n' "$WAIT_ARITH_MARKER" > "$WAIT_ARITH_ROOT/.last-working-claude"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude","agent_status":"idle"}]}}'
-wait_arith_out="$(cmd_wait --base-dir "$WAIT_ARITH_ROOT" --deadline-at "$(( $(date +%s) + 3 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_ARITH_ROOT" 3
+wait_arith_out="$(cmd_wait --base-dir "$WAIT_ARITH_ROOT" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ ! -e "$WAIT_ARITH_MARKER" ] && pass "cmd_wait 不對 .last-working-<cli> 的內容做算術求值，payload 裡的指令替換沒有被執行" || bad "cmd_wait 執行了 .last-working-<cli> 內容裡夾帶的指令 -- 標記檔被建立: $WAIT_ARITH_MARKER"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
@@ -7626,7 +7756,8 @@ WAIT_AS_OUT="$T/wait-agent-states-guard.out"
 (
   # shellcheck disable=SC2329  # invoked indirectly: cmd_wait (sourced from run-review.sh) calls this by name
   _wait_agent_states() { return 1; }
-  cmd_wait --base-dir "$WAIT_AS_ROOT" --deadline-at "$(( $(date +%s) + 3 ))" 2>/dev/null
+  wait_set_dispatched "$WAIT_AS_ROOT" 3
+  cmd_wait --base-dir "$WAIT_AS_ROOT" 2>/dev/null
 ) > "$WAIT_AS_OUT"
 # 這裡能執行到，本身就是「沒有中止」的證明。
 pass cmd-wait-agent-states-failure-does-not-abort
@@ -7746,9 +7877,10 @@ for wait_shape_i in "${!wait_shape_labels[@]}"; do
   printf 'claude some-model dispatched\n' > "$wait_shape_dir/.roster"
   printf 'pane-claude\n' > "$wait_shape_dir/.pane-claude"
   printf '%s\n' "$wait_shape_old" > "$wait_shape_dir/.last-working-claude"
+  wait_set_dispatched "$wait_shape_dir" 2
   # 以行內環境變數把 JSON 交給這個背景呼叫（它本來就跑在 & 的子殼層裡）。
   WAIT_HERDR_AGENT_LIST_JSON="${wait_shape_jsons[$wait_shape_i]}" \
-    cmd_wait --base-dir "$wait_shape_dir" --deadline-at "$(( $(date +%s) + 2 ))" > "$wait_shape_dir/out" 2>/dev/null &
+    cmd_wait --base-dir "$wait_shape_dir" > "$wait_shape_dir/out" 2>/dev/null &
   wait_shape_pids+=("$!")
 done
 # 只等這 17 個背景工作，並逐一檢查結束碼（不用裸 wait：那會等整支測試
@@ -7780,7 +7912,8 @@ printf 'pane-codex\n' > "$WAIT_SHAPE_MIX/.pane-codex"
 printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_MIX/.last-working-claude"
 printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_MIX/.last-working-codex"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-claude","agent_status":3},{"pane_id":"pane-codex","agent_status":"blocked"}]}}'
-wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_MIX" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_SHAPE_MIX" 20
+wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_MIX" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_shape_got" = 'event=blocked cli=codex' ] && pass "cmd_wait 一格查詢失效時，其他格的 blocked 照常發出" || bad "cmd_wait 逐格處置（blocked）不正確: '$wait_shape_got'"
 # 重設在事件判斷之前完成：blocked 一返回，失效格（roster 排在前面）的
@@ -7790,7 +7923,8 @@ wait_shape_lw="$(cat "$WAIT_SHAPE_MIX/.last-working-claude")"
 [ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ] && pass "cmd_wait blocked 返回的同一次呼叫中，失效格的 .last-working 已被改寫" || bad "cmd_wait blocked 返回時失效格的 .last-working 未被改寫: '$wait_shape_lw'"
 printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_MIX/.last-working-claude"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-claude","agent_status":3},{"pane_id":"pane-codex","agent_status":"idle"}]}}'
-wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_MIX" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_SHAPE_MIX" 20
+wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_MIX" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_shape_got" = 'event=stalled cli=codex' ] && pass "cmd_wait 一格查詢失效時，其他格的 stalled 照常發出" || bad "cmd_wait 逐格處置（stalled）不正確: '$wait_shape_got'"
 wait_shape_lw="$(cat "$WAIT_SHAPE_MIX/.last-working-claude")"
@@ -7808,7 +7942,8 @@ printf 'pane-codex\n' > "$WAIT_SHAPE_AFTER_STALLED/.pane-codex"
 printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_AFTER_STALLED/.last-working-claude"
 printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_AFTER_STALLED/.last-working-codex"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-claude","agent_status":3},{"pane_id":"pane-codex","agent_status":"idle"}]}}'
-wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_AFTER_STALLED" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_SHAPE_AFTER_STALLED" 20
+wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_AFTER_STALLED" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_shape_got" = 'event=stalled cli=codex' ] && pass "cmd_wait 失效格排在後面時，前面 idle 格仍發 stalled" || bad "cmd_wait 失效格排在 stalled 格之後時事件不正確: '$wait_shape_got'"
 wait_shape_lw="$(cat "$WAIT_SHAPE_AFTER_STALLED/.last-working-claude")"
@@ -7823,7 +7958,8 @@ printf 'pane-claude\n' > "$WAIT_SHAPE_AFTER_BLOCKED/.pane-claude"
 printf 'pane-codex\n' > "$WAIT_SHAPE_AFTER_BLOCKED/.pane-codex"
 printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_AFTER_BLOCKED/.last-working-claude"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-claude","agent_status":3},{"pane_id":"pane-codex","agent_status":"blocked"}]}}'
-wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_AFTER_BLOCKED" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_SHAPE_AFTER_BLOCKED" 20
+wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_AFTER_BLOCKED" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_shape_got" = 'event=blocked cli=codex' ] && pass "cmd_wait 失效格排在 blocked 格之後時仍發 blocked" || bad "cmd_wait 失效格排在 blocked 格之後時事件不正確: '$wait_shape_got'"
 wait_shape_lw="$(cat "$WAIT_SHAPE_AFTER_BLOCKED/.last-working-claude")"
@@ -7846,7 +7982,8 @@ printf 'claude some-model dispatched\n' > "$WAIT_SHAPE_UNK/.roster"
 printf 'pane-claude\n' > "$WAIT_SHAPE_UNK/.pane-claude"
 printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_UNK/.last-working-claude"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-other","agent_status":"working"}]}}'
-wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_UNK" --deadline-at "$(( $(date +%s) + 20 ))" 2>/dev/null)"
+wait_set_dispatched "$WAIT_SHAPE_UNK" 20
+wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_UNK" 2>/dev/null)"
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_shape_got" = 'event=stalled cli=claude' ] && pass "cmd_wait 沒比對到 pane（unknown）且基準超過門檻時仍發 stalled" || bad "cmd_wait unknown 的 stalled 處置被改變: '$wait_shape_got'"
 
@@ -7858,39 +7995,251 @@ rm -f "$STUB_BIN/herdr"
 WAIT_DL="$T/wait-deadline"
 mkdir -p "$WAIT_DL"
 : > "$WAIT_DL/summary.txt"
+wait_set_dispatched "$WAIT_DL" 3
 wait_dl_start=$(date +%s)
-wait_dl_out="$(cmd_wait --base-dir "$WAIT_DL" --deadline-at "$(( wait_dl_start + 3 ))" 2>/dev/null)"
+wait_dl_out="$(cmd_wait --base-dir "$WAIT_DL" 2>/dev/null)"
 wait_dl_elapsed=$(( $(date +%s) - wait_dl_start ))
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_dl_out" = 'event=deadline' ] && pass "cmd_wait 死線到達回傳 deadline 事件" || bad "cmd_wait 死線事件不正確: $wait_dl_out"
-if [ "$wait_dl_elapsed" -ge 3 ] && [ "$wait_dl_elapsed" -le 9 ]; then
+if [ "$wait_dl_elapsed" -ge 2 ] && [ "$wait_dl_elapsed" -le 9 ]; then
   pass "cmd_wait 死線前不早退、到達後不久即返回（$wait_dl_elapsed 秒）"
 else
   bad "cmd_wait 死線時序不正確: $wait_dl_elapsed 秒"
 fi
 
-# --- 心跳時點 → event=heartbeat，且心跳早於死線時先返回心跳 ---
-WAIT_HB="$T/wait-heartbeat"
-mkdir -p "$WAIT_HB"; : > "$WAIT_HB/summary.txt"
-wait_hb_now=$(date +%s)
-wait_hb_out="$(cmd_wait --base-dir "$WAIT_HB" --heartbeat-at "$(( wait_hb_now + 2 ))" --deadline-at "$(( wait_hb_now + 60 ))" 2>/dev/null)"
+# --- 死線 = 派出時刻 + 7200 秒（腳本自己算，呼叫端不傳）。
+# 重現「編排端把 UTC 時間戳當本地時間解析、算出的派出時刻早了 28800 秒、
+# 死線一開始就過期」那個缺陷的形狀：執行目錄名稱是 UTC 時間戳（與真實的
+# 執行目錄同一種命名），派出時刻是正確的「剛剛」時，絕不能一開始就回
+# deadline。背景跑 2 秒（TZ 刻意設成 +0800），期間不得返回任何事件；2 秒後
+# 仍在跑才砍掉。 ---
+WAIT_FRESH="$T/wait-fresh-dispatch/$(date -u +%Y%m%d%H%M%S)-x"
+mkdir -p "$WAIT_FRESH/logs"; : > "$WAIT_FRESH/summary.txt"
+printf '%s\n' "$(date +%s)" > "$WAIT_FRESH/logs/.dispatched-at"
+TZ=Asia/Taipei cmd_wait --base-dir "$WAIT_FRESH" > "$WAIT_FRESH/out" 2>/dev/null &
+wait_fresh_pid=$!
+sleep 2
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_hb_out" = 'event=heartbeat' ] && pass "cmd_wait 心跳時點回傳 heartbeat 事件" || bad "cmd_wait 心跳事件不正確: $wait_hb_out"
+kill -0 "$wait_fresh_pid" 2>/dev/null && [ ! -s "$WAIT_FRESH/out" ] \
+  && pass "cmd_wait 剛派出時不會一開始就回 deadline（死線 = 派出時刻 + 7200 秒）" \
+  || bad "cmd_wait 剛派出就返回了事件: '$(cat "$WAIT_FRESH/out" 2>/dev/null)'"
+kill "$wait_fresh_pid" 2>/dev/null || true
+wait "$wait_fresh_pid" 2>/dev/null || true
+
+# --- 派出時刻在 7200 秒之前 → 一進迴圈就回 deadline（不等任何一輪 sleep） ---
+WAIT_EXPIRED="$T/wait-expired"
+mkdir -p "$WAIT_EXPIRED/logs"; : > "$WAIT_EXPIRED/summary.txt"
+printf '%s\n' "$(( $(date +%s) - 7200 - 60 + 3 ))" > "$WAIT_EXPIRED/logs/.dispatched-at"
+wait_expired_start=$(date +%s)
+wait_expired_out="$(cmd_wait --base-dir "$WAIT_EXPIRED" 2>/dev/null)"
+wait_expired_elapsed=$(( $(date +%s) - wait_expired_start ))
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_expired_out" = 'event=deadline' ] && [ "$wait_expired_elapsed" -le 2 ] \
+  && pass "cmd_wait 派出時刻已超過 7200 秒時立即回 deadline" \
+  || bad "cmd_wait 已過期的死線處置不正確: '$wait_expired_out'（$wait_expired_elapsed 秒）"
+
+# --- --extend-minutes 是「累計」總數，把死線往後推 n*60 秒：自己專屬的派出
+# 時刻（不和其他案例共用），原死線已過 52 秒，帶 --extend-minutes 1 之後死
+# 線落在 8 秒後。 ---
+WAIT_EXT1="$T/wait-extend-one"
+mkdir -p "$WAIT_EXT1/logs"; : > "$WAIT_EXT1/summary.txt"
+printf '%s\n' "$(( $(date +%s) - 7200 - 60 + 8 ))" > "$WAIT_EXT1/logs/.dispatched-at"
+wait_ext_start=$(date +%s)
+wait_ext_out="$(cmd_wait --base-dir "$WAIT_EXT1" --extend-minutes 1 2>/dev/null)"
+wait_ext_elapsed=$(( $(date +%s) - wait_ext_start ))
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_ext_out" = 'event=deadline' ] && [ "$wait_ext_elapsed" -ge 5 ] && [ "$wait_ext_elapsed" -le 15 ] \
+  && pass "cmd_wait --extend-minutes 把死線往後推 n*60 秒（原死線已過仍等到新死線才回 deadline）" \
+  || bad "cmd_wait --extend-minutes 處置不正確: '$wait_ext_out'（$wait_ext_elapsed 秒）"
+# 帶較大的總數時，不得在 2 秒內回任何事件。
+cmd_wait --base-dir "$WAIT_EXPIRED" --extend-minutes 30 > "$WAIT_EXPIRED/out" 2>/dev/null &
+wait_ext_pid=$!
+sleep 2
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+kill -0 "$wait_ext_pid" 2>/dev/null && [ ! -s "$WAIT_EXPIRED/out" ] \
+  && pass "cmd_wait --extend-minutes 30 讓已過期的死線不再立即觸發" \
+  || bad "cmd_wait --extend-minutes 30 仍立即返回: '$(cat "$WAIT_EXPIRED/out" 2>/dev/null)'"
+kill "$wait_ext_pid" 2>/dev/null || true
+wait "$wait_ext_pid" 2>/dev/null || true
+
+# --- --extend-minutes 非純數字（含空字串、負數、小數、缺值）→ exit 2 且無事件輸出 ---
+for wait_ext_bad in 'abc' '-5' '1.5' '' '1 2'; do
+  wait_bounded "$WAIT_EXPIRED/out" "$WAIT_EXPIRED/err" --base-dir "$WAIT_EXPIRED" --extend-minutes "$wait_ext_bad"
+  wait_ext_rc=$wait_bounded_rc
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$wait_ext_rc" -eq 2 ] && [ ! -s "$WAIT_EXPIRED/out" ] && grep -q -- '--extend-minutes' "$WAIT_EXPIRED/err" \
+    && pass "cmd_wait --extend-minutes '$wait_ext_bad' 以結束碼 2 拒絕，無事件輸出" \
+    || bad "cmd_wait --extend-minutes '$wait_ext_bad' 處置不正確: rc=$wait_ext_rc out='$(cat "$WAIT_EXPIRED/out")' err='$(cat "$WAIT_EXPIRED/err")'"
+done
+wait_bounded "$WAIT_EXPIRED/out" /dev/null --base-dir "$WAIT_EXPIRED" --extend-minutes
+wait_ext_rc=$wait_bounded_rc
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_ext_rc" -eq 2 ] && [ ! -s "$WAIT_EXPIRED/out" ] && pass "cmd_wait --extend-minutes 缺值以結束碼 2 拒絕" || bad "cmd_wait --extend-minutes 缺值的處置不正確: rc=$wait_ext_rc"
+# 前導零不得被當成八進位：08 必須讀成十進位 8 分鐘（新死線在約 423 秒後），
+# 所以 2 秒內不得返回任何事件，也不得因算術錯誤中止。
+cmd_wait --base-dir "$WAIT_EXPIRED" --extend-minutes 08 > "$WAIT_EXPIRED/out" 2>"$WAIT_EXPIRED/err" &
+wait_ext_pid=$!
+sleep 2
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+kill -0 "$wait_ext_pid" 2>/dev/null && [ ! -s "$WAIT_EXPIRED/out" ] && [ ! -s "$WAIT_EXPIRED/err" ] \
+  && pass "cmd_wait --extend-minutes 08 以十進位讀成 8 分鐘" \
+  || bad "cmd_wait --extend-minutes 08 沒有以十進位處理: out='$(cat "$WAIT_EXPIRED/out" 2>/dev/null)' err='$(cat "$WAIT_EXPIRED/err" 2>/dev/null)'"
+kill "$wait_ext_pid" 2>/dev/null || true
+wait "$wait_ext_pid" 2>/dev/null || true
+
+# --- 溢位防護：--extend-minutes 限 1 到 6 位純數字，7 位（9999999）拒絕；
+# 6 位（999999）接受。 ---
+wait_bounded "$WAIT_EXPIRED/out" "$WAIT_EXPIRED/err" --base-dir "$WAIT_EXPIRED" --extend-minutes 9999999
+wait_ext_rc=$wait_bounded_rc
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_ext_rc" -eq 2 ] && [ ! -s "$WAIT_EXPIRED/out" ] && grep -q -- '--extend-minutes' "$WAIT_EXPIRED/err" \
+  && pass "cmd_wait --extend-minutes 9999999（7 位）以結束碼 2 拒絕，無事件輸出" \
+  || bad "cmd_wait --extend-minutes 9999999 處置不正確: rc=$wait_ext_rc out='$(cat "$WAIT_EXPIRED/out")' err='$(cat "$WAIT_EXPIRED/err")'"
+cmd_wait --base-dir "$WAIT_EXPIRED" --extend-minutes 999999 > "$WAIT_EXPIRED/out" 2>"$WAIT_EXPIRED/err" &
+wait_ext_pid=$!
+sleep 2
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+kill -0 "$wait_ext_pid" 2>/dev/null && [ ! -s "$WAIT_EXPIRED/out" ] && [ ! -s "$WAIT_EXPIRED/err" ] \
+  && pass "cmd_wait --extend-minutes 999999（6 位）仍被接受" \
+  || bad "cmd_wait --extend-minutes 999999 不該被拒絕: out='$(cat "$WAIT_EXPIRED/out" 2>/dev/null)' err='$(cat "$WAIT_EXPIRED/err" 2>/dev/null)'"
+kill "$wait_ext_pid" 2>/dev/null || true
+wait "$wait_ext_pid" 2>/dev/null || true
+
+# --- 心跳：錨定在派出時刻，取 D + 900*k 中嚴格大於當下的最小者，事件行帶
+# minute=<k*15>。D 落在 2700 秒（45 分鐘）前再加 12 秒，下一個倍數（k=3）
+# 就在 12 秒後 -> event=heartbeat minute=45。 ---
+WAIT_HB="$T/wait-heartbeat"
+mkdir -p "$WAIT_HB/logs"; : > "$WAIT_HB/summary.txt"
+printf '%s\n' "$(( $(date +%s) - 2700 + 12 ))" > "$WAIT_HB/logs/.dispatched-at"
+wait_hb_start=$(date +%s)
+wait_hb_out="$(cmd_wait --base-dir "$WAIT_HB" 2>/dev/null)"
+wait_hb_elapsed=$(( $(date +%s) - wait_hb_start ))
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_hb_out" = 'event=heartbeat minute=45' ] && pass "cmd_wait 心跳在下一個 15 分鐘倍數回傳 event=heartbeat minute=45" || bad "cmd_wait 心跳事件不正確: '$wait_hb_out'"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_hb_elapsed" -ge 8 ] && [ "$wait_hb_elapsed" -le 20 ] && pass "cmd_wait 心跳不早退（$wait_hb_elapsed 秒）" || bad "cmd_wait 心跳時序不正確: $wait_hb_elapsed 秒"
+
+# 第一個倍數：D 在 900 秒前再加 12 秒 -> minute=15。
+printf '%s\n' "$(( $(date +%s) - 900 + 12 ))" > "$WAIT_HB/logs/.dispatched-at"
+wait_hb_out="$(cmd_wait --base-dir "$WAIT_HB" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_hb_out" = 'event=heartbeat minute=15' ] && pass "cmd_wait 第一個心跳回傳 minute=15" || bad "cmd_wait 第一個心跳不正確: '$wait_hb_out'"
+
+# --- 心跳邊界。D 恰好落在 900 秒前（現在就是一個倍數）：「嚴格大於現在」
+# 所以要等下一個倍數，約 2 秒內不得有任何事件；D 在未來（時鐘被調過）時
+# 第一個心跳是 D + 900，也不得有事件。 ---
+WAIT_HBB="$T/wait-heartbeat-boundary"
+mkdir -p "$WAIT_HBB/logs"; : > "$WAIT_HBB/summary.txt"
+printf '%s\n' "$(( $(date +%s) - 900 ))" > "$WAIT_HBB/logs/.dispatched-at"
+cmd_wait --base-dir "$WAIT_HBB" > "$WAIT_HBB/out" 2>/dev/null &
+wait_hbb_pid=$!
+sleep 2
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+kill -0 "$wait_hbb_pid" 2>/dev/null && [ ! -s "$WAIT_HBB/out" ] \
+  && pass "cmd_wait D 恰好在 900 秒前時不立即報心跳（要等下一個倍數）" \
+  || bad "cmd_wait D 恰好在倍數上時處置不正確: '$(cat "$WAIT_HBB/out" 2>/dev/null)'"
+kill "$wait_hbb_pid" 2>/dev/null || true
+wait "$wait_hbb_pid" 2>/dev/null || true
+# D 在未來（時鐘被往回調過）：第一個心跳必須是 D + 900（k=1）。真等 15 分鐘
+# 不可行，所以在子殼層裡用函式遮蔽 date 與 sleep 做假時鐘：date +%s 回傳假
+# 的現在，sleep N 只把假的現在往前推 N 秒、不真的等。D = 假現在 + 100，斷言
+# 回傳 `event=heartbeat minute=15`，且返回時假時鐘恰好在 D + 900（k 若被算成
+# 2，事件會是 minute=30、時鐘在 D + 1800）。
+printf '%s\n' "$(( 1800000000 + 100 ))" > "$WAIT_HBB/logs/.dispatched-at"
+wait_fake_out="$(
+  # shellcheck disable=SC2329  # invoked indirectly: cmd_wait calls date/sleep by name and gets these functions
+  date() { if [ "${1:-}" = '+%s' ]; then printf '%s\n' "$wait_fake_now"; else command date "$@"; fi; }
+  # shellcheck disable=SC2329  # invoked indirectly: cmd_wait's poll loop calls sleep by name
+  sleep() { wait_fake_now=$(( wait_fake_now + $1 )); }
+  wait_fake_now=1800000000
+  cmd_wait --base-dir "$WAIT_HBB" 2>&1
+  printf 'fake_now=%s\n' "$wait_fake_now"
+)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_fake_out" = "event=heartbeat minute=15
+fake_now=$(( 1800000000 + 100 + 900 ))" ] \
+  && pass "cmd_wait D 在未來時第一個心跳是 D + 900（k=1，minute=15）" \
+  || bad "cmd_wait D 在未來時的心跳不正確: '$wait_fake_out'"
+
+# --- 帶 --extend-minutes 讓死線晚於心跳：D 在 8100 秒（135 分鐘）前再加 12
+# 秒，原死線早已過，--extend-minutes 30 使死線落在約 912 秒後；下一個倍數
+# （k=9）在 12 秒後 -> event=heartbeat minute=135（超過 120 分鐘）。 ---
+printf '%s\n' "$(( $(date +%s) - 8100 + 12 ))" > "$WAIT_HB/logs/.dispatched-at"
+wait_hb_out="$(cmd_wait --base-dir "$WAIT_HB" --extend-minutes 30 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_hb_out" = 'event=heartbeat minute=135' ] && pass "cmd_wait 延長後超過 120 分鐘的心跳回傳 minute=135" || bad "cmd_wait 延長後的心跳不正確: '$wait_hb_out'"
+
+# --- 同一時刻死線與心跳都成立時報 deadline：D + 7200 = D + 900*8，兩者落在
+# 同一秒。 ---
+wait_set_dispatched "$WAIT_HB" 3
+wait_hb_out="$(cmd_wait --base-dir "$WAIT_HB" 2>/dev/null)"
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_hb_out" = 'event=deadline' ] && pass "cmd_wait 死線與心跳同一時刻成立時報 deadline" || bad "cmd_wait 死線與心跳同刻的處置不正確: '$wait_hb_out'"
 
 # --- 摘要檔還不存在時當成零行、不視為錯誤 ---
 WAIT_NF="$T/wait-nofile"
 mkdir -p "$WAIT_NF"
-wait_nf_now=$(date +%s)
-wait_nf_out="$(cmd_wait --base-dir "$WAIT_NF" --deadline-at "$(( wait_nf_now + 3 ))" 2>/dev/null)"; wait_nf_rc=$?
+wait_set_dispatched "$WAIT_NF" 3
+wait_nf_out="$(cmd_wait --base-dir "$WAIT_NF" 2>/dev/null)"; wait_nf_rc=$?
 # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 [ "$wait_nf_out" = 'event=deadline' ] && [ "$wait_nf_rc" -eq 0 ] && pass "cmd_wait 摘要檔不存在時當成零行繼續等" || bad "cmd_wait 摘要檔不存在時處置不正確: $wait_nf_out rc=$wait_nf_rc"
 
+# --- .dispatched-at 缺漏 / 空 / 非純數字 → exit 2、stderr 說明、stdout 沒有任何
+# event；且不得退回別的時間來源：每個案例都放了「看起來有效」的 .prepared-at
+# 與一個帶時間戳的目錄名，證明沒有從那裡取值。 ---
+WAIT_DA_ROOT="$T/wait-dispatched-at-invalid"
+wait_da_labels=(missing empty alpha spaced negative multiline dir toolong)
+for wait_da_label in "${wait_da_labels[@]}"; do
+  wait_da_dir="$WAIT_DA_ROOT/$(date -u +%Y%m%d%H%M%S)-$wait_da_label"
+  mkdir -p "$wait_da_dir/logs"; : > "$wait_da_dir/summary.txt"
+  printf '%s\n' "$(date +%s)" > "$wait_da_dir/.prepared-at"
+  case "$wait_da_label" in
+    missing)   ;;
+    empty)     : > "$wait_da_dir/logs/.dispatched-at" ;;
+    alpha)     printf 'abc\n' > "$wait_da_dir/logs/.dispatched-at" ;;
+    spaced)    printf '123 456\n' > "$wait_da_dir/logs/.dispatched-at" ;;
+    negative)  printf -- '-5\n' > "$wait_da_dir/logs/.dispatched-at" ;;
+    multiline) printf '%s\n%s\n' "$(date +%s)" "$(date +%s)" > "$wait_da_dir/logs/.dispatched-at" ;;
+    dir)       mkdir "$wait_da_dir/logs/.dispatched-at" ;;
+    toolong)   printf '1234567890123\n' > "$wait_da_dir/logs/.dispatched-at" ;;
+  esac
+  wait_bounded "$wait_da_dir/out" "$wait_da_dir/err" --base-dir "$wait_da_dir"
+  wait_da_rc=$wait_bounded_rc
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$wait_da_rc" -eq 2 ] && [ ! -s "$wait_da_dir/out" ] && grep -q -- '\.dispatched-at' "$wait_da_dir/err" \
+    && pass "cmd_wait .dispatched-at 為 $wait_da_label 時以結束碼 2 拒絕，stderr 點名該檔，無 event 輸出" \
+    || bad "cmd_wait .dispatched-at 為 $wait_da_label 時處置不正確: rc=$wait_da_rc out='$(cat "$wait_da_dir/out")' err='$(cat "$wait_da_dir/err")'"
+done
+
+# --- 前導零的 .dispatched-at 不得被當成八進位（含 8/9 的數字在 (( )) 裡會
+# 變成算術錯誤而中止） ---
+WAIT_DA_OCT="$T/wait-dispatched-at-leading-zero"
+mkdir -p "$WAIT_DA_OCT/logs"; : > "$WAIT_DA_OCT/summary.txt"
+printf '0%s\n' "$(( $(date +%s) - 7200 + 3 ))" > "$WAIT_DA_OCT/logs/.dispatched-at"
+wait_da_rc=0
+wait_da_out="$(cmd_wait --base-dir "$WAIT_DA_OCT" 2>/dev/null)" || wait_da_rc=$?
+# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+[ "$wait_da_rc" -eq 0 ] && [ "$wait_da_out" = 'event=deadline' ] \
+  && pass "cmd_wait .dispatched-at 帶前導零時以十進位處理" \
+  || bad "cmd_wait .dispatched-at 帶前導零處置不正確: rc=$wait_da_rc out='$wait_da_out'"
+
+# --- 舊旗標 --deadline-at / --heartbeat-at 已移除 → unknown flag，exit 2 ---
+for wait_old_flag in --deadline-at --heartbeat-at; do
+  wait_set_dispatched "$WAIT_NF" 3
+  wait_bounded "$WAIT_NF/out" "$WAIT_NF/err" --base-dir "$WAIT_NF" "$wait_old_flag" "$(( $(date +%s) + 60 ))"
+  wait_old_rc=$wait_bounded_rc
+  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
+  [ "$wait_old_rc" -eq 2 ] && [ ! -s "$WAIT_NF/out" ] && grep -q 'unknown flag' "$WAIT_NF/err" \
+    && pass "cmd_wait 已移除 $wait_old_flag，傳入時以 unknown flag 結束碼 2 拒絕" \
+    || bad "cmd_wait 對舊旗標 $wait_old_flag 處置不正確: rc=$wait_old_rc out='$(cat "$WAIT_NF/out")' err='$(cat "$WAIT_NF/err")'"
+done
+
 # --- 用法錯誤 ---
-if ( cmd_wait --base-dir "$WAIT_ROOT" 2>/dev/null ); then
-  bad "cmd_wait 缺 --deadline-at 應以結束碼 2 拒絕"
+if ( cmd_wait 2>/dev/null ); then
+  bad "cmd_wait 缺 --base-dir 應以結束碼 2 拒絕"
 else
   # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$?" -eq 2 ] && pass "cmd_wait 缺 --deadline-at 以結束碼 2 拒絕" || bad "cmd_wait 缺 --deadline-at 的結束碼不是 2"
+  [ "$?" -eq 2 ] && pass "cmd_wait 缺 --base-dir 以結束碼 2 拒絕" || bad "cmd_wait 缺 --base-dir 的結束碼不是 2"
 fi
 
 # ==============================================================
