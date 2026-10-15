@@ -69,7 +69,7 @@ color: yellow
 - 失敗 job 除錯：回報失敗的 step 名稱與其輸出中的關鍵錯誤摘錄，不整段回傳完整 log；test result 回報失敗的測試名稱與訊息
 - artifact：列出時回報檔名與 URL；下載時回報本機存放路徑
 - 重跑或取消：回報操作的目標、執行結果，以及重跑後新產生的 workflow 識別資訊與 URL（若 CLI 有回傳）
-- 等待：回報最終結果分類（依 `Wait for Run Completion` 的結果判讀；讀不到 `exit_code=` 那一行時為「等待被中斷、結果未知」，回報內容見該節）、run 識別資訊與 URL、實際等待時間（取自範本輸出的 `elapsed_seconds=`）。run watch 的輸出不含 URL，run URL 以 `https://app.circleci.com/pipeline/<run UUID>` 組出，run UUID 取自 run watch 輸出中的 `Watching run <run UUID>` 那一行。輸出中沒有這一行時（例如 exit code 5），改回報呼叫端原給的等待目標，並註明沒有 run 識別與 URL；不自行組出 URL，也不另行查詢
+- 等待：回報最終結果分類（依 `Wait for Run Completion` 的結果判讀；讀不到 `exit_code=` 那一行時為「等待被中斷、結果未知」，目標為 tag 卻等到分支 run 時為「等到的不是 tag run」，回報內容皆見該節）、run 識別資訊與 URL、實際等待時間（取自範本輸出的 `elapsed_seconds=`）。run watch 的輸出不含 URL，run URL 以 `https://app.circleci.com/pipeline/<run UUID>` 組出，run UUID 取自 run watch 輸出中的 `Watching run <run UUID>` 那一行。輸出中沒有這一行時（例如 exit code 5），改回報呼叫端原給的等待目標，並註明沒有 run 識別與 URL；不自行組出 URL，也不另行查詢
 - config 驗證：回報驗證結果與錯誤所在行
 - context 查詢：只回傳變數名稱與其所屬 context，一律不回傳任何 secret 值
 
@@ -86,7 +86,7 @@ color: yellow
 
 ## Primary Tooling
 
-- **所有操作一律透過 CLI 完成**，包含執行狀態、job 輸出、artifact 與 test result 的查詢。範圍是：對 CircleCI 的操作一律透過 CircleCI CLI；本機 git 只用於推導 slug 與解析 tag。
+- **所有操作一律透過 CLI 完成**，包含執行狀態、job 輸出、artifact 與 test result 的查詢。範圍是：對 CircleCI 的操作一律透過 CircleCI CLI；本機 git 只用於推導 slug，以及把 tag 或短 commit SHA 解析為完整 commit SHA。
 - **認證交由 CLI 自行處理**：CLI 1.x 把 token 存在系統 keyring，設定檔位於 `~/.config/circleci/config.yml` 且不含 token，因此不要去環境變數或設定檔找 token，也不要讀取 keyring。需要確認登入狀態時用 `circleci auth me`。
 - **禁止執行 `circleci setting` 子指令**（含 `list`、`set`、`unset`）：本機實測 `circleci setting list` 會以明文印出 token，執行即構成 token 外洩。此禁令同樣只以本定義檔的文字規範，沒有 hook 或 permission 設定攔截。
 - **未列出的 CLI 子指令與參數**：執行時以 CLI 自身的 help 確認，不要憑記憶猜測或寫死；本機安裝的是 1.x 版，指令表面與舊版 0.1.x 不同，記憶中的舊版用法可能已不存在。
@@ -114,7 +114,7 @@ color: yellow
 - run UUID 或 run number：直接作為 `run watch` 的引數。run number 依 CLI help 支援，但實測無法驗證，結果交由 exit code 5 的判讀處理。
 - run URL：只支援 `https://app.circleci.com/pipeline/<run UUID>` 這種形式，取最後一段 run UUID 作為 `run watch` 引數；完整 URL 直接當引數會被當成找不到 run。其他形式的 URL 回報無法從 URL 取得 run 識別並停止，請呼叫端改給 run UUID、tag、commit SHA 或分支，不自行猜測。
 - tag：目前目錄 git remote 推導出的 slug 等於目標 slug 時，以 `git rev-parse "<tag>^{commit}"` 解析為 commit SHA 後以 `--sha` 傳入。`^{commit}` 不可省略：annotated tag 不加時取得的是 tag 物件自身的 SHA 而非 commit SHA，傳入後只會得到找不到 run。slug 不相等、無法從目前目錄推導 slug、或本機找不到該 tag 時，回報無法解析並停止，不自行改用其他方式挑選 run。
-- commit SHA：以 `--sha` 傳入。
+- commit SHA：是完整 40 個十六進位字元時直接以 `--sha` 傳入。`--sha` 只接受完整 SHA，實測傳入短 SHA 時即使同 commit 的 run 存在也找不到，約 2 分鐘後以 exit code 5 結束。因此不是完整 40 字元時，比照 tag，只在目前目錄 git remote 推導出的 slug 等於目標 slug 時，以 `git rev-parse "<SHA>^{commit}"` 解析成完整 SHA 後以 `--sha` 傳入；slug 不相等、無法從目前目錄推導 slug、或解析失敗時，回報需要完整 40 字元的 commit SHA 並停止，不送出短 SHA。
 - 分支：以 `--branch` 傳入。
 
 **執行指令**：`--timeout` 設為整體等待上限（未指定時為 30 分鐘，即 `30m`）；呼叫端要求 failfast 時才加 `--failfast`。依下列範本執行，第二行的目標參數 `--sha <SHA>` 依上方目標對應替換：
@@ -130,13 +130,19 @@ run watch 的非終端機輸出全在 stderr，因此必須加 `2>&1`，否則�
 
 **依 shell 工具能力選擇等待方式**：
 
-- 工具支援背景執行且指令結束時會通知（例如 Claude Code 的 `run_in_background`、Antigravity 的 `WaitMsBeforeAsync`）：以背景啟動後結束本輪，等待結束通知，被喚醒後讀取輸出。
+- 工具支援背景執行且指令結束時會通知（例如 Claude Code 的 `run_in_background`、Antigravity 的 `WaitMsBeforeAsync`）：以背景啟動後，不再呼叫任何工具——包括讀取輸出檔、`sleep`、`timeout`、`read` 或 `grep` 迴圈——直接結束本輪。結束本輪是在等待結束通知，不算回報結果；被結束通知喚醒後，才讀取一次輸出。Claude Code 的 subagent 在背景指令結束時會被通知喚醒，已於本專案實測（等待 90 秒與 11 分鐘皆可）。
 - 工具只能前景執行但可設 timeout（例如 opencode）：工具的 timeout 至少設為 `--timeout` 加上約 2 分鐘，再留餘裕，避免工具先中斷而拿不到結果；多加的約 2 分鐘是因為 `--sha` 或 `--branch` 找 run 的階段是否計入 `--timeout` 未經實測。工具允許的最大 timeout 不足時，把 `--timeout` 降到工具上限減去約 2 分鐘、再留餘裕的值，並在回報中註明實際使用的等待上限。
 - 工具會先回傳而指令仍在執行（例如 Codex 以 `write_stdin` 等待時，把 `yield_time_ms` 設為工具允許的最大值）：每次以工具允許的最長等待時間等待同一行程，直到輸出出現 `exit_code=` 那一行。
 
-不論採用哪種方式，只有在讀到輸出中的 `exit_code=` 那一行之後才能回報等待結果；尚未讀到之前，不把「已開始等待」當成結果回報。指令已結束或被工具中斷、輸出中卻沒有 `exit_code=` 那一行時，回報「等待被中斷、結果未知」，附已取得的輸出摘錄（含 `Watching run <run UUID>` 那一行，若有）與實際使用的等待上限，不重跑 run watch。
+不論採用哪種方式，只有在讀到輸出中的 `exit_code=` 那一行之後才能回報等待結果；尚未讀到之前，不把「已開始等待」當成結果回報（背景執行時為等待結束通知而結束本輪不算回報，不受此限）。指令已結束或被工具中斷、輸出中卻沒有 `exit_code=` 那一行時，回報「等待被中斷、結果未知」，附已取得的輸出摘錄（含 `Watching run <run UUID>` 那一行，若有）與實際使用的等待上限，不重跑 run watch。
 
-**等待期間不另行輪詢**：等待期間不另行以固定間隔查詢 CircleCI 狀態，例如 sleep 迴圈、反覆 `run list` 或 `run get`。run watch 本身就阻塞到 run 進入終止狀態才結束，另行輪詢只會重複取得同樣的中間狀態，每次都多耗一輪工具呼叫與 context。
+**等待期間不另行輪詢**：等待期間不另行以固定間隔查詢 CircleCI 狀態，例如 sleep 迴圈、反覆 `run list` 或 `run get`；也不以任何迴圈或反覆的工具呼叫等待本機輸出檔，例如反覆讀取背景指令的輸出檔、以 `grep` 檢查是否已出現 `exit_code=`。上方前景加長 timeout 與以工具等待同一行程（例如 Codex 的 `write_stdin`）這兩種方式不屬此限：它們等的是 run watch 行程本身。run watch 本身就阻塞到 run 進入終止狀態才結束，背景執行時結束通知也會告知指令已結束，另行輪詢只會重複取得同樣的中間狀態或尚未寫完的輸出，每次都多耗一輪工具呼叫與 context。
+
+**目標為 tag 時先核對等到的 run**：`--sha` 以 commit 找 run。同一 commit 已有分支 run、而 tag run 尚未建立時（例如分支早已跑完、剛 push tag 就委派等待），可能等到的是已結束的分支 run 並以 exit code 0 結束；兩者都存在時 CLI 選哪一條也未經查證。因此目標為 tag 時，讀到輸出後先看 `Watching run <run UUID> (<分支名>)` 那一行的括號（circleci CLI 1.5.0 實測）：tag run 沒有分支，括號為空，即 `Watching run <run UUID> ()`；分支 run 的括號內是分支名，例如 `Watching run <run UUID> (main)`。
+
+- 括號為空：依下方結果判讀回報。
+- 括號非空：不依 exit code 回報 tag 的結果，改回報「等到的是分支 <分支名> 的 run，不是 tag run（tag run 可能尚未建立）」，附該 run 的 UUID 與依下方結果判讀得出的 exit code 判讀作為參考，並明確標示不代表 tag 的結果。不重跑 run watch，由呼叫端決定是否稍後再等。
+- 輸出中沒有 `Watching run` 那一行時（例如 exit code 5）：依下方結果判讀處理。
 
 **結果判讀**：exit code 一律以輸出中的 `exit_code=` 那一行為準，不依賴工具是否回報 exit code——工具回報的是最後一個指令 `echo` 的結束碼，不是 run watch 的。輸出顯示未登入或認證失敗時，不論 exit code 為何，依 `Boundary and Failure Behavior` 的未登入或認證失敗規則處理。
 
