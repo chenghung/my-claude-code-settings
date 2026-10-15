@@ -130,13 +130,13 @@ run watch 的非終端機輸出全在 stderr，因此必須加 `2>&1`，否則�
 
 **依 shell 工具能力選擇等待方式**：
 
-- 工具支援背景執行且指令結束時會通知（例如 Claude Code 的 `run_in_background`、Antigravity 的 `WaitMsBeforeAsync`）：以背景啟動後，不再呼叫任何工具——包括讀取輸出檔、`sleep`、`timeout`、`read` 或 `grep` 迴圈——直接結束本輪。結束本輪是在等待結束通知，不算回報結果；被結束通知喚醒後，才讀取一次輸出。Claude Code 的 subagent 在背景指令結束時會被通知喚醒，已於本專案實測（等待 90 秒與 11 分鐘皆可）。
+- 工具支援背景執行且指令結束時會通知（例如 Claude Code 的 `run_in_background`、Antigravity 的 `WaitMsBeforeAsync`）：以背景啟動後，不再呼叫任何工具——包括讀取輸出檔、`sleep`、`timeout`、`read` 或 `grep` 迴圈——直接結束本輪。結束本輪是在等待結束通知，不算回報結果；被結束通知喚醒後，才讀取一次輸出。Claude Code 的 subagent 在背景指令結束時會被通知喚醒，只在互動式 session 成立，已於本專案實測（等待 90 秒與 11 分鐘皆可）。你無從得知自己處於互動式 session 還是 `claude -p`（非互動），所以結束本輪時的最後一則訊息一律自述為「等待中，尚未取得結果」，並寫明已以背景啟動 `run watch`、實際執行的指令與等待上限，再註明：若之後沒有收到後續回報，呼叫端應視為等待被中斷、結果未知。理由是 `claude -p` 下 subagent 結束本輪會讓背景指令被終止（輸出出現 `[killed]` 與 `Stopped watching before the run completed`），你不會被喚醒，也讀不到這份輸出；呼叫端手上只有這則訊息，不寫明就可能把「已開始等待」誤當成結果。
 - 工具只能前景執行但可設 timeout（例如 opencode）：工具的 timeout 至少設為 `--timeout` 加上約 2 分鐘，再留餘裕，避免工具先中斷而拿不到結果；多加的約 2 分鐘是因為 `--sha` 或 `--branch` 找 run 的階段是否計入 `--timeout` 未經實測。工具允許的最大 timeout 不足時，把 `--timeout` 降到工具上限減去約 2 分鐘、再留餘裕的值，並在回報中註明實際使用的等待上限。
 - 工具會先回傳而指令仍在執行（例如 Codex 以 `write_stdin` 等待時，把 `yield_time_ms` 設為工具允許的最大值）：每次以工具允許的最長等待時間等待同一行程，直到輸出出現 `exit_code=` 那一行。
 
-不論採用哪種方式，只有在讀到輸出中的 `exit_code=` 那一行之後才能回報等待結果；尚未讀到之前，不把「已開始等待」當成結果回報（背景執行時為等待結束通知而結束本輪不算回報，不受此限）。指令已結束或被工具中斷、輸出中卻沒有 `exit_code=` 那一行時，回報「等待被中斷、結果未知」，附已取得的輸出摘錄（含 `Watching run <run UUID>` 那一行，若有）與實際使用的等待上限，不重跑 run watch。
+不論採用哪種方式，只有在讀到輸出中的 `exit_code=` 那一行之後才能回報等待結果；尚未讀到之前，不把「已開始等待」當成結果回報（背景執行時為等待結束通知而結束本輪不算回報，不受此限，但該則訊息須依上方背景執行項自述為等待中；結束通知是否會喚醒你取決於上方所述的互動式 session 前提）。指令已結束或被工具中斷、輸出中卻沒有 `exit_code=` 那一行時，回報「等待被中斷、結果未知」，附已取得的輸出摘錄（含 `Watching run <run UUID>` 那一行，若有）與實際使用的等待上限，不重跑 run watch。
 
-**等待期間不另行輪詢**：等待期間不另行以固定間隔查詢 CircleCI 狀態，例如 sleep 迴圈、反覆 `run list` 或 `run get`；也不以任何迴圈或反覆的工具呼叫等待本機輸出檔，例如反覆讀取背景指令的輸出檔、以 `grep` 檢查是否已出現 `exit_code=`。上方前景加長 timeout 與以工具等待同一行程（例如 Codex 的 `write_stdin`）這兩種方式不屬此限：它們等的是 run watch 行程本身。run watch 本身就阻塞到 run 進入終止狀態才結束，背景執行時結束通知也會告知指令已結束，另行輪詢只會重複取得同樣的中間狀態或尚未寫完的輸出，每次都多耗一輪工具呼叫與 context。
+**等待期間不另行輪詢**：等待期間不另行以固定間隔查詢 CircleCI 狀態，例如 sleep 迴圈、反覆 `run list` 或 `run get`；也不以任何迴圈或反覆的工具呼叫等待本機輸出檔，例如反覆讀取背景指令的輸出檔、以 `grep` 檢查是否已出現 `exit_code=`。上方前景加長 timeout 與以工具等待同一行程（例如 Codex 的 `write_stdin`）這兩種方式不屬此限：它們等的是 run watch 行程本身。run watch 本身就阻塞到 run 進入終止狀態才結束，背景執行時（在上方所述的互動式 session 前提下）結束通知也會告知指令已結束，另行輪詢只會重複取得同樣的中間狀態或尚未寫完的輸出，每次都多耗一輪工具呼叫與 context。
 
 **目標為 tag 時先核對等到的 run**：`--sha` 以 commit 找 run。同一 commit 已有分支 run、而 tag run 尚未建立時（例如分支早已跑完、剛 push tag 就委派等待），可能等到的是已結束的分支 run 並以 exit code 0 結束；兩者都存在時 CLI 選哪一條也未經查證。因此目標為 tag 時，讀到輸出後先看 `Watching run <run UUID> (<分支名>)` 那一行的括號（circleci CLI 1.5.0 實測）：tag run 沒有分支，括號為空，即 `Watching run <run UUID> ()`；分支 run 的括號內是分支名，例如 `Watching run <run UUID> (main)`。
 
