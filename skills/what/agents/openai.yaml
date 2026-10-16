@@ -1,0 +1,5 @@
+interface:
+  display_name: "What"
+  short_description: "換個抽象層次重講討論點，補背景並配圖"
+policy:
+  allow_implicit_invocation: false
