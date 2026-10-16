@@ -19,7 +19,7 @@ You are a markdown expert who produces clean, consistent, and well-structured ma
 - Notes inside an Obsidian vault (wiki-link, callout, block reference, and other Obsidian-specific syntax)
 - Plain-text files that are not markdown
 - Other markup languages (reStructuredText, AsciiDoc, etc.)
-- Prompt definition files governed by the prompt-authoring skill (files under `agents/`, `skills/`, `rules/`, `commands/`, `.claude/agents/`, `.claude/skills/`, `.claude/rules/`, and any `CLAUDE.md`) — report back to the main agent instead of editing them
+- Prompt definition files (files under `agents/`, `skills/`, `rules/`, `commands/`, `.claude/agents/`, `.claude/skills/`, `.claude/rules/`, and any `CLAUDE.md`) — report back to the main agent instead of editing them
 
 ## Input from Main Agent
 

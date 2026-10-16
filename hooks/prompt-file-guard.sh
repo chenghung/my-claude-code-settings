@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # prompt-file-guard.sh — Claude Code PreToolUse hook (Edit|Write matcher).
-# Reminds (never blocks) when the target file is a managed prompt-authoring
-# definition, so the model routes the write through the prompt-authoring
-# skill and its authoring subagent instead of editing it directly.
+# Reminds (never blocks) when the target file is a managed prompt definition
+# .md file, so the model loads the writing-for-agents skill before writing it.
+# The reminder fires for subagent calls too (no agent_id exemption).
 # Must never exit non-zero (a failing hook would stall Claude Code).
 # Target shell: bash 4.3+ (persistent script, repo compatibility floor).
 set -euo pipefail
 
-REMINDER='This path is a managed prompt-authoring definition (agents/skills/rules/commands/CLAUDE.md). Trigger the prompt-authoring skill and delegate the write to its authoring subagent instead of editing this file directly.'
+REMINDER='This path is a managed prompt definition (agents/skills/rules/commands/CLAUDE.md). Load the writing-for-agents skill before writing it.'
 
 # True (exit 0) when $1's path segments contain one of the eight managed
 # prefixes. Comparison is per path segment, not substring, so "my-agents/x"
@@ -47,7 +47,7 @@ is_managed_path() {
 }
 
 main() {
-  local raw tool_name file_path agent_id
+  local raw tool_name file_path
 
   command -v jq >/dev/null 2>&1 || return 0
 
@@ -58,9 +58,6 @@ main() {
     return 0
   fi
   if ! file_path=$(jq -r '.tool_input.file_path // empty' <<< "$raw" 2>/dev/null); then
-    return 0
-  fi
-  if ! agent_id=$(jq -r '.agent_id // empty' <<< "$raw" 2>/dev/null); then
     return 0
   fi
 
@@ -75,10 +72,11 @@ main() {
     *) return 0 ;;
   esac
 
-  # agent_id is only present when a subagent triggered this hook; that
-  # subagent is already the sanctioned authoring flow, so stay silent.
-  [[ -n "$agent_id" ]] && return 0
   [[ -z "$file_path" ]] && return 0
+
+  # Only prompt definitions (.md) are reminded; scripts and other files that
+  # live under managed directories (e.g. skills/a/scripts/b.sh) stay silent.
+  [[ "$file_path" == *.md ]] || return 0
 
   is_managed_path "$file_path" || return 0
 

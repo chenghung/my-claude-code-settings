@@ -160,7 +160,8 @@
     "description": "User-invoked scan for deepening opportunities, presented as an HTML report, then a grilling session on the one picked"
   },
 
-  // Dependencies of entries above, not wanted for their own sake. grill-me's
+  // Dependencies of entries above, not wanted for their own sake (except
+  // writing-for-agents, see below). grill-me's
   // whole body is "Run a /grilling session"; grill-with-docs adds "using the
   // /domain-modeling skill"; triage's grill step calls the Skill tool for
   // "grilling" and "domain-modeling" by name; improve-codebase-architecture's
@@ -171,7 +172,10 @@
   // domain-modeling breaks grill-with-docs, triage and
   // improve-codebase-architecture; dropping writing-for-agents breaks retro.
   // Either way the affected entries still install fine and then skip the step
-  // that needed the missing skill. improve-codebase-architecture also calls
+  // that needed the missing skill. writing-for-agents is the one entry here
+  // that is also wanted in its own right: it is this repo's guide for writing
+  // prompt definition files, and hooks/prompt-file-guard.sh tells the agent to
+  // load it before editing one. improve-codebase-architecture also calls
   // codebase-design, which is listed above for its own sake rather than here.
   // (setup-matt-pocock-skills is also a dependency, of triage, to-spec and
   // to-tickets; see its entry above.)
@@ -188,7 +192,7 @@
   {
     "name": "writing-for-agents",
     "repo": "mattpocock/skills",
-    "description": "Guidance on writing prompts and docs that agents read; retro calls it by name"
+    "description": "Guidance on writing prompts and docs that agents read; this repo's prompt-writing guide, which retro and hooks/prompt-file-guard.sh point to"
   },
 
   // Delegation skills: let the host agent hand work to another agent CLI. They
