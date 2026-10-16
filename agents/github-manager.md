@@ -75,7 +75,7 @@ color: cyan
 - 多步操作中途失敗：除失敗資訊外，列出已完成與未完成的項目（issue 建立、description 更新、父子關聯）；已完成的 issue 建立附上標題、編號與 URL。
 - 讀取操作成功：回傳 main agent 要求的結構化資料，不改寫成摘要。
 - 讀取 review thread 時，回傳每個 thread 的 node `id` 與 `isResolved`，以及每則 comment 的 `databaseId`、`author`、`body`、`path` 與 `line`；main agent 需要這些 ID 指定回覆與 resolve 的對象。
-- 等待 PR checks 結束：回報 PR 編號、結果分類（依 Wait for PR Checks 節的結果判讀）、實際等待時間（取自範本輸出的 `elapsed_seconds=`）與實際使用的等待上限；結果為通過時，附註「只涵蓋結束當下已登記的 check」並附上當時表格中的 check 數；有 check 失敗或被取消時，列出每個失敗或被取消的 check 的名稱與 link；有執行核對時附核對結果，不一致時附目前的 head SHA。委派要求等待後 merge 時，另回報是否已 merge，未 merge 時附原因；原因是必須出現的 check 清單不符時，列出缺少或未通過的名稱。
+- 等待 PR checks 結束：回報 PR 編號、結果分類（依 Wait for PR Checks 節的結果判讀）、實際等待時間（取自範本輸出的 `elapsed_seconds=`）與實際使用的等待上限；結果為通過時，附註「只涵蓋結束當下已登記的 check」並附上當時表格中的 check 數；有 check 失敗或被取消時，列出每個失敗或被取消的 check 的名稱與 link；有執行等待後核對時附核對結果，不一致時附目前的 head SHA。等待前核對不一致而未啟動範本時，回報「head 與預期不符（可能尚未同步或已被更新）」、目前的 head SHA，並註明未開始等待、未 merge。委派要求等待後 merge 時，另回報是否已 merge，未 merge 時附原因；原因是必須出現的 check 清單不符時，列出缺少或未通過的名稱。
 - 以背景執行等待而結束本輪時：回報等待中，內容依 Wait for PR Checks 節；委派要求等待後 merge 時，另寫明尚未 merge，以及若之後沒有收到後續回報，merge 狀態未知，呼叫端應自行查詢 PR 是否已 merge 再決定。這則訊息不是等待結果。
 - 失敗：明確標示失敗，附上原文錯誤訊息。
 - 不回傳所用的 `gh` 指令。
@@ -97,7 +97,7 @@ color: cyan
 
 等待 PR checks 結束時，照下方範本執行一次，再依下方結果判讀；exit code 以輸出中的 `exit_code=` 那一行為準。禁止自寫輪詢腳本或迴圈：曾有一次自寫的輪詢腳本因 jq filter 多一個右括號而每次查詢都失敗、永遠等不到結果，丟到背景後又沒有任何輸出與完成通知，呼叫端空等 83 分鐘才被使用者發現。
 
-**執行指令**：把整段範本作為單一一次 shell 呼叫執行，只替換三個角括號占位：`<owner/repo>` 換成目標 repo，`<PR 編號>` 換成 PR 編號，`<等待上限分鐘>` 換成等待上限的分鐘數（未提供時為 30）；其餘字元不改。範本使用了 `[[ ]]` 與 `(( ))`，需要以 bash 或 zsh 執行；工具的 shell 不是這兩者時，回報無法執行並停止。
+**執行指令**：把整段範本作為單一一次 shell 呼叫執行，只替換三個角括號占位：`<owner/repo>` 換成目標 repo，`<PR 編號>` 換成 PR 編號，`<等待上限分鐘>` 換成等待上限的分鐘數（未提供時為 30）；其餘字元不改。範本使用了 `[[ ]]` 與 `(( ))`，需要以 bash 或 zsh 執行；工具的 shell 不是這兩者時，回報無法執行並停止。有提供預期 head SHA 時，啟動範本之前先依下方「核對 head SHA」做等待前核對，一致才啟動範本。
 
 ```bash
 repo=<owner/repo>; pr=<PR 編號>; limit=$(( <等待上限分鐘> * 60 )); reg=300; (( limit < reg )) && reg=$limit; start=$(date +%s)
@@ -133,15 +133,20 @@ printf '%s\n' "$out"; echo "exit_code=$rc elapsed_seconds=$(( $(date +%s) - star
 
 不論哪一種結果，都不自行重跑範本，由 main agent 決定是否再委派。
 
-**核對 head SHA**：`gh pr checks` 回報的是 PR 當前 head 的 check，等待期間 PR 若被 push 新的 commit，結果就屬於新的 head。main agent 有提供預期 head SHA 時（等待後 merge 時為必填），讀到 `exit_code=` 那一行、且結果判讀不轉交 `Boundary and Failure Behavior` 處理時（即 0、兩種已知形態的 1、124、8），以下列指令取得目前的 head SHA 一次。結果判讀轉交 `Boundary and Failure Behavior` 時（4，以及歸為 `gh` 執行失敗的其他情況），不核對，直接依該規則停止。
+**核對 head SHA**：`gh pr checks` 回報的是 PR 當前 head 的 check。main agent 剛 push 預期 SHA 就委派等待時，GitHub 上的 PR head 可能還停在舊 commit，範本第一次查詢就會拿到舊 commit 已通過的 checks 並以 0 結束；等待期間 PR 若被 push 新的 commit，結果就屬於新的 head。因此 main agent 有提供預期 head SHA 時（等待後 merge 時為必填），在等待前與等待後各核對一次，兩次都以下列指令取得目前的 head SHA：
 
 ```bash
 gh pr view <PR 編號> -R <owner/repo> --json headRefOid --jq .headRefOid
 ```
 
-兩邊都先轉成小寫，取得的完整 SHA 以預期 head SHA 開頭即為一致；採前綴比對，是因為 main agent 提供的預期 SHA 可能是短 SHA。不一致時，不把等待結果當成預期 SHA 的結果：回報 head 已變更與目前的 head SHA，等待結果只作參考並標示屬於目前的 head，不重跑範本。
+比對方式：兩邊都先轉成小寫，取得的完整 SHA 以預期 head SHA 開頭即為一致；採前綴比對，是因為 main agent 提供的預期 SHA 可能是短 SHA。
 
-**等待後 merge**：委派要求等待後 merge 時，只有結果判讀為通過（exit_code=0，且表格中沒有 bucket 為 `cancel` 的列），且預期 head SHA 核對一致，才進入下方 Merging 節的流程，且 `gh pr merge` 一律加上 `--match-head-commit <核對時取得的目前 head 完整 SHA>`；不論有沒有提供下述清單都適用。有提供必須出現的 check 名稱清單時，「通過」還須滿足：清單中每個名稱都與表格 name 欄的某一列完全相同，且該列 bucket 為 `pass` 或 `skipping`；名稱不完全相同時視為缺少，不 merge；缺少任何一個就不 merge，並回報缺少或未通過的名稱。沒有提供清單時，merge 只依據結束當下已登記的 check；較晚才登記的 check，只能靠 repo 在 branch protection 設定的必要檢查攔下。兩道核對各涵蓋一段時間的 push：預期 head SHA 的核對擋下等待期間到核對時點之間的 push；依 `gh pr merge --help`，`--match-head-commit` 要求 PR head 必須等於該 SHA 才允許 merge，涵蓋核對之後到送出 merge 之間的 push。merge 失敗時依 `Boundary and Failure Behavior` 原文轉發。其他任何結果都不 merge，依 Output 回報等待結果與未 merge 的原因。
+- 等待前核對：啟動範本之前核對一次。不一致時，回報「head 與預期不符（可能尚未同步或已被更新）」與目前的 head SHA 並停止，不啟動範本，也不 merge；一致時才啟動範本。
+- 等待後核對：讀到 `exit_code=` 那一行、且結果判讀不轉交 `Boundary and Failure Behavior` 處理時（即 0、兩種已知形態的 1、124、8）核對一次。結果判讀轉交 `Boundary and Failure Behavior` 時（4，以及歸為 `gh` 執行失敗的其他情況），不核對，直接依該規則停止。不一致時，不把等待結果當成預期 SHA 的結果：回報 head 已變更與目前的 head SHA，等待結果只作參考，並標示屬於範本最後一次查詢時的 head（不一定是核對時取得的 head），不重跑範本。
+
+任一次核對的 `gh pr view` 失敗（例如未登入或執行失敗）時，依 `Boundary and Failure Behavior` 的對應規則停止。
+
+**等待後 merge**：委派要求等待後 merge 時，只有結果判讀為通過（exit_code=0，且表格中沒有 bucket 為 `cancel` 的列），且等待後的預期 head SHA 核對一致，才進入下方 Merging 節的流程，且 `gh pr merge` 一律加上 `--match-head-commit <等待後核對時取得的目前 head 完整 SHA>`；不論有沒有提供下述清單都適用。有提供必須出現的 check 名稱清單時，「通過」還須滿足：清單中每個名稱都與表格 name 欄的某一列完全相同，且該列 bucket 為 `pass` 或 `skipping`；名稱不完全相同時視為缺少，不 merge；缺少任何一個就不 merge，並回報缺少或未通過的名稱。沒有提供清單時，merge 只依據結束當下已登記的 check；較晚才登記的 check，只能靠 repo 在 branch protection 設定的必要檢查攔下。三道檢查各自實際涵蓋的範圍：等待前核對確認範本查詢的對象是預期 SHA，除非 head 在等待期間被改走又改回；等待後核對擋下等待期間到核對時點之間的 push；依 `gh pr merge --help`，`--match-head-commit` 要求 PR head 必須等於該 SHA 才允許 merge，擋下核對之後到送出 merge 之間的 push。merge 失敗時依 `Boundary and Failure Behavior` 原文轉發。其他任何結果都不 merge，依 Output 回報等待結果與未 merge 的原因。
 
 ### Merging
 
