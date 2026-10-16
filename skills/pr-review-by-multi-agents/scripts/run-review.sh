@@ -15,14 +15,16 @@
 # just built. `prepare` and `launch` stay in place for stepwise
 # debugging and because the existing test suite drives them directly.
 # `run-review.sh wait
-# --base-dir <path> --deadline-at <epoch> [--heartbeat-at <epoch>]
+# --base-dir <path> [--extend-minutes <n>]
 # [--reported-blocked <cli>]... [--reported-stalled <cli>]...` (see
 # cmd_wait) blocks one turn of the caller's own poll loop, returning
 # exactly one event line -- a new summary line, a newly blocked reviewer, a
 # reviewer that has gone quiet without being seen working (see
 # REVIEWER_STALLED_THRESHOLD_SECONDS), the heartbeat time, or the deadline
 # -- for the caller to interpret; it never decides what to do about the
-# event itself. `run-review.sh cleanup
+# event itself. The deadline and the heartbeat times are computed by the
+# script from the dispatch time cmd_launch recorded, never passed in by the
+# caller (see cmd_wait). `run-review.sh cleanup
 # --base-dir <path>` (see cmd_cleanup) tears a finished run down --
 # removing its worktree and run directory and force-deleting the local
 # branch `prepare` created for it, deriving both the branch name and the
@@ -4934,7 +4936,9 @@ _confirm_reviewers_working() {
 # The launch half of the pipeline: parse the named flags (see
 # parse_launch_args), confirm every named cli was actually selected by the
 # matching prepare invocation (see _check_agents_selected), re-verify every
-# named cli is still on PATH (see verify_selection), then for each named
+# named cli is still on PATH (see verify_selection), record the dispatch
+# time cmd_wait computes its deadline and heartbeats from (see the comment at
+# that step), then for each named
 # cli read back the prompt file cmd_prepare wrote for it and start it
 # inside its already-created herdr pane (see launch_reviewer_interactive),
 # confirm every one of them actually reached agent_status=working (see
@@ -5030,6 +5034,53 @@ cmd_launch() {
   # that never produces a marker-terminated review.md, after every other
   # selected reviewer has already been launched for real.
   verify_selection "${all_reviewers[@]}" || exit 3
+
+  # The dispatch time, recorded before the first reviewer is started: the
+  # one anchor cmd_wait computes its deadline (dispatch + 2 hours + any
+  # extension the user agreed to) and its 15-minute heartbeats from (see
+  # cmd_wait's own docstring). It is recorded here, by the script, because
+  # the orchestrating agent has no epoch dispatch time of its own to work
+  # from -- the only timestamp it sees is the run directory's name, a UTC
+  # wall-clock string, and an orchestrator that parses that as local time
+  # gets a dispatch time off by the UTC offset (28800 seconds at +0800), so
+  # the deadline is already past on cmd_wait's first iteration. All time
+  # arithmetic therefore lives in this script.
+  #
+  # It lives in logs/, not at the run directory's root: the root is
+  # writable by every reviewer for the whole run (see references/
+  # rationale.md's "執行目錄根層沒有上鎖" note), so a reviewer could rewrite
+  # a root-level file and push the deadline back. logs_dir is made read-only
+  # right after the dispatch loop below (chmod -R a-w), which is a second
+  # line of defence, not an absolute guarantee: it only takes effect once
+  # the loop finishes (so the file stays writable while reviewers are being
+  # started), the chmod is best-effort (a failure only logs a warning and
+  # leaves logs/ writable), and the reviewers run as the same user, so
+  # nothing stops one from chmod-ing it back. That is the same exposure the
+  # <cli>.prompt files in logs/ already have.
+  #
+  # Re-run guard, checked first and WITHOUT any cleanup: once a launch has
+  # got this far the file exists, and after the first launch's chmod -R a-w
+  # on logs_dir it is read-only. A second `launch` against the same
+  # --base-dir would then fail the write below with EACCES, and the failure
+  # path (_dispatch_failed_cleanup) would force-remove the worktree that the
+  # first launch's still-running reviewers are working in. A run directory
+  # that already has a dispatch time has been dispatched; refuse with the
+  # usage-error exit code and touch nothing.
+  if [ -e "$logs_dir/.dispatched-at" ]; then
+    printf 'run-review.sh: launch: %s already exists; this run directory has already been dispatched and launch cannot be run again on it\n' \
+      "$logs_dir/.dispatched-at" >&2
+    exit 2
+  fi
+
+  # Treated as fatal, and checked before the loop: no reviewer has been
+  # dispatched yet, so a failure here is cleaned up the same way a first-
+  # dispatch failure is (_dispatch_failed_cleanup with nothing dispatched)
+  # and exits 1, rather than running a review that cmd_wait can never time.
+  if ! printf '%s\n' "$(date +%s)" > "$logs_dir/.dispatched-at"; then
+    printf 'run-review.sh: failed to write the dispatch time: %s\n' "$logs_dir/.dispatched-at" >&2
+    _dispatch_failed_cleanup "$worktree_dir"
+    exit 1
+  fi
 
   for cli in "${all_reviewers[@]}"; do
     # reviewer_workdir/reviewer_home already exist on disk -- cmd_prepare's
@@ -5531,7 +5582,7 @@ _cleanup_delete_branch() {
   fi
 }
 
-# cmd_wait --base-dir <path> --deadline-at <epoch> [--heartbeat-at <epoch>]
+# cmd_wait --base-dir <path> [--extend-minutes <n>]
 #          [--reported-blocked <cli>]... [--reported-stalled <cli>]...
 #
 # One turn of the orchestrator's wait loop, moved here out of SKILL.md.
@@ -5540,7 +5591,34 @@ _cleanup_delete_branch() {
 # the event -- what to report, whether to ask the user to terminate a
 # suspected hang, whether to extend the deadline. None of that judgement
 # moves into this script; only the blocking, the polling and the deadline
-# arithmetic do.
+# and heartbeat arithmetic do.
+#
+# TIME IS COMPUTED HERE, NOT PASSED IN. The caller gives no epoch and does
+# no time arithmetic. cmd_launch records the dispatch time D (epoch
+# seconds) in <base_dir>/logs/.dispatched-at (see cmd_launch for why it
+# lives in logs/), and this function derives everything from it:
+#   - deadline  = D + 7200 + extend_minutes * 60. Checked before the
+#     heartbeat, so when both hold at the same instant the event is
+#     `event=deadline`.
+#   - heartbeat = the smallest D + 900 * k (k >= 1) strictly greater than
+#     the time of this call, computed once at the start of the call. It is
+#     printed as `event=heartbeat minute=<k * 15>` (e.g. minute=45), so
+#     the caller learns which 15-minute mark fired without counting. The
+#     mark is only taken when a call starts: a mark that passes between two
+#     calls (while the caller is busy handling an earlier event) is NOT
+#     replayed afterwards -- the next call looks ahead to the next one --
+#     so heartbeats are at most one per call, not one per elapsed 15
+#     minutes.
+# --extend-minutes <n> is the TOTAL number of minutes the user has agreed
+# to extend the deadline by, not an increment: every wait call passes the
+# same cumulative number. A non-negative integer of 1 to 6 digits (a
+# non-numeric or longer value is exit 2); defaults to 0.
+# A missing, empty, non-numeric or longer-than-12-digit .dispatched-at (a
+# run directory created by an older script, or a corrupted file) is an
+# error, exit 2 with a
+# message on stderr, and NOT a reason to fall back to another time source
+# (the directory name, .prepared-at, a file mtime): a guessed dispatch time
+# is exactly the kind of wrong anchor that made the deadline fire at once.
 #
 # Why this exists: SKILL.md carried two versions of this loop, one for
 # hosts with a background wake-up mechanism and one for hosts without, and
@@ -5639,9 +5717,12 @@ _cleanup_delete_branch() {
 # same, plus a new event after some number of
 # consecutive failed rounds. Both meet the criterion "under a malformed
 # response no false event=stalled at second 300, and no silent `unknown`".
-# (1) was chosen. If herdr stays broken the signal still surfaces: SKILL.md
-# requires the orchestrator to pass --heartbeat-at on every wait call (one
-# heartbeat per 15 minutes); on each heartbeat the orchestrator runs the
+# (1) was chosen. If herdr stays broken the signal still surfaces: each wait
+# call fixes its next 15-minute heartbeat mark at the moment it starts (the
+# caller passes nothing for it) and reports it once, at that mark, if the
+# call is still running then. No frequency is promised between calls: a
+# mark that passes while the caller is handling an earlier event is not
+# replayed. On each heartbeat the orchestrator runs the
 # same projection per cell itself, and an empty result is reported as
 # "status query unavailable" per SKILL.md's query-failure handling. (2)
 # would add an event kind and a SKILL.md handling branch, which pulls
@@ -5658,7 +5739,7 @@ _cleanup_delete_branch() {
 # the supervisor creates it, and there is a short race between this script
 # printing its coordinates and that file appearing.
 cmd_wait() {
-  local base_dir="" deadline_at="" heartbeat_at="" summary_file
+  local base_dir="" extend_minutes=0 dispatched_at="" deadline_at heartbeat_at heartbeat_minute summary_file
   local -a reported_blocked=() reported_stalled=()
   local baseline_lines now current_lines new_cli cli status
   local agent_states line last_working
@@ -5666,24 +5747,62 @@ cmd_wait() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --base-dir)         [ "$#" -ge 2 ] || { printf 'run-review.sh: --base-dir requires a value\n' >&2; exit 2; }; base_dir="$2"; shift 2 ;;
-      --deadline-at)      [ "$#" -ge 2 ] || { printf 'run-review.sh: --deadline-at requires a value\n' >&2; exit 2; }; deadline_at="$2"; shift 2 ;;
-      --heartbeat-at)     [ "$#" -ge 2 ] || { printf 'run-review.sh: --heartbeat-at requires a value\n' >&2; exit 2; }; heartbeat_at="$2"; shift 2 ;;
+      --extend-minutes)   [ "$#" -ge 2 ] || { printf 'run-review.sh: --extend-minutes requires a value\n' >&2; exit 2; }; extend_minutes="$2"; shift 2 ;;
       --reported-blocked) [ "$#" -ge 2 ] || { printf 'run-review.sh: --reported-blocked requires a value\n' >&2; exit 2; }; reported_blocked+=("$2"); shift 2 ;;
       --reported-stalled) [ "$#" -ge 2 ] || { printf 'run-review.sh: --reported-stalled requires a value\n' >&2; exit 2; }; reported_stalled+=("$2"); shift 2 ;;
       *) printf 'run-review.sh: unknown flag for wait: %s\n' "$1" >&2; exit 2 ;;
     esac
   done
   [ -n "$base_dir" ] || { printf 'run-review.sh: wait requires --base-dir\n' >&2; exit 2; }
-  [ -n "$deadline_at" ] || { printf 'run-review.sh: wait requires --deadline-at\n' >&2; exit 2; }
-  case "$deadline_at" in ''|*[!0-9]*) printf 'run-review.sh: --deadline-at must be an epoch second\n' >&2; exit 2 ;; esac
+  # At most 6 digits (999999 minutes is nearly two years): keeps the
+  # arithmetic below far from 64-bit overflow, which would otherwise wrap
+  # silently into a nonsense deadline.
+  case "$extend_minutes" in
+    ''|*[!0-9]*) printf 'run-review.sh: --extend-minutes must be a non-negative integer\n' >&2; exit 2 ;;
+  esac
+  if [ "${#extend_minutes}" -gt 6 ]; then
+    printf 'run-review.sh: --extend-minutes must be at most 6 digits\n' >&2; exit 2
+  fi
+
+  # Both values are digits-only by this point, and are forced to base 10
+  # (the 10# below) so a leading zero is not read as octal -- `08` would
+  # otherwise be an arithmetic error that aborts this function under
+  # `set -e`. logs/.dispatched-at is a file a reviewer may be able to
+  # rewrite (see cmd_launch), which is why it is validated as strictly as
+  # the .last-working-<cli> value further down, before any arithmetic.
+  dispatched_at="$(cat "$base_dir/logs/.dispatched-at" 2>/dev/null)" || dispatched_at=""
+  # 1 to 12 digits (a 12-digit epoch is year 33658): anything longer is
+  # treated as not a plain epoch number, for the same overflow reason as
+  # --extend-minutes above.
+  case "$dispatched_at" in
+    ''|*[!0-9]*) dispatched_at="" ;;
+  esac
+  if [ -z "$dispatched_at" ] || [ "${#dispatched_at}" -gt 12 ]; then
+    printf 'run-review.sh: wait: %s is missing, empty or not a plain epoch number (1 to 12 digits); this run directory has no dispatch time record (it may have been created by an older version of this script)\n' \
+      "$base_dir/logs/.dispatched-at" >&2
+    exit 2
+  fi
+  dispatched_at=$(( 10#$dispatched_at ))
+  deadline_at=$(( dispatched_at + 7200 + 10#$extend_minutes * 60 ))
 
   summary_file="$base_dir/summary.txt"
   baseline_lines="$(wc -l < "$summary_file" 2>/dev/null || printf '0')"
 
+  # The heartbeat mark for this call, fixed once here: the first
+  # dispatched_at + 900 * k (k >= 1) strictly after now. A dispatch time
+  # in the future (clock step) gives a negative elapsed time; k is then 1.
+  now="$(date +%s)"
+  if (( now < dispatched_at )); then
+    heartbeat_minute=15
+  else
+    heartbeat_minute=$(( ((now - dispatched_at) / 900 + 1) * 15 ))
+  fi
+  heartbeat_at=$(( dispatched_at + heartbeat_minute * 60 ))
+
   while :; do
     now="$(date +%s)"
     if [ "$now" -ge "$deadline_at" ]; then printf 'event=deadline\n'; return 0; fi
-    if [ -n "$heartbeat_at" ] && [ "$now" -ge "$heartbeat_at" ]; then printf 'event=heartbeat\n'; return 0; fi
+    if [ "$now" -ge "$heartbeat_at" ]; then printf 'event=heartbeat minute=%s\n' "$heartbeat_minute"; return 0; fi
 
     current_lines="$(wc -l < "$summary_file" 2>/dev/null || printf '0')"
     if [ "$current_lines" -gt "$baseline_lines" ]; then
@@ -5835,8 +5954,9 @@ cmd_wait() {
       # where `x` is never assigned) -- reusing the name of a variable
       # this function already defines, as the probe above does with
       # `now`, sails straight past it. The case pattern below is the same
-      # digit-only shape this function's own --deadline-at parsing already
-      # validates against earlier in this file, applied here for the same
+      # digit-only shape this function's own .dispatched-at and
+      # --extend-minutes parsing already validate against earlier in this
+      # function, applied here for the same
       # reason: reject anything that is not purely `[0-9]+` before it can
       # ever be handed to an arithmetic context, rather than trust the
       # value's origin. A value that fails this is treated exactly like no
