@@ -38,7 +38,7 @@ metadata:
 - 分層堆疊圖 — 誰在誰上面、誰依賴誰 — `references/layers.md`
 - 方框加箭頭流程圖 — 流程、資料流、互動 — `references/flow.md`
 - 步驟線 — 走過哪些路、現在在哪 — `references/timeline.md`
-- HTML — 終端機塞不下的密集概念或版面 — `references/html.md`
+- HTML — 終端機塞不下的密集概念或版面（直接產生，不先問）— `references/html.md`
 
 ## 文字規則
 
