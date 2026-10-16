@@ -8,7 +8,7 @@
 
 ## 設計階段委派
 
-產出任何受本規則約束的圖表 DSL 之前，main agent 必須先呼叫 `diagram-designer` skill 完成圖表類型與語法選型；免除觸發的情境以該 skill 的 description 為準。
+產出任何受本規則約束的圖表 DSL 之前，main agent 必須先呼叫 `diagram-designer` skill 完成圖表類型與語法選型；免除觸發的情境以該 skill 的 description 為準。例外：`what` skill 產生的 HTML 內嵌 Mermaid 時，不必先呼叫 `diagram-designer`。
 
 ## 判斷流程
 
