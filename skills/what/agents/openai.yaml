@@ -1,0 +1,5 @@
+interface:
+  display_name: "What"
+  short_description: "提高抽象層次，補上背景，重新說一次討論點"
+policy:
+  allow_implicit_invocation: false

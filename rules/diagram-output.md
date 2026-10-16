@@ -8,7 +8,7 @@
 
 ## 設計階段委派
 
-產出任何受本規則約束的圖表 DSL 之前，main agent 必須先呼叫 `diagram-designer` skill 完成圖表類型與語法選型；免除觸發的情境以該 skill 的 description 為準。
+產出任何受本規則約束的圖表 DSL 之前，main agent 必須先呼叫 `diagram-designer` skill 完成圖表類型與語法選型；免除觸發的情境以該 skill 的 description 為準。例外：`what` skill 產生的 HTML 內嵌 Mermaid 時，不必先呼叫 `diagram-designer`。
 
 ## 判斷流程
 
@@ -16,6 +16,6 @@
 
 1. 使用者明示要原始碼 → 直接輸出到 stdout
 1. 使用者要的是 ASCII 字元圖示 → 直接輸出到 stdout
-1. 呼叫 `diagram-designer` skill 完成圖表類型選型與即時預覽
-1. 需要持久保存 → 寫入 `.md` 檔；目標為 Obsidian vault 筆記時，依 `obsidian-notes` skill 處理
+1. 呼叫 `diagram-designer` skill 完成圖表類型選型與即時預覽（`what` skill 的 HTML 依上述例外，不呼叫）
+1. 需要持久保存 → 寫入 `.md` 檔；目標為 Obsidian vault 筆記時，依 `obsidian-notes` skill 處理（`what` skill 的 HTML 依其說明存成 `.tmp/` 下的 `.html` 暫存檔，不適用此步）
 1. 任何情況下禁止將受本規則約束的 DSL 以圖表為目的直接輸出到 stdout
