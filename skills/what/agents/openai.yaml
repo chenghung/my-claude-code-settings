@@ -1,5 +1,5 @@
 interface:
   display_name: "What"
-  short_description: "換個抽象層次重講討論點，補背景並配圖"
+  short_description: "提高抽象層次，補上背景，重新說一次討論點"
 policy:
   allow_implicit_invocation: false
