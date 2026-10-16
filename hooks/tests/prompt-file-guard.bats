@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 # Tests for hooks/prompt-file-guard.sh — a PreToolUse hook that reminds
-# (never blocks) when Edit/Write targets a managed prompt-authoring path.
+# (never blocks) when Edit/Write targets a managed prompt definition .md
+# file, pointing the agent to the writing-for-agents skill.
 #
 # Pure bats: bats-support/bats-assert/bats-file are not installed in this
 # environment (see task-6-brief.md Step 1 fallback), so assertions use
@@ -28,7 +29,7 @@ build_payload() {
 
 # Assert the most recent `run` produced a well-formed additionalContext
 # reminder: exit 0, valid JSON, correct hookEventName, non-empty context
-# mentioning the prompt-authoring skill and subagent delegation.
+# mentioning the writing-for-agents skill.
 assert_reminder() {
   local context
   [ "$status" -eq 0 ]
@@ -37,8 +38,7 @@ assert_reminder() {
   [ "$(jq -r '.hookSpecificOutput.hookEventName' <<< "$output")" = "PreToolUse" ]
   context="$(jq -r '.hookSpecificOutput.additionalContext' <<< "$output")"
   [ -n "$context" ]
-  [[ "$context" == *"prompt-authoring"* ]]
-  [[ "$context" == *"subagent"* ]]
+  [[ "$context" == *"writing-for-agents"* ]]
 }
 
 # Assert the most recent `run` stayed silent: exit 0, empty stdout.
@@ -77,9 +77,9 @@ assert_silent() {
   assert_silent
 }
 
-@test "7: agents/ path with agent_id present stays silent (subagent in flow)" {
+@test "7: agents/ path with agent_id present also emits a reminder" {
   run run_hook_raw "$(build_payload Edit "agents/foo.md" "a123")"
-  assert_silent
+  assert_reminder
 }
 
 @test "8: invalid JSON on stdin stays silent, exit 0" {
@@ -131,5 +131,12 @@ assert_silent() {
 
 @test "17: managed path with tool_name entirely absent stays silent" {
   run run_hook_raw '{"tool_input":{"file_path":"agents/foo.md"}}'
+  assert_silent
+}
+
+@test "18: non-.md file under a managed path stays silent" {
+  run run_hook_raw "$(build_payload Edit "skills/a/scripts/b.sh")"
+  assert_silent
+  run run_hook_raw "$(build_payload Write "skills/a/scripts/b.sh" "a123")"
   assert_silent
 }
