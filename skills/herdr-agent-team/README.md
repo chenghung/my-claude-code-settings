@@ -844,7 +844,7 @@ flowchart TD
 
 ## 12. registry 結構與速查
 
-registry 根目錄位於 team home 的 `.tmp` 下，路徑為 `.tmp/herdr-agent-team/<workspace_id>`（`.tmp` 是指向 `~/.tmp` 專案資料夾的 symbolic link）。`team-init.sh` 建立根目錄與七個子目錄。
+registry 根目錄位於 team home 的 `.tmp` 下，路徑為 `.tmp/herdr-agent-team/<workspace_id>`（team home 已有可用的 `.tmp` 時直接沿用，沒有時由腳本建立為指向 `~/.tmp` 專案資料夾的 symbolic link）。`team-init.sh` 建立根目錄與七個子目錄。
 
 ```mermaid
 flowchart TB
