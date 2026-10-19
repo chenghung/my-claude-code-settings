@@ -4669,10 +4669,10 @@ mkdir -p "$T_LOCK/workers"
 
 lock_victim="$T_LOCK/workers/lockvictim.json"
 printf '{"role":"backend"}' > "$lock_victim"
-# 背景持鎖 3 秒，遠長於下面 1 秒的逾時上限；flock 是本檔已查證位於
+# 背景持鎖 5 秒，遠長於下面 1 秒的逾時上限；flock 是本檔已查證位於
 # /usr/bin、跑真的完全安全的工具之一（見檔頭「樁遮蔽的結構性修法」一
 # 節），不需要樁。
-( exec 9>"${lock_victim}.lock"; flock -x 9; sleep 3 ) &
+( exec 9>"${lock_victim}.lock"; flock -x 9; sleep 5 ) &
 lock_holder_pid=$!
 sleep 0.3
 lock_start="$(date +%s)"
@@ -4684,7 +4684,7 @@ if [ "$rc" -eq 5 ]; then
 else
   bad "hat_json_set：得到 rc=$rc（預期 5），輸出：$out"
 fi
-if [ "$lock_elapsed" -lt 3 ]; then
+if [ "$lock_elapsed" -lt 4 ]; then
   pass "hat_json_set：等鎖有上限，不會等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
 else
   bad "hat_json_set：等了 ${lock_elapsed}s，看起來仍是無界等待"
@@ -4710,7 +4710,7 @@ fi
 #      flock -x 是另一個未套用逾時的呼叫點，同樣要驗證 ----
 pend_victim="$T_LOCK/workers/pendvictim.json"
 printf '{"pending_resend":[]}' > "$pend_victim"
-( exec 9>"${pend_victim}.lock"; flock -x 9; sleep 3 ) &
+( exec 9>"${pend_victim}.lock"; flock -x 9; sleep 5 ) &
 lock_holder_pid=$!
 sleep 0.3
 lock_start="$(date +%s)"
@@ -4722,7 +4722,7 @@ if [ "$rc" -eq 5 ]; then
 else
   bad "hat_append_pending_resend：得到 rc=$rc（預期 5），輸出：$out"
 fi
-if [ "$lock_elapsed" -lt 3 ]; then
+if [ "$lock_elapsed" -lt 4 ]; then
   pass "hat_append_pending_resend：等鎖有上限，不會等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
 else
   bad "hat_append_pending_resend：等了 ${lock_elapsed}s，看起來仍是無界等待"
@@ -7784,14 +7784,14 @@ fi
 # ---- report.sh：hat_allocate_seq（team.json.lock）——worker 上行取號
 #      的唯一入口，掛住的後果是那個 worker 從此完全不再回報，而且是靜
 #      默的 ----
-( exec 9>"$REG/team.json.lock"; flock -x 9; sleep 2 ) &
+( exec 9>"$REG/team.json.lock"; flock -x 9; sleep 5 ) &
 lock_holder_pid=$!
 sleep 0.3
 lock_start="$(date +%s)"
 rc=0; out="$( ( AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 bash "$SCRIPTS/report.sh" --token fyi --summary '測試鎖逾時' ) 2>&1 )" || rc=$?
 lock_elapsed=$(( $(date +%s) - lock_start ))
 wait "$lock_holder_pid"
-if [ "$lock_elapsed" -lt 2 ]; then
+if [ "$lock_elapsed" -lt 4 ]; then
   pass "report.sh：hat_allocate_seq 等鎖有上限，沒有等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
 else
   bad "report.sh：等了 ${lock_elapsed}s，hat_allocate_seq 看起來仍是無界等待"
@@ -7807,14 +7807,14 @@ fi
 printf '{"pane_id":"w3N:p8","held":false}' > "$REG/workers/w3n-grantfrom.json"
 printf '{"pane_id":"w3N:p9","held":false}' > "$REG/workers/w3n-grantto.json"
 
-( exec 9>"$REG/workers/w3n-grantfrom.json.lock"; flock -x 9; sleep 2 ) &
+( exec 9>"$REG/workers/w3n-grantfrom.json.lock"; flock -x 9; sleep 5 ) &
 lock_holder_pid=$!
 sleep 0.3
 lock_start="$(date +%s)"
 rc=0; out="$( ( AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 bash "$SCRIPTS/grant-peer.sh" --from w3n-grantfrom --to w3n-grantto ) 2>&1 )" || rc=$?
 lock_elapsed=$(( $(date +%s) - lock_start ))
 wait "$lock_holder_pid"
-if [ "$lock_elapsed" -lt 2 ]; then
+if [ "$lock_elapsed" -lt 4 ]; then
   pass "grant-peer.sh：hat_grant_add 等鎖有上限，沒有等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
 else
   bad "grant-peer.sh：等了 ${lock_elapsed}s，hat_grant_add 看起來仍是無界等待"
@@ -7825,14 +7825,14 @@ else
   bad "grant-peer.sh：得到 rc=$rc（預期 5），輸出：$out"
 fi
 
-( exec 9>"$REG/workers/w3n-grantfrom.json.lock"; flock -x 9; sleep 2 ) &
+( exec 9>"$REG/workers/w3n-grantfrom.json.lock"; flock -x 9; sleep 5 ) &
 lock_holder_pid=$!
 sleep 0.3
 lock_start="$(date +%s)"
 rc=0; out="$( ( AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 bash "$SCRIPTS/grant-peer.sh" --from w3n-grantfrom --to w3n-grantto --revoke ) 2>&1 )" || rc=$?
 lock_elapsed=$(( $(date +%s) - lock_start ))
 wait "$lock_holder_pid"
-if [ "$lock_elapsed" -lt 2 ]; then
+if [ "$lock_elapsed" -lt 4 ]; then
   pass "grant-peer.sh：hat_grant_remove 等鎖有上限，沒有等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
 else
   bad "grant-peer.sh：等了 ${lock_elapsed}s，hat_grant_remove 看起來仍是無界等待"
@@ -7849,14 +7849,14 @@ rm -f "$REG/workers/w3n-grantfrom.json" "$REG/workers/w3n-grantto.json" \
 #      持有到最後移除記錄為止 ----
 printf '{"pane_id":"w3N:pL2","held":false,"tab_id":"w3N:tL2"}' > "$REG/workers/w3n-shutdownlock.json"
 
-( exec 9>"$REG/workers/w3n-shutdownlock.json.lock"; flock -x 9; sleep 2 ) &
+( exec 9>"$REG/workers/w3n-shutdownlock.json.lock"; flock -x 9; sleep 5 ) &
 lock_holder_pid=$!
 sleep 0.3
 lock_start="$(date +%s)"
 rc=0; out="$( ( AGENT_TEAM_LOCK_TIMEOUT_SECONDS=1 bash "$SCRIPTS/shutdown-worker.sh" --to w3n-shutdownlock --reason "done" --evidence '測試鎖逾時' ) 2>&1 )" || rc=$?
 lock_elapsed=$(( $(date +%s) - lock_start ))
 wait "$lock_holder_pid"
-if [ "$lock_elapsed" -lt 2 ]; then
+if [ "$lock_elapsed" -lt 4 ]; then
   pass "shutdown-worker.sh：主鎖等鎖有上限，沒有等到持鎖者釋放才罷休（耗時 ${lock_elapsed}s）"
 else
   bad "shutdown-worker.sh：等了 ${lock_elapsed}s，主鎖看起來仍是無界等待"

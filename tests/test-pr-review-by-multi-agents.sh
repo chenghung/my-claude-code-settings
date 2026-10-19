@@ -150,18 +150,15 @@ chmod +x "$STUB_BIN/gh"
 # ==============================================================
 
 out="$(parse_pr_url "https://github.com/acme/widgets/pull/42")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "acme widgets 42" ] && pass parse-full-url || bad parse-full-url
+if [ "$out" = "acme widgets 42" ]; then pass parse-full-url; else bad parse-full-url; fi
 
 out="$(parse_pr_url "acme/widgets#42")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "acme widgets 42" ] && pass parse-shorthand || bad parse-shorthand
+if [ "$out" = "acme widgets 42" ]; then pass parse-shorthand; else bad parse-shorthand; fi
 
 # Full URL with a trailing path suffix (e.g. the "/files" tab a browser adds
 # when a user copies a PR URL) must still parse to the same three values.
 out="$(parse_pr_url "https://github.com/acme/widgets/pull/42/files")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "acme widgets 42" ] && pass parse-full-url-trailing-suffix || bad parse-full-url-trailing-suffix
+if [ "$out" = "acme widgets 42" ]; then pass parse-full-url-trailing-suffix; else bad parse-full-url-trailing-suffix; fi
 
 # Empty input: derive from the current branch via the stubbed gh. GH_STUB_*
 # must be `export`ed (not just assigned) so the gh stub subprocess sees them.
@@ -171,8 +168,7 @@ export GH_STUB_DERIVED_URL="https://github.com/acme/widgets/pull/7"
 out="$(parse_pr_url "")"
 unset GH_STUB_DERIVE_OK GH_STUB_DERIVED_URL
 export PATH="$saved_path"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "acme widgets 7" ] && pass parse-derive-from-branch || bad parse-derive-from-branch
+if [ "$out" = "acme widgets 7" ]; then pass parse-derive-from-branch; else bad parse-derive-from-branch; fi
 
 # Empty input, no PR associated with the current branch -> gh fails -> non-zero.
 export PATH="$STUB_BIN:$PATH"
@@ -189,8 +185,7 @@ if out="$(parse_pr_url "not-a-valid-pr-reference" 2>/dev/null)"; then
 else
   pass parse-invalid-format
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass parse-invalid-format-no-output || bad parse-invalid-format-no-output
+if [ -z "$out" ]; then pass parse-invalid-format-no-output; else bad parse-invalid-format-no-output; fi
 
 # ==============================================================
 # check_prerequisites
@@ -294,9 +289,9 @@ if parse_args --pr X >/dev/null 2>&1; then
   bad "parse_args 未選平台時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_args 未選平台時回傳 2" \
-    || bad "parse_args 未選平台時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_args 未選平台時回傳 2"
+  else bad "parse_args 未選平台時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_args 未知旗標時以 2 拒絕 ----
@@ -304,9 +299,9 @@ if parse_args --pr X --claude --bogus >/dev/null 2>&1; then
   bad "parse_args 未知旗標時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_args 未知旗標時回傳 2" \
-    || bad "parse_args 未知旗標時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_args 未知旗標時回傳 2"
+  else bad "parse_args 未知旗標時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_args 旗標缺值時以 2 拒絕 ----
@@ -314,9 +309,9 @@ if parse_args --pr --claude >/dev/null 2>&1; then
   bad "parse_args --pr 缺值時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_args 旗標缺值時回傳 2" \
-    || bad "parse_args 旗標缺值時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_args 旗標缺值時回傳 2"
+  else bad "parse_args 旗標缺值時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_args 旗標值含換行時以 2 拒絕（換行可偽造 pr=/issue=/design=/clis=
@@ -326,9 +321,9 @@ if parse_args --pr X --design "$(printf 'legit line\nclis=codex')" --claude >/de
   bad "parse_args 旗標值含換行時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_args 旗標值含換行時回傳 2" \
-    || bad "parse_args 旗標值含換行時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_args 旗標值含換行時回傳 2"
+  else bad "parse_args 旗標值含換行時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- 選定組合中有 CLI 缺席時回傳 3 ----
@@ -337,9 +332,9 @@ if verify_selection claude agy >/dev/null 2>&1; then
   bad "verify_selection 全部缺席時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 3 ] && pass "verify_selection 缺席時回傳 3" \
-    || bad "verify_selection 缺席時回傳 $rc，應為 3"
+  if [ "$rc" -eq 3 ]; then pass "verify_selection 缺席時回傳 3"
+  else bad "verify_selection 缺席時回傳 $rc，應為 3"
+  fi
 fi
 PATH="$saved_path"
 
@@ -369,9 +364,9 @@ if cas_err="$(_check_agents_selected "$CAS_ROOT" claude opencode 2>&1 1>/dev/nul
 else
   cas_rc=$?
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$cas_rc" -eq 2 ] && pass "check-agents-selected-rejects-unselected-cli-with-exit-2" \
-  || bad "check-agents-selected-rejects-unselected-cli-with-exit-2: rc=$cas_rc"
+if [ "$cas_rc" -eq 2 ]; then pass "check-agents-selected-rejects-unselected-cli-with-exit-2"
+else bad "check-agents-selected-rejects-unselected-cli-with-exit-2: rc=$cas_rc"
+fi
 case "$cas_err" in
   *'opencode'*) pass check-agents-selected-message-names-unselected-cli ;;
   *) bad "check-agents-selected-message-names-unselected-cli: $cas_err" ;;
@@ -382,9 +377,9 @@ if cas_noroster_err="$(_check_agents_selected "$T/check-agents-selected-no-such-
 else
   cas_noroster_rc=$?
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$cas_noroster_rc" -eq 2 ] && pass "check-agents-selected-missing-roster-file-exit-2" \
-  || bad "check-agents-selected-missing-roster-file-exit-2: rc=$cas_noroster_rc"
+if [ "$cas_noroster_rc" -eq 2 ]; then pass "check-agents-selected-missing-roster-file-exit-2"
+else bad "check-agents-selected-missing-roster-file-exit-2: rc=$cas_noroster_rc"
+fi
 case "$cas_noroster_err" in
   *'.roster'*) pass check-agents-selected-missing-roster-file-message-names-roster ;;
   *) bad "check-agents-selected-missing-roster-file-message-names-roster: $cas_noroster_err" ;;
@@ -420,9 +415,9 @@ if parse_launch_args --agent claude=w1 >/dev/null 2>&1; then
   bad "parse_launch_args 缺少 --base-dir 時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_launch_args 缺少 --base-dir 時回傳 2" \
-    || bad "parse_launch_args 缺少 --base-dir 時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_launch_args 缺少 --base-dir 時回傳 2"
+  else bad "parse_launch_args 缺少 --base-dir 時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_launch_args --base-dir 缺值時以 2 拒絕 ----
@@ -430,9 +425,9 @@ if parse_launch_args --base-dir --agent claude=w1 >/dev/null 2>&1; then
   bad "parse_launch_args --base-dir 缺值時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_launch_args --base-dir 缺值時回傳 2" \
-    || bad "parse_launch_args --base-dir 缺值時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_launch_args --base-dir 缺值時回傳 2"
+  else bad "parse_launch_args --base-dir 缺值時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_launch_args --base-dir 重複給值時以 2 拒絕 ----
@@ -440,9 +435,9 @@ if parse_launch_args --base-dir /tmp/a --base-dir /tmp/b --agent claude=w1 >/dev
   bad "parse_launch_args --base-dir 重複時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_launch_args --base-dir 重複時回傳 2" \
-    || bad "parse_launch_args --base-dir 重複時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_launch_args --base-dir 重複時回傳 2"
+  else bad "parse_launch_args --base-dir 重複時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_launch_args --base-dir 非絕對路徑時以 2 拒絕 ----
@@ -450,9 +445,9 @@ if parse_launch_args --base-dir relative/dir --agent claude=w1 >/dev/null 2>&1; 
   bad "parse_launch_args --base-dir 非絕對路徑時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_launch_args --base-dir 非絕對路徑時回傳 2" \
-    || bad "parse_launch_args --base-dir 非絕對路徑時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_launch_args --base-dir 非絕對路徑時回傳 2"
+  else bad "parse_launch_args --base-dir 非絕對路徑時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_launch_args 缺少 --agent 時以 2 拒絕 ----
@@ -460,9 +455,9 @@ if parse_launch_args --base-dir /tmp/run-dir >/dev/null 2>&1; then
   bad "parse_launch_args 缺少 --agent 時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_launch_args 缺少 --agent 時回傳 2" \
-    || bad "parse_launch_args 缺少 --agent 時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_launch_args 缺少 --agent 時回傳 2"
+  else bad "parse_launch_args 缺少 --agent 時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_launch_args --agent 缺值時以 2 拒絕 ----
@@ -470,9 +465,9 @@ if parse_launch_args --base-dir /tmp/run-dir --agent >/dev/null 2>&1; then
   bad "parse_launch_args --agent 缺值時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_launch_args --agent 缺值時回傳 2" \
-    || bad "parse_launch_args --agent 缺值時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_launch_args --agent 缺值時回傳 2"
+  else bad "parse_launch_args --agent 缺值時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_launch_args --agent 值缺少等號時以 2 拒絕 ----
@@ -480,9 +475,9 @@ if parse_launch_args --base-dir /tmp/run-dir --agent claude-no-equals-sign >/dev
   bad "parse_launch_args --agent 值缺少等號時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_launch_args --agent 值缺少等號時回傳 2" \
-    || bad "parse_launch_args --agent 值缺少等號時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_launch_args --agent 值缺少等號時回傳 2"
+  else bad "parse_launch_args --agent 值缺少等號時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_launch_args --agent cli 不在列舉範圍時以 2 拒絕 ----
@@ -490,9 +485,9 @@ if parse_launch_args --base-dir /tmp/run-dir --agent bogus-cli=w1 >/dev/null 2>&
   bad "parse_launch_args --agent cli 不在列舉範圍時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_launch_args --agent cli 不在列舉範圍時回傳 2" \
-    || bad "parse_launch_args --agent cli 不在列舉範圍時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_launch_args --agent cli 不在列舉範圍時回傳 2"
+  else bad "parse_launch_args --agent cli 不在列舉範圍時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_launch_args 同一個 cli 重複給值時以 2 拒絕（否則 cmd_launch 會
@@ -502,9 +497,9 @@ if parse_launch_args --base-dir /tmp/run-dir --agent claude=w1 --agent claude=w2
   bad "parse_launch_args --agent cli 重複時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_launch_args --agent cli 重複時回傳 2" \
-    || bad "parse_launch_args --agent cli 重複時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_launch_args --agent cli 重複時回傳 2"
+  else bad "parse_launch_args --agent cli 重複時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_launch_args 未知旗標時以 2 拒絕 ----
@@ -512,9 +507,9 @@ if parse_launch_args --base-dir /tmp/run-dir --agent claude=w1 --bogus >/dev/nul
   bad "parse_launch_args 未知旗標時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_launch_args 未知旗標時回傳 2" \
-    || bad "parse_launch_args 未知旗標時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_launch_args 未知旗標時回傳 2"
+  else bad "parse_launch_args 未知旗標時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_launch_args --base-dir 值含換行時以 2 拒絕（同一種偽造風險，
@@ -523,9 +518,9 @@ if parse_launch_args --base-dir "$(printf '/tmp/run-dir\nagent=codex:evil')" --a
   bad "parse_launch_args --base-dir 值含換行時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_launch_args --base-dir 值含換行時回傳 2" \
-    || bad "parse_launch_args --base-dir 值含換行時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_launch_args --base-dir 值含換行時回傳 2"
+  else bad "parse_launch_args --base-dir 值含換行時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- parse_launch_args --agent 的 pane_id 部分含換行時以 2 拒絕 -- cli 本身
@@ -535,9 +530,9 @@ if parse_launch_args --base-dir /tmp/run-dir --agent "$(printf 'claude=w1\nagent
   bad "parse_launch_args --agent pane_id 含換行時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "parse_launch_args --agent pane_id 含換行時回傳 2" \
-    || bad "parse_launch_args --agent pane_id 含換行時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "parse_launch_args --agent pane_id 含換行時回傳 2"
+  else bad "parse_launch_args --agent pane_id 含換行時回傳 $rc，應為 2"
+  fi
 fi
 
 # ==============================================================
@@ -555,9 +550,9 @@ if ( main ) >/dev/null 2>&1; then
   bad "main() 不帶引數時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "main() 不帶引數時回傳 2" \
-    || bad "main() 不帶引數時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "main() 不帶引數時回傳 2"
+  else bad "main() 不帶引數時回傳 $rc，應為 2"
+  fi
 fi
 
 # ---- main() 帶未知子命令時以 2 拒絕 ----
@@ -565,9 +560,9 @@ if ( main bogus-subcommand ) >/dev/null 2>&1; then
   bad "main() 帶未知子命令時應失敗"
 else
   rc=$?
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$rc" -eq 2 ] && pass "main() 帶未知子命令時回傳 2" \
-    || bad "main() 帶未知子命令時回傳 $rc，應為 2"
+  if [ "$rc" -eq 2 ]; then pass "main() 帶未知子命令時回傳 2"
+  else bad "main() 帶未知子命令時回傳 $rc，應為 2"
+  fi
 fi
 
 # ==============================================================
@@ -584,10 +579,8 @@ REAL_CONTRACT="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contra
 
 # Direct case: resolve from run-review.sh's own real, un-symlinked location.
 out="$(resolve_contract_path)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "$REAL_CONTRACT" ] && pass contract-path-direct || bad contract-path-direct
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$out" ] && pass contract-path-direct-readable || bad contract-path-direct-readable
+if [ "$out" = "$REAL_CONTRACT" ]; then pass contract-path-direct; else bad contract-path-direct; fi
+if [ -s "$out" ]; then pass contract-path-direct-readable; else bad contract-path-direct-readable; fi
 
 # Symlink case: this fixture symlinks only run-review.sh itself, not the whole
 # skill directory the way install.sh actually deploys it (a single symlink
@@ -600,8 +593,7 @@ SYMLINKED_SKILL="$T/symlinked-skill"
 mkdir -p "$SYMLINKED_SKILL/scripts"
 ln -s "$RUN_SH" "$SYMLINKED_SKILL/scripts/run-review.sh"
 out="$(bash -c "source '$SYMLINKED_SKILL/scripts/run-review.sh'; resolve_contract_path")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "$REAL_CONTRACT" ] && pass contract-path-symlink || bad contract-path-symlink
+if [ "$out" = "$REAL_CONTRACT" ]; then pass contract-path-symlink; else bad contract-path-symlink; fi
 
 # Missing case: a scripts/ directory with no sibling references/ at all ->
 # non-zero, no stdout. Must not be confused with the two cases above.
@@ -613,8 +605,7 @@ if out="$(bash -c "source '$NO_CONTRACT_SKILL/scripts/run-review.sh'; resolve_co
 else
   pass contract-path-missing
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass contract-path-missing-no-output || bad contract-path-missing-no-output
+if [ -z "$out" ]; then pass contract-path-missing-no-output; else bad contract-path-missing-no-output; fi
 
 # ==============================================================
 # resolve_model
@@ -637,15 +628,13 @@ model = "nested-model-must-not-win"
 TOML
 out="$(HOME="$HOME_CODEX_OK" resolve_model codex)"
 rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "top-level-model" ] && pass resolve-model-codex-found || bad resolve-model-codex-found
+if [ "$rc" -eq 0 ] && [ "$out" = "top-level-model" ]; then pass resolve-model-codex-found; else bad resolve-model-codex-found; fi
 
 HOME_CODEX_NOFILE="$T/home-codex-nofile"
 mkdir -p "$HOME_CODEX_NOFILE"
 out="$(HOME="$HOME_CODEX_NOFILE" resolve_model codex)"
 rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-codex-missing-file || bad resolve-model-codex-missing-file
+if [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ]; then pass resolve-model-codex-missing-file; else bad resolve-model-codex-missing-file; fi
 
 HOME_CODEX_NOFIELD="$T/home-codex-nofield"
 mkdir -p "$HOME_CODEX_NOFIELD/.codex"
@@ -654,8 +643,7 @@ personality = "pragmatic"
 TOML
 out="$(HOME="$HOME_CODEX_NOFIELD" resolve_model codex)"
 rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-codex-missing-field || bad resolve-model-codex-missing-field
+if [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ]; then pass resolve-model-codex-missing-field; else bad resolve-model-codex-missing-field; fi
 
 # --- opencode: ~/.config/opencode/opencode.json, .model ---
 
@@ -664,23 +652,20 @@ mkdir -p "$HOME_OC_OK/.config/opencode"
 printf '{"model": "test-provider/test-model"}' > "$HOME_OC_OK/.config/opencode/opencode.json"
 out="$(HOME="$HOME_OC_OK" resolve_model opencode)"
 rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "test-provider/test-model" ] && pass resolve-model-opencode-found || bad resolve-model-opencode-found
+if [ "$rc" -eq 0 ] && [ "$out" = "test-provider/test-model" ]; then pass resolve-model-opencode-found; else bad resolve-model-opencode-found; fi
 
 HOME_OC_NOFILE="$T/home-opencode-nofile"
 mkdir -p "$HOME_OC_NOFILE"
 out="$(HOME="$HOME_OC_NOFILE" resolve_model opencode)"
 rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-opencode-missing-file || bad resolve-model-opencode-missing-file
+if [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ]; then pass resolve-model-opencode-missing-file; else bad resolve-model-opencode-missing-file; fi
 
 HOME_OC_NOFIELD="$T/home-opencode-nofield"
 mkdir -p "$HOME_OC_NOFIELD/.config/opencode"
 printf '{"other": true}' > "$HOME_OC_NOFIELD/.config/opencode/opencode.json"
 out="$(HOME="$HOME_OC_NOFIELD" resolve_model opencode)"
 rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-opencode-missing-field || bad resolve-model-opencode-missing-field
+if [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ]; then pass resolve-model-opencode-missing-field; else bad resolve-model-opencode-missing-field; fi
 
 # --- claude: $CLAUDE_CONFIG_DIR/settings.json (falling back to
 # ~/.claude/settings.json), .model. CLAUDE_CONFIG_DIR is explicitly
@@ -696,23 +681,20 @@ mkdir -p "$HOME_CC_OK/.claude"
 printf '{"model": "sonnet-test"}' > "$HOME_CC_OK/.claude/settings.json"
 out="$(CLAUDE_CONFIG_DIR="" HOME="$HOME_CC_OK" resolve_model claude)"
 rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "sonnet-test" ] && pass resolve-model-claude-found || bad resolve-model-claude-found
+if [ "$rc" -eq 0 ] && [ "$out" = "sonnet-test" ]; then pass resolve-model-claude-found; else bad resolve-model-claude-found; fi
 
 HOME_CC_NOFILE="$T/home-claude-nofile"
 mkdir -p "$HOME_CC_NOFILE"
 out="$(CLAUDE_CONFIG_DIR="" HOME="$HOME_CC_NOFILE" resolve_model claude)"
 rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-claude-missing-file || bad resolve-model-claude-missing-file
+if [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ]; then pass resolve-model-claude-missing-file; else bad resolve-model-claude-missing-file; fi
 
 HOME_CC_NOFIELD="$T/home-claude-nofield"
 mkdir -p "$HOME_CC_NOFIELD/.claude"
 printf '{"other": true}' > "$HOME_CC_NOFIELD/.claude/settings.json"
 out="$(CLAUDE_CONFIG_DIR="" HOME="$HOME_CC_NOFIELD" resolve_model claude)"
 rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-claude-missing-field || bad resolve-model-claude-missing-field
+if [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ]; then pass resolve-model-claude-missing-field; else bad resolve-model-claude-missing-field; fi
 
 # A distinct CLAUDE_CONFIG_DIR, separate from HOME/.claude, must actually
 # be honored (not just harmlessly cleared) -- otherwise the fallback-only
@@ -723,8 +705,7 @@ mkdir -p "$HOME_CC_ENVDIR" "$CLAUDE_CONFIG_DIR_CASE"
 printf '{"model": "env-dir-model"}' > "$CLAUDE_CONFIG_DIR_CASE/settings.json"
 out="$(CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR_CASE" HOME="$HOME_CC_ENVDIR" resolve_model claude)"
 rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "env-dir-model" ] && pass resolve-model-claude-honors-config-dir-env-var || bad resolve-model-claude-honors-config-dir-env-var
+if [ "$rc" -eq 0 ] && [ "$out" = "env-dir-model" ]; then pass resolve-model-claude-honors-config-dir-env-var; else bad resolve-model-claude-honors-config-dir-env-var; fi
 
 # --- agy: hardcoded, not read from any config file (see resolve_model's
 # agy branch docstring for why) -- no isolated $HOME needed, the real
@@ -770,8 +751,7 @@ if out="$(bash -c "source '$RUN_SH'; HOME='$HOME_CODEX_DUP' resolve_model codex"
 else
   rc=$?
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "first-model" ] && pass resolve-model-codex-duplicate-lines || bad resolve-model-codex-duplicate-lines
+if [ "$rc" -eq 0 ] && [ "$out" = "first-model" ]; then pass resolve-model-codex-duplicate-lines; else bad resolve-model-codex-duplicate-lines; fi
 
 # opencode: syntactically invalid JSON.
 HOME_OC_BADJSON="$T/home-opencode-badjson"
@@ -782,8 +762,7 @@ if out="$(bash -c "source '$RUN_SH'; HOME='$HOME_OC_BADJSON' resolve_model openc
 else
   rc=$?
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-opencode-invalid-json || bad resolve-model-opencode-invalid-json
+if [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ]; then pass resolve-model-opencode-invalid-json; else bad resolve-model-opencode-invalid-json; fi
 
 # opencode: syntactically valid JSON, but the wrong type at the top level
 # (an array instead of an object) -- `.model` on an array is a jq runtime
@@ -796,8 +775,7 @@ if out="$(bash -c "source '$RUN_SH'; HOME='$HOME_OC_TYPE' resolve_model opencode
 else
   rc=$?
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-opencode-type-mismatch || bad resolve-model-opencode-type-mismatch
+if [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ]; then pass resolve-model-opencode-type-mismatch; else bad resolve-model-opencode-type-mismatch; fi
 
 # claude: syntactically invalid JSON.
 HOME_CC_BADJSON="$T/home-claude-badjson"
@@ -808,8 +786,7 @@ if out="$(bash -c "source '$RUN_SH'; CLAUDE_CONFIG_DIR='' HOME='$HOME_CC_BADJSON
 else
   rc=$?
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-claude-invalid-json || bad resolve-model-claude-invalid-json
+if [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ]; then pass resolve-model-claude-invalid-json; else bad resolve-model-claude-invalid-json; fi
 
 # claude: valid JSON, wrong top-level type.
 HOME_CC_TYPE="$T/home-claude-typemismatch"
@@ -820,8 +797,7 @@ if out="$(bash -c "source '$RUN_SH'; CLAUDE_CONFIG_DIR='' HOME='$HOME_CC_TYPE' r
 else
   rc=$?
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ] && pass resolve-model-claude-type-mismatch || bad resolve-model-claude-type-mismatch
+if [ "$rc" -eq 0 ] && [ "$out" = "unknown-model" ]; then pass resolve-model-claude-type-mismatch; else bad resolve-model-claude-type-mismatch; fi
 
 # --- _fetch_pr_material: PR 材料抓取與回音室過濾 ---
 PRMAT_ROOT="$T/prmat"
@@ -858,14 +834,10 @@ else
   bad fetch-pr-material-returns-zero
 fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF '修正 worktree 清理' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-has-title || bad fetch-pr-material-has-title
-# shellcheck disable=SC2015
-grep -qF 'Closes #42' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-has-body || bad fetch-pr-material-has-body
-# shellcheck disable=SC2015
-grep -qF '第一則人類留言' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-has-human-comment || bad fetch-pr-material-has-human-comment
-# shellcheck disable=SC2015
-grep -qF 'review 總結內文' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-has-review-body || bad fetch-pr-material-has-review-body
+if grep -qF '修正 worktree 清理' "$PRMAT_ROOT/pr.md"; then pass fetch-pr-material-has-title; else bad fetch-pr-material-has-title; fi
+if grep -qF 'Closes #42' "$PRMAT_ROOT/pr.md"; then pass fetch-pr-material-has-body; else bad fetch-pr-material-has-body; fi
+if grep -qF '第一則人類留言' "$PRMAT_ROOT/pr.md"; then pass fetch-pr-material-has-human-comment; else bad fetch-pr-material-has-human-comment; fi
+if grep -qF 'review 總結內文' "$PRMAT_ROOT/pr.md"; then pass fetch-pr-material-has-review-body; else bad fetch-pr-material-has-review-body; fi
 
 # 回音室過濾：標記在留言最開頭（即使前面帶著空白／換行）的那一則整段不得
 # 出現，驗證濾網對開頭空白要有容忍度
@@ -877,14 +849,12 @@ fi
 
 # 標記只是出現在留言「中間」（不是開頭）時不算回音，不得被濾掉 -- 濾網只
 # 比對開頭，一個提到標記字串本身的人類留言不應該因此消失
-# shellcheck disable=SC2015
-grep -qF '我們在留言中間提到這個標記字串' "$PRMAT_ROOT/pr.md" && pass fetch-pr-material-keeps-mid-body-marker-mention || bad fetch-pr-material-keeps-mid-body-marker-mention
+if grep -qF '我們在留言中間提到這個標記字串' "$PRMAT_ROOT/pr.md"; then pass fetch-pr-material-keeps-mid-body-marker-mention; else bad fetch-pr-material-keeps-mid-body-marker-mention; fi
 
 # raw body file 只該是 gh 回傳的 PR body 本身，不得包含討論串或 review 的
 # 任何內容 -- _derive_issue_number 依賴這個檔案而非渲染後的 pr.md，才不會
 # 被留言裡的 closing keyword 誤導
-# shellcheck disable=SC2015
-grep -qF 'Closes #42' "$PRMAT_ROOT/pr-body-raw.md" && pass fetch-pr-material-raw-body-has-pr-body || bad fetch-pr-material-raw-body-has-pr-body
+if grep -qF 'Closes #42' "$PRMAT_ROOT/pr-body-raw.md"; then pass fetch-pr-material-raw-body-has-pr-body; else bad fetch-pr-material-raw-body-has-pr-body; fi
 if grep -qF '第一則人類留言' "$PRMAT_ROOT/pr-body-raw.md"; then
   bad fetch-pr-material-raw-body-excludes-comments
 else
@@ -895,14 +865,10 @@ export PATH="$saved_path"
 
 # --- _parse_issue_ref / _derive_issue_number ---
 # 明示的 issue 參照：完整 URL、owner/repo#N、純 #N、純數字
-# shellcheck disable=SC2015
-[ "$(_parse_issue_ref 'https://github.com/acme/widgets/issues/42' acme widgets)" = 42 ] && pass parse-issue-ref-url || bad parse-issue-ref-url
-# shellcheck disable=SC2015
-[ "$(_parse_issue_ref 'acme/widgets#42' acme widgets)" = 42 ] && pass parse-issue-ref-shorthand || bad parse-issue-ref-shorthand
-# shellcheck disable=SC2015
-[ "$(_parse_issue_ref '#42' acme widgets)" = 42 ] && pass parse-issue-ref-hash || bad parse-issue-ref-hash
-# shellcheck disable=SC2015
-[ "$(_parse_issue_ref '42' acme widgets)" = 42 ] && pass parse-issue-ref-bare-number || bad parse-issue-ref-bare-number
+if [ "$(_parse_issue_ref 'https://github.com/acme/widgets/issues/42' acme widgets)" = 42 ]; then pass parse-issue-ref-url; else bad parse-issue-ref-url; fi
+if [ "$(_parse_issue_ref 'acme/widgets#42' acme widgets)" = 42 ]; then pass parse-issue-ref-shorthand; else bad parse-issue-ref-shorthand; fi
+if [ "$(_parse_issue_ref '#42' acme widgets)" = 42 ]; then pass parse-issue-ref-hash; else bad parse-issue-ref-hash; fi
+if [ "$(_parse_issue_ref '42' acme widgets)" = 42 ]; then pass parse-issue-ref-bare-number; else bad parse-issue-ref-bare-number; fi
 
 # 別的 repo 的 issue 不接受
 if _parse_issue_ref 'https://github.com/other/repo/issues/42' acme widgets >/dev/null 2>&1; then
@@ -912,18 +878,16 @@ else
 fi
 
 # 從 PR 內文的 closing keyword 推導，大小寫不敏感
-# shellcheck disable=SC2015
-[ "$(_derive_issue_number 'blah
-Closes #42' acme widgets)" = 42 ] && pass derive-issue-closes-hash || bad derive-issue-closes-hash
-# shellcheck disable=SC2015
-[ "$(_derive_issue_number 'fixes https://github.com/acme/widgets/issues/7' acme widgets)" = 7 ] && pass derive-issue-fixes-url || bad derive-issue-fixes-url
-# shellcheck disable=SC2015
-[ "$(_derive_issue_number 'RESOLVED acme/widgets#9' acme widgets)" = 9 ] && pass derive-issue-resolved-shorthand || bad derive-issue-resolved-shorthand
+if [ "$(_derive_issue_number 'blah
+Closes #42' acme widgets)" = 42 ]; then pass derive-issue-closes-hash
+else bad derive-issue-closes-hash
+fi
+if [ "$(_derive_issue_number 'fixes https://github.com/acme/widgets/issues/7' acme widgets)" = 7 ]; then pass derive-issue-fixes-url; else bad derive-issue-fixes-url; fi
+if [ "$(_derive_issue_number 'RESOLVED acme/widgets#9' acme widgets)" = 9 ]; then pass derive-issue-resolved-shorthand; else bad derive-issue-resolved-shorthand; fi
 
 # 沒有 closing keyword 時回非零，且不得印出任何東西
 DERIVE_OUT="$(_derive_issue_number 'just a plain body mentioning #42' acme widgets 2>/dev/null)" && DERIVE_RC=0 || DERIVE_RC=1
-# shellcheck disable=SC2015
-[ "$DERIVE_RC" = 1 ] && [ -z "$DERIVE_OUT" ] && pass derive-issue-no-keyword-returns-nonzero || bad derive-issue-no-keyword-returns-nonzero
+if [ "$DERIVE_RC" = 1 ] && [ -z "$DERIVE_OUT" ]; then pass derive-issue-no-keyword-returns-nonzero; else bad derive-issue-no-keyword-returns-nonzero; fi
 
 # --- fetch_review_materials: 三份材料、缺料降級、materials 唯讀 ---
 MAT_ROOT="$T/materials-e2e"
@@ -953,31 +917,23 @@ export PATH="$MAT_ROOT/bin:$saved_path"
 export GH_PR_JSON_FIXTURE="$MAT_ROOT/pr.json"
 export GH_ISSUE_JSON_FIXTURE="$MAT_ROOT/issue.json"
 
-# shellcheck disable=SC2015
-MAT_DIR="$(fetch_review_materials acme widgets 7 '' "$MAT_ROOT/design-doc.md" "$MAT_ROOT/run")" \
-  && pass fetch-materials-returns-zero || bad fetch-materials-returns-zero
+if MAT_DIR="$(fetch_review_materials acme widgets 7 '' "$MAT_ROOT/design-doc.md" "$MAT_ROOT/run")"; then pass fetch-materials-returns-zero
+else bad fetch-materials-returns-zero
+fi
 
-# shellcheck disable=SC2015
-[ "$MAT_DIR" = "$MAT_ROOT/run/materials" ] && pass fetch-materials-prints-dir || bad fetch-materials-prints-dir
-# shellcheck disable=SC2015
-[ -f "$MAT_DIR/pr.md" ] && pass fetch-materials-writes-pr || bad fetch-materials-writes-pr
+if [ "$MAT_DIR" = "$MAT_ROOT/run/materials" ]; then pass fetch-materials-prints-dir; else bad fetch-materials-prints-dir; fi
+if [ -f "$MAT_DIR/pr.md" ]; then pass fetch-materials-writes-pr; else bad fetch-materials-writes-pr; fi
 # issue 編號由 PR 內文的 Closes #42 推導而來，第四個參數是空字串
-# shellcheck disable=SC2015
-grep -qF '需求內文' "$MAT_DIR/issue.md" && pass fetch-materials-derives-issue || bad fetch-materials-derives-issue
-# shellcheck disable=SC2015
-grep -qF '補充需求' "$MAT_DIR/issue.md" && pass fetch-materials-issue-comments || bad fetch-materials-issue-comments
-# shellcheck disable=SC2015
-grep -qF '設計文件內容' "$MAT_DIR/design.md" && pass fetch-materials-copies-design || bad fetch-materials-copies-design
+if grep -qF '需求內文' "$MAT_DIR/issue.md"; then pass fetch-materials-derives-issue; else bad fetch-materials-derives-issue; fi
+if grep -qF '補充需求' "$MAT_DIR/issue.md"; then pass fetch-materials-issue-comments; else bad fetch-materials-issue-comments; fi
+if grep -qF '設計文件內容' "$MAT_DIR/design.md"; then pass fetch-materials-copies-design; else bad fetch-materials-copies-design; fi
 
 # .materials-status 要記錄這次是「由 PR 內文推導」issue、design document
 # 「已提供」-- print_summary 靠這個檔案回報收集狀況給人看
 MAT_STATUS="$MAT_ROOT/run/.materials-status"
-# shellcheck disable=SC2015
-grep -qxF 'issue_status=derived' "$MAT_STATUS" && pass fetch-materials-status-issue-derived || bad fetch-materials-status-issue-derived
-# shellcheck disable=SC2015
-grep -qxF 'issue_number=42' "$MAT_STATUS" && pass fetch-materials-status-issue-number || bad fetch-materials-status-issue-number
-# shellcheck disable=SC2015
-grep -qxF 'design_status=provided' "$MAT_STATUS" && pass fetch-materials-status-design-provided || bad fetch-materials-status-design-provided
+if grep -qxF 'issue_status=derived' "$MAT_STATUS"; then pass fetch-materials-status-issue-derived; else bad fetch-materials-status-issue-derived; fi
+if grep -qxF 'issue_number=42' "$MAT_STATUS"; then pass fetch-materials-status-issue-number; else bad fetch-materials-status-issue-number; fi
+if grep -qxF 'design_status=provided' "$MAT_STATUS"; then pass fetch-materials-status-design-provided; else bad fetch-materials-status-design-provided; fi
 
 # materials 目錄與其中的檔案都不可寫
 if ( : > "$MAT_DIR/should-not-be-writable.txt" ) 2>/dev/null; then
@@ -992,24 +948,19 @@ chmod -R u+w "$MAT_ROOT/run" 2>/dev/null || true
 MAT_DIR2_ROOT="$MAT_ROOT/run2"
 mkdir -p "$MAT_DIR2_ROOT"
 unset GH_ISSUE_JSON_FIXTURE
-# shellcheck disable=SC2015
-MAT_DIR2="$(fetch_review_materials acme widgets 7 '' '' "$MAT_DIR2_ROOT")" \
-  && pass fetch-materials-degrades-returns-zero || bad fetch-materials-degrades-returns-zero
-# shellcheck disable=SC2015
-[ -f "$MAT_DIR2/pr.md" ] && pass fetch-materials-degrades-keeps-pr || bad fetch-materials-degrades-keeps-pr
-# shellcheck disable=SC2015
-[ ! -e "$MAT_DIR2/issue.md" ] && pass fetch-materials-degrades-no-issue-file || bad fetch-materials-degrades-no-issue-file
-# shellcheck disable=SC2015
-[ ! -e "$MAT_DIR2/design.md" ] && pass fetch-materials-degrades-no-design-file || bad fetch-materials-degrades-no-design-file
+if MAT_DIR2="$(fetch_review_materials acme widgets 7 '' '' "$MAT_DIR2_ROOT")"; then pass fetch-materials-degrades-returns-zero
+else bad fetch-materials-degrades-returns-zero
+fi
+if [ -f "$MAT_DIR2/pr.md" ]; then pass fetch-materials-degrades-keeps-pr; else bad fetch-materials-degrades-keeps-pr; fi
+if [ ! -e "$MAT_DIR2/issue.md" ]; then pass fetch-materials-degrades-no-issue-file; else bad fetch-materials-degrades-no-issue-file; fi
+if [ ! -e "$MAT_DIR2/design.md" ]; then pass fetch-materials-degrades-no-design-file; else bad fetch-materials-degrades-no-design-file; fi
 
 # .materials-status 要能分辨「issue 有被推導出來、但抓不到」跟「design
 # document 根本沒給」這兩種不同狀態 -- 這是使用者能不能自己動手修的關鍵
 # 差異，見 print_summary 的回報邏輯
 MAT_STATUS2="$MAT_DIR2_ROOT/.materials-status"
-# shellcheck disable=SC2015
-grep -qxF 'issue_status=failed' "$MAT_STATUS2" && pass fetch-materials-status-issue-failed || bad fetch-materials-status-issue-failed
-# shellcheck disable=SC2015
-grep -qxF 'design_status=not-provided' "$MAT_STATUS2" && pass fetch-materials-status-design-not-provided || bad fetch-materials-status-design-not-provided
+if grep -qxF 'issue_status=failed' "$MAT_STATUS2"; then pass fetch-materials-status-issue-failed; else bad fetch-materials-status-issue-failed; fi
+if grep -qxF 'design_status=not-provided' "$MAT_STATUS2"; then pass fetch-materials-status-design-not-provided; else bad fetch-materials-status-design-not-provided; fi
 
 chmod -R u+w "$MAT_DIR2_ROOT" 2>/dev/null || true
 
@@ -1018,30 +969,25 @@ chmod -R u+w "$MAT_DIR2_ROOT" 2>/dev/null || true
 MAT_DIR3_ROOT="$MAT_ROOT/run3"
 mkdir -p "$MAT_DIR3_ROOT"
 export GH_ISSUE_JSON_FIXTURE="$MAT_ROOT/issue.json"
-# shellcheck disable=SC2015
-MAT_DIR3="$(fetch_review_materials acme widgets 7 '99' '' "$MAT_DIR3_ROOT")" \
-  && pass fetch-materials-explicit-issue-returns-zero || bad fetch-materials-explicit-issue-returns-zero
-# shellcheck disable=SC2015
-[ -f "$MAT_DIR3/issue.md" ] && pass fetch-materials-explicit-issue-writes-issue-file || bad fetch-materials-explicit-issue-writes-issue-file
+if MAT_DIR3="$(fetch_review_materials acme widgets 7 '99' '' "$MAT_DIR3_ROOT")"; then pass fetch-materials-explicit-issue-returns-zero
+else bad fetch-materials-explicit-issue-returns-zero
+fi
+if [ -f "$MAT_DIR3/issue.md" ]; then pass fetch-materials-explicit-issue-writes-issue-file; else bad fetch-materials-explicit-issue-writes-issue-file; fi
 MAT_STATUS3="$MAT_DIR3_ROOT/.materials-status"
-# shellcheck disable=SC2015
-grep -qxF 'issue_status=explicit' "$MAT_STATUS3" && pass fetch-materials-status-issue-explicit || bad fetch-materials-status-issue-explicit
-# shellcheck disable=SC2015
-grep -qxF 'issue_number=99' "$MAT_STATUS3" && pass fetch-materials-status-issue-explicit-number || bad fetch-materials-status-issue-explicit-number
+if grep -qxF 'issue_status=explicit' "$MAT_STATUS3"; then pass fetch-materials-status-issue-explicit; else bad fetch-materials-status-issue-explicit; fi
+if grep -qxF 'issue_number=99' "$MAT_STATUS3"; then pass fetch-materials-status-issue-explicit-number; else bad fetch-materials-status-issue-explicit-number; fi
 chmod -R u+w "$MAT_DIR3_ROOT" 2>/dev/null || true
 
 # --- fetch_review_materials: design doc 路徑有給但讀不到 -- 這跟「根本
 # 沒給」要能分開回報，前者通常是打錯路徑，後者是使用者自己的選擇 ---
 MAT_DIR4_ROOT="$MAT_ROOT/run4"
 mkdir -p "$MAT_DIR4_ROOT"
-# shellcheck disable=SC2015
-MAT_DIR4="$(fetch_review_materials acme widgets 7 '' "$MAT_ROOT/does-not-exist-design.md" "$MAT_DIR4_ROOT")" \
-  && pass fetch-materials-unreadable-design-returns-zero || bad fetch-materials-unreadable-design-returns-zero
-# shellcheck disable=SC2015
-[ ! -e "$MAT_DIR4/design.md" ] && pass fetch-materials-unreadable-design-no-file || bad fetch-materials-unreadable-design-no-file
+if MAT_DIR4="$(fetch_review_materials acme widgets 7 '' "$MAT_ROOT/does-not-exist-design.md" "$MAT_DIR4_ROOT")"; then pass fetch-materials-unreadable-design-returns-zero
+else bad fetch-materials-unreadable-design-returns-zero
+fi
+if [ ! -e "$MAT_DIR4/design.md" ]; then pass fetch-materials-unreadable-design-no-file; else bad fetch-materials-unreadable-design-no-file; fi
 MAT_STATUS4="$MAT_DIR4_ROOT/.materials-status"
-# shellcheck disable=SC2015
-grep -qxF 'design_status=unreadable' "$MAT_STATUS4" && pass fetch-materials-status-design-unreadable || bad fetch-materials-status-design-unreadable
+if grep -qxF 'design_status=unreadable' "$MAT_STATUS4"; then pass fetch-materials-status-design-unreadable; else bad fetch-materials-status-design-unreadable; fi
 chmod -R u+w "$MAT_DIR4_ROOT" 2>/dev/null || true
 
 # --- Finding 1 的釘死測試：PR 本文沒有 closing keyword，但討論串裡有一則
@@ -1060,19 +1006,16 @@ mkdir -p "$MAT_INJ_ROOT"
 export GH_PR_JSON_FIXTURE="$MAT_ROOT/pr-injection.json"
 export GH_ISSUE_JSON_FIXTURE="$MAT_ROOT/issue-injection.json"
 
-# shellcheck disable=SC2015
-MAT_INJ_DIR="$(fetch_review_materials acme widgets 7 '' '' "$MAT_INJ_ROOT")" \
-  && pass fetch-materials-injection-returns-zero || bad fetch-materials-injection-returns-zero
+if MAT_INJ_DIR="$(fetch_review_materials acme widgets 7 '' '' "$MAT_INJ_ROOT")"; then pass fetch-materials-injection-returns-zero
+else bad fetch-materials-injection-returns-zero
+fi
 # 留言確實有被抓進渲染後的材料裡 -- 排除「根本沒被用到只是因為沒抓到」
 # 這個假陽性
-# shellcheck disable=SC2015
-grep -qF 'closes #999' "$MAT_INJ_DIR/pr.md" && pass fetch-materials-injection-comment-present-in-render || bad fetch-materials-injection-comment-present-in-render
+if grep -qF 'closes #999' "$MAT_INJ_DIR/pr.md"; then pass fetch-materials-injection-comment-present-in-render; else bad fetch-materials-injection-comment-present-in-render; fi
 # 但就是不准被拿去推導、抓取
-# shellcheck disable=SC2015
-[ ! -e "$MAT_INJ_DIR/issue.md" ] && pass fetch-materials-injection-no-issue-file || bad fetch-materials-injection-no-issue-file
+if [ ! -e "$MAT_INJ_DIR/issue.md" ]; then pass fetch-materials-injection-no-issue-file; else bad fetch-materials-injection-no-issue-file; fi
 MAT_INJ_STATUS="$MAT_INJ_ROOT/.materials-status"
-# shellcheck disable=SC2015
-grep -qxF 'issue_status=not-declared' "$MAT_INJ_STATUS" && pass fetch-materials-injection-status-not-declared || bad fetch-materials-injection-status-not-declared
+if grep -qxF 'issue_status=not-declared' "$MAT_INJ_STATUS"; then pass fetch-materials-injection-status-not-declared; else bad fetch-materials-injection-status-not-declared; fi
 
 chmod -R u+w "$MAT_INJ_ROOT" 2>/dev/null || true
 export PATH="$saved_path"
@@ -1095,19 +1038,15 @@ BP_OUT="$(build_prompt "$BP_ROOT/contract.md" \
   "$BP_ROOT/materials" \
   claude some-model /tmp/wt origin/main "$BP_ROOT/review.md")"
 
-# shellcheck disable=SC2015
-grep -qF 'CONTRACT-BODY' <<<"$BP_OUT" && pass build-prompt-embeds-contract || bad build-prompt-embeds-contract
+if grep -qF 'CONTRACT-BODY' <<<"$BP_OUT"; then pass build-prompt-embeds-contract; else bad build-prompt-embeds-contract; fi
 # 材料檔就放在 materials_dir 底下、build_prompt 完全沒讀過它們的內容 --
 # 這兩份材料的內文不該出現在組出來的 prompt 裡
-# shellcheck disable=SC2015
-grep -qF 'PR-MATERIAL-BODY' <<<"$BP_OUT" && bad build-prompt-does-not-embed-pr-material || pass build-prompt-does-not-embed-pr-material
-# shellcheck disable=SC2015
-grep -qF 'ISSUE-MATERIAL-BODY' <<<"$BP_OUT" && bad build-prompt-does-not-embed-issue-material || pass build-prompt-does-not-embed-issue-material
+if grep -qF 'PR-MATERIAL-BODY' <<<"$BP_OUT"; then bad build-prompt-does-not-embed-pr-material; else pass build-prompt-does-not-embed-pr-material; fi
+if grep -qF 'ISSUE-MATERIAL-BODY' <<<"$BP_OUT"; then bad build-prompt-does-not-embed-issue-material; else pass build-prompt-does-not-embed-issue-material; fi
 # 材料目錄的絕對路徑仍要出現在座標區，供人事後查閱 -- 現在這一行指向的是
 # 呼叫端（cmd_prepare()）傳進來的那個目錄，可能是共用的 materials_dir，
 # 也可能是某個 reviewer 自己的副本，build_prompt 自己不分辨、原樣印出
-# shellcheck disable=SC2015
-grep -qF "$BP_ROOT/materials" <<<"$BP_OUT" && pass build-prompt-keeps-materials-path || bad build-prompt-keeps-materials-path
+if grep -qF "$BP_ROOT/materials" <<<"$BP_OUT"; then pass build-prompt-keeps-materials-path; else bad build-prompt-keeps-materials-path; fi
 
 # 契約全文必須逐字、原封不動地作為 prompt 的開頭 -- 用真正的
 # reviewer-contract.md（多章節）而非上面的合成 fixture 檢查，才抓得到
@@ -1139,14 +1078,10 @@ BP_AGY_OUT="$(build_prompt "$BP_ROOT/contract.md" \
   "$BP_ROOT/materials" \
   agy some-model /tmp/wt origin/main "$BP_AGY_OUTPUT_FILE")"
 
-# shellcheck disable=SC2015
-grep -qxF -- "- 輸出檔絕對路徑：$BP_CLAUDE_OUTPUT_FILE" <<<"$BP_CLAUDE_OUT" && pass build-prompt-output-file-claude-line || bad build-prompt-output-file-claude-line
-# shellcheck disable=SC2015
-grep -qxF -- "- 輸出檔絕對路徑：$BP_AGY_OUTPUT_FILE" <<<"$BP_AGY_OUT" && pass build-prompt-output-file-agy-line || bad build-prompt-output-file-agy-line
-# shellcheck disable=SC2015
-grep -qF "$BP_AGY_OUTPUT_FILE" <<<"$BP_CLAUDE_OUT" && bad build-prompt-output-file-claude-excludes-agy-path || pass build-prompt-output-file-claude-excludes-agy-path
-# shellcheck disable=SC2015
-grep -qF "$BP_CLAUDE_OUTPUT_FILE" <<<"$BP_AGY_OUT" && bad build-prompt-output-file-agy-excludes-claude-path || pass build-prompt-output-file-agy-excludes-claude-path
+if grep -qxF -- "- 輸出檔絕對路徑：$BP_CLAUDE_OUTPUT_FILE" <<<"$BP_CLAUDE_OUT"; then pass build-prompt-output-file-claude-line; else bad build-prompt-output-file-claude-line; fi
+if grep -qxF -- "- 輸出檔絕對路徑：$BP_AGY_OUTPUT_FILE" <<<"$BP_AGY_OUT"; then pass build-prompt-output-file-agy-line; else bad build-prompt-output-file-agy-line; fi
+if grep -qF "$BP_AGY_OUTPUT_FILE" <<<"$BP_CLAUDE_OUT"; then bad build-prompt-output-file-claude-excludes-agy-path; else pass build-prompt-output-file-claude-excludes-agy-path; fi
+if grep -qF "$BP_CLAUDE_OUTPUT_FILE" <<<"$BP_AGY_OUT"; then bad build-prompt-output-file-agy-excludes-claude-path; else pass build-prompt-output-file-agy-excludes-claude-path; fi
 
 # ==============================================================
 # setup_worktree
@@ -1193,11 +1128,9 @@ PR_SHA="$(git -C "$GIT_FIXTURE/work" rev-parse feature)"
 BASE_DIR="$T/setup-worktree-base"
 out="$(cd "$GIT_FIXTURE/work" && setup_worktree acme widgets 9 "$BASE_DIR")"
 rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "$BASE_DIR/worktree" ] && pass setup-worktree-success || bad setup-worktree-success
+if [ "$rc" -eq 0 ] && [ "$out" = "$BASE_DIR/worktree" ]; then pass setup-worktree-success; else bad setup-worktree-success; fi
 got_sha="$(git -C "$out" rev-parse HEAD 2>/dev/null || true)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$got_sha" = "$PR_SHA" ] && pass setup-worktree-checks-out-pr-head || bad setup-worktree-checks-out-pr-head
+if [ "$got_sha" = "$PR_SHA" ]; then pass setup-worktree-checks-out-pr-head; else bad setup-worktree-checks-out-pr-head; fi
 
 # owner/repo that doesn't match this cwd's actual origin -> refuse rather
 # than silently fetch/review the wrong codebase.
@@ -1206,8 +1139,7 @@ if out="$(cd "$GIT_FIXTURE/work" && setup_worktree wrong-owner wrong-repo 9 "$T/
 else
   pass setup-worktree-owner-mismatch
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass setup-worktree-owner-mismatch-no-output || bad setup-worktree-owner-mismatch-no-output
+if [ -z "$out" ]; then pass setup-worktree-owner-mismatch-no-output; else bad setup-worktree-owner-mismatch-no-output; fi
 
 # PR number with no matching refs/pull/<N>/head on the remote -> fetch
 # fails -> non-zero, no stdout.
@@ -1216,8 +1148,7 @@ if out="$(cd "$GIT_FIXTURE/work" && setup_worktree acme widgets 999 "$T/setup-wo
 else
   pass setup-worktree-missing-pr-ref
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass setup-worktree-missing-pr-ref-no-output || bad setup-worktree-missing-pr-ref-no-output
+if [ -z "$out" ]; then pass setup-worktree-missing-pr-ref-no-output; else bad setup-worktree-missing-pr-ref-no-output; fi
 
 # A same-named local ref left behind by an earlier run whose PID got
 # reused (setup_worktree names its ref pr-review-<N>-$$, and $$ stays
@@ -1239,11 +1170,9 @@ fi
 )
 out="$(cd "$GIT_FIXTURE/work" && setup_worktree acme widgets 20 "$T/setup-worktree-stale-ref")"
 rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 0 ] && [ "$out" = "$T/setup-worktree-stale-ref/worktree" ] && pass setup-worktree-force-updates-stale-ref || bad setup-worktree-force-updates-stale-ref
+if [ "$rc" -eq 0 ] && [ "$out" = "$T/setup-worktree-stale-ref/worktree" ]; then pass setup-worktree-force-updates-stale-ref; else bad setup-worktree-force-updates-stale-ref; fi
 stale_got_sha="$(git -C "$out" rev-parse HEAD 2>/dev/null || true)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$stale_got_sha" = "$PR_SHA" ] && pass setup-worktree-force-update-correct-commit || bad setup-worktree-force-update-correct-commit
+if [ "$stale_got_sha" = "$PR_SHA" ]; then pass setup-worktree-force-update-correct-commit; else bad setup-worktree-force-update-correct-commit; fi
 
 # ==============================================================
 # _origin_matches_owner_repo
@@ -1335,8 +1264,7 @@ if out="$(cd "$BOUNDARY_REPO" && setup_worktree acme widgets 1 "$T/setup-worktre
 else
   pass setup-worktree-rejects-boundary-bypass
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass setup-worktree-rejects-boundary-bypass-no-output || bad setup-worktree-rejects-boundary-bypass-no-output
+if [ -z "$out" ]; then pass setup-worktree-rejects-boundary-bypass-no-output; else bad setup-worktree-rejects-boundary-bypass-no-output; fi
 
 # ==============================================================
 # setup_worktree -- stale local-ref cleanup
@@ -1384,10 +1312,8 @@ else
   pass setup-worktree-cleans-stale-refs
 fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-notes && pass setup-worktree-preserves-unrelated-user-branch || bad setup-worktree-preserves-unrelated-user-branch
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-42 && pass setup-worktree-preserves-single-number-user-branch || bad setup-worktree-preserves-single-number-user-branch
+if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-notes; then pass setup-worktree-preserves-unrelated-user-branch; else bad setup-worktree-preserves-unrelated-user-branch; fi
+if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-42; then pass setup-worktree-preserves-single-number-user-branch; else bad setup-worktree-preserves-single-number-user-branch; fi
 
 # A branch matching this function's own exact stale-ref shape, but NOT
 # checked out anywhere -- exactly the window this function's own docstring
@@ -1408,8 +1334,7 @@ git -C "$CLEANUP_FIXTURE/work" branch "pr-review-77-$$" main
 # liveness check.
 (cd "$CLEANUP_FIXTURE/work" && setup_worktree acme widgets 888 "$T/setup-worktree-cleanup-check2") >/dev/null 2>&1 || true
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet "refs/heads/pr-review-77-$$" && pass setup-worktree-preserves-branch-with-live-pid || bad setup-worktree-preserves-branch-with-live-pid
+if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet "refs/heads/pr-review-77-$$"; then pass setup-worktree-preserves-branch-with-live-pid; else bad setup-worktree-preserves-branch-with-live-pid; fi
 
 # --- 缺陷 6：上面那組用 $$（這支測試腳本自己的 PID）當活體分支的 trailing
 # PID，整場測試期間恆為存活，遮蔽了兩階段拆分後的真實情況 -- 那裡的
@@ -1442,12 +1367,12 @@ printf '%s\n' "$cleanup_supervisor_alive_pid" > "$CLEANUP_SUP_STALE_BASE/.superv
 # 不對那次成功本身斷言，只在乎它有沒有連帶動到上面那個 stale sibling。
 (cd "$CLEANUP_FIXTURE/work" && setup_worktree acme widgets 5 "$CLEANUP_SUPERVISOR_ROOT/2-current-$$") >/dev/null 2>&1 || true
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -e "$CLEANUP_SUP_STALE_BASE/worktree" ] && pass "setup-worktree-live-supervisor-pid-preserves-worktree-despite-dead-trailing-pid" \
-  || bad "setup-worktree-live-supervisor-pid-preserves-worktree-despite-dead-trailing-pid: worktree 仍被回收，即使 .supervisor.pid 存活"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet "refs/heads/pr-review-5-$cleanup_dead_pid" && pass "setup-worktree-live-supervisor-pid-preserves-branch-despite-dead-trailing-pid" \
-  || bad "setup-worktree-live-supervisor-pid-preserves-branch-despite-dead-trailing-pid: 分支被強制刪除了，即使 .supervisor.pid 存活"
+if [ -e "$CLEANUP_SUP_STALE_BASE/worktree" ]; then pass "setup-worktree-live-supervisor-pid-preserves-worktree-despite-dead-trailing-pid"
+else bad "setup-worktree-live-supervisor-pid-preserves-worktree-despite-dead-trailing-pid: worktree 仍被回收，即使 .supervisor.pid 存活"
+fi
+if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet "refs/heads/pr-review-5-$cleanup_dead_pid"; then pass "setup-worktree-live-supervisor-pid-preserves-branch-despite-dead-trailing-pid"
+else bad "setup-worktree-live-supervisor-pid-preserves-branch-despite-dead-trailing-pid: 分支被強制刪除了，即使 .supervisor.pid 存活"
+fi
 
 kill "$cleanup_supervisor_alive_pid" 2>/dev/null || true
 wait "$cleanup_supervisor_alive_pid" 2>/dev/null || true
@@ -1496,13 +1421,11 @@ SNAP_WT="$(_make_worktree_fixture "$SNAP_ROOT")"
 
 snap1="$(_git_status_snapshot "$SNAP_WT")"
 snap2="$(_git_status_snapshot "$SNAP_WT")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$snap1" = "$snap2" ] && pass git-status-snapshot-stable-when-unchanged || bad git-status-snapshot-stable-when-unchanged
+if [ "$snap1" = "$snap2" ]; then pass git-status-snapshot-stable-when-unchanged; else bad git-status-snapshot-stable-when-unchanged; fi
 
 printf 'dirty\n' > "$SNAP_WT/untracked-marker.txt"
 snap3="$(_git_status_snapshot "$SNAP_WT")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$snap1" != "$snap3" ] && pass git-status-snapshot-detects-untracked-file || bad git-status-snapshot-detects-untracked-file
+if [ "$snap1" != "$snap3" ]; then pass git-status-snapshot-detects-untracked-file; else bad git-status-snapshot-detects-untracked-file; fi
 rm -f "$SNAP_WT/untracked-marker.txt"
 
 # A commit that leaves the working tree clean again must still be detected
@@ -1515,8 +1438,7 @@ rm -f "$SNAP_WT/untracked-marker.txt"
   git commit -q -m more
 )
 snap4="$(_git_status_snapshot "$SNAP_WT")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$snap1" != "$snap4" ] && pass git-status-snapshot-detects-commit-with-clean-tree || bad git-status-snapshot-detects-commit-with-clean-tree
+if [ "$snap1" != "$snap4" ]; then pass git-status-snapshot-detects-commit-with-clean-tree; else bad git-status-snapshot-detects-commit-with-clean-tree; fi
 
 # ==============================================================
 # _write_agy_home
@@ -1556,8 +1478,7 @@ fi
 # collide or leak into each other's settings.
 agy_home2="$T/agy-home-2"
 _write_agy_home "$agy_home2" || bad "_write_agy_home 第二次呼叫回傳非零"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$agy_home2/.gemini/antigravity-cli/settings.json" ] && [ "$agy_home2" != "$agy_home" ] && pass _write_agy_home-independent-instances || bad _write_agy_home-independent-instances
+if [ -f "$agy_home2/.gemini/antigravity-cli/settings.json" ] && [ "$agy_home2" != "$agy_home" ]; then pass _write_agy_home-independent-instances; else bad _write_agy_home-independent-instances; fi
 
 # ==============================================================
 # _write_claude_home_interactive
@@ -1638,8 +1559,7 @@ else
   bad "_write_claude_home_interactive 的 .claude.json 內容不正確: $(cat "$ccj" 2>/dev/null)"
 fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$claude_home_i/.zshrc" ] && pass "_write_claude_home_interactive 建立非空 .zshrc" || bad "_write_claude_home_interactive 未建立非空 .zshrc"
+if [ -s "$claude_home_i/.zshrc" ]; then pass "_write_claude_home_interactive 建立非空 .zshrc"; else bad "_write_claude_home_interactive 未建立非空 .zshrc"; fi
 
 # ==============================================================
 # _write_env_scrubbing_zshrc
@@ -1658,8 +1578,7 @@ else
   bad "_write_env_scrubbing_zshrc 回傳非零"
 fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$ENVSCRUB" ] && pass "_write_env_scrubbing_zshrc 寫出非空檔案" || bad "_write_env_scrubbing_zshrc 寫出空檔案"
+if [ -s "$ENVSCRUB" ]; then pass "_write_env_scrubbing_zshrc 寫出非空檔案"; else bad "_write_env_scrubbing_zshrc 寫出空檔案"; fi
 
 # 白名單每一項都必須出現在 _rr_keep 陣列本身，而不是整份產生檔案（含註解）
 # 的任何角落。先把陣列區塊切出來、砍掉每一行的 # 註解，只對切剩的陣列
@@ -1675,8 +1594,7 @@ for v in PATH HOME SHELL TERM TERMINFO COLORTERM LANG LC_ALL USER LOGNAME \
          ZDOTDIR SHLVL OPENCODE_CONFIG; do
   printf '%s\n' "$envscrub_array" | grep -qw -- "$v" || envscrub_missing="$envscrub_missing $v"
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$envscrub_missing" ] && pass "_write_env_scrubbing_zshrc 白名單完整" || bad "_write_env_scrubbing_zshrc 白名單缺項:$envscrub_missing"
+if [ -z "$envscrub_missing" ]; then pass "_write_env_scrubbing_zshrc 白名單完整"; else bad "_write_env_scrubbing_zshrc 白名單缺項:$envscrub_missing"; fi
 
 # 已知的機密變數名不得出現在檔案裡——清理靠白名單，不是靠列舉機密
 case "$(cat "$ENVSCRUB")" in
@@ -1791,8 +1709,7 @@ for codex_variant_i in nomodel nocfg unkmodel; do
 done
 HOME="$codex_fake_home_i"
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$codex_home_i/.zshrc" ] && pass "_write_codex_home_interactive 建立非空 .zshrc" || bad "_write_codex_home_interactive 未建立非空 .zshrc"
+if [ -s "$codex_home_i/.zshrc" ]; then pass "_write_codex_home_interactive 建立非空 .zshrc"; else bad "_write_codex_home_interactive 未建立非空 .zshrc"; fi
 
 # A1/F1 迴歸測試：沒有這份 rules 檔時，codex 在沙箱內執行 `gh pr comment`
 # 連不上網路，會跳出「是否在沙箱外執行」的核准對話框，卡在 herdr 的
@@ -1826,10 +1743,9 @@ if _write_codex_home_interactive "$codex_home_empty_i" "$codex_workdir_empty_i" 
 else
   pass "_write_codex_home_interactive pr_url 為空時回傳非零"
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$codex_home_empty_i/.codex/rules/default.rules" ] \
-  && pass "_write_codex_home_interactive pr_url 為空時沒有寫出 default.rules" \
-  || bad "_write_codex_home_interactive pr_url 為空時仍寫出了 default.rules: $(cat "$codex_home_empty_i/.codex/rules/default.rules" 2>/dev/null)"
+if [ ! -f "$codex_home_empty_i/.codex/rules/default.rules" ]; then pass "_write_codex_home_interactive pr_url 為空時沒有寫出 default.rules"
+else bad "_write_codex_home_interactive pr_url 為空時仍寫出了 default.rules: $(cat "$codex_home_empty_i/.codex/rules/default.rules" 2>/dev/null)"
+fi
 
 codex_home_bad_i="$T/codex-home-interactive-malformed-pr-url"
 codex_workdir_bad_i="$T/codex-workdir-interactive-malformed-pr-url"
@@ -1839,10 +1755,9 @@ if _write_codex_home_interactive "$codex_home_bad_i" "$codex_workdir_bad_i" "not
 else
   pass "_write_codex_home_interactive pr_url 格式不符時回傳非零"
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$codex_home_bad_i/.codex/rules/default.rules" ] \
-  && pass "_write_codex_home_interactive pr_url 格式不符時沒有寫出 default.rules" \
-  || bad "_write_codex_home_interactive pr_url 格式不符時仍寫出了 default.rules: $(cat "$codex_home_bad_i/.codex/rules/default.rules" 2>/dev/null)"
+if [ ! -f "$codex_home_bad_i/.codex/rules/default.rules" ]; then pass "_write_codex_home_interactive pr_url 格式不符時沒有寫出 default.rules"
+else bad "_write_codex_home_interactive pr_url 格式不符時仍寫出了 default.rules: $(cat "$codex_home_bad_i/.codex/rules/default.rules" 2>/dev/null)"
+fi
 
 # 還原真實 HOME，後續區塊照舊。
 HOME="$codex_real_home_i"
@@ -1858,8 +1773,7 @@ else
   bad "_write_opencode_home_interactive 回傳非零"
 fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$opencode_home_i/.zshrc" ] && pass "_write_opencode_home_interactive 建立非空 .zshrc" || bad "_write_opencode_home_interactive 未建立非空 .zshrc"
+if [ -s "$opencode_home_i/.zshrc" ]; then pass "_write_opencode_home_interactive 建立非空 .zshrc"; else bad "_write_opencode_home_interactive 未建立非空 .zshrc"; fi
 
 # ==============================================================
 # _write_agy_home_interactive
@@ -1913,11 +1827,9 @@ fi
 
 # 刻意差異，不是遺漏：實測結論是互動模式不需要頂層 .gemini/settings.json
 # 的 auth-type 標記（見 _write_agy_home_interactive 自己的文件字串）。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$agy_home_i/.gemini/settings.json" ] && pass "_write_agy_home_interactive 不寫頂層 .gemini/settings.json" || bad "_write_agy_home_interactive 不應寫頂層 .gemini/settings.json"
+if [ ! -e "$agy_home_i/.gemini/settings.json" ]; then pass "_write_agy_home_interactive 不寫頂層 .gemini/settings.json"; else bad "_write_agy_home_interactive 不應寫頂層 .gemini/settings.json"; fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$agy_home_i/.zshrc" ] && pass "_write_agy_home_interactive 建立非空 .zshrc" || bad "_write_agy_home_interactive 未建立非空 .zshrc"
+if [ -s "$agy_home_i/.zshrc" ]; then pass "_write_agy_home_interactive 建立非空 .zshrc"; else bad "_write_agy_home_interactive 未建立非空 .zshrc"; fi
 
 # ==============================================================
 # _derive_agent_name
@@ -1945,8 +1857,7 @@ fi
 # 分）-- 這是給 herdr 自己畫面上的人類辨識用，不是 _wait_agent_states 的
 # 比對依據：那個函式現在只看 pane id 本身，不看這個名稱。
 derive_name_agy="$(_derive_agent_name agy wT:p1)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$derive_name_claude" != "$derive_name_agy" ] && pass "_derive_agent_name 不同 cli 得到不同名稱" || bad "_derive_agent_name 不同 cli 卻撞名: $derive_name_claude"
+if [ "$derive_name_claude" != "$derive_name_agy" ]; then pass "_derive_agent_name 不同 cli 得到不同名稱"; else bad "_derive_agent_name 不同 cli 卻撞名: $derive_name_claude"; fi
 
 # ==============================================================
 # launch_reviewer_interactive
@@ -2142,8 +2053,7 @@ printf 'claude review prompt' > "$LRI_ROOT/claude.prompt"
 # itself), so any non-codex direct call is free to pass empty here.
 lri_claude_out="$(launch_reviewer_interactive claude w14:pZ "$LRI_WT" \
   "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt" "")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_claude_out" = "$lri_claude_workdir/review.md" ] && pass launch-reviewer-interactive-claude-prints-output-file || bad "launch-reviewer-interactive-claude-prints-output-file: $lri_claude_out"
+if [ "$lri_claude_out" = "$lri_claude_workdir/review.md" ]; then pass launch-reviewer-interactive-claude-prints-output-file; else bad "launch-reviewer-interactive-claude-prints-output-file: $lri_claude_out"; fi
 
 claude_start_argv="$LRI_RECORD_DIR/agent-start.claude.argv"
 mapfile -t lri_claude_argv < "$claude_start_argv"
@@ -2157,14 +2067,12 @@ lri_claude_dashdash_idx=-1
 for idx in "${!lri_claude_argv[@]}"; do
   [ "${lri_claude_argv[$idx]}" = "--" ] && lri_claude_dashdash_idx=$idx
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 lri_claude_first_arg="${lri_claude_argv[$((lri_claude_dashdash_idx + 1))]:-}"
 # Asserts the invariant (the first token after `--` is one of claude's own
 # flags, never the executable name again) rather than pinning which flag
 # happens to come first, so adding or reordering claude's flags does not
 # make this regression guard fail for the wrong reason.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_claude_dashdash_idx" -ge 0 ] && [ "$lri_claude_first_arg" != "claude" ] && [ "${lri_claude_first_arg#-}" != "$lri_claude_first_arg" ] && pass launch-reviewer-interactive-claude-no-duplicate-executable-name || bad "launch-reviewer-interactive-claude-no-duplicate-executable-name: $(cat "$claude_start_argv")"
+if [ "$lri_claude_dashdash_idx" -ge 0 ] && [ "$lri_claude_first_arg" != "claude" ] && [ "${lri_claude_first_arg#-}" != "$lri_claude_first_arg" ]; then pass launch-reviewer-interactive-claude-no-duplicate-executable-name; else bad "launch-reviewer-interactive-claude-no-duplicate-executable-name: $(cat "$claude_start_argv")"; fi
 case "$(cat "$claude_start_argv")" in
   *'--disallowedTools'*'WebFetch'*) pass launch-reviewer-interactive-claude-disallows-webfetch ;;
   *) bad "launch-reviewer-interactive-claude-disallows-webfetch: $(cat "$claude_start_argv")" ;;
@@ -2178,8 +2086,7 @@ for a in "${lri_claude_argv[@]}"; do
     -p) lri_claude_dash_p_found=1 ;;
   esac
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_claude_dash_p_found" -eq 0 ] && pass launch-reviewer-interactive-claude-no-print-flag || bad launch-reviewer-interactive-claude-no-print-flag
+if [ "$lri_claude_dash_p_found" -eq 0 ]; then pass launch-reviewer-interactive-claude-no-print-flag; else bad launch-reviewer-interactive-claude-no-print-flag; fi
 # --permission-mode auto must be passed explicitly. The earlier assertion
 # here demanded its absence, on a probe reading that claude's status bar
 # showed "auto mode on" under `agent start` with the flag omitted. That
@@ -2196,23 +2103,20 @@ for idx in "${!lri_claude_argv[@]}"; do
     lri_claude_perm_mode_ok=1
   fi
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_claude_perm_mode_ok" -eq 1 ] && pass launch-reviewer-interactive-claude-permission-mode-auto || bad "launch-reviewer-interactive-claude-permission-mode-auto: $(cat "$claude_start_argv")"
+if [ "$lri_claude_perm_mode_ok" -eq 1 ]; then pass launch-reviewer-interactive-claude-permission-mode-auto; else bad "launch-reviewer-interactive-claude-permission-mode-auto: $(cat "$claude_start_argv")"; fi
 case "$(cat "$claude_start_argv")" in
   *'Edit'*|*'Write'*) bad "launch-reviewer-interactive-claude-write-not-disallowed: $(cat "$claude_start_argv")" ;;
   *) pass launch-reviewer-interactive-claude-write-not-disallowed ;;
 esac
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$LRI_ROOT/.git-status-before-claude" ] && pass launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name || bad launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name
+if [ -f "$LRI_ROOT/.git-status-before-claude" ]; then pass launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name; else bad launch-reviewer-interactive-claude-records-before-snapshot-keyed-by-cli-name; fi
 
 # claude's own bare [prompt] positional carries only the fixed "開始"
 # launch phrase, and it is the LAST token on this call's own argv -- see
 # this function's own "ONE-SHOT LAUNCH: CLAUDE ONLY" docstring section for
 # why claude, uniquely among the four, has no second, separate
 # `agent prompt` call left to carry it instead.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "${lri_claude_argv[-1]}" = "開始" ] && pass launch-reviewer-interactive-claude-last-arg-is-start-signal || bad "launch-reviewer-interactive-claude-last-arg-is-start-signal: ${lri_claude_argv[-1]:-<empty>}"
+if [ "${lri_claude_argv[-1]}" = "開始" ]; then pass launch-reviewer-interactive-claude-last-arg-is-start-signal; else bad "launch-reviewer-interactive-claude-last-arg-is-start-signal: ${lri_claude_argv[-1]:-<empty>}"; fi
 
 # claude 的契約走 --append-system-prompt-file，不再有任何一種形式的第二段
 # 呼叫。附加型（append）已做過兩次功能探測，皆成功；取代型
@@ -2224,8 +2128,7 @@ for idx in "${!lri_claude_argv[@]}"; do
     lri_claude_syspromptfile_ok=1
   fi
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_claude_syspromptfile_ok" -eq 1 ] && pass launch-reviewer-interactive-claude-system-prompt-file || bad "launch-reviewer-interactive-claude-system-prompt-file: $(cat "$claude_start_argv")"
+if [ "$lri_claude_syspromptfile_ok" -eq 1 ]; then pass launch-reviewer-interactive-claude-system-prompt-file; else bad "launch-reviewer-interactive-claude-system-prompt-file: $(cat "$claude_start_argv")"; fi
 
 # 取代型不得被使用
 case "$(cat "$claude_start_argv")" in
@@ -2245,8 +2148,7 @@ esac
 # （契約 + 起跑訊號）已經在上面同一個 agent start 呼叫裡完成，這才是這個
 # 分支真正不會踩到「prompt 送出成功卻被靜默丟棄」那個缺陷的原因，不是
 # 靠後續補救。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$LRI_RECORD_DIR/agent-prompt.w14:pZ.text" ] && pass launch-reviewer-interactive-claude-never-calls-agent-prompt || bad launch-reviewer-interactive-claude-never-calls-agent-prompt
+if [ ! -f "$LRI_RECORD_DIR/agent-prompt.w14:pZ.text" ]; then pass launch-reviewer-interactive-claude-never-calls-agent-prompt; else bad launch-reviewer-interactive-claude-never-calls-agent-prompt; fi
 
 # 這條是「WHY CODEX/OPENCODE/AGY STAY TWO-STEP」那個發現的正面對照組：
 # claude 送進 agent start 的引數全部都不含換行（契約走檔案路徑、位置參數
@@ -2258,8 +2160,7 @@ for a in "${lri_claude_argv[@]}"; do
     *$'\n'*) lri_claude_has_newline=1 ;;
   esac
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_claude_has_newline" -eq 0 ] && pass launch-reviewer-interactive-claude-agent-start-argv-has-no-newlines || bad launch-reviewer-interactive-claude-agent-start-argv-has-no-newlines
+if [ "$lri_claude_has_newline" -eq 0 ]; then pass launch-reviewer-interactive-claude-agent-start-argv-has-no-newlines; else bad launch-reviewer-interactive-claude-agent-start-argv-has-no-newlines; fi
 
 # --- codex: no -s (the sandbox flag was the now-removed headless
 # launcher's own concern; herdr's own --pane already scopes this to one
@@ -2272,8 +2173,7 @@ printf 'codex review prompt' > "$LRI_ROOT/codex.prompt"
 
 lri_codex_out="$(launch_reviewer_interactive codex w1X:pA "$LRI_WT" \
   "$lri_codex_workdir" "$lri_codex_home" "$LRI_ROOT/codex.prompt" "$LRI_PR_URL")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_codex_out" = "$lri_codex_workdir/review.md" ] && pass launch-reviewer-interactive-codex-prints-output-file || bad "launch-reviewer-interactive-codex-prints-output-file: $lri_codex_out"
+if [ "$lri_codex_out" = "$lri_codex_workdir/review.md" ]; then pass launch-reviewer-interactive-codex-prints-output-file; else bad "launch-reviewer-interactive-codex-prints-output-file: $lri_codex_out"; fi
 
 codex_start_argv="$LRI_RECORD_DIR/agent-start.codex.argv"
 mapfile -t lri_codex_argv < "$codex_start_argv"
@@ -2285,34 +2185,29 @@ lri_codex_dashdash_idx=-1
 for idx in "${!lri_codex_argv[@]}"; do
   [ "${lri_codex_argv[$idx]}" = "--" ] && lri_codex_dashdash_idx=$idx
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
 lri_codex_first_arg="${lri_codex_argv[$((lri_codex_dashdash_idx + 1))]:-}"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_codex_dashdash_idx" -ge 0 ] && [ "$lri_codex_first_arg" != "codex" ] && [ "${lri_codex_first_arg#-}" != "$lri_codex_first_arg" ] && pass launch-reviewer-interactive-codex-no-duplicate-executable-name || bad "launch-reviewer-interactive-codex-no-duplicate-executable-name: $(cat "$codex_start_argv")"
+if [ "$lri_codex_dashdash_idx" -ge 0 ] && [ "$lri_codex_first_arg" != "codex" ] && [ "${lri_codex_first_arg#-}" != "$lri_codex_first_arg" ]; then pass launch-reviewer-interactive-codex-no-duplicate-executable-name; else bad "launch-reviewer-interactive-codex-no-duplicate-executable-name: $(cat "$codex_start_argv")"; fi
 # codex 的 agent start argv 必須帶 --no-daemon：codex-cli 0.158.0 預設會起
 # 背景 daemon，client 經隔離 HOME 下過長的 socket 路徑連線而失敗。
 lri_codex_no_daemon_found=0
 for a in "${lri_codex_argv[@]}"; do
   [ "$a" = "--no-daemon" ] && lri_codex_no_daemon_found=1
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_codex_no_daemon_found" -eq 1 ] && pass launch-reviewer-interactive-codex-no-daemon-flag || bad "launch-reviewer-interactive-codex-no-daemon-flag: $(cat "$codex_start_argv")"
+if [ "$lri_codex_no_daemon_found" -eq 1 ]; then pass launch-reviewer-interactive-codex-no-daemon-flag; else bad "launch-reviewer-interactive-codex-no-daemon-flag: $(cat "$codex_start_argv")"; fi
 lri_codex_dash_s_found=0
 for a in "${lri_codex_argv[@]}"; do
   case "$a" in
     -s) lri_codex_dash_s_found=1 ;;
   esac
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_codex_dash_s_found" -eq 0 ] && pass launch-reviewer-interactive-codex-no-sandbox-flag || bad launch-reviewer-interactive-codex-no-sandbox-flag
+if [ "$lri_codex_dash_s_found" -eq 0 ]; then pass launch-reviewer-interactive-codex-no-sandbox-flag; else bad launch-reviewer-interactive-codex-no-sandbox-flag; fi
 found=0
 for idx in "${!lri_codex_argv[@]}"; do
   if [ "${lri_codex_argv[$idx]}" = "-C" ] && [ "${lri_codex_argv[$((idx + 1))]:-}" = "$lri_codex_workdir" ]; then
     found=1
   fi
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$found" -eq 1 ] && pass launch-reviewer-interactive-codex-workdir-flag || bad launch-reviewer-interactive-codex-workdir-flag
+if [ "$found" -eq 1 ]; then pass launch-reviewer-interactive-codex-workdir-flag; else bad launch-reviewer-interactive-codex-workdir-flag; fi
 # codex stays two-step (see this function's own "WHY CODEX/OPENCODE/AGY
 # STAY TWO-STEP" docstring section): `agent start` carries no prompt
 # content of any kind, and the reviewer's full contract instead arrives
@@ -2321,8 +2216,7 @@ case "$(cat "$codex_start_argv")" in
   *'codex review prompt'*) bad "launch-reviewer-interactive-codex-agent-start-no-prompt-embedded: $(cat "$codex_start_argv")" ;;
   *) pass launch-reviewer-interactive-codex-agent-start-no-prompt-embedded ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pA.text" 2>/dev/null)" = "codex review prompt" ] && pass launch-reviewer-interactive-codex-agent-prompt-carries-full-contract || bad "launch-reviewer-interactive-codex-agent-prompt-carries-full-contract: $(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pA.text" 2>/dev/null)"
+if [ "$(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pA.text" 2>/dev/null)" = "codex review prompt" ]; then pass launch-reviewer-interactive-codex-agent-prompt-carries-full-contract; else bad "launch-reviewer-interactive-codex-agent-prompt-carries-full-contract: $(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pA.text" 2>/dev/null)"; fi
 
 # F1: the .codex/rules/default.rules this call wrote must be scoped to
 # *this run's* PR ($LRI_PR_URL, passed as the codex_pr_url argument
@@ -2332,10 +2226,9 @@ esac
 lri_codex_rules="$lri_codex_home/.codex/rules/default.rules"
 lri_codex_expected_rule="prefix_rule(pattern=[\"gh\",\"pr\",\"comment\",\"$LRI_PR_URL\"], decision=\"allow\")
 "
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$lri_codex_rules" ] && [ "$(cat "$lri_codex_rules" 2>/dev/null; printf x)" = "$(printf '%s' "$lri_codex_expected_rule"; printf x)" ] \
-  && pass "launch-reviewer-interactive-codex-rules-scoped-to-this-run-pr-url" \
-  || bad "launch-reviewer-interactive-codex-rules-scoped-to-this-run-pr-url: $(cat "$lri_codex_rules" 2>/dev/null)"
+if [ -f "$lri_codex_rules" ] && [ "$(cat "$lri_codex_rules" 2>/dev/null; printf x)" = "$(printf '%s' "$lri_codex_expected_rule"; printf x)" ]; then pass "launch-reviewer-interactive-codex-rules-scoped-to-this-run-pr-url"
+else bad "launch-reviewer-interactive-codex-rules-scoped-to-this-run-pr-url: $(cat "$lri_codex_rules" 2>/dev/null)"
+fi
 
 # --- opencode: no `run`; no `--dir` (dropped in favour of the positional
 # project-path argument -- the top-level command has no --dir at all) ---
@@ -2347,8 +2240,7 @@ printf 'opencode review prompt' > "$LRI_ROOT/opencode.prompt"
 
 lri_opencode_out="$(launch_reviewer_interactive opencode w2:p12 "$LRI_WT" \
   "$lri_opencode_workdir" "$lri_opencode_home" "$LRI_ROOT/opencode.prompt" "")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_opencode_out" = "$lri_opencode_workdir/review.md" ] && pass launch-reviewer-interactive-opencode-prints-output-file || bad "launch-reviewer-interactive-opencode-prints-output-file: $lri_opencode_out"
+if [ "$lri_opencode_out" = "$lri_opencode_workdir/review.md" ]; then pass launch-reviewer-interactive-opencode-prints-output-file; else bad "launch-reviewer-interactive-opencode-prints-output-file: $lri_opencode_out"; fi
 
 opencode_start_argv="$LRI_RECORD_DIR/agent-start.opencode.argv"
 mapfile -t lri_opencode_argv < "$opencode_start_argv"
@@ -2364,16 +2256,14 @@ for idx in "${!lri_opencode_argv[@]}"; do
   [ "${lri_opencode_argv[$idx]}" = "--" ] && lri_opencode_dashdash_idx=$idx
 done
 lri_opencode_first_arg="${lri_opencode_argv[$((lri_opencode_dashdash_idx + 1))]:-}"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_opencode_dashdash_idx" -ge 0 ] && [ "$lri_opencode_first_arg" != "opencode" ] && [ "${lri_opencode_first_arg#-}" != "$lri_opencode_first_arg" ] && pass launch-reviewer-interactive-opencode-no-duplicate-executable-name || bad "launch-reviewer-interactive-opencode-no-duplicate-executable-name: $(cat "$opencode_start_argv")"
+if [ "$lri_opencode_dashdash_idx" -ge 0 ] && [ "$lri_opencode_first_arg" != "opencode" ] && [ "${lri_opencode_first_arg#-}" != "$lri_opencode_first_arg" ]; then pass launch-reviewer-interactive-opencode-no-duplicate-executable-name; else bad "launch-reviewer-interactive-opencode-no-duplicate-executable-name: $(cat "$opencode_start_argv")"; fi
 lri_opencode_auto_found=0
 for a in "${lri_opencode_argv[@]}"; do
   case "$a" in
     --auto) lri_opencode_auto_found=1 ;;
   esac
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_opencode_auto_found" -eq 1 ] && pass launch-reviewer-interactive-opencode-auto-flag || bad launch-reviewer-interactive-opencode-auto-flag
+if [ "$lri_opencode_auto_found" -eq 1 ]; then pass launch-reviewer-interactive-opencode-auto-flag; else bad launch-reviewer-interactive-opencode-auto-flag; fi
 lri_opencode_run_found=0
 lri_opencode_dir_found=0
 for a in "${lri_opencode_argv[@]}"; do
@@ -2382,16 +2272,13 @@ for a in "${lri_opencode_argv[@]}"; do
     --dir) lri_opencode_dir_found=1 ;;
   esac
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_opencode_run_found" -eq 0 ] && pass launch-reviewer-interactive-opencode-no-run-subcommand || bad launch-reviewer-interactive-opencode-no-run-subcommand
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_opencode_dir_found" -eq 0 ] && pass launch-reviewer-interactive-opencode-no-dir-flag || bad launch-reviewer-interactive-opencode-no-dir-flag
+if [ "$lri_opencode_run_found" -eq 0 ]; then pass launch-reviewer-interactive-opencode-no-run-subcommand; else bad launch-reviewer-interactive-opencode-no-run-subcommand; fi
+if [ "$lri_opencode_dir_found" -eq 0 ]; then pass launch-reviewer-interactive-opencode-no-dir-flag; else bad launch-reviewer-interactive-opencode-no-dir-flag; fi
 found=0
 for a in "${lri_opencode_argv[@]}"; do
   [ "$a" = "$lri_opencode_workdir" ] && found=1
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$found" -eq 1 ] && pass launch-reviewer-interactive-opencode-positional-workdir || bad launch-reviewer-interactive-opencode-positional-workdir
+if [ "$found" -eq 1 ]; then pass launch-reviewer-interactive-opencode-positional-workdir; else bad launch-reviewer-interactive-opencode-positional-workdir; fi
 # opencode stays two-step (see this function's own "WHY CODEX/OPENCODE/AGY
 # STAY TWO-STEP" docstring section): `agent start` carries no --prompt
 # flag or any other prompt content, and the reviewer's full contract
@@ -2400,11 +2287,9 @@ case "$(cat "$opencode_start_argv")" in
   *'--prompt'*) bad "launch-reviewer-interactive-opencode-agent-start-no-prompt-flag: $(cat "$opencode_start_argv")" ;;
   *) pass launch-reviewer-interactive-opencode-agent-start-no-prompt-flag ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$LRI_RECORD_DIR/agent-prompt.w2:p12.text" 2>/dev/null)" = "opencode review prompt" ] && pass launch-reviewer-interactive-opencode-agent-prompt-carries-full-contract || bad "launch-reviewer-interactive-opencode-agent-prompt-carries-full-contract: $(cat "$LRI_RECORD_DIR/agent-prompt.w2:p12.text" 2>/dev/null)"
+if [ "$(cat "$LRI_RECORD_DIR/agent-prompt.w2:p12.text" 2>/dev/null)" = "opencode review prompt" ]; then pass launch-reviewer-interactive-opencode-agent-prompt-carries-full-contract; else bad "launch-reviewer-interactive-opencode-agent-prompt-carries-full-contract: $(cat "$LRI_RECORD_DIR/agent-prompt.w2:p12.text" 2>/dev/null)"; fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$lri_opencode_home/opencode-permission.json" ] && pass launch-reviewer-interactive-opencode-writes-permission-config || bad launch-reviewer-interactive-opencode-writes-permission-config
+if [ -s "$lri_opencode_home/opencode-permission.json" ]; then pass launch-reviewer-interactive-opencode-writes-permission-config; else bad launch-reviewer-interactive-opencode-writes-permission-config; fi
 case "$(cat "$lri_opencode_home/opencode-permission.json" 2>/dev/null)" in
   *'"edit": "deny"'*) bad "launch-reviewer-interactive-opencode-permission-config-allows-edit: reviewer would be unable to write review.md" ;;
   *) pass launch-reviewer-interactive-opencode-permission-config-allows-edit ;;
@@ -2486,10 +2371,9 @@ esac
 
 # 整份清單仍是合法 JSON，不是斷言比對到的片段恰好長得像字串、檔案其實
 # 已經壞掉
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-jq empty "$lri_opencode_home/opencode-permission.json" >/dev/null 2>&1 \
-  && pass launch-reviewer-interactive-opencode-permission-config-valid-json \
-  || bad launch-reviewer-interactive-opencode-permission-config-valid-json
+if jq empty "$lri_opencode_home/opencode-permission.json" >/dev/null 2>&1; then pass launch-reviewer-interactive-opencode-permission-config-valid-json
+else bad launch-reviewer-interactive-opencode-permission-config-valid-json
+fi
 
 # --- agy: no --print-timeout (no interactive-mode equivalent exists);
 # --add-dir names only reviewer_workdir, never the worktree path too;
@@ -2503,8 +2387,7 @@ printf 'agy review prompt' > "$LRI_ROOT/agy.prompt"
 
 lri_agy_out="$(launch_reviewer_interactive agy w28:p1 "$LRI_WT" \
   "$lri_agy_workdir" "$lri_agy_home" "$LRI_ROOT/agy.prompt" "")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_agy_out" = "$lri_agy_workdir/review.md" ] && pass launch-reviewer-interactive-agy-prints-output-file || bad "launch-reviewer-interactive-agy-prints-output-file: $lri_agy_out"
+if [ "$lri_agy_out" = "$lri_agy_workdir/review.md" ]; then pass launch-reviewer-interactive-agy-prints-output-file; else bad "launch-reviewer-interactive-agy-prints-output-file: $lri_agy_out"; fi
 
 agy_start_argv="$LRI_RECORD_DIR/agent-start.agy.argv"
 mapfile -t lri_agy_argv < "$agy_start_argv"
@@ -2518,8 +2401,7 @@ lri_agy_dashdash_idx=-1
 for idx in "${!lri_agy_argv[@]}"; do
   [ "${lri_agy_argv[$idx]}" = "--" ] && lri_agy_dashdash_idx=$idx
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$lri_agy_dashdash_idx" -ge 0 ] && [ "${lri_agy_argv[$((lri_agy_dashdash_idx + 1))]:-}" = "--add-dir" ] && pass launch-reviewer-interactive-agy-no-duplicate-executable-name || bad "launch-reviewer-interactive-agy-no-duplicate-executable-name: $(cat "$agy_start_argv")"
+if [ "$lri_agy_dashdash_idx" -ge 0 ] && [ "${lri_agy_argv[$((lri_agy_dashdash_idx + 1))]:-}" = "--add-dir" ]; then pass launch-reviewer-interactive-agy-no-duplicate-executable-name; else bad "launch-reviewer-interactive-agy-no-duplicate-executable-name: $(cat "$agy_start_argv")"; fi
 case "$(cat "$agy_start_argv")" in
   *'--print-timeout'*) bad "launch-reviewer-interactive-agy-no-print-timeout: $(cat "$agy_start_argv")" ;;
   *) pass launch-reviewer-interactive-agy-no-print-timeout ;;
@@ -2530,8 +2412,7 @@ for idx in "${!lri_agy_argv[@]}"; do
     add_dir_values+=("${lri_agy_argv[$((idx + 1))]:-}")
   fi
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "${#add_dir_values[@]}" -eq 1 ] && [ "${add_dir_values[0]}" = "$lri_agy_workdir" ] && pass launch-reviewer-interactive-agy-add-dir-reviewer-workdir-only || bad "launch-reviewer-interactive-agy-add-dir-reviewer-workdir-only: ${add_dir_values[*]:-<none>}"
+if [ "${#add_dir_values[@]}" -eq 1 ] && [ "${add_dir_values[0]}" = "$lri_agy_workdir" ]; then pass launch-reviewer-interactive-agy-add-dir-reviewer-workdir-only; else bad "launch-reviewer-interactive-agy-add-dir-reviewer-workdir-only: ${add_dir_values[*]:-<none>}"; fi
 case "$(cat "$agy_start_argv")" in
   *"$LRI_WT"*) bad "launch-reviewer-interactive-agy-add-dir-excludes-worktree: $(cat "$agy_start_argv")" ;;
   *) pass launch-reviewer-interactive-agy-add-dir-excludes-worktree ;;
@@ -2554,8 +2435,7 @@ case "$(cat "$agy_start_argv")" in
   *'--prompt-interactive'*) bad "launch-reviewer-interactive-agy-agent-start-no-prompt-interactive: $(cat "$agy_start_argv")" ;;
   *) pass launch-reviewer-interactive-agy-agent-start-no-prompt-interactive ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$LRI_RECORD_DIR/agent-prompt.w28:p1.text" 2>/dev/null)" = "agy review prompt" ] && pass launch-reviewer-interactive-agy-agent-prompt-carries-full-contract || bad "launch-reviewer-interactive-agy-agent-prompt-carries-full-contract: $(cat "$LRI_RECORD_DIR/agent-prompt.w28:p1.text" 2>/dev/null)"
+if [ "$(cat "$LRI_RECORD_DIR/agent-prompt.w28:p1.text" 2>/dev/null)" = "agy review prompt" ]; then pass launch-reviewer-interactive-agy-agent-prompt-carries-full-contract; else bad "launch-reviewer-interactive-agy-agent-prompt-carries-full-contract: $(cat "$LRI_RECORD_DIR/agent-prompt.w28:p1.text" 2>/dev/null)"; fi
 
 # --- regression guard: across all calls above, `herdr pane read` must
 # never have been invoked at all -- it was the readiness gate the
@@ -2602,8 +2482,7 @@ esac
 # specific attempt (see this section's own top comment on why the
 # pane-id-keyed recording, not the kind-keyed one, is what a single
 # attempt's own absence can be proven from).
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$LRI_RECORD_DIR/agent-prompt.w1X:pO.text" ] && pass launch-reviewer-interactive-prompt-too-large-no-prompt-sent || bad launch-reviewer-interactive-prompt-too-large-no-prompt-sent
+if [ ! -f "$LRI_RECORD_DIR/agent-prompt.w1X:pO.text" ]; then pass launch-reviewer-interactive-prompt-too-large-no-prompt-sent; else bad launch-reviewer-interactive-prompt-too-large-no-prompt-sent; fi
 
 # --- prompt file missing: reject explicitly, before ever calling herdr at
 # all. This function's only real caller (cmd_launch) invokes it as `if !
@@ -2630,8 +2509,7 @@ case "$lri_missing_prompt_err" in
   *"$LRI_ROOT/does-not-exist.prompt"*) pass launch-reviewer-interactive-missing-prompt-message-names-file ;;
   *) bad "launch-reviewer-interactive-missing-prompt-message-names-file: $lri_missing_prompt_err" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$LRI_RECORD_DIR/agent-prompt.w1X:pM.text" ] && pass launch-reviewer-interactive-missing-prompt-no-prompt-sent || bad "launch-reviewer-interactive-missing-prompt-no-prompt-sent: $(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pM.text" 2>/dev/null)"
+if [ ! -f "$LRI_RECORD_DIR/agent-prompt.w1X:pM.text" ]; then pass launch-reviewer-interactive-missing-prompt-no-prompt-sent; else bad "launch-reviewer-interactive-missing-prompt-no-prompt-sent: $(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pM.text" 2>/dev/null)"; fi
 
 unset HERDR_RECORD_DIR
 export PATH="$saved_path"
@@ -2788,20 +2666,17 @@ if HERDR_STUB_START_OK=0 launch_reviewer_interactive codex "w9:pRecover" "$LRIRE
 else
   bad "launch_reviewer_interactive 未從 agent start 失敗但 pane 存活的情境復原: $(cat "$LRIRECOVER_ROOT/recover.err")"
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q 'treating as started' "$LRIRECOVER_ROOT/recover.err" \
-  && pass "launch_reviewer_interactive 復原時印出的訊息如實反映『視為已啟動』，不是與事實相反的失敗訊息" \
-  || bad "launch_reviewer_interactive 復原時的訊息不正確: $(cat "$LRIRECOVER_ROOT/recover.err")"
+if grep -q 'treating as started' "$LRIRECOVER_ROOT/recover.err"; then pass "launch_reviewer_interactive 復原時印出的訊息如實反映『視為已啟動』，不是與事實相反的失敗訊息"
+else bad "launch_reviewer_interactive 復原時的訊息不正確: $(cat "$LRIRECOVER_ROOT/recover.err")"
+fi
 # codex 是兩段式：agent start 復原之後仍要照常送出第二段 agent prompt。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$LRIRECOVER_RECORD_DIR/agent-prompt.w9:pRecover.text" ] \
-  && pass "launch_reviewer_interactive 復原後仍對 codex 送出第二段 agent prompt" \
-  || bad "launch_reviewer_interactive 復原後未對 codex 送出 agent prompt"
+if [ -s "$LRIRECOVER_RECORD_DIR/agent-prompt.w9:pRecover.text" ]; then pass "launch_reviewer_interactive 復原後仍對 codex 送出第二段 agent prompt"
+else bad "launch_reviewer_interactive 復原後未對 codex 送出 agent prompt"
+fi
 # .git-status-before-codex 仍要照常寫出，同一個復原路徑必須走完剩下的正常流程。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$LRIRECOVER_ROOT/.git-status-before-codex" ] \
-  && pass "launch_reviewer_interactive 復原後仍寫出 .git-status-before-codex" \
-  || bad "launch_reviewer_interactive 復原後未寫出 .git-status-before-codex"
+if [ -f "$LRIRECOVER_ROOT/.git-status-before-codex" ]; then pass "launch_reviewer_interactive 復原後仍寫出 .git-status-before-codex"
+else bad "launch_reviewer_interactive 復原後未寫出 .git-status-before-codex"
+fi
 
 # ---- 對照組：agent start 回報失敗，agent list 也確實查無這格 pane -- 這才
 # 是真正的派送失敗，既有行為不變 ----
@@ -2816,14 +2691,12 @@ if HERDR_STUB_START_OK=0 launch_reviewer_interactive codex "w9:pGenuineFail" "$L
 else
   pass "launch_reviewer_interactive agent list 確實查無這格 pane 時仍照既有行為回傳失敗"
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q 'herdr failed to start' "$LRIRECOVER_ROOT/genuine-fail.err" \
-  && pass "launch_reviewer_interactive 真正派送失敗時訊息維持既有措辭" \
-  || bad "launch_reviewer_interactive 真正派送失敗時的訊息不對: $(cat "$LRIRECOVER_ROOT/genuine-fail.err")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$LRIRECOVER_RECORD_DIR/agent-prompt.w9:pGenuineFail.text" ] \
-  && pass "launch_reviewer_interactive 真正派送失敗時不會送出 agent prompt" \
-  || bad "launch_reviewer_interactive 真正派送失敗時仍送出了 agent prompt"
+if grep -q 'herdr failed to start' "$LRIRECOVER_ROOT/genuine-fail.err"; then pass "launch_reviewer_interactive 真正派送失敗時訊息維持既有措辭"
+else bad "launch_reviewer_interactive 真正派送失敗時的訊息不對: $(cat "$LRIRECOVER_ROOT/genuine-fail.err")"
+fi
+if [ ! -s "$LRIRECOVER_RECORD_DIR/agent-prompt.w9:pGenuineFail.text" ]; then pass "launch_reviewer_interactive 真正派送失敗時不會送出 agent prompt"
+else bad "launch_reviewer_interactive 真正派送失敗時仍送出了 agent prompt"
+fi
 
 # ---- --timeout 旗標：四種 cli 的 agent start 呼叫現在都不該帶這個旗標
 # -- 缺陷 E 的回歸：端對端對真實 PR 實跑，claude 的 agent start 每次都吃
@@ -2843,24 +2716,21 @@ mkdir -p "$LRIRECOVER_WORKDIR3"
 export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":[]}}'
 HERDR_STUB_START_OK=1 launch_reviewer_interactive claude "w9:pTimeout" "$LRIRECOVER_WT" \
   "$LRIRECOVER_WORKDIR3" "$LRIRECOVER_HOME3" "$LRIRECOVER_PROMPT" "" >/dev/null 2>&1 || true
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.claude.argv" \
-  && pass "launch_reviewer_interactive claude 的 agent start 不再帶 --timeout" \
-  || bad "launch_reviewer_interactive claude 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.claude.argv" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.codex.argv" \
-  && pass "launch_reviewer_interactive codex 的 agent start 不再帶 --timeout" \
-  || bad "launch_reviewer_interactive codex 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.codex.argv" 2>/dev/null)"
+if ! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.claude.argv"; then pass "launch_reviewer_interactive claude 的 agent start 不再帶 --timeout"
+else bad "launch_reviewer_interactive claude 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.claude.argv" 2>/dev/null)"
+fi
+if ! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.codex.argv"; then pass "launch_reviewer_interactive codex 的 agent start 不再帶 --timeout"
+else bad "launch_reviewer_interactive codex 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.codex.argv" 2>/dev/null)"
+fi
 
 LRIRECOVER_HOME4="$LRIRECOVER_ROOT/home-opencode4"
 LRIRECOVER_WORKDIR4="$LRIRECOVER_ROOT/workdir-opencode4"
 mkdir -p "$LRIRECOVER_WORKDIR4"
 HERDR_STUB_START_OK=1 launch_reviewer_interactive opencode "w9:pTimeout2" "$LRIRECOVER_WT" \
   "$LRIRECOVER_WORKDIR4" "$LRIRECOVER_HOME4" "$LRIRECOVER_PROMPT" "" >/dev/null 2>&1 || true
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.opencode.argv" \
-  && pass "launch_reviewer_interactive opencode 的 agent start 不再帶 --timeout" \
-  || bad "launch_reviewer_interactive opencode 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.opencode.argv" 2>/dev/null)"
+if ! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.opencode.argv"; then pass "launch_reviewer_interactive opencode 的 agent start 不再帶 --timeout"
+else bad "launch_reviewer_interactive opencode 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.opencode.argv" 2>/dev/null)"
+fi
 
 LRIRECOVER_HOME5="$LRIRECOVER_ROOT/home-agy5"
 LRIRECOVER_WORKDIR5="$LRIRECOVER_ROOT/workdir-agy5"
@@ -2868,10 +2738,9 @@ LRIRECOVER_WT5="$LRIRECOVER_WT"
 mkdir -p "$LRIRECOVER_WORKDIR5"
 HERDR_STUB_START_OK=1 launch_reviewer_interactive agy "w9:pTimeout3" "$LRIRECOVER_WT5" \
   "$LRIRECOVER_WORKDIR5" "$LRIRECOVER_HOME5" "$LRIRECOVER_PROMPT" "" >/dev/null 2>&1 || true
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.agy.argv" \
-  && pass "launch_reviewer_interactive agy 的 agent start 不再帶 --timeout" \
-  || bad "launch_reviewer_interactive agy 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.agy.argv" 2>/dev/null)"
+if ! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.agy.argv"; then pass "launch_reviewer_interactive agy 的 agent start 不再帶 --timeout"
+else bad "launch_reviewer_interactive agy 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.agy.argv" 2>/dev/null)"
+fi
 
 unset HERDR_RECORD_DIR LRIRECOVER_AGENT_LIST_JSON
 export PATH="$saved_path"
@@ -3000,14 +2869,12 @@ F4_DISPATCHED_AT="$(cat "$F4_ROOT/logs/.dispatched-at" 2>/dev/null)" || F4_DISPA
 case "$F4_DISPATCHED_AT" in
   ''|*[!0-9]*) bad "cmd_launch 沒有寫出數字的 logs/.dispatched-at: '$F4_DISPATCHED_AT'" ;;
   *)
-    # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-    [ "$F4_DISPATCHED_AT" -ge "$F4_BEFORE_LAUNCH" ] && [ "$F4_DISPATCHED_AT" -le "$F4_AFTER_LAUNCH" ] \
-      && pass "cmd_launch 把派出時刻寫入 logs/.dispatched-at（落在 launch 前後時間之內）" \
-      || bad "cmd_launch 的 logs/.dispatched-at 不在 launch 前後時間之內: $F4_DISPATCHED_AT（$F4_BEFORE_LAUNCH..$F4_AFTER_LAUNCH）"
-    # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-    [ "$F4_DISPATCHED_AT" -le "$(cat "$F4_ROOT/.last-working-claude" 2>/dev/null || printf 0)" ] \
-      && pass "cmd_launch 的 logs/.dispatched-at 不晚於第一個 reviewer 的派出基準" \
-      || bad "cmd_launch 的 logs/.dispatched-at 晚於 .last-working-claude: $F4_DISPATCHED_AT"
+    if [ "$F4_DISPATCHED_AT" -ge "$F4_BEFORE_LAUNCH" ] && [ "$F4_DISPATCHED_AT" -le "$F4_AFTER_LAUNCH" ]; then pass "cmd_launch 把派出時刻寫入 logs/.dispatched-at（落在 launch 前後時間之內）"
+    else bad "cmd_launch 的 logs/.dispatched-at 不在 launch 前後時間之內: $F4_DISPATCHED_AT（$F4_BEFORE_LAUNCH..$F4_AFTER_LAUNCH）"
+    fi
+    if [ "$F4_DISPATCHED_AT" -le "$(cat "$F4_ROOT/.last-working-claude" 2>/dev/null || printf 0)" ]; then pass "cmd_launch 的 logs/.dispatched-at 不晚於第一個 reviewer 的派出基準"
+    else bad "cmd_launch 的 logs/.dispatched-at 晚於 .last-working-claude: $F4_DISPATCHED_AT"
+    fi
     ;;
 esac
 
@@ -3033,14 +2900,12 @@ else
   F5_RC=$?
 fi
 chmod u+w "$F5_ROOT/logs" 2>/dev/null || true
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$F5_RC" -eq 1 ] && [ ! -e "$F5_ROOT/.pane-claude" ] && [[ "$F5_OUT" == *'.dispatched-at'* ]] \
-  && pass "cmd_launch 寫不出 logs/.dispatched-at 時以結束碼 1 失敗，且沒有派出任何 reviewer" \
-  || bad "cmd_launch 寫不出 logs/.dispatched-at 時處置不正確: rc=$F5_RC out='$F5_OUT'"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$F5_ROOT/worktree" ] \
-  && pass "cmd_launch 寫不出 logs/.dispatched-at 時照致命路徑清理（worktree 已移除）" \
-  || bad "cmd_launch 寫不出 logs/.dispatched-at 時沒有清理 worktree"
+if [ "$F5_RC" -eq 1 ] && [ ! -e "$F5_ROOT/.pane-claude" ] && [[ "$F5_OUT" == *'.dispatched-at'* ]]; then pass "cmd_launch 寫不出 logs/.dispatched-at 時以結束碼 1 失敗，且沒有派出任何 reviewer"
+else bad "cmd_launch 寫不出 logs/.dispatched-at 時處置不正確: rc=$F5_RC out='$F5_OUT'"
+fi
+if [ ! -e "$F5_ROOT/worktree" ]; then pass "cmd_launch 寫不出 logs/.dispatched-at 時照致命路徑清理（worktree 已移除）"
+else bad "cmd_launch 寫不出 logs/.dispatched-at 時沒有清理 worktree"
+fi
 
 # 重跑防護：同一個 --base-dir 第二次 launch 時 .dispatched-at 已存在（第一
 # 次 launch 之後它在唯讀的 logs 裡）。必須以結束碼 2 拒絕，且不得呼叫任何
@@ -3064,14 +2929,12 @@ else
   F6_RC=$?
 fi
 chmod -R u+w "$F6_ROOT/logs" 2>/dev/null || true
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$F6_RC" -eq 2 ] && [[ "$F6_OUT" == *'.dispatched-at'* ]] && [[ "$F6_OUT" != *'dispatch failed'* ]] \
-  && pass "cmd_launch 對已派出過的執行目錄（.dispatched-at 已存在）以結束碼 2 拒絕，不走致命清理" \
-  || bad "cmd_launch 重跑防護處置不正確: rc=$F6_RC out='$F6_OUT'"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -d "$F6_ROOT/worktree" ] && [ ! -e "$F6_ROOT/.pane-claude" ] \
-  && pass "cmd_launch 重跑防護拒絕後 worktree 仍在，且沒有派出任何 reviewer" \
-  || bad "cmd_launch 重跑防護拒絕後 worktree 被動到或有 reviewer 被派出"
+if [ "$F6_RC" -eq 2 ] && [[ "$F6_OUT" == *'.dispatched-at'* ]] && [[ "$F6_OUT" != *'dispatch failed'* ]]; then pass "cmd_launch 對已派出過的執行目錄（.dispatched-at 已存在）以結束碼 2 拒絕，不走致命清理"
+else bad "cmd_launch 重跑防護處置不正確: rc=$F6_RC out='$F6_OUT'"
+fi
+if [ -d "$F6_ROOT/worktree" ] && [ ! -e "$F6_ROOT/.pane-claude" ]; then pass "cmd_launch 重跑防護拒絕後 worktree 仍在，且沒有派出任何 reviewer"
+else bad "cmd_launch 重跑防護拒絕後 worktree 被動到或有 reviewer 被派出"
+fi
 
 # 佐證：.pr-url 這時已經確實變成改寫後的值，證明竄改真的發生過 -- 不是
 # 底下那筆斷言沒踩到竄改分支才通過。
@@ -3151,12 +3014,10 @@ chmod -R a-w "$REAP_ALIVE_BASE/worktree"
 
 (cd "$REAP_ROOT/work" && _reap_stale_run_dirs "$REAP_CURRENT_BASE")
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$REAP_STALE_BASE/worktree" ] && pass reap-stale-run-dirs-removes-dead-worktree || bad reap-stale-run-dirs-removes-dead-worktree
+if [ ! -e "$REAP_STALE_BASE/worktree" ]; then pass reap-stale-run-dirs-removes-dead-worktree; else bad reap-stale-run-dirs-removes-dead-worktree; fi
 # A sibling whose PID ($$, this very test script) is still very much
 # alive must be left completely untouched.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -e "$REAP_ALIVE_BASE/worktree" ] && pass reap-stale-run-dirs-preserves-live-worktree || bad reap-stale-run-dirs-preserves-live-worktree
+if [ -e "$REAP_ALIVE_BASE/worktree" ]; then pass reap-stale-run-dirs-preserves-live-worktree; else bad reap-stale-run-dirs-preserves-live-worktree; fi
 chmod -R u+w "$REAP_ALIVE_BASE/worktree" 2>/dev/null || true
 (cd "$REAP_ROOT/work" && git worktree remove --force "$REAP_ALIVE_BASE/worktree") >/dev/null 2>&1 || true
 
@@ -3176,9 +3037,9 @@ printf '%s\n' "$REAP_SUPERVISOR_ALIVE_PID" > "$REAP_SUPERVISED_BASE/.supervisor.
 
 (cd "$REAP_ROOT/work" && _reap_stale_run_dirs "$REAP_CURRENT_BASE")
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -e "$REAP_SUPERVISED_BASE/worktree" ] && pass "reap-stale-run-dirs-live-supervisor-pid-overrides-dead-trailing-pid" \
-  || bad "reap-stale-run-dirs-live-supervisor-pid-overrides-dead-trailing-pid: worktree 仍被回收，即使 .supervisor.pid 存活"
+if [ -e "$REAP_SUPERVISED_BASE/worktree" ]; then pass "reap-stale-run-dirs-live-supervisor-pid-overrides-dead-trailing-pid"
+else bad "reap-stale-run-dirs-live-supervisor-pid-overrides-dead-trailing-pid: worktree 仍被回收，即使 .supervisor.pid 存活"
+fi
 
 kill "$REAP_SUPERVISOR_ALIVE_PID" 2>/dev/null || true
 wait "$REAP_SUPERVISOR_ALIVE_PID" 2>/dev/null || true
@@ -3197,9 +3058,9 @@ date -u +%s > "$REAP_GAP_BASE/.prepared-at"
 
 (cd "$REAP_ROOT/work" && _reap_stale_run_dirs "$REAP_CURRENT_BASE")
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -e "$REAP_GAP_BASE/worktree" ] && pass "reap-stale-run-dirs-fresh-prepared-at-within-grace-preserves-worktree" \
-  || bad "reap-stale-run-dirs-fresh-prepared-at-within-grace-preserves-worktree: worktree 在寬限期內就被回收了"
+if [ -e "$REAP_GAP_BASE/worktree" ]; then pass "reap-stale-run-dirs-fresh-prepared-at-within-grace-preserves-worktree"
+else bad "reap-stale-run-dirs-fresh-prepared-at-within-grace-preserves-worktree: worktree 在寬限期內就被回收了"
+fi
 
 # --- 同一個空窗形狀，但 .prepared-at 已經過了寬限期：必須落回原本的
 # trailing-PID 檢查，照舊被回收 -- 這條保住的是「準備了卻從未啟動」的
@@ -3215,9 +3076,9 @@ printf '%s\n' "$(( $(date -u +%s) - RUN_DIR_STALE_GRACE_SECONDS - 60 ))" > "$REA
 
 (cd "$REAP_ROOT/work" && _reap_stale_run_dirs "$REAP_CURRENT_BASE")
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$REAP_EXPIRED_BASE/worktree" ] && pass "reap-stale-run-dirs-expired-prepared-at-falls-back-to-dead-pid-reap" \
-  || bad "reap-stale-run-dirs-expired-prepared-at-falls-back-to-dead-pid-reap: 過了寬限期仍未回收"
+if [ ! -e "$REAP_EXPIRED_BASE/worktree" ]; then pass "reap-stale-run-dirs-expired-prepared-at-falls-back-to-dead-pid-reap"
+else bad "reap-stale-run-dirs-expired-prepared-at-falls-back-to-dead-pid-reap: 過了寬限期仍未回收"
+fi
 
 chmod -R u+w "$REAP_GAP_BASE/worktree" 2>/dev/null || true
 (cd "$REAP_ROOT/work" && git worktree remove --force "$REAP_GAP_BASE/worktree") >/dev/null 2>&1 || true
@@ -3240,8 +3101,7 @@ LOGEOF
 
 out="$(_extract_review_content "$EXTRACT_FIXTURE_DIR/good.log")"
 expected=$'line one of the review\nline two of the review'
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "$expected" ] && pass extract-review-content-happy-path || bad extract-review-content-happy-path
+if [ "$out" = "$expected" ]; then pass extract-review-content-happy-path; else bad extract-review-content-happy-path; fi
 
 cat > "$EXTRACT_FIXTURE_DIR/no-begin.log" <<'LOGEOF'
 no begin marker anywhere in here
@@ -3252,8 +3112,7 @@ if out="$(_extract_review_content "$EXTRACT_FIXTURE_DIR/no-begin.log" 2>/dev/nul
 else
   pass extract-review-content-missing-begin
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass extract-review-content-missing-begin-no-output || bad extract-review-content-missing-begin-no-output
+if [ -z "$out" ]; then pass extract-review-content-missing-begin-no-output; else bad extract-review-content-missing-begin-no-output; fi
 
 cat > "$EXTRACT_FIXTURE_DIR/no-end.log" <<'LOGEOF'
 ===PR-REVIEW-BY-MULTI-AGENTS-BEGIN===
@@ -3309,8 +3168,7 @@ if out="$(_extract_review_content "$EXTRACT_FIXTURE_DIR/adjacent-markers.log" 2>
 else
   pass extract-review-content-rejects-adjacent-markers
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass extract-review-content-rejects-adjacent-markers-no-output || bad extract-review-content-rejects-adjacent-markers-no-output
+if [ -z "$out" ]; then pass extract-review-content-rejects-adjacent-markers-no-output; else bad extract-review-content-rejects-adjacent-markers-no-output; fi
 # Specifically guards against the exact failure mode found: the END
 # marker line itself must never leak out as if it were "content".
 case "$out" in
@@ -3340,8 +3198,7 @@ line two of the review
 REVIEWEOF
 out="$(_extract_reviewer_output "$EXTRACTOUT_FIXTURE_DIR/good.md")"
 expected=$'line one of the review\nline two of the review'
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "$expected" ] && pass extract-reviewer-output-happy-path || bad "extract-reviewer-output-happy-path: $out"
+if [ "$out" = "$expected" ]; then pass extract-reviewer-output-happy-path; else bad "extract-reviewer-output-happy-path: $out"; fi
 
 if out="$(_extract_reviewer_output "$EXTRACTOUT_FIXTURE_DIR/does-not-exist.md" 2>/dev/null)"; then
   bad extract-reviewer-output-missing-file
@@ -3502,16 +3359,12 @@ printf 'agent_not_found' > "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-c"
 
 confirm_mix_stderr="$(_confirm_reviewers_working "$CONFIRM_MIX" 60 "claude:pane-a" "codex:pane-b" "agy:pane-c" 2>&1 >/dev/null)"
 confirm_mix_rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$confirm_mix_rc" -eq 0 ] && pass confirm-reviewers-working-never-fails || bad "confirm-reviewers-working-never-fails: rc=$confirm_mix_rc"
+if [ "$confirm_mix_rc" -eq 0 ]; then pass confirm-reviewers-working-never-fails; else bad "confirm-reviewers-working-never-fails: rc=$confirm_mix_rc"; fi
 
 CONFIRM_MIX_STATUS="$CONFIRM_MIX/.reviewer-confirm-status"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(awk '$1=="claude"{print $2}' "$CONFIRM_MIX_STATUS" 2>/dev/null)" = working ] && pass confirm-reviewers-working-status-working || bad "confirm-reviewers-working-status-working: $(cat "$CONFIRM_MIX_STATUS" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(awk '$1=="codex"{print $2}' "$CONFIRM_MIX_STATUS" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-status-timeout-is-unconfirmed || bad "confirm-reviewers-working-status-timeout-is-unconfirmed: $(cat "$CONFIRM_MIX_STATUS" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(awk '$1=="agy"{print $2}' "$CONFIRM_MIX_STATUS" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-status-agent-not-found-is-unconfirmed || bad "confirm-reviewers-working-status-agent-not-found-is-unconfirmed: $(cat "$CONFIRM_MIX_STATUS" 2>/dev/null)"
+if [ "$(awk '$1=="claude"{print $2}' "$CONFIRM_MIX_STATUS" 2>/dev/null)" = working ]; then pass confirm-reviewers-working-status-working; else bad "confirm-reviewers-working-status-working: $(cat "$CONFIRM_MIX_STATUS" 2>/dev/null)"; fi
+if [ "$(awk '$1=="codex"{print $2}' "$CONFIRM_MIX_STATUS" 2>/dev/null)" = unconfirmed ]; then pass confirm-reviewers-working-status-timeout-is-unconfirmed; else bad "confirm-reviewers-working-status-timeout-is-unconfirmed: $(cat "$CONFIRM_MIX_STATUS" 2>/dev/null)"; fi
+if [ "$(awk '$1=="agy"{print $2}' "$CONFIRM_MIX_STATUS" 2>/dev/null)" = unconfirmed ]; then pass confirm-reviewers-working-status-agent-not-found-is-unconfirmed; else bad "confirm-reviewers-working-status-agent-not-found-is-unconfirmed: $(cat "$CONFIRM_MIX_STATUS" 2>/dev/null)"; fi
 
 # 兩種失敗的錯誤碼確實讀得出來、分辨得出來 -- 只出現在 stderr 的診斷訊息
 # 裡，never stdout（下面單獨驗證 stdout 本身是空的）。
@@ -3532,8 +3385,7 @@ case "$(cat "$CONFIRM_MIX_STATUS" 2>/dev/null)" in
   *) pass confirm-reviewers-working-never-leaks-terminal-title-to-status-file ;;
 esac
 confirm_stdout_only="$(_confirm_reviewers_working "$CONFIRM_MIX" 60 "claude:pane-a" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$confirm_stdout_only" ] && pass confirm-reviewers-working-prints-nothing-to-stdout || bad "confirm-reviewers-working-prints-nothing-to-stdout: $confirm_stdout_only"
+if [ -z "$confirm_stdout_only" ]; then pass confirm-reviewers-working-prints-nothing-to-stdout; else bad "confirm-reviewers-working-prints-nothing-to-stdout: $confirm_stdout_only"; fi
 
 # --- 每一格各自獨立算一次逾時（本回合要修的缺陷）：前一格花掉多少真實
 # 時間，不會讓下一格拿到的 --timeout 縮水 -- pane-fast 拿到的值必須等於
@@ -3555,10 +3407,9 @@ confirm_budget_pane_fast_timeout="$(cat "$CONFIRM_RECORD_DIR/agent-wait-timeout-
 # 以它自己的嘗試次數（1 次原始 + REVIEWER_PROMPT_RESEND_LIMIT 次重送機
 # 會）算出來的固定值，和 pane-slow 花了多久無關。
 confirm_budget_expected_fast_ms=$(( (5 * 1000) / (REVIEWER_PROMPT_RESEND_LIMIT + 1) ))
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$confirm_budget_pane_fast_timeout" = "$confirm_budget_expected_fast_ms" ] \
-  && pass confirm-reviewers-working-gives-each-reviewer-its-own-independent-budget \
-  || bad "confirm-reviewers-working-gives-each-reviewer-its-own-independent-budget: pane-fast 拿到 ${confirm_budget_pane_fast_timeout:-<空>}ms，預期 ${confirm_budget_expected_fast_ms}ms"
+if [ "$confirm_budget_pane_fast_timeout" = "$confirm_budget_expected_fast_ms" ]; then pass confirm-reviewers-working-gives-each-reviewer-its-own-independent-budget
+else bad "confirm-reviewers-working-gives-each-reviewer-its-own-independent-budget: pane-fast 拿到 ${confirm_budget_pane_fast_timeout:-<空>}ms，預期 ${confirm_budget_expected_fast_ms}ms"
+fi
 
 # --- 迴歸重現（本回合要修的缺陷，使用者端對端實跑量到的正是這個）：
 # 前面的家吃光自己的預算導致逾時，不得讓排在後面的家連確認機會都沒有 --
@@ -3582,16 +3433,13 @@ rm -f "$CONFIRM_RECORD_DIR/agent-wait-outcome.pane-after"
 
 _confirm_reviewers_working "$CONFIRM_EXHAUST" 1 "claude:pane-slow2" "codex:pane-after" 2>/dev/null
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-after" ] && pass confirm-reviewers-working-later-reviewer-still-queried-after-earlier-one-exhausts-its-own-budget || bad confirm-reviewers-working-later-reviewer-still-queried-after-earlier-one-exhausts-its-own-budget
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(awk '$1=="codex"{print $2}' "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = working ] && pass confirm-reviewers-working-later-reviewer-not-starved-by-earlier-slow-one || bad "confirm-reviewers-working-later-reviewer-not-starved-by-earlier-slow-one: $(cat "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"
+if [ -f "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-after" ]; then pass confirm-reviewers-working-later-reviewer-still-queried-after-earlier-one-exhausts-its-own-budget; else bad confirm-reviewers-working-later-reviewer-still-queried-after-earlier-one-exhausts-its-own-budget; fi
+if [ "$(awk '$1=="codex"{print $2}' "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = working ]; then pass confirm-reviewers-working-later-reviewer-not-starved-by-earlier-slow-one; else bad "confirm-reviewers-working-later-reviewer-not-starved-by-earlier-slow-one: $(cat "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"; fi
 
 # claude 自己那一格是真的逾時（1 秒預算、只有一次機會，stub 固定回報
 # timeout），修正後仍然正確記為 unconfirmed -- 證明這個修正沒有連帶讓
 # 「真的卡住」的偵測跟著失效。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(awk '$1=="claude"{print $2}' "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-still-flags-a-genuinely-stuck-reviewer || bad "confirm-reviewers-working-still-flags-a-genuinely-stuck-reviewer: $(cat "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"
+if [ "$(awk '$1=="claude"{print $2}' "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ]; then pass confirm-reviewers-working-still-flags-a-genuinely-stuck-reviewer; else bad "confirm-reviewers-working-still-flags-a-genuinely-stuck-reviewer: $(cat "$CONFIRM_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"; fi
 
 # --- 重送：codex/opencode/agy 這三家第一次 agent wait 沒確認到，這個函式
 # 要重送同一份 prompt 檔的內容，再重新確認一次 -- 這裡直接讓重送生效
@@ -3608,10 +3456,8 @@ rm -f "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-ok"
 
 _confirm_reviewers_working "$CONFIRM_RESEND_OK" 60 "codex:pane-resend-ok" 2>/dev/null
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(awk '$1=="codex"{print $2}' "$CONFIRM_RESEND_OK/.reviewer-confirm-status" 2>/dev/null)" = working ] && pass confirm-reviewers-working-resend-recovers-a-dropped-prompt || bad "confirm-reviewers-working-resend-recovers-a-dropped-prompt: $(cat "$CONFIRM_RESEND_OK/.reviewer-confirm-status" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-ok" 2>/dev/null)" = "1" ] && pass confirm-reviewers-working-resend-stops-once-it-succeeds || bad "confirm-reviewers-working-resend-stops-once-it-succeeds: $(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-ok" 2>/dev/null)"
+if [ "$(awk '$1=="codex"{print $2}' "$CONFIRM_RESEND_OK/.reviewer-confirm-status" 2>/dev/null)" = working ]; then pass confirm-reviewers-working-resend-recovers-a-dropped-prompt; else bad "confirm-reviewers-working-resend-recovers-a-dropped-prompt: $(cat "$CONFIRM_RESEND_OK/.reviewer-confirm-status" 2>/dev/null)"; fi
+if [ "$(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-ok" 2>/dev/null)" = "1" ]; then pass confirm-reviewers-working-resend-stops-once-it-succeeds; else bad "confirm-reviewers-working-resend-stops-once-it-succeeds: $(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-ok" 2>/dev/null)"; fi
 
 # --- 重送用光上限（REVIEWER_PROMPT_RESEND_LIMIT 次）仍未確認到 working
 # 時，才真正記為 unconfirmed -- 且重送次數必須剛好等於這個常數，不多也
@@ -3626,10 +3472,8 @@ rm -f "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-exhaust"
 
 _confirm_reviewers_working "$CONFIRM_RESEND_EXHAUST" 60 "opencode:pane-resend-exhaust" 2>/dev/null
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(awk '$1=="opencode"{print $2}' "$CONFIRM_RESEND_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-marks-unconfirmed-after-resend-limit-exhausted || bad "confirm-reviewers-working-marks-unconfirmed-after-resend-limit-exhausted: $(cat "$CONFIRM_RESEND_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-exhaust" 2>/dev/null)" = "$REVIEWER_PROMPT_RESEND_LIMIT" ] && pass confirm-reviewers-working-resends-exactly-up-to-the-limit || bad "confirm-reviewers-working-resends-exactly-up-to-the-limit: $(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-exhaust" 2>/dev/null), 應為 $REVIEWER_PROMPT_RESEND_LIMIT"
+if [ "$(awk '$1=="opencode"{print $2}' "$CONFIRM_RESEND_EXHAUST/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ]; then pass confirm-reviewers-working-marks-unconfirmed-after-resend-limit-exhausted; else bad "confirm-reviewers-working-marks-unconfirmed-after-resend-limit-exhausted: $(cat "$CONFIRM_RESEND_EXHAUST/.reviewer-confirm-status" 2>/dev/null)"; fi
+if [ "$(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-exhaust" 2>/dev/null)" = "$REVIEWER_PROMPT_RESEND_LIMIT" ]; then pass confirm-reviewers-working-resends-exactly-up-to-the-limit; else bad "confirm-reviewers-working-resends-exactly-up-to-the-limit: $(cat "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-resend-exhaust" 2>/dev/null), 應為 $REVIEWER_PROMPT_RESEND_LIMIT"; fi
 
 # --- 重送不得變成送完就當作沒事發生（本回合要修的另一個缺陷）：最後一
 # 次重送之後那次 agent wait，拿到的 --timeout 必須是這一格自己預算切分
@@ -3637,10 +3481,9 @@ _confirm_reviewers_working "$CONFIRM_RESEND_EXHAUST" 60 "opencode:pane-resend-ex
 # 修正前，舊的共用倒數式預算會讓最後一次重送後的那次 agent wait 幾乎沒
 # 有觀察時間就被判定 unconfirmed。---
 confirm_resend_expected_ms=$(( (60 * 1000) / (REVIEWER_PROMPT_RESEND_LIMIT + 1) ))
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-resend-exhaust" 2>/dev/null)" = "$confirm_resend_expected_ms" ] \
-  && pass confirm-reviewers-working-resend-gets-a-real-observation-window \
-  || bad "confirm-reviewers-working-resend-gets-a-real-observation-window: $(cat "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-resend-exhaust" 2>/dev/null)ms，預期 ${confirm_resend_expected_ms}ms"
+if [ "$(cat "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-resend-exhaust" 2>/dev/null)" = "$confirm_resend_expected_ms" ]; then pass confirm-reviewers-working-resend-gets-a-real-observation-window
+else bad "confirm-reviewers-working-resend-gets-a-real-observation-window: $(cat "$CONFIRM_RECORD_DIR/agent-wait-timeout-ms.pane-resend-exhaust" 2>/dev/null)ms，預期 ${confirm_resend_expected_ms}ms"
+fi
 
 # --- claude 絕不重送:第一次 agent wait 沒確認到就直接記為 unconfirmed,
 # 不曾呼叫 agent prompt -- 它整個啟動已經在 launch_reviewer_interactive
@@ -3654,10 +3497,8 @@ rm -f "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-claude-noresend"
 
 _confirm_reviewers_working "$CONFIRM_CLAUDE_NO_RESEND" 60 "claude:pane-claude-noresend" 2>/dev/null
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(awk '$1=="claude"{print $2}' "$CONFIRM_CLAUDE_NO_RESEND/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ] && pass confirm-reviewers-working-claude-unconfirmed-on-failed-wait || bad "confirm-reviewers-working-claude-unconfirmed-on-failed-wait: $(cat "$CONFIRM_CLAUDE_NO_RESEND/.reviewer-confirm-status" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-claude-noresend" ] && pass confirm-reviewers-working-claude-never-resends || bad confirm-reviewers-working-claude-never-resends
+if [ "$(awk '$1=="claude"{print $2}' "$CONFIRM_CLAUDE_NO_RESEND/.reviewer-confirm-status" 2>/dev/null)" = unconfirmed ]; then pass confirm-reviewers-working-claude-unconfirmed-on-failed-wait; else bad "confirm-reviewers-working-claude-unconfirmed-on-failed-wait: $(cat "$CONFIRM_CLAUDE_NO_RESEND/.reviewer-confirm-status" 2>/dev/null)"; fi
+if [ ! -f "$CONFIRM_RECORD_DIR/agent-prompt-resend-count.pane-claude-noresend" ]; then pass confirm-reviewers-working-claude-never-resends; else bad confirm-reviewers-working-claude-never-resends; fi
 
 # --- 追加寫入失敗不得中止流程（本次要修的缺陷）：逐格結果原本用一支
 # 沒有防護的 `>>` append 寫進 $status_file，而 cmd_launch 是以裸呼叫
@@ -3712,13 +3553,11 @@ chmod u+w "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null || true
 
 # 先前成功寫入的那一格（claude）仍保有狀態欄位 -- 沒有被後面那格的失敗
 # 拖累消失。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(awk '$1=="claude"{print $2}' "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)" = working ] && pass confirm-reviewers-working-append-failure-keeps-earlier-successful-line || bad "confirm-reviewers-working-append-failure-keeps-earlier-successful-line: $(cat "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)"
+if [ "$(awk '$1=="claude"{print $2}' "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)" = working ]; then pass confirm-reviewers-working-append-failure-keeps-earlier-successful-line; else bad "confirm-reviewers-working-append-failure-keeps-earlier-successful-line: $(cat "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)"; fi
 
 # 追加失敗的那一格完全沒有留下任何一行 -- 不是留下一個錯誤值，是那一行
 # 從未寫成功過。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$(awk '$1=="codex"{print $2}' "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)" ] && pass confirm-reviewers-working-append-failure-leaves-no-entry-for-that-cli || bad "confirm-reviewers-working-append-failure-leaves-no-entry-for-that-cli: $(cat "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)"
+if [ -z "$(awk '$1=="codex"{print $2}' "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)" ]; then pass confirm-reviewers-working-append-failure-leaves-no-entry-for-that-cli; else bad "confirm-reviewers-working-append-failure-leaves-no-entry-for-that-cli: $(cat "$CONFIRM_APPEND_FAIL_STATUS" 2>/dev/null)"; fi
 
 # print_summary 讀回這份缺一格的狀態檔時，混合摘要真的印得出來：先前
 # 成功的那格仍帶狀態欄位，追加失敗的那格落到 print_summary 自己「這個
@@ -3732,8 +3571,7 @@ case "$confirm_appendfail_claude_line" in
   *'狀態：已進入審查中'*) pass confirm-reviewers-working-append-failure-summary-keeps-annotated-line ;;
   *) bad "confirm-reviewers-working-append-failure-summary-keeps-annotated-line: $confirm_appendfail_claude_line" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$confirm_appendfail_codex_line" ] && pass confirm-reviewers-working-append-failure-summary-still-prints-the-cli-line || bad "confirm-reviewers-working-append-failure-summary-still-prints-the-cli-line: codex 那行整個不見了: $confirm_appendfail_summary"
+if [ -n "$confirm_appendfail_codex_line" ]; then pass confirm-reviewers-working-append-failure-summary-still-prints-the-cli-line; else bad "confirm-reviewers-working-append-failure-summary-still-prints-the-cli-line: codex 那行整個不見了: $confirm_appendfail_summary"; fi
 case "$confirm_appendfail_codex_line" in
   *'狀態：'*) bad "confirm-reviewers-working-append-failure-summary-omits-status-for-failed-cli: 不該帶狀態欄位卻帶了: $confirm_appendfail_codex_line" ;;
   *) pass confirm-reviewers-working-append-failure-summary-omits-status-for-failed-cli ;;
@@ -3931,10 +3769,8 @@ export GH_STUB_BASE_REF_NAME=main
 out="$(cd "$GIT_FIXTURE/work" && resolve_base_ref acme widgets 9)"
 unset GH_STUB_BASE_REF_OK GH_STUB_BASE_REF_NAME
 export PATH="$saved_path"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "origin/main" ] && pass resolve-base-ref-success || bad resolve-base-ref-success
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-git -C "$GIT_FIXTURE/work" show-ref --verify --quiet refs/remotes/origin/main && pass resolve-base-ref-creates-tracking-ref || bad resolve-base-ref-creates-tracking-ref
+if [ "$out" = "origin/main" ]; then pass resolve-base-ref-success; else bad resolve-base-ref-success; fi
+if git -C "$GIT_FIXTURE/work" show-ref --verify --quiet refs/remotes/origin/main; then pass resolve-base-ref-creates-tracking-ref; else bad resolve-base-ref-creates-tracking-ref; fi
 
 export PATH="$STUB_BIN:$saved_path"
 export GH_STUB_BASE_REF_OK=0
@@ -3945,8 +3781,7 @@ else
 fi
 unset GH_STUB_BASE_REF_OK
 export PATH="$saved_path"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass resolve-base-ref-gh-failure-no-output || bad resolve-base-ref-gh-failure-no-output
+if [ -z "$out" ]; then pass resolve-base-ref-gh-failure-no-output; else bad resolve-base-ref-gh-failure-no-output; fi
 
 export PATH="$STUB_BIN:$saved_path"
 export GH_STUB_BASE_REF_NAME=""
@@ -3971,8 +3806,7 @@ export GH_STUB_BASE_REF_STATE=OPEN
 out="$(cd "$GIT_FIXTURE/work" && resolve_base_ref acme widgets 9)"
 unset GH_STUB_BASE_REF_OK GH_STUB_BASE_REF_NAME GH_STUB_BASE_REF_STATE
 export PATH="$saved_path"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$out" = "origin/main" ] && pass resolve-base-ref-open-outputs-origin-base || bad "resolve-base-ref-open-outputs-origin-base: $out"
+if [ "$out" = "origin/main" ]; then pass resolve-base-ref-open-outputs-origin-base; else bad "resolve-base-ref-open-outputs-origin-base: $out"; fi
 
 # ==============================================================
 # resolve_base_ref -- MERGED PR must resolve to baseRefOid, not
@@ -4030,22 +3864,18 @@ merged_rc=$?
 unset GH_STUB_BASE_REF_OK GH_STUB_BASE_REF_NAME GH_STUB_BASE_REF_STATE GH_STUB_BASE_REF_OID
 export PATH="$saved_path"
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$merged_rc" -eq 0 ] && pass resolve-base-ref-merged-success || bad "resolve-base-ref-merged-success: rc=$merged_rc"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$merged_out" = "$MERGED_BASE_SHA" ] && pass resolve-base-ref-merged-outputs-base-ref-oid || bad "resolve-base-ref-merged-outputs-base-ref-oid: $merged_out"
+if [ "$merged_rc" -eq 0 ]; then pass resolve-base-ref-merged-success; else bad "resolve-base-ref-merged-success: rc=$merged_rc"; fi
+if [ "$merged_out" = "$MERGED_BASE_SHA" ]; then pass resolve-base-ref-merged-outputs-base-ref-oid; else bad "resolve-base-ref-merged-outputs-base-ref-oid: $merged_out"; fi
 
 # The bug's own repro: origin/main (post-merge) three-dot-diffed against
 # the PR's own head is empty -- the exact defect A5 reports.
 merged_diff_via_origin="$(git -C "$GIT_FIXTURE_MERGED/work" diff --name-only "origin/main...$MERGED_PR_HEAD_SHA")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$merged_diff_via_origin" ] && pass resolve-base-ref-merged-origin-base-diff-is-empty || bad "resolve-base-ref-merged-origin-base-diff-is-empty: $merged_diff_via_origin"
+if [ -z "$merged_diff_via_origin" ]; then pass resolve-base-ref-merged-origin-base-diff-is-empty; else bad "resolve-base-ref-merged-origin-base-diff-is-empty: $merged_diff_via_origin"; fi
 
 # The fix's own payoff: diffing against what resolve_base_ref now returns
 # (baseRefOid) recovers the PR's actual changed file.
 merged_diff_via_oid="$(git -C "$GIT_FIXTURE_MERGED/work" diff --name-only "$merged_out...$MERGED_PR_HEAD_SHA")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$merged_diff_via_oid" = "pr-file.txt" ] && pass resolve-base-ref-merged-base-ref-oid-diff-recovers-pr-change || bad "resolve-base-ref-merged-base-ref-oid-diff-recovers-pr-change: $merged_diff_via_oid"
+if [ "$merged_diff_via_oid" = "pr-file.txt" ]; then pass resolve-base-ref-merged-base-ref-oid-diff-recovers-pr-change; else bad "resolve-base-ref-merged-base-ref-oid-diff-recovers-pr-change: $merged_diff_via_oid"; fi
 
 # --- MERGED but baseRefOid does not resolve locally, even after this
 # function's own best-effort `git fetch origin <sha>` retry (a bogus,
@@ -4063,8 +3893,7 @@ else
 fi
 unset GH_STUB_BASE_REF_OK GH_STUB_BASE_REF_NAME GH_STUB_BASE_REF_STATE GH_STUB_BASE_REF_OID
 export PATH="$saved_path"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass resolve-base-ref-merged-unresolvable-oid-no-output || bad resolve-base-ref-merged-unresolvable-oid-no-output
+if [ -z "$out" ]; then pass resolve-base-ref-merged-unresolvable-oid-no-output; else bad resolve-base-ref-merged-unresolvable-oid-no-output; fi
 
 # ==============================================================
 # resolve_base_ref -- empty baseRefName must be caught by the existing
@@ -4113,16 +3942,14 @@ else
   pass resolve-base-ref-empty-name-still-fails
 fi
 export PATH="$saved_path"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass resolve-base-ref-empty-name-no-output || bad resolve-base-ref-empty-name-no-output
+if [ -z "$out" ]; then pass resolve-base-ref-empty-name-no-output; else bad resolve-base-ref-empty-name-no-output; fi
 # The actual regression guard: no `git` subcommand at all -- and
 # specifically no `fetch` for a branch named "OPEN" -- was ever invoked.
 # The emptiness guard must reject this before resolve_base_ref ever
 # reaches its own `git fetch` call. Checked before unsetting GIT_CALL_LOG
 # below -- this file runs under `set -u`, so reading it after unset would
 # abort the whole test run instead of reporting a clean FAIL.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$GIT_CALL_LOG" ] && pass "resolve-base-ref-empty-name-no-git-call: 空 baseRefName 被守衛擋下，從未呼叫任何 git 指令" || bad "resolve-base-ref-empty-name-no-git-call: 守衛沒擋住，實際呼叫了 git: $(cat "$GIT_CALL_LOG")"
+if [ ! -s "$GIT_CALL_LOG" ]; then pass "resolve-base-ref-empty-name-no-git-call: 空 baseRefName 被守衛擋下，從未呼叫任何 git 指令"; else bad "resolve-base-ref-empty-name-no-git-call: 守衛沒擋住，實際呼叫了 git: $(cat "$GIT_CALL_LOG")"; fi
 unset GH_STUB_BASE_REF_OK GH_STUB_BASE_REF_NAME GH_STUB_BASE_REF_STATE REAL_GIT GIT_CALL_LOG
 
 # --- MERGED, but baseRefOid itself comes back empty -- must fail via the
@@ -4146,8 +3973,7 @@ else
 fi
 unset GH_STUB_BASE_REF_OK GH_STUB_BASE_REF_NAME GH_STUB_BASE_REF_STATE GH_STUB_BASE_REF_OID REAL_GIT GIT_CALL_LOG
 export PATH="$saved_path"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass resolve-base-ref-merged-empty-oid-no-output || bad resolve-base-ref-merged-empty-oid-no-output
+if [ -z "$out" ]; then pass resolve-base-ref-merged-empty-oid-no-output; else bad resolve-base-ref-merged-empty-oid-no-output; fi
 
 # --- _check_origin_matches must run, and reject, before resolve_base_ref
 # ever gets a chance to fetch -- exercised through a real cmd_prepare() run
@@ -4193,8 +4019,7 @@ if out="$(cd "$ORIGIN_ORDER_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_R
 else
   pass main-e2e-origin-check-rejects-wrong-owner
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-git -C "$ORIGIN_ORDER_FIXTURE/work" show-ref --verify --quiet refs/remotes/origin/origin-order-base-branch && bad main-e2e-origin-check-runs-before-fetch || pass main-e2e-origin-check-runs-before-fetch
+if git -C "$ORIGIN_ORDER_FIXTURE/work" show-ref --verify --quiet refs/remotes/origin/origin-order-base-branch; then bad main-e2e-origin-check-runs-before-fetch; else pass main-e2e-origin-check-runs-before-fetch; fi
 
 # --- gh missing is checked (and reported clearly) before parse_pr_url's
 # own empty-input derivation attempt, which needs gh itself and would
@@ -4277,16 +4102,16 @@ if hgp_out="$(cd "$HERDRGATE_ROOT" && env -u HERDR_ENV HOME="$HERDRGATE_HOME" PA
 else
   hgp_rc=$?
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$hgp_rc" -eq 4 ] && pass "herdr-gate-prepare-exit-4-without-herdr-env" \
-  || bad "herdr-gate-prepare-exit-4-without-herdr-env: rc=$hgp_rc output=$hgp_out"
+if [ "$hgp_rc" -eq 4 ]; then pass "herdr-gate-prepare-exit-4-without-herdr-env"
+else bad "herdr-gate-prepare-exit-4-without-herdr-env: rc=$hgp_rc output=$hgp_out"
+fi
 case "$hgp_out" in
   *'HERDR_ENV'*) pass herdr-gate-prepare-message-names-herdr-env ;;
   *) bad "herdr-gate-prepare-message-names-herdr-env: $hgp_out" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$HERDRGATE_HOME/.tmp" ] && pass herdr-gate-prepare-no-tmp-dir-created \
-  || bad "herdr-gate-prepare-no-tmp-dir-created: $(find "$HERDRGATE_HOME/.tmp" 2>/dev/null)"
+if [ ! -e "$HERDRGATE_HOME/.tmp" ]; then pass herdr-gate-prepare-no-tmp-dir-created
+else bad "herdr-gate-prepare-no-tmp-dir-created: $(find "$HERDRGATE_HOME/.tmp" 2>/dev/null)"
+fi
 
 # HERDR_ENV present but not exactly "1" must be rejected the same way as
 # absent -- this is the other half of "在該環境變數不存在或不等於 1 時"
@@ -4298,9 +4123,9 @@ if hgp2_out="$(cd "$HERDRGATE_ROOT" && HERDR_ENV=0 HOME="$HERDRGATE_HOME" PATH="
 else
   hgp2_rc=$?
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$hgp2_rc" -eq 4 ] && pass "herdr-gate-prepare-exit-4-with-non-1-herdr-env" \
-  || bad "herdr-gate-prepare-exit-4-with-non-1-herdr-env: rc=$hgp2_rc output=$hgp2_out"
+if [ "$hgp2_rc" -eq 4 ]; then pass "herdr-gate-prepare-exit-4-with-non-1-herdr-env"
+else bad "herdr-gate-prepare-exit-4-with-non-1-herdr-env: rc=$hgp2_rc output=$hgp2_out"
+fi
 
 if hgl_out="$(cd "$HERDRGATE_ROOT" && env -u HERDR_ENV HOME="$HERDRGATE_HOME" PATH="$EMPTY_BIN" \
   "$BASH_ABS_PATH" "$RUN_SH" launch --base-dir "$HERDRGATE_ROOT/no-such-base-dir" --agent claude=pane-x 2>&1)"; then
@@ -4308,9 +4133,9 @@ if hgl_out="$(cd "$HERDRGATE_ROOT" && env -u HERDR_ENV HOME="$HERDRGATE_HOME" PA
 else
   hgl_rc=$?
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$hgl_rc" -eq 4 ] && pass "herdr-gate-launch-exit-4-without-herdr-env" \
-  || bad "herdr-gate-launch-exit-4-without-herdr-env: rc=$hgl_rc output=$hgl_out"
+if [ "$hgl_rc" -eq 4 ]; then pass "herdr-gate-launch-exit-4-without-herdr-env"
+else bad "herdr-gate-launch-exit-4-without-herdr-env: rc=$hgl_rc output=$hgl_out"
+fi
 case "$hgl_out" in
   *'HERDR_ENV'*) pass herdr-gate-launch-message-names-herdr-env ;;
   *) bad "herdr-gate-launch-message-names-herdr-env: $hgl_out" ;;
@@ -4320,9 +4145,9 @@ esac
 # report a distinct "no .roster file" usage error instead of ever
 # touching that path, so its continued absence here is further proof
 # nothing past the gate ran.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$HERDRGATE_ROOT/no-such-base-dir" ] && pass herdr-gate-launch-no-base-dir-touched \
-  || bad herdr-gate-launch-no-base-dir-touched
+if [ ! -e "$HERDRGATE_ROOT/no-such-base-dir" ]; then pass herdr-gate-launch-no-base-dir-touched
+else bad herdr-gate-launch-no-base-dir-touched
+fi
 
 # --check-clis stays exempt from the gate -- confirmed working identically
 # with HERDR_ENV unset.
@@ -4354,8 +4179,7 @@ case "$dfc_err" in
   *'12345'*) pass dispatch-failed-cleanup-reports-orphaned-pid ;;
   *) bad dispatch-failed-cleanup-reports-orphaned-pid ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$DFC_WT" ] && pass dispatch-failed-cleanup-removes-worktree || bad dispatch-failed-cleanup-removes-worktree
+if [ ! -e "$DFC_WT" ]; then pass dispatch-failed-cleanup-removes-worktree; else bad dispatch-failed-cleanup-removes-worktree; fi
 
 DFC_ROOT2="$T/dispatch-failed-cleanup-fixture-none-launched"
 DFC_WT2="$(_make_worktree_fixture "$DFC_ROOT2")"
@@ -4391,9 +4215,9 @@ DFCREPOPATH_ELSEWHERE="$T/not-the-target-repo-dfc"
 mkdir -p "$DFCREPOPATH_ELSEWHERE"
 dfcrepopath_err="$(cd "$DFCREPOPATH_ELSEWHERE" && _dispatch_failed_cleanup "$DFCREPOPATH_WT" claude 2>&1 1>/dev/null)"
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$DFCREPOPATH_WT" ] && pass "dispatch-failed-cleanup 從非目標 repo 的工作目錄呼叫仍能清除 worktree" \
-  || bad "dispatch-failed-cleanup 從非目標 repo 的工作目錄呼叫時未能清除 worktree（worktree 仍在: $DFCREPOPATH_WT, stderr: $dfcrepopath_err）"
+if [ ! -e "$DFCREPOPATH_WT" ]; then pass "dispatch-failed-cleanup 從非目標 repo 的工作目錄呼叫仍能清除 worktree"
+else bad "dispatch-failed-cleanup 從非目標 repo 的工作目錄呼叫時未能清除 worktree（worktree 仍在: $DFCREPOPATH_WT, stderr: $dfcrepopath_err）"
+fi
 
 # ==============================================================
 # prepare/launch end-to-end
@@ -4537,23 +4361,19 @@ E2E_LOGS_DIR="$(find "$E2E_HOME/.tmp" -type d -name logs 2>/dev/null | head -1)"
 E2E_BASE_DIR="$(dirname "${E2E_LOGS_DIR:-/nonexistent}")"
 E2E_PROMPT_FILE="$E2E_LOGS_DIR/codex.prompt"
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$E2E_LOGS_DIR" ] && [ -s "$E2E_PROMPT_FILE" ] && pass main-e2e-prompt-file-written || bad main-e2e-prompt-file-written
+if [ -n "$E2E_LOGS_DIR" ] && [ -s "$E2E_PROMPT_FILE" ]; then pass main-e2e-prompt-file-written; else bad main-e2e-prompt-file-written; fi
 
 # ---- Task 3 Step 6: cmd_prepare() prints its own coordinates on success --
 # base_dir/worktree_dir plus one reviewer_workdir_<cli>=, one
 # reviewer_home_<cli>=, and one prompt_file_<cli>= line per selected
 # reviewer. ----
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF "base_dir=$E2E_BASE_DIR" <<<"$out" && pass main-e2e-prepare-prints-base-dir || bad main-e2e-prepare-prints-base-dir
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF "worktree_dir=$E2E_BASE_DIR/worktree" <<<"$out" && pass main-e2e-prepare-prints-worktree-dir || bad main-e2e-prepare-prints-worktree-dir
+if grep -qxF "base_dir=$E2E_BASE_DIR" <<<"$out"; then pass main-e2e-prepare-prints-base-dir; else bad main-e2e-prepare-prints-base-dir; fi
+if grep -qxF "worktree_dir=$E2E_BASE_DIR/worktree" <<<"$out"; then pass main-e2e-prepare-prints-worktree-dir; else bad main-e2e-prepare-prints-worktree-dir; fi
 
 # ---- Task 3 Step 2: base_dir is now the two-layer <repo>-pr-<number>/
 # <timestamp>-<pid> shape -- no sha256 hash, no intervening pr-review
 # directory. ----
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(dirname "$E2E_BASE_DIR")" = "$E2E_HOME/.tmp/widgets9pr-pr-321" ] && pass main-e2e-base-dir-repo-pr-parent || bad "main-e2e-base-dir-repo-pr-parent: $(dirname "$E2E_BASE_DIR")"
+if [ "$(dirname "$E2E_BASE_DIR")" = "$E2E_HOME/.tmp/widgets9pr-pr-321" ]; then pass main-e2e-base-dir-repo-pr-parent; else bad "main-e2e-base-dir-repo-pr-parent: $(dirname "$E2E_BASE_DIR")"; fi
 case "$(basename "$E2E_BASE_DIR")" in
   [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9]*)
     pass main-e2e-base-dir-timestamp-pid-shape ;;
@@ -4565,10 +4385,8 @@ esac
 # workdir and isolated home directory, and their paths are among what
 # cmd_prepare() printed above. ----
 for cli in claude codex opencode; do
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ -d "$E2E_BASE_DIR/reviewers/$cli/workdir" ] && pass "main-e2e-reviewer-workdir-created-$cli" || bad "main-e2e-reviewer-workdir-created-$cli"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ -d "$E2E_BASE_DIR/reviewers/$cli/home" ] && pass "main-e2e-reviewer-home-created-$cli" || bad "main-e2e-reviewer-home-created-$cli"
+  if [ -d "$E2E_BASE_DIR/reviewers/$cli/workdir" ]; then pass "main-e2e-reviewer-workdir-created-$cli"; else bad "main-e2e-reviewer-workdir-created-$cli"; fi
+  if [ -d "$E2E_BASE_DIR/reviewers/$cli/home" ]; then pass "main-e2e-reviewer-home-created-$cli"; else bad "main-e2e-reviewer-home-created-$cli"; fi
   # cmd_prepare() also writes a .zshrc into reviewer_home right away, via
   # _write_env_scrubbing_zshrc, in the same per-cli loop iteration that
   # just created it above -- before cmd_launch ever runs -- both to
@@ -4577,14 +4395,10 @@ for cli in claude codex opencode; do
   # scrub that pane's inherited environment down to a whitelist (see
   # cmd_prepare's own per-cli loop comment and _write_env_scrubbing_zshrc's
   # own docstring in run-review.sh).
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ -s "$E2E_BASE_DIR/reviewers/$cli/home/.zshrc" ] && pass "main-e2e-reviewer-home-zshrc-created-$cli" || bad "main-e2e-reviewer-home-zshrc-created-$cli"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  grep -qxF "reviewer_workdir_$cli=$E2E_BASE_DIR/reviewers/$cli/workdir" <<<"$out" && pass "main-e2e-prepare-prints-reviewer-workdir-$cli" || bad "main-e2e-prepare-prints-reviewer-workdir-$cli"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  grep -qxF "reviewer_home_$cli=$E2E_BASE_DIR/reviewers/$cli/home" <<<"$out" && pass "main-e2e-prepare-prints-reviewer-home-$cli" || bad "main-e2e-prepare-prints-reviewer-home-$cli"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  grep -qxF "prompt_file_$cli=$E2E_LOGS_DIR/$cli.prompt" <<<"$out" && pass "main-e2e-prepare-prints-prompt-file-$cli" || bad "main-e2e-prepare-prints-prompt-file-$cli"
+  if [ -s "$E2E_BASE_DIR/reviewers/$cli/home/.zshrc" ]; then pass "main-e2e-reviewer-home-zshrc-created-$cli"; else bad "main-e2e-reviewer-home-zshrc-created-$cli"; fi
+  if grep -qxF "reviewer_workdir_$cli=$E2E_BASE_DIR/reviewers/$cli/workdir" <<<"$out"; then pass "main-e2e-prepare-prints-reviewer-workdir-$cli"; else bad "main-e2e-prepare-prints-reviewer-workdir-$cli"; fi
+  if grep -qxF "reviewer_home_$cli=$E2E_BASE_DIR/reviewers/$cli/home" <<<"$out"; then pass "main-e2e-prepare-prints-reviewer-home-$cli"; else bad "main-e2e-prepare-prints-reviewer-home-$cli"; fi
+  if grep -qxF "prompt_file_$cli=$E2E_LOGS_DIR/$cli.prompt" <<<"$out"; then pass "main-e2e-prepare-prints-prompt-file-$cli"; else bad "main-e2e-prepare-prints-prompt-file-$cli"; fi
 done
 
 # ---- Task 3b: cmd_prepare() copies this run's materials into each
@@ -4596,12 +4410,9 @@ for cli in claude codex opencode; do
   cli_materials="$E2E_BASE_DIR/reviewers/$cli/workdir/materials"
   cli_prompt_file="$E2E_LOGS_DIR/$cli.prompt"
 
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ -s "$cli_materials/pr.md" ] && pass "main-e2e-reviewer-materials-pr-copied-$cli" || bad "main-e2e-reviewer-materials-pr-copied-$cli"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  grep -qF 'e2e-distinctive-issue-body-marker' "$cli_materials/issue.md" 2>/dev/null && pass "main-e2e-reviewer-materials-issue-copied-$cli" || bad "main-e2e-reviewer-materials-issue-copied-$cli"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  grep -qF 'e2e-distinctive-design-doc-marker-content' "$cli_materials/design.md" 2>/dev/null && pass "main-e2e-reviewer-materials-design-copied-$cli" || bad "main-e2e-reviewer-materials-design-copied-$cli"
+  if [ -s "$cli_materials/pr.md" ]; then pass "main-e2e-reviewer-materials-pr-copied-$cli"; else bad "main-e2e-reviewer-materials-pr-copied-$cli"; fi
+  if grep -qF 'e2e-distinctive-issue-body-marker' "$cli_materials/issue.md" 2>/dev/null; then pass "main-e2e-reviewer-materials-issue-copied-$cli"; else bad "main-e2e-reviewer-materials-issue-copied-$cli"; fi
+  if grep -qF 'e2e-distinctive-design-doc-marker-content' "$cli_materials/design.md" 2>/dev/null; then pass "main-e2e-reviewer-materials-design-copied-$cli"; else bad "main-e2e-reviewer-materials-design-copied-$cli"; fi
 
   # 唯讀：對複製後的材料檔嘗試寫入，確認被拒
   if ( : > "$cli_materials/pr.md" ) 2>/dev/null; then
@@ -4610,8 +4421,7 @@ for cli in claude codex opencode; do
     pass "main-e2e-reviewer-materials-read-only-$cli"
   fi
 
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  grep -qxF -- "- 材料檔目錄絕對路徑：$cli_materials" "$cli_prompt_file" 2>/dev/null && pass "main-e2e-prompt-materials-coordinate-own-copy-$cli" || bad "main-e2e-prompt-materials-coordinate-own-copy-$cli"
+  if grep -qxF -- "- 材料檔目錄絕對路徑：$cli_materials" "$cli_prompt_file" 2>/dev/null; then pass "main-e2e-prompt-materials-coordinate-own-copy-$cli"; else bad "main-e2e-prompt-materials-coordinate-own-copy-$cli"; fi
 done
 chmod -R u+w "$E2E_BASE_DIR/reviewers" 2>/dev/null || true
 
@@ -4619,16 +4429,13 @@ chmod -R u+w "$E2E_BASE_DIR/reviewers" 2>/dev/null || true
 # 不該提到 codex 那份材料副本的路徑，反之亦然。
 E2E_CLAUDE_MATERIALS="$E2E_BASE_DIR/reviewers/claude/workdir/materials"
 E2E_CODEX_MATERIALS="$E2E_BASE_DIR/reviewers/codex/workdir/materials"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF "$E2E_CODEX_MATERIALS" "$E2E_LOGS_DIR/claude.prompt" 2>/dev/null && bad main-e2e-prompt-materials-coordinate-no-cross-contamination-claude || pass main-e2e-prompt-materials-coordinate-no-cross-contamination-claude
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF "$E2E_CLAUDE_MATERIALS" "$E2E_LOGS_DIR/codex.prompt" 2>/dev/null && bad main-e2e-prompt-materials-coordinate-no-cross-contamination-codex || pass main-e2e-prompt-materials-coordinate-no-cross-contamination-codex
+if grep -qF "$E2E_CODEX_MATERIALS" "$E2E_LOGS_DIR/claude.prompt" 2>/dev/null; then bad main-e2e-prompt-materials-coordinate-no-cross-contamination-claude; else pass main-e2e-prompt-materials-coordinate-no-cross-contamination-claude; fi
+if grep -qF "$E2E_CLAUDE_MATERIALS" "$E2E_LOGS_DIR/codex.prompt" 2>/dev/null; then bad main-e2e-prompt-materials-coordinate-no-cross-contamination-codex; else pass main-e2e-prompt-materials-coordinate-no-cross-contamination-codex; fi
 
 # ---- Task 3 Step 5: .roster is written during prepare (not launch) --
 # confirmed here, before cmd_launch() has run at all. ----
 E2E_ROSTER_AFTER_PREPARE="$E2E_BASE_DIR/.roster"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$E2E_ROSTER_AFTER_PREPARE" ] && [ "$(wc -l < "$E2E_ROSTER_AFTER_PREPARE")" -eq 3 ] && pass main-e2e-roster-written-by-prepare || bad main-e2e-roster-written-by-prepare
+if [ -s "$E2E_ROSTER_AFTER_PREPARE" ] && [ "$(wc -l < "$E2E_ROSTER_AFTER_PREPARE")" -eq 3 ]; then pass main-e2e-roster-written-by-prepare; else bad main-e2e-roster-written-by-prepare; fi
 
 # cmd_prepare() does not launch anything itself (see its own docstring) --
 # launch is a second, separate `bash "$RUN_SH"` invocation, fed the same
@@ -4671,45 +4478,33 @@ fi
 # this re-checks the same content survived cmd_launch() unmodified, since
 # nothing in cmd_launch() touches .roster any more.
 E2E_ROSTER_FILE="$E2E_BASE_DIR/.roster"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$E2E_ROSTER_FILE" ] && [ "$(wc -l < "$E2E_ROSTER_FILE")" -eq 3 ] && pass main-e2e-roster-written || bad main-e2e-roster-written
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'codex e2e-distinctive-model dispatched' "$E2E_ROSTER_FILE" 2>/dev/null && pass main-e2e-roster-records-codex-model || bad main-e2e-roster-records-codex-model
+if [ -s "$E2E_ROSTER_FILE" ] && [ "$(wc -l < "$E2E_ROSTER_FILE")" -eq 3 ]; then pass main-e2e-roster-written; else bad main-e2e-roster-written; fi
+if grep -qxF 'codex e2e-distinctive-model dispatched' "$E2E_ROSTER_FILE" 2>/dev/null; then pass main-e2e-roster-records-codex-model; else bad main-e2e-roster-records-codex-model; fi
 # CLAUDE_CONFIG_DIR="" for this run and no ~/.config/opencode ever
 # created under E2E_HOME, so both resolve to resolve_model's own
 # documented unknown-value marker.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'claude unknown-model dispatched' "$E2E_ROSTER_FILE" 2>/dev/null && pass main-e2e-roster-records-claude || bad main-e2e-roster-records-claude
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'opencode unknown-model dispatched' "$E2E_ROSTER_FILE" 2>/dev/null && pass main-e2e-roster-records-opencode || bad main-e2e-roster-records-opencode
+if grep -qxF 'claude unknown-model dispatched' "$E2E_ROSTER_FILE" 2>/dev/null; then pass main-e2e-roster-records-claude; else bad main-e2e-roster-records-claude; fi
+if grep -qxF 'opencode unknown-model dispatched' "$E2E_ROSTER_FILE" 2>/dev/null; then pass main-e2e-roster-records-opencode; else bad main-e2e-roster-records-opencode; fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF -- '- PR：https://github.com/acme9pr/widgets9pr/pull/321' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-pr-url-in-place || bad main-e2e-prompt-pr-url-in-place
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF -- "- git worktree 絕對路徑：$E2E_BASE_DIR/worktree" "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-worktree-path-in-place || bad main-e2e-prompt-worktree-path-in-place
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF -- '- base ref：origin/e2e-distinctive-base' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-base-ref-in-place || bad main-e2e-prompt-base-ref-in-place
+if grep -qxF -- '- PR：https://github.com/acme9pr/widgets9pr/pull/321' "$E2E_PROMPT_FILE" 2>/dev/null; then pass main-e2e-prompt-pr-url-in-place; else bad main-e2e-prompt-pr-url-in-place; fi
+if grep -qxF -- "- git worktree 絕對路徑：$E2E_BASE_DIR/worktree" "$E2E_PROMPT_FILE" 2>/dev/null; then pass main-e2e-prompt-worktree-path-in-place; else bad main-e2e-prompt-worktree-path-in-place; fi
+if grep -qxF -- '- base ref：origin/e2e-distinctive-base' "$E2E_PROMPT_FILE" 2>/dev/null; then pass main-e2e-prompt-base-ref-in-place; else bad main-e2e-prompt-base-ref-in-place; fi
 # issue_arg "777" resolves via _parse_issue_ref straight through
 # fetch_review_materials to a real (stubbed) `gh issue view` call; its
 # body ends up copied into codex's own materials/issue.md (asserted in the
 # Task 3b block above, main-e2e-reviewer-materials-issue-copied-codex), not
 # embedded into this prompt file -- confirmed negatively here.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'e2e-distinctive-issue-body-marker' "$E2E_PROMPT_FILE" 2>/dev/null && bad main-e2e-prompt-issue-material-not-embedded || pass main-e2e-prompt-issue-material-not-embedded
+if grep -qF 'e2e-distinctive-issue-body-marker' "$E2E_PROMPT_FILE" 2>/dev/null; then bad main-e2e-prompt-issue-material-not-embedded; else pass main-e2e-prompt-issue-material-not-embedded; fi
 # Same shift for the design doc: its full text ends up copied into
 # codex's own materials/design.md instead of being embedded in this
 # prompt file -- confirmed negatively here too.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'e2e-distinctive-design-doc-marker-content' "$E2E_PROMPT_FILE" 2>/dev/null && bad main-e2e-prompt-design-material-not-embedded || pass main-e2e-prompt-design-material-not-embedded
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF -- '- 產出這則 review 的 CLI 名稱：codex' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-cli-name-in-place || bad main-e2e-prompt-cli-name-in-place
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF -- '- 產出這則 review 的 model 名稱：e2e-distinctive-model' "$E2E_PROMPT_FILE" 2>/dev/null && pass main-e2e-prompt-model-in-place || bad main-e2e-prompt-model-in-place
+if grep -qF 'e2e-distinctive-design-doc-marker-content' "$E2E_PROMPT_FILE" 2>/dev/null; then bad main-e2e-prompt-design-material-not-embedded; else pass main-e2e-prompt-design-material-not-embedded; fi
+if grep -qxF -- '- 產出這則 review 的 CLI 名稱：codex' "$E2E_PROMPT_FILE" 2>/dev/null; then pass main-e2e-prompt-cli-name-in-place; else bad main-e2e-prompt-cli-name-in-place; fi
+if grep -qxF -- '- 產出這則 review 的 model 名稱：e2e-distinctive-model' "$E2E_PROMPT_FILE" 2>/dev/null; then pass main-e2e-prompt-model-in-place; else bad main-e2e-prompt-model-in-place; fi
 # launch 路徑寫進隔離 HOME 的 config.toml：第一行就是揭露的同一個 model
 # （頂層鍵，在 [projects."..."] 表頭之前）。
 E2E_CODEX_CFG="$E2E_BASE_DIR/reviewers/codex/home/.codex/config.toml"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(sed -n '1p' "$E2E_CODEX_CFG" 2>/dev/null)" = 'model = "e2e-distinctive-model"' ] && case "$(sed -n '2p' "$E2E_CODEX_CFG")" in '[projects."'*) true ;; *) false ;; esac && pass main-e2e-codex-config-carries-disclosed-model-before-table || bad "main-e2e-codex-config-carries-disclosed-model-before-table: $(cat "$E2E_CODEX_CFG" 2>/dev/null)"
+if [ "$(sed -n '1p' "$E2E_CODEX_CFG" 2>/dev/null)" = 'model = "e2e-distinctive-model"' ] && case "$(sed -n '2p' "$E2E_CODEX_CFG")" in '[projects."'*) true ;; *) false ;; esac; then pass main-e2e-codex-config-carries-disclosed-model-before-table; else bad "main-e2e-codex-config-carries-disclosed-model-before-table: $(cat "$E2E_CODEX_CFG" 2>/dev/null)"; fi
 # No scratch-directory coordinate at all any more: the reviewer prints
 # its review to stdout (cmd_launch()'s log file) instead of writing a
 # comment-body file anywhere, so there is no longer a scratch path to
@@ -4737,8 +4532,7 @@ E2E_WORKTREE_DIR="$E2E_BASE_DIR/worktree"
 CHMOD_ROOT="$T/chmod-worktree-fixture"
 CHMOD_WT="$(_make_worktree_fixture "$CHMOD_ROOT")"
 chmod -R a-w "$CHMOD_WT"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -w "$CHMOD_WT" ] && pass chmod-worktree-is-os-level-read-only || bad chmod-worktree-is-os-level-read-only
+if [ ! -w "$CHMOD_WT" ]; then pass chmod-worktree-is-os-level-read-only; else bad chmod-worktree-is-os-level-read-only; fi
 if ( : > "$CHMOD_WT/should-not-be-writable.txt" ) 2>/dev/null; then
   bad chmod-worktree-write-actually-denied
 else
@@ -4749,10 +4543,8 @@ fi
 # linked worktree's own index/HEAD housekeeping lives under the main
 # repo's .git/worktrees/<name>/, not inside the worktree's own directory
 # tree, so chmod'ing that tree read-only should not affect them.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-git -C "$CHMOD_WT" status --porcelain >/dev/null 2>&1 && pass chmod-worktree-status-still-works || bad chmod-worktree-status-still-works
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-git -C "$CHMOD_WT" diff main...HEAD >/dev/null 2>&1 && pass chmod-worktree-diff-still-works || bad chmod-worktree-diff-still-works
+if git -C "$CHMOD_WT" status --porcelain >/dev/null 2>&1; then pass chmod-worktree-status-still-works; else bad chmod-worktree-status-still-works; fi
+if git -C "$CHMOD_WT" diff main...HEAD >/dev/null 2>&1; then pass chmod-worktree-diff-still-works; else bad chmod-worktree-diff-still-works; fi
 chmod -R u+w "$CHMOD_WT"
 
 # --- print_summary's own stdout (cmd_launch()'s only output) names every
@@ -4787,8 +4579,7 @@ case "$out" in
 esac
 
 E2E_CONFIRM_STATUS="$E2E_BASE_DIR/.reviewer-confirm-status"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(awk '$1=="codex"{print $2}' "$E2E_CONFIRM_STATUS" 2>/dev/null)" = unconfirmed ] && pass main-e2e-confirm-status-file-records-codex-unconfirmed || bad "main-e2e-confirm-status-file-records-codex-unconfirmed: $(cat "$E2E_CONFIRM_STATUS" 2>/dev/null)"
+if [ "$(awk '$1=="codex"{print $2}' "$E2E_CONFIRM_STATUS" 2>/dev/null)" = unconfirmed ]; then pass main-e2e-confirm-status-file-records-codex-unconfirmed; else bad "main-e2e-confirm-status-file-records-codex-unconfirmed: $(cat "$E2E_CONFIRM_STATUS" 2>/dev/null)"; fi
 
 # --- cmd_launch()'s own per-cli dispatch loop (task 4's own dependency)
 # writes cmd_wait's stalled-detection baseline the moment each reviewer is
@@ -4796,8 +4587,7 @@ E2E_CONFIRM_STATUS="$E2E_BASE_DIR/.reviewer-confirm-status"
 # for every dispatched cli, not just codex above. ---
 for e2e_lw_cli in claude codex opencode; do
   e2e_lw_file="$E2E_BASE_DIR/.last-working-$e2e_lw_cli"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ -s "$e2e_lw_file" ] && pass "main-e2e-last-working-baseline-written-$e2e_lw_cli" || bad "main-e2e-last-working-baseline-written-$e2e_lw_cli"
+  if [ -s "$e2e_lw_file" ]; then pass "main-e2e-last-working-baseline-written-$e2e_lw_cli"; else bad "main-e2e-last-working-baseline-written-$e2e_lw_cli"; fi
   case "$(cat "$e2e_lw_file" 2>/dev/null)" in
     ''|*[!0-9]*) bad "main-e2e-last-working-baseline-numeric-$e2e_lw_cli: $(cat "$e2e_lw_file" 2>/dev/null)" ;;
     *) pass "main-e2e-last-working-baseline-numeric-$e2e_lw_cli" ;;
@@ -4814,10 +4604,9 @@ done
 # own pane id, not just non-empty. ---
 for e2e_pane_cli in claude codex opencode; do
   e2e_pane_file="$E2E_BASE_DIR/.pane-$e2e_pane_cli"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$(cat "$e2e_pane_file" 2>/dev/null)" = "pane-$e2e_pane_cli" ] \
-    && pass "main-e2e-pane-id-mapping-written-$e2e_pane_cli" \
-    || bad "main-e2e-pane-id-mapping-written-$e2e_pane_cli: $(cat "$e2e_pane_file" 2>/dev/null)"
+  if [ "$(cat "$e2e_pane_file" 2>/dev/null)" = "pane-$e2e_pane_cli" ]; then pass "main-e2e-pane-id-mapping-written-$e2e_pane_cli"
+  else bad "main-e2e-pane-id-mapping-written-$e2e_pane_cli: $(cat "$e2e_pane_file" 2>/dev/null)"
+  fi
 done
 
 # This run's own issue_arg ("777") was explicit and its design doc path was
@@ -4849,17 +4638,13 @@ esac
 E2E_SUMMARY_FILE="$E2E_BASE_DIR/summary.txt"
 i=0
 until { [ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 3 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 3 ] && pass main-e2e-summary-file-converges || bad main-e2e-summary-file-converges
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q 'worktree_status=ok' "$E2E_SUMMARY_FILE" 2>/dev/null && pass main-e2e-summary-file-worktree-status-ok || bad main-e2e-summary-file-worktree-status-ok
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-! grep -q 'cli=synthesis:' "$E2E_SUMMARY_FILE" 2>/dev/null && pass main-e2e-summary-file-no-synthesis || bad main-e2e-summary-file-no-synthesis
+if [ -f "$E2E_SUMMARY_FILE" ] && [ "$(wc -l < "$E2E_SUMMARY_FILE")" -eq 3 ]; then pass main-e2e-summary-file-converges; else bad main-e2e-summary-file-converges; fi
+if grep -q 'worktree_status=ok' "$E2E_SUMMARY_FILE" 2>/dev/null; then pass main-e2e-summary-file-worktree-status-ok; else bad main-e2e-summary-file-worktree-status-ok; fi
+if ! grep -q 'cli=synthesis:' "$E2E_SUMMARY_FILE" 2>/dev/null; then pass main-e2e-summary-file-no-synthesis; else bad main-e2e-summary-file-no-synthesis; fi
 
 i=0
 until [ ! -e "$E2E_WORKTREE_DIR" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$E2E_WORKTREE_DIR" ] && pass main-e2e-worktree-removed-after-completion || bad main-e2e-worktree-removed-after-completion
+if [ ! -e "$E2E_WORKTREE_DIR" ]; then pass main-e2e-worktree-removed-after-completion; else bad main-e2e-worktree-removed-after-completion; fi
 
 # --- --pr/--issue/--design all omitted: PR derives from branch, and (the
 # stub PR body carrying no closing keyword, same as the header's shared gh
@@ -4883,12 +4668,9 @@ fi
 E2E_LOGS_DIR2="$(find "$E2E_HOME2/.tmp" -type d -name logs 2>/dev/null | head -1)"
 E2E_BASE_DIR2="$(dirname "${E2E_LOGS_DIR2:-/nonexistent}")"
 E2E_CODEX_MATERIALS2="$E2E_BASE_DIR2/reviewers/codex/workdir/materials"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$E2E_CODEX_MATERIALS2/pr.md" ] && pass main-e2e-empty-args-materials-pr-copied || bad main-e2e-empty-args-materials-pr-copied
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$E2E_CODEX_MATERIALS2/issue.md" ] && pass main-e2e-empty-args-materials-no-issue-file || bad main-e2e-empty-args-materials-no-issue-file
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$E2E_CODEX_MATERIALS2/design.md" ] && pass main-e2e-empty-args-materials-no-design-file || bad main-e2e-empty-args-materials-no-design-file
+if [ -s "$E2E_CODEX_MATERIALS2/pr.md" ]; then pass main-e2e-empty-args-materials-pr-copied; else bad main-e2e-empty-args-materials-pr-copied; fi
+if [ ! -e "$E2E_CODEX_MATERIALS2/issue.md" ]; then pass main-e2e-empty-args-materials-no-issue-file; else bad main-e2e-empty-args-materials-no-issue-file; fi
+if [ ! -e "$E2E_CODEX_MATERIALS2/design.md" ]; then pass main-e2e-empty-args-materials-no-design-file; else bad main-e2e-empty-args-materials-no-design-file; fi
 
 # See the earlier prepare/launch pair's own comment on why this is a
 # second, separate `bash "$RUN_SH"` call, why the pane_id values below are
@@ -5101,9 +4883,7 @@ CHMODE2E_WORKTREE_DIR="$CHMODE2E_BASE_DIR/worktree"
 # whole fixture's own bug recurring) trips neither `set -e` nor the
 # `pipefail` this file also sets -- an unguarded nonzero exit on its own
 # line would abort this entire test script right here under `set -euo
-# pipefail`, silently skipping every section after it, exactly the same
-# hazard `# shellcheck disable=SC2015`'s own `&&`/`||` idiom exists to
-# avoid elsewhere in this file. Caught empirically: this uncovered a real
+# pipefail`, silently skipping every section after it. Caught empirically: this uncovered a real
 # `set -e` abort during the herdr PATH-guard proof this task's own report
 # describes, the first time this exact line legitimately failed.
 CHMODE2E_LAUNCH_OUT="$T/chmod-e2e-launch.out"
@@ -5129,8 +4909,7 @@ fi
 
 # Not racy: logs_dir is never removed by this pipeline, so its
 # permissions are stable to inspect any time after the run returns.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -d "$CHMODE2E_LOGS_DIR" ] && [ ! -w "$CHMODE2E_LOGS_DIR" ] && pass main-e2e-logs-dir-actually-read-only || bad main-e2e-logs-dir-actually-read-only
+if [ -d "$CHMODE2E_LOGS_DIR" ] && [ ! -w "$CHMODE2E_LOGS_DIR" ]; then pass main-e2e-logs-dir-actually-read-only; else bad main-e2e-logs-dir-actually-read-only; fi
 if ( : > "$CHMODE2E_LOGS_DIR/should-not-be-writable.txt" ) 2>/dev/null; then
   bad main-e2e-logs-dir-write-actually-denied
 else
@@ -5227,16 +5006,16 @@ if out="$(cd "$VERIFY3_FIXTURE/work" && PATH="$VERIFY3_MISSING_BIN" HERDR_ENV=1 
 else
   rc=$?
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 3 ] && pass "cmd_launch 平台於延遲期間消失時回傳 3" \
-  || bad "cmd_launch 平台於延遲期間消失時回傳 $rc，應為 3: $out"
+if [ "$rc" -eq 3 ]; then pass "cmd_launch 平台於延遲期間消失時回傳 3"
+else bad "cmd_launch 平台於延遲期間消失時回傳 $rc，應為 3: $out"
+fi
 case "$out" in
   *'codex'*) pass "cmd_launch 回傳 3 時訊息點名缺席的 codex" ;;
   *) bad "cmd_launch 回傳 3 時訊息未點名缺席的 codex: $out" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$VERIFY3_LOGS_DIR/claude.pid" ] && pass "cmd_launch 回傳 3 時連仍在 PATH 上的 claude 也沒有被啟動" \
-  || bad "cmd_launch 回傳 3 卻仍啟動了 claude，partial dispatch 沒被擋下"
+if [ ! -f "$VERIFY3_LOGS_DIR/claude.pid" ]; then pass "cmd_launch 回傳 3 時連仍在 PATH 上的 claude 也沒有被啟動"
+else bad "cmd_launch 回傳 3 卻仍啟動了 claude，partial dispatch 沒被擋下"
+fi
 
 # --- cmd_launch()'s own --agent cross-check against .roster: opencode is
 # on PATH (the stub set up above provides it) but was never selected by
@@ -5268,9 +5047,9 @@ if out="$(cd "$VERIFY3_FIXTURE/work" && HERDR_ENV=1 PATH="$STUB_BIN:$saved_path"
 else
   rc=$?
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rc" -eq 2 ] && pass "cmd_launch --agent 點名 prepare 未選中的平台時回傳 2" \
-  || bad "cmd_launch --agent 點名 prepare 未選中的平台時回傳 $rc，應為 2: $out"
+if [ "$rc" -eq 2 ]; then pass "cmd_launch --agent 點名 prepare 未選中的平台時回傳 2"
+else bad "cmd_launch --agent 點名 prepare 未選中的平台時回傳 $rc，應為 2: $out"
+fi
 case "$out" in
   *'opencode'*) pass "cmd_launch 回傳 2 時訊息點名未選中的 opencode" ;;
   *) bad "cmd_launch 回傳 2 時訊息未點名未選中的 opencode: $out" ;;
@@ -5280,9 +5059,9 @@ esac
 # _check_agents_selected's own call site in cmd_launch ever regressed,
 # this would be the first thing to catch a real herdr pane getting
 # started for real.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$HERDR_LEAK_RECORD" ] && pass "cmd_launch --agent 平台不符時 herdr 完全沒被呼叫" \
-  || bad "cmd_launch --agent 平台不符時仍呼叫了 herdr，dispatch 沒被擋下"
+if [ ! -f "$HERDR_LEAK_RECORD" ]; then pass "cmd_launch --agent 平台不符時 herdr 完全沒被呼叫"
+else bad "cmd_launch --agent 平台不符時仍呼叫了 herdr，dispatch 沒被擋下"
+fi
 
 rm -f "$STUB_BIN/herdr"
 unset HERDR_LEAK_RECORD
@@ -5348,9 +5127,9 @@ esac
 # 留下痕跡 -- 不是「後來被清掉」，是 cmd_prepare() 自己的 per-cli 迴圈在
 # 寫出 prompt 檔的當下就先擋下，走 _dispatch_failed_cleanup。
 OVERSIZED_BASE_DIR="$(find "$OVERSIZED_HOME/.tmp" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | head -1)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$OVERSIZED_BASE_DIR" ] && [ ! -e "$OVERSIZED_BASE_DIR/worktree" ] && pass cmd-prepare-oversized-prompt-worktree-not-left-behind \
-  || bad "cmd-prepare-oversized-prompt-worktree-not-left-behind: $OVERSIZED_BASE_DIR"
+if [ -n "$OVERSIZED_BASE_DIR" ] && [ ! -e "$OVERSIZED_BASE_DIR/worktree" ]; then pass cmd-prepare-oversized-prompt-worktree-not-left-behind
+else bad "cmd-prepare-oversized-prompt-worktree-not-left-behind: $OVERSIZED_BASE_DIR"
+fi
 
 # --- prepare/launch: jq 前置檢查、print_summary 印出執行目錄 ---
 
@@ -5381,10 +5160,8 @@ export PATH="$saved_path"
 PS_ROOT="$T/print-summary-paths"
 mkdir -p "$PS_ROOT"
 PS_OUT="$(print_summary "$PS_ROOT" claude:p1 --skipped codex opencode)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF "$PS_ROOT/summary.txt" <<<"$PS_OUT" && pass print-summary-shows-summary-path || bad print-summary-shows-summary-path
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF "本次執行目錄：$PS_ROOT" <<<"$PS_OUT" && pass print-summary-shows-run-dir || bad print-summary-shows-run-dir
+if grep -qF "$PS_ROOT/summary.txt" <<<"$PS_OUT"; then pass print-summary-shows-summary-path; else bad print-summary-shows-summary-path; fi
+if grep -qF "本次執行目錄：$PS_ROOT" <<<"$PS_OUT"; then pass print-summary-shows-run-dir; else bad print-summary-shows-run-dir; fi
 
 # ==============================================================
 # 審查契約強化：失敗情境、高風險變更提示、信心等級、摺疊區
@@ -5558,8 +5335,7 @@ SPWSYNI_SUMMARY="$SPWSYNI_ROOT/summary.txt"
 
 i=0
 until { [ -f "$SPWSYNI_SUMMARY" ] && [ "$(wc -l < "$SPWSYNI_SUMMARY")" -eq 3 ]; } || [ "$i" -ge 200 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$SPWSYNI_SUMMARY" ] && [ "$(wc -l < "$SPWSYNI_SUMMARY")" -eq 3 ] && pass "spawn_supervisor_interactive 三個 reviewer 完成且無合流" || bad "spawn_supervisor_interactive 未收斂為三個 reviewer 行: $(cat "$SPWSYNI_SUMMARY" 2>/dev/null)"
+if [ -f "$SPWSYNI_SUMMARY" ] && [ "$(wc -l < "$SPWSYNI_SUMMARY")" -eq 3 ]; then pass "spawn_supervisor_interactive 三個 reviewer 完成且無合流"; else bad "spawn_supervisor_interactive 未收斂為三個 reviewer 行: $(cat "$SPWSYNI_SUMMARY" 2>/dev/null)"; fi
 
 SPWSYNI_L1="$(sed -n 1p "$SPWSYNI_SUMMARY")"
 case "$SPWSYNI_L1" in
@@ -5587,27 +5363,21 @@ esac
 # 會被當成 PR 討論串的材料重新餵回 reviewer，形成回音室。claude、agy 兩
 # 份 ready、codex 那份 withheld 在這個 fixture 裡都已經由
 # spawn_supervisor_interactive 寫出，三份都要驗。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(head -1 "$SPWSYNI_ROOT/.comment-body-claude.md")" = '<!-- pr-review-by-multi-agents -->' ] \
-  && pass "spawn_supervisor_interactive claude 逐則張貼內容檔第一行是回音室標記" \
-  || bad "spawn_supervisor_interactive claude 逐則張貼內容檔缺回音室標記"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(head -1 "$SPWSYNI_ROOT/.comment-body-agy.md")" = '<!-- pr-review-by-multi-agents -->' ] \
-  && pass "spawn_supervisor_interactive agy 逐則張貼內容檔第一行是回音室標記" \
-  || bad "spawn_supervisor_interactive agy 逐則張貼內容檔缺回音室標記"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(head -1 "$SPWSYNI_ROOT/.comment-body-codex.md")" = '<!-- pr-review-by-multi-agents -->' ] \
-  && pass "spawn_supervisor_interactive codex（withheld）逐則張貼內容檔第一行仍是回音室標記" \
-  || bad "spawn_supervisor_interactive codex（withheld）逐則張貼內容檔缺回音室標記"
+if [ "$(head -1 "$SPWSYNI_ROOT/.comment-body-claude.md")" = '<!-- pr-review-by-multi-agents -->' ]; then pass "spawn_supervisor_interactive claude 逐則張貼內容檔第一行是回音室標記"
+else bad "spawn_supervisor_interactive claude 逐則張貼內容檔缺回音室標記"
+fi
+if [ "$(head -1 "$SPWSYNI_ROOT/.comment-body-agy.md")" = '<!-- pr-review-by-multi-agents -->' ]; then pass "spawn_supervisor_interactive agy 逐則張貼內容檔第一行是回音室標記"
+else bad "spawn_supervisor_interactive agy 逐則張貼內容檔缺回音室標記"
+fi
+if [ "$(head -1 "$SPWSYNI_ROOT/.comment-body-codex.md")" = '<!-- pr-review-by-multi-agents -->' ]; then pass "spawn_supervisor_interactive codex（withheld）逐則張貼內容檔第一行仍是回音室標記"
+else bad "spawn_supervisor_interactive codex（withheld）逐則張貼內容檔缺回音室標記"
+fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-! grep -q 'cli=synthesis:' "$SPWSYNI_SUMMARY" 2>/dev/null && pass "spawn_supervisor_interactive 無合流摘要行" || bad "spawn_supervisor_interactive 仍有合流摘要行"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$SPWSYNI_ROOT/synthesis.log" ] && pass "spawn_supervisor_interactive 未產生合流 log" || bad "spawn_supervisor_interactive 仍產生了合流 log"
+if ! grep -q 'cli=synthesis:' "$SPWSYNI_SUMMARY" 2>/dev/null; then pass "spawn_supervisor_interactive 無合流摘要行"; else bad "spawn_supervisor_interactive 仍有合流摘要行"; fi
+if [ ! -e "$SPWSYNI_ROOT/synthesis.log" ]; then pass "spawn_supervisor_interactive 未產生合流 log"; else bad "spawn_supervisor_interactive 仍產生了合流 log"; fi
 i=0
 until [ ! -e "$SPWSYNI_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$SPWSYNI_WT" ] && pass "spawn_supervisor_interactive 完成後 worktree 已移除" || bad "spawn_supervisor_interactive 完成後 worktree 仍在"
+if [ ! -e "$SPWSYNI_WT" ]; then pass "spawn_supervisor_interactive 完成後 worktree 已移除"; else bad "spawn_supervisor_interactive 完成後 worktree 仍在"; fi
 
 # --- 只有一個 reviewer 時正常收斂且無合流（互動模式） ---
 SPWSYNI1_ROOT="$T/spawn-supervisor-interactive-single-ready-fixture"
@@ -5623,10 +5393,8 @@ i=0
 until [ ! -e "$SPWSYNI1_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
 sleep 1
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(wc -l < "$SPWSYNI1_SUMMARY")" -eq 1 ] && pass "spawn_supervisor_interactive 只有一個 reviewer 時不多寫合流那一行" || bad "spawn_supervisor_interactive 在只有一個 reviewer 時仍寫出多餘行: $(cat "$SPWSYNI1_SUMMARY" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$SPWSYNI1_ROOT/synthesis.log" ] && pass "spawn_supervisor_interactive 只有一個 reviewer 時不啟動合流行程" || bad "spawn_supervisor_interactive 只有一個 reviewer 時仍啟動了合流行程"
+if [ "$(wc -l < "$SPWSYNI1_SUMMARY")" -eq 1 ]; then pass "spawn_supervisor_interactive 只有一個 reviewer 時不多寫合流那一行"; else bad "spawn_supervisor_interactive 在只有一個 reviewer 時仍寫出多餘行: $(cat "$SPWSYNI1_SUMMARY" 2>/dev/null)"; fi
+if [ ! -e "$SPWSYNI1_ROOT/synthesis.log" ]; then pass "spawn_supervisor_interactive 只有一個 reviewer 時不啟動合流行程"; else bad "spawn_supervisor_interactive 只有一個 reviewer 時仍啟動了合流行程"; fi
 
 # ==============================================================
 # spawn_supervisor_interactive -- 標記出現前持續等待，出現後才記錄
@@ -5695,10 +5463,8 @@ chmod u+w "$RRRI_SUMMARY" 2>/dev/null || true
 
 # summary_file 的追加失敗只丟掉這一行，不影響內容檔（兩個寫入各自獨立
 # 防護）：內容檔仍然寫出，摘要行則完全沒有寫成功過。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$RRRI_SUMMARY" ] && pass "_record_reviewer_result_interactive 摘要行追加失敗時不留下任何一行" || bad "_record_reviewer_result_interactive 摘要行追加失敗時仍留下內容: $(cat "$RRRI_SUMMARY" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$RRRI_ROOT/.comment-body-claude.md" ] && pass "_record_reviewer_result_interactive 摘要行追加失敗不影響已經寫成功的內容檔" || bad "_record_reviewer_result_interactive 內容檔未寫出"
+if [ ! -s "$RRRI_SUMMARY" ]; then pass "_record_reviewer_result_interactive 摘要行追加失敗時不留下任何一行"; else bad "_record_reviewer_result_interactive 摘要行追加失敗時仍留下內容: $(cat "$RRRI_SUMMARY" 2>/dev/null)"; fi
+if [ -f "$RRRI_ROOT/.comment-body-claude.md" ]; then pass "_record_reviewer_result_interactive 摘要行追加失敗不影響已經寫成功的內容檔"; else bad "_record_reviewer_result_interactive 內容檔未寫出"; fi
 
 printf 'claude claude-e2e-model dispatched\n' > "$SPWSYNI2_ROOT/.roster"
 SPWSYNI2_SUMMARY="$SPWSYNI2_ROOT/summary.txt"
@@ -5715,15 +5481,12 @@ nohup bash -c '
 # 標記還沒補上（背景 sleep 3 秒還沒到）：輪詢迴圈這時應該已經跑過至少
 # 一輪，仍應該還在等，summary.txt 不該有任何一行。
 sleep 1
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$SPWSYNI2_SUMMARY" ] && pass "spawn_supervisor_interactive 標記出現前持續等待、不預先記錄" || bad "spawn_supervisor_interactive 標記出現前就記錄了: $(cat "$SPWSYNI2_SUMMARY" 2>/dev/null)"
+if [ ! -s "$SPWSYNI2_SUMMARY" ]; then pass "spawn_supervisor_interactive 標記出現前持續等待、不預先記錄"; else bad "spawn_supervisor_interactive 標記出現前就記錄了: $(cat "$SPWSYNI2_SUMMARY" 2>/dev/null)"; fi
 
 i=0
 until [ -s "$SPWSYNI2_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$SPWSYNI2_SUMMARY" ] && pass "spawn_supervisor_interactive 標記出現後輪詢才記錄" || bad "spawn_supervisor_interactive 標記出現後仍未記錄"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'content_status=ready' "$SPWSYNI2_SUMMARY" 2>/dev/null && pass "spawn_supervisor_interactive 補上標記後 content_status=ready" || bad "spawn_supervisor_interactive 補上標記後這一行不對: $(cat "$SPWSYNI2_SUMMARY" 2>/dev/null)"
+if [ -s "$SPWSYNI2_SUMMARY" ]; then pass "spawn_supervisor_interactive 標記出現後輪詢才記錄"; else bad "spawn_supervisor_interactive 標記出現後仍未記錄"; fi
+if grep -qF 'content_status=ready' "$SPWSYNI2_SUMMARY" 2>/dev/null; then pass "spawn_supervisor_interactive 補上標記後 content_status=ready"; else bad "spawn_supervisor_interactive 補上標記後這一行不對: $(cat "$SPWSYNI2_SUMMARY" 2>/dev/null)"; fi
 
 # ==============================================================
 # spawn_supervisor_interactive -- must not hold the caller's own
@@ -5759,19 +5522,17 @@ svipipe_out="$(cd "$SVIPIPE_ROOT/work" && spawn_supervisor_interactive "$SVIPIPE
 svipipe_t1="$(date +%s)"
 svipipe_elapsed="$((svipipe_t1 - svipipe_t0))"
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$svipipe_elapsed" -le 2 ] && pass "spawn_supervisor_interactive 不持有呼叫端管線：命令替換立刻返回" \
-  || bad "spawn_supervisor_interactive 命令替換等了 ${svipipe_elapsed}s 才返回（標記要等 3s 才補上），疑似仍持有呼叫端的 fd 1/2"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$svipipe_out" ] && pass "spawn_supervisor_interactive 命令替換沒有擷取到非預期輸出" || bad "spawn_supervisor_interactive 命令替換擷取到非預期輸出: $svipipe_out"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$SVIPIPE_SUMMARY" ] && pass "spawn_supervisor_interactive 返回時輪詢確實還沒收尾（標記還沒補上，時序假設成立）" \
-  || bad "spawn_supervisor_interactive 返回過快，summary.txt 已經有內容，時序假設不成立，上面立刻返回的斷言不足採信"
+if [ "$svipipe_elapsed" -le 2 ]; then pass "spawn_supervisor_interactive 不持有呼叫端管線：命令替換立刻返回"
+else bad "spawn_supervisor_interactive 命令替換等了 ${svipipe_elapsed}s 才返回（標記要等 3s 才補上），疑似仍持有呼叫端的 fd 1/2"
+fi
+if [ -z "$svipipe_out" ]; then pass "spawn_supervisor_interactive 命令替換沒有擷取到非預期輸出"; else bad "spawn_supervisor_interactive 命令替換擷取到非預期輸出: $svipipe_out"; fi
+if [ ! -s "$SVIPIPE_SUMMARY" ]; then pass "spawn_supervisor_interactive 返回時輪詢確實還沒收尾（標記還沒補上，時序假設成立）"
+else bad "spawn_supervisor_interactive 返回過快，summary.txt 已經有內容，時序假設不成立，上面立刻返回的斷言不足採信"
+fi
 
 i=0
 until [ -s "$SVIPIPE_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$SVIPIPE_SUMMARY" ] && pass "spawn_supervisor_interactive 背景輪詢最終仍完成收尾" || bad "spawn_supervisor_interactive 背景輪詢從未收尾"
+if [ -s "$SVIPIPE_SUMMARY" ]; then pass "spawn_supervisor_interactive 背景輪詢最終仍完成收尾"; else bad "spawn_supervisor_interactive 背景輪詢從未收尾"; fi
 
 # ==============================================================
 # spawn_supervisor_interactive -- worktree 移除不依賴呼叫端當下的工作
@@ -5805,9 +5566,9 @@ mkdir -p "$SVREPOPATH_ELSEWHERE"
 
 i=0
 until [ ! -e "$SVREPOPATH_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$SVREPOPATH_WT" ] && pass "spawn_supervisor_interactive 從非目標 repo 的工作目錄呼叫仍能清除 worktree" \
-  || bad "spawn_supervisor_interactive 從非目標 repo 的工作目錄呼叫時未能清除 worktree（worktree 仍在: $SVREPOPATH_WT）"
+if [ ! -e "$SVREPOPATH_WT" ]; then pass "spawn_supervisor_interactive 從非目標 repo 的工作目錄呼叫仍能清除 worktree"
+else bad "spawn_supervisor_interactive 從非目標 repo 的工作目錄呼叫時未能清除 worktree（worktree 仍在: $SVREPOPATH_WT）"
+fi
 
 # ==============================================================
 # spawn_supervisor_interactive -- .supervisor.pid 寫入與 SIGHUP 存活韌性
@@ -5852,19 +5613,18 @@ nohup bash -c '
 
 i=0
 until [ -s "$SVIPID_ROOT/.supervisor.pid" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$SVIPID_ROOT/.supervisor.pid" ] && pass "spawn_supervisor_interactive 寫出 .supervisor.pid" || bad "spawn_supervisor_interactive 沒有寫出 .supervisor.pid"
+if [ -s "$SVIPID_ROOT/.supervisor.pid" ]; then pass "spawn_supervisor_interactive 寫出 .supervisor.pid"; else bad "spawn_supervisor_interactive 沒有寫出 .supervisor.pid"; fi
 
 svipid_recorded="$(cat "$SVIPID_ROOT/.supervisor.pid" 2>/dev/null)"
 # 標記還沒補上（背景 sleep 3 秒還沒到），此時 .supervisor.pid 記錄的行
 # 程必然還在跑，用 kill -0 直接驗證，不是巧合命中一個已經結束、PID 被
 # 作業系統回收給別的行程用的號碼。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$svipid_recorded" ] && kill -0 "$svipid_recorded" 2>/dev/null && pass "spawn_supervisor_interactive .supervisor.pid 記錄的是當下存活的行程" \
-  || bad "spawn_supervisor_interactive .supervisor.pid 記錄的行程（$svipid_recorded）當下已經不存活"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$svipid_recorded" ] && [ "$svipid_recorded" != "$$" ] && pass "spawn_supervisor_interactive .supervisor.pid 不是呼叫端自己的 PID" \
-  || bad "spawn_supervisor_interactive .supervisor.pid 記成了呼叫端自己的 PID: $svipid_recorded"
+if [ -n "$svipid_recorded" ] && kill -0 "$svipid_recorded" 2>/dev/null; then pass "spawn_supervisor_interactive .supervisor.pid 記錄的是當下存活的行程"
+else bad "spawn_supervisor_interactive .supervisor.pid 記錄的行程（$svipid_recorded）當下已經不存活"
+fi
+if [ -n "$svipid_recorded" ] && [ "$svipid_recorded" != "$$" ]; then pass "spawn_supervisor_interactive .supervisor.pid 不是呼叫端自己的 PID"
+else bad "spawn_supervisor_interactive .supervisor.pid 記成了呼叫端自己的 PID: $svipid_recorded"
+fi
 
 # 對 .supervisor.pid 記錄的那個行程送真正的 SIGHUP：這個函式一開始就
 # trap '' HUP，重點是它會忽略這個訊號本身，不是靠 disown（disown 只讓
@@ -5872,21 +5632,18 @@ svipid_recorded="$(cat "$SVIPID_ROOT/.supervisor.pid" 2>/dev/null)"
 kill -HUP "$svipid_recorded" 2>/dev/null || true
 
 sleep 0.2
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-kill -0 "$svipid_recorded" 2>/dev/null && pass "spawn_supervisor_interactive 收到 SIGHUP 後仍然存活" \
-  || bad "spawn_supervisor_interactive 收到 SIGHUP 後已經死亡（PID $svipid_recorded 消失）"
+if kill -0 "$svipid_recorded" 2>/dev/null; then pass "spawn_supervisor_interactive 收到 SIGHUP 後仍然存活"
+else bad "spawn_supervisor_interactive 收到 SIGHUP 後已經死亡（PID $svipid_recorded 消失）"
+fi
 
 i=0
 until [ -s "$SVIPID_SUMMARY" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -s "$SVIPID_SUMMARY" ] && pass "spawn_supervisor_interactive 收到 SIGHUP 後仍完成輪詢並寫出摘要" || bad "spawn_supervisor_interactive 收到 SIGHUP 後未完成輪詢，摘要檔仍是空的"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'content_status=ready' "$SVIPID_SUMMARY" 2>/dev/null && pass "spawn_supervisor_interactive 收到 SIGHUP 後仍正確記錄 content_status=ready" || bad "spawn_supervisor_interactive 收到 SIGHUP 後這一行不對: $(cat "$SVIPID_SUMMARY" 2>/dev/null)"
+if [ -s "$SVIPID_SUMMARY" ]; then pass "spawn_supervisor_interactive 收到 SIGHUP 後仍完成輪詢並寫出摘要"; else bad "spawn_supervisor_interactive 收到 SIGHUP 後未完成輪詢，摘要檔仍是空的"; fi
+if grep -qF 'content_status=ready' "$SVIPID_SUMMARY" 2>/dev/null; then pass "spawn_supervisor_interactive 收到 SIGHUP 後仍正確記錄 content_status=ready"; else bad "spawn_supervisor_interactive 收到 SIGHUP 後這一行不對: $(cat "$SVIPID_SUMMARY" 2>/dev/null)"; fi
 
 i=0
 until [ ! -e "$SVIPID_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$SVIPID_WT" ] && pass "spawn_supervisor_interactive 收到 SIGHUP 後仍完成 worktree 清理" || bad "spawn_supervisor_interactive 收到 SIGHUP 後未清理 worktree"
+if [ ! -e "$SVIPID_WT" ]; then pass "spawn_supervisor_interactive 收到 SIGHUP 後仍完成 worktree 清理"; else bad "spawn_supervisor_interactive 收到 SIGHUP 後未清理 worktree"; fi
 
 export PATH="$saved_path"
 
@@ -5959,13 +5716,12 @@ fi
 : > "$CLOSEPANE_ROOT/closepane.calls"
 : > "$CLOSEPANE_ROOT/.pane-close-status"
 _close_reviewer_pane_interactive claude "$CLOSEPANE_ROOT" content "$CPCP_OUTPUT"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'cli=claude pane_closed=no reason=no-pane-id' "$CLOSEPANE_ROOT/.pane-close-status" \
-  && pass "_close_reviewer_pane_interactive 缺 .pane-<cli> 時記錄 reason=no-pane-id" \
-  || bad "_close_reviewer_pane_interactive 缺 .pane-<cli> 時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$CLOSEPANE_ROOT/closepane.calls" ] && pass "_close_reviewer_pane_interactive 缺 .pane-<cli> 時完全沒呼叫 herdr" \
-  || bad "_close_reviewer_pane_interactive 缺 .pane-<cli> 時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+if grep -qxF 'cli=claude pane_closed=no reason=no-pane-id' "$CLOSEPANE_ROOT/.pane-close-status"; then pass "_close_reviewer_pane_interactive 缺 .pane-<cli> 時記錄 reason=no-pane-id"
+else bad "_close_reviewer_pane_interactive 缺 .pane-<cli> 時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+fi
+if [ ! -s "$CLOSEPANE_ROOT/closepane.calls" ]; then pass "_close_reviewer_pane_interactive 缺 .pane-<cli> 時完全沒呼叫 herdr"
+else bad "_close_reviewer_pane_interactive 缺 .pane-<cli> 時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+fi
 
 printf 'w1:p1\n' > "$CLOSEPANE_ROOT/.pane-claude"
 printf 'https://github.com/acme/widgets/pull/7\n' > "$CLOSEPANE_ROOT/.pr-url"
@@ -5975,26 +5731,24 @@ printf 'https://github.com/acme/widgets/pull/7\n' > "$CLOSEPANE_ROOT/.pr-url"
 : > "$CLOSEPANE_ROOT/closepane.calls"
 : > "$CLOSEPANE_ROOT/.pane-close-status"
 HERDR_PANE_ID=w1:p1 _close_reviewer_pane_interactive claude "$CLOSEPANE_ROOT" content "$CPCP_OUTPUT"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'cli=claude pane_closed=no reason=refused-own-pane' "$CLOSEPANE_ROOT/.pane-close-status" \
-  && pass "_close_reviewer_pane_interactive pane id 等於 HERDR_PANE_ID 時拒絕並記錄 reason=refused-own-pane" \
-  || bad "_close_reviewer_pane_interactive pane id 等於 HERDR_PANE_ID 時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$CLOSEPANE_ROOT/closepane.calls" ] && pass "_close_reviewer_pane_interactive pane id 等於 HERDR_PANE_ID 時完全沒呼叫 herdr" \
-  || bad "_close_reviewer_pane_interactive pane id 等於 HERDR_PANE_ID 時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+if grep -qxF 'cli=claude pane_closed=no reason=refused-own-pane' "$CLOSEPANE_ROOT/.pane-close-status"; then pass "_close_reviewer_pane_interactive pane id 等於 HERDR_PANE_ID 時拒絕並記錄 reason=refused-own-pane"
+else bad "_close_reviewer_pane_interactive pane id 等於 HERDR_PANE_ID 時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+fi
+if [ ! -s "$CLOSEPANE_ROOT/closepane.calls" ]; then pass "_close_reviewer_pane_interactive pane id 等於 HERDR_PANE_ID 時完全沒呼叫 herdr"
+else bad "_close_reviewer_pane_interactive pane id 等於 HERDR_PANE_ID 時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+fi
 
 # ---- guard 2b：pane id 等於編排端自己的 HERDR_TAB_ID，同樣不可關 ----
 
 : > "$CLOSEPANE_ROOT/closepane.calls"
 : > "$CLOSEPANE_ROOT/.pane-close-status"
 HERDR_TAB_ID=w1:p1 _close_reviewer_pane_interactive claude "$CLOSEPANE_ROOT" content "$CPCP_OUTPUT"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'cli=claude pane_closed=no reason=refused-own-pane' "$CLOSEPANE_ROOT/.pane-close-status" \
-  && pass "_close_reviewer_pane_interactive pane id 等於 HERDR_TAB_ID 時拒絕並記錄 reason=refused-own-pane" \
-  || bad "_close_reviewer_pane_interactive pane id 等於 HERDR_TAB_ID 時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$CLOSEPANE_ROOT/closepane.calls" ] && pass "_close_reviewer_pane_interactive pane id 等於 HERDR_TAB_ID 時完全沒呼叫 herdr" \
-  || bad "_close_reviewer_pane_interactive pane id 等於 HERDR_TAB_ID 時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+if grep -qxF 'cli=claude pane_closed=no reason=refused-own-pane' "$CLOSEPANE_ROOT/.pane-close-status"; then pass "_close_reviewer_pane_interactive pane id 等於 HERDR_TAB_ID 時拒絕並記錄 reason=refused-own-pane"
+else bad "_close_reviewer_pane_interactive pane id 等於 HERDR_TAB_ID 時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+fi
+if [ ! -s "$CLOSEPANE_ROOT/closepane.calls" ]; then pass "_close_reviewer_pane_interactive pane id 等於 HERDR_TAB_ID 時完全沒呼叫 herdr"
+else bad "_close_reviewer_pane_interactive pane id 等於 HERDR_TAB_ID 時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+fi
 
 # ---- guard 3：缺 .pr-url，視同這個 base_dir 早於這個功能，不關 ----
 
@@ -6002,13 +5756,12 @@ grep -qxF 'cli=claude pane_closed=no reason=refused-own-pane' "$CLOSEPANE_ROOT/.
 : > "$CLOSEPANE_ROOT/.pane-close-status"
 rm -f "$CLOSEPANE_ROOT/.pr-url"
 _close_reviewer_pane_interactive claude "$CLOSEPANE_ROOT" content "$CPCP_OUTPUT"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'cli=claude pane_closed=no reason=pr-identity-unavailable' "$CLOSEPANE_ROOT/.pane-close-status" \
-  && pass "_close_reviewer_pane_interactive 缺 .pr-url 時記錄 reason=pr-identity-unavailable" \
-  || bad "_close_reviewer_pane_interactive 缺 .pr-url 時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$CLOSEPANE_ROOT/closepane.calls" ] && pass "_close_reviewer_pane_interactive 缺 .pr-url 時完全沒呼叫 herdr" \
-  || bad "_close_reviewer_pane_interactive 缺 .pr-url 時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+if grep -qxF 'cli=claude pane_closed=no reason=pr-identity-unavailable' "$CLOSEPANE_ROOT/.pane-close-status"; then pass "_close_reviewer_pane_interactive 缺 .pr-url 時記錄 reason=pr-identity-unavailable"
+else bad "_close_reviewer_pane_interactive 缺 .pr-url 時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+fi
+if [ ! -s "$CLOSEPANE_ROOT/closepane.calls" ]; then pass "_close_reviewer_pane_interactive 缺 .pr-url 時完全沒呼叫 herdr"
+else bad "_close_reviewer_pane_interactive 缺 .pr-url 時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+fi
 printf 'https://github.com/acme/widgets/pull/7\n' > "$CLOSEPANE_ROOT/.pr-url"
 
 # ---- guard 4，content 模式：comment 確認不到（gh 沒有回傳相符的
@@ -6025,12 +5778,12 @@ if GH_STUB_COMMENTS_JSON='{"comments":[]}' _close_reviewer_pane_interactive clau
 else
   pass "_close_reviewer_pane_interactive content 模式 comment 確認不到時回傳非零（交給呼叫端重試）"
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$CLOSEPANE_ROOT/.pane-close-status" ] && pass "_close_reviewer_pane_interactive content 模式 comment 確認不到時不寫狀態檔（留給呼叫端決定終局寫法）" \
-  || bad "_close_reviewer_pane_interactive content 模式 comment 確認不到時仍寫了狀態檔: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$CLOSEPANE_ROOT/closepane.calls" ] && pass "_close_reviewer_pane_interactive comment 確認不到時完全沒呼叫 herdr" \
-  || bad "_close_reviewer_pane_interactive comment 確認不到時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+if [ ! -s "$CLOSEPANE_ROOT/.pane-close-status" ]; then pass "_close_reviewer_pane_interactive content 模式 comment 確認不到時不寫狀態檔（留給呼叫端決定終局寫法）"
+else bad "_close_reviewer_pane_interactive content 模式 comment 確認不到時仍寫了狀態檔: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+fi
+if [ ! -s "$CLOSEPANE_ROOT/closepane.calls" ]; then pass "_close_reviewer_pane_interactive comment 確認不到時完全沒呼叫 herdr"
+else bad "_close_reviewer_pane_interactive comment 確認不到時仍呼叫了 herdr: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+fi
 
 # ---- guard 4，marker 模式：comment 確認不到時維持舊行為不變 -- 寫狀態
 # 檔、回傳 0（見 _close_reviewer_pane_interactive 自己 docstring：marker
@@ -6044,10 +5797,9 @@ if GH_STUB_COMMENTS_JSON='{"comments":[]}' _close_reviewer_pane_interactive clau
 else
   bad "_close_reviewer_pane_interactive marker 模式 comment 確認不到時回傳非零（不應該被 content 模式的修正波及）"
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'cli=claude pane_closed=no reason=comment-not-confirmed' "$CLOSEPANE_ROOT/.pane-close-status" \
-  && pass "_close_reviewer_pane_interactive marker 模式 comment 確認不到時仍照舊寫下 reason=comment-not-confirmed" \
-  || bad "_close_reviewer_pane_interactive marker 模式 comment 確認不到時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+if grep -qxF 'cli=claude pane_closed=no reason=comment-not-confirmed' "$CLOSEPANE_ROOT/.pane-close-status"; then pass "_close_reviewer_pane_interactive marker 模式 comment 確認不到時仍照舊寫下 reason=comment-not-confirmed"
+else bad "_close_reviewer_pane_interactive marker 模式 comment 確認不到時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+fi
 
 # ---- 全部條件成立：真的關閉，且關的正是 .pane-claude 記錄的那個 pane id ----
 
@@ -6055,14 +5807,12 @@ grep -qxF 'cli=claude pane_closed=no reason=comment-not-confirmed' "$CLOSEPANE_R
 : > "$CLOSEPANE_ROOT/.pane-close-status"
 GH_STUB_COMMENTS_JSON='{"comments":[{"body":"<!-- pr-review-by-multi-agents -->\nclaude review body\n"}]}' \
   _close_reviewer_pane_interactive claude "$CLOSEPANE_ROOT" content "$CPCP_OUTPUT"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'cli=claude pane_closed=yes' "$CLOSEPANE_ROOT/.pane-close-status" \
-  && pass "_close_reviewer_pane_interactive 全部條件成立時記錄 pane_closed=yes" \
-  || bad "_close_reviewer_pane_interactive 全部條件成立時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'pane close w1:p1' "$CLOSEPANE_ROOT/closepane.calls" \
-  && pass "_close_reviewer_pane_interactive 真的呼叫了 herdr pane close，目標正是 .pane-claude 記錄的 pane id" \
-  || bad "_close_reviewer_pane_interactive 未正確呼叫 herdr pane close: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+if grep -qxF 'cli=claude pane_closed=yes' "$CLOSEPANE_ROOT/.pane-close-status"; then pass "_close_reviewer_pane_interactive 全部條件成立時記錄 pane_closed=yes"
+else bad "_close_reviewer_pane_interactive 全部條件成立時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+fi
+if grep -qxF 'pane close w1:p1' "$CLOSEPANE_ROOT/closepane.calls"; then pass "_close_reviewer_pane_interactive 真的呼叫了 herdr pane close，目標正是 .pane-claude 記錄的 pane id"
+else bad "_close_reviewer_pane_interactive 未正確呼叫 herdr pane close: $(cat "$CLOSEPANE_ROOT/closepane.calls")"
+fi
 
 # ---- herdr 拒絕關閉：記錄失敗原因，函式仍以結束碼 0 收尾（不得中止呼叫端）----
 
@@ -6074,10 +5824,9 @@ if HERDR_STUB_CLOSE_OK=0 GH_STUB_COMMENTS_JSON='{"comments":[{"body":"<!-- pr-re
 else
   bad "_close_reviewer_pane_interactive herdr 關閉失敗時整個函式跟著失敗（結束碼非 0）"
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'cli=claude pane_closed=no reason=herdr-close-failed:' "$CLOSEPANE_ROOT/.pane-close-status" \
-  && pass "_close_reviewer_pane_interactive herdr 關閉失敗時記錄 reason=herdr-close-failed" \
-  || bad "_close_reviewer_pane_interactive herdr 關閉失敗時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+if grep -qF 'cli=claude pane_closed=no reason=herdr-close-failed:' "$CLOSEPANE_ROOT/.pane-close-status"; then pass "_close_reviewer_pane_interactive herdr 關閉失敗時記錄 reason=herdr-close-failed"
+else bad "_close_reviewer_pane_interactive herdr 關閉失敗時的記錄不對: $(cat "$CLOSEPANE_ROOT/.pane-close-status")"
+fi
 
 unset HERDR_RECORD_DIR
 export PATH="$saved_path"
@@ -6164,18 +5913,18 @@ esac
 # .pane-close-status 甚至不該有任何一行（content 模式落空不寫狀態檔，
 # 見 _close_reviewer_pane_interactive 自己的說明，這正是這次修正要做到
 # 的：不把「還沒確認到」寫成終局）。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$RACEE2E_ROOT/.pane-close-status" ] && pass "spawn_supervisor_interactive 缺陷 C 競態：comment 還沒出現時 pane 未被關、也還沒寫下任何終局狀態" \
-  || bad "spawn_supervisor_interactive 缺陷 C 競態：comment 還沒出現就已經寫下狀態: $(cat "$RACEE2E_ROOT/.pane-close-status" 2>/dev/null)"
+if [ ! -s "$RACEE2E_ROOT/.pane-close-status" ]; then pass "spawn_supervisor_interactive 缺陷 C 競態：comment 還沒出現時 pane 未被關、也還沒寫下任何終局狀態"
+else bad "spawn_supervisor_interactive 缺陷 C 競態：comment 還沒出現就已經寫下狀態: $(cat "$RACEE2E_ROOT/.pane-close-status" 2>/dev/null)"
+fi
 
 # worktree 的移除不能被卡住的 pane-close 重試無限期推遲：這裡 pending 早
 # 就空了（review.md 一開始就完整），worktree 應該已經被移除，即使 pane
 # 還沒確認到、還在重試。
 i=0
 until [ ! -e "$RACEE2E_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$RACEE2E_WT" ] && pass "spawn_supervisor_interactive 缺陷 C 競態：worktree 在 pane 還沒確認完畢時就已經移除，未被關 pane 重試卡住" \
-  || bad "spawn_supervisor_interactive 缺陷 C 競態：worktree 被還沒確認完畢的 pane-close 重試卡住，未移除"
+if [ ! -e "$RACEE2E_WT" ]; then pass "spawn_supervisor_interactive 缺陷 C 競態：worktree 在 pane 還沒確認完畢時就已經移除，未被關 pane 重試卡住"
+else bad "spawn_supervisor_interactive 缺陷 C 競態：worktree 被還沒確認完畢的 pane-close 重試卡住，未移除"
+fi
 
 # 模擬 reviewer 幾秒後真的把 comment 貼上去：只改檔案內容，背景監督行程
 # 下一次重試時會重新讀到。
@@ -6184,14 +5933,12 @@ printf '%s' '{"comments":[{"body":"<!-- pr-review-by-multi-agents -->\nclaude ra
 
 i=0
 until grep -q '^cli=claude pane_closed=yes' "$RACEE2E_ROOT/.pane-close-status" 2>/dev/null || [ "$i" -ge 200 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'cli=claude pane_closed=yes' "$RACEE2E_ROOT/.pane-close-status" 2>/dev/null \
-  && pass "spawn_supervisor_interactive 缺陷 C 競態：comment 出現後重試把 pane 關掉" \
-  || bad "spawn_supervisor_interactive 缺陷 C 競態：comment 出現後仍未關閉 pane: $(cat "$RACEE2E_ROOT/.pane-close-status" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'pane close w5:pClaude' "$RACEE2E_ROOT/race-e2e.calls" 2>/dev/null \
-  && pass "spawn_supervisor_interactive 缺陷 C 競態：真的呼叫了 herdr pane close" \
-  || bad "spawn_supervisor_interactive 缺陷 C 競態：未正確呼叫 herdr pane close: $(cat "$RACEE2E_ROOT/race-e2e.calls" 2>/dev/null)"
+if grep -qxF 'cli=claude pane_closed=yes' "$RACEE2E_ROOT/.pane-close-status" 2>/dev/null; then pass "spawn_supervisor_interactive 缺陷 C 競態：comment 出現後重試把 pane 關掉"
+else bad "spawn_supervisor_interactive 缺陷 C 競態：comment 出現後仍未關閉 pane: $(cat "$RACEE2E_ROOT/.pane-close-status" 2>/dev/null)"
+fi
+if grep -qxF 'pane close w5:pClaude' "$RACEE2E_ROOT/race-e2e.calls" 2>/dev/null; then pass "spawn_supervisor_interactive 缺陷 C 競態：真的呼叫了 herdr pane close"
+else bad "spawn_supervisor_interactive 缺陷 C 競態：未正確呼叫 herdr pane close: $(cat "$RACEE2E_ROOT/race-e2e.calls" 2>/dev/null)"
+fi
 
 unset HERDR_RECORD_DIR RACEE2E_COMMENTS_FILE
 export PATH="$saved_path"
@@ -6257,32 +6004,28 @@ CLOSEE2E_SUMMARY="$CLOSEE2E_ROOT/summary.txt"
 
 i=0
 until { [ -f "$CLOSEE2E_SUMMARY" ] && [ "$(wc -l < "$CLOSEE2E_SUMMARY")" -eq 2 ]; } || [ "$i" -ge 200 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$CLOSEE2E_SUMMARY" ] && [ "$(wc -l < "$CLOSEE2E_SUMMARY")" -eq 2 ] \
-  && pass "spawn_supervisor_interactive 缺陷 C 情境兩個 reviewer 都收斂" \
-  || bad "spawn_supervisor_interactive 缺陷 C 情境未收斂: $(cat "$CLOSEE2E_SUMMARY" 2>/dev/null)"
+if [ -f "$CLOSEE2E_SUMMARY" ] && [ "$(wc -l < "$CLOSEE2E_SUMMARY")" -eq 2 ]; then pass "spawn_supervisor_interactive 缺陷 C 情境兩個 reviewer 都收斂"
+else bad "spawn_supervisor_interactive 缺陷 C 情境未收斂: $(cat "$CLOSEE2E_SUMMARY" 2>/dev/null)"
+fi
 
 i=0
 until [ -s "$CLOSEE2E_ROOT/.pane-close-status" ] || [ "$i" -ge 50 ]; do sleep 0.1; i=$((i + 1)); done
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'cli=claude pane_closed=yes' "$CLOSEE2E_ROOT/.pane-close-status" 2>/dev/null \
-  && pass "spawn_supervisor_interactive content_status=ready 的 claude 被正確關閉" \
-  || bad "spawn_supervisor_interactive content_status=ready 的 claude 未被關閉: $(cat "$CLOSEE2E_ROOT/.pane-close-status" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-! grep -q '^cli=codex ' "$CLOSEE2E_ROOT/.pane-close-status" 2>/dev/null \
-  && pass "spawn_supervisor_interactive content_status=withheld 的 codex 連嘗試都沒有被記錄" \
-  || bad "spawn_supervisor_interactive content_status=withheld 的 codex 不該出現在 .pane-close-status: $(cat "$CLOSEE2E_ROOT/.pane-close-status" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-! grep -q 'pane close w2:pX' "$CLOSEE2E_ROOT/closepane-e2e.calls" 2>/dev/null \
-  && pass "spawn_supervisor_interactive 從未對 codex 的 pane 呼叫 herdr pane close" \
-  || bad "spawn_supervisor_interactive 對 withheld 的 codex 呼叫了 herdr pane close: $(cat "$CLOSEE2E_ROOT/closepane-e2e.calls" 2>/dev/null)"
+if grep -qxF 'cli=claude pane_closed=yes' "$CLOSEE2E_ROOT/.pane-close-status" 2>/dev/null; then pass "spawn_supervisor_interactive content_status=ready 的 claude 被正確關閉"
+else bad "spawn_supervisor_interactive content_status=ready 的 claude 未被關閉: $(cat "$CLOSEE2E_ROOT/.pane-close-status" 2>/dev/null)"
+fi
+if ! grep -q '^cli=codex ' "$CLOSEE2E_ROOT/.pane-close-status" 2>/dev/null; then pass "spawn_supervisor_interactive content_status=withheld 的 codex 連嘗試都沒有被記錄"
+else bad "spawn_supervisor_interactive content_status=withheld 的 codex 不該出現在 .pane-close-status: $(cat "$CLOSEE2E_ROOT/.pane-close-status" 2>/dev/null)"
+fi
+if ! grep -q 'pane close w2:pX' "$CLOSEE2E_ROOT/closepane-e2e.calls" 2>/dev/null; then pass "spawn_supervisor_interactive 從未對 codex 的 pane 呼叫 herdr pane close"
+else bad "spawn_supervisor_interactive 對 withheld 的 codex 呼叫了 herdr pane close: $(cat "$CLOSEE2E_ROOT/closepane-e2e.calls" 2>/dev/null)"
+fi
 
 i=0
 until [ ! -e "$CLOSEE2E_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$CLOSEE2E_WT" ] && pass "spawn_supervisor_interactive 缺陷 C 情境完成後 worktree 仍照常移除" \
-  || bad "spawn_supervisor_interactive 缺陷 C 情境完成後 worktree 未移除"
+if [ ! -e "$CLOSEE2E_WT" ]; then pass "spawn_supervisor_interactive 缺陷 C 情境完成後 worktree 仍照常移除"
+else bad "spawn_supervisor_interactive 缺陷 C 情境完成後 worktree 未移除"
+fi
 
 unset HERDR_RECORD_DIR GH_STUB_COMMENTS_JSON
 export PATH="$saved_path"
@@ -6506,10 +6249,9 @@ case "$RORI_LINE" in
   'cli=codex pid=n/a exit=n/a '*' content_status=posted-no-output '*) pass "_record_orphan_reviewer_result_interactive 寫出 content_status=posted-no-output 的摘要行" ;;
   *) bad "_record_orphan_reviewer_result_interactive 摘要行不正確: $RORI_LINE" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$RORI_ROOT/.comment-body-codex.md")" = "$RORI_BODY" ] \
-  && pass "_record_orphan_reviewer_result_interactive 內容檔存的是傳入的 comment body 原樣，不再加一次標記" \
-  || bad "_record_orphan_reviewer_result_interactive 內容檔內容不正確: $(cat "$RORI_ROOT/.comment-body-codex.md")"
+if [ "$(cat "$RORI_ROOT/.comment-body-codex.md")" = "$RORI_BODY" ]; then pass "_record_orphan_reviewer_result_interactive 內容檔存的是傳入的 comment body 原樣，不再加一次標記"
+else bad "_record_orphan_reviewer_result_interactive 內容檔內容不正確: $(cat "$RORI_ROOT/.comment-body-codex.md")"
+fi
 
 # ==============================================================
 # spawn_supervisor_interactive -- 缺陷 D 完整接線：review.md 從未出現，但
@@ -6580,21 +6322,18 @@ case "$ORPHANE2E_CODEX_LINE" in
 esac
 i=0
 until grep -q '^cli=codex pane_closed=yes' "$ORPHANE2E_ROOT/.pane-close-status" 2>/dev/null || [ "$i" -ge 50 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'cli=codex pane_closed=yes' "$ORPHANE2E_ROOT/.pane-close-status" 2>/dev/null \
-  && pass "spawn_supervisor_interactive 缺陷 D：codex 的 pane 依既有確認流程被關閉" \
-  || bad "spawn_supervisor_interactive 缺陷 D：codex 的 pane 未被關閉: $(cat "$ORPHANE2E_ROOT/.pane-close-status" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qxF 'pane close w3:pCodex' "$ORPHANE2E_ROOT/orphan-e2e.calls" 2>/dev/null \
-  && pass "spawn_supervisor_interactive 缺陷 D：真的呼叫了 herdr pane close，目標是 codex 自己的 pane" \
-  || bad "spawn_supervisor_interactive 缺陷 D：未正確呼叫 herdr pane close: $(cat "$ORPHANE2E_ROOT/orphan-e2e.calls" 2>/dev/null)"
+if grep -qxF 'cli=codex pane_closed=yes' "$ORPHANE2E_ROOT/.pane-close-status" 2>/dev/null; then pass "spawn_supervisor_interactive 缺陷 D：codex 的 pane 依既有確認流程被關閉"
+else bad "spawn_supervisor_interactive 缺陷 D：codex 的 pane 未被關閉: $(cat "$ORPHANE2E_ROOT/.pane-close-status" 2>/dev/null)"
+fi
+if grep -qxF 'pane close w3:pCodex' "$ORPHANE2E_ROOT/orphan-e2e.calls" 2>/dev/null; then pass "spawn_supervisor_interactive 缺陷 D：真的呼叫了 herdr pane close，目標是 codex 自己的 pane"
+else bad "spawn_supervisor_interactive 缺陷 D：未正確呼叫 herdr pane close: $(cat "$ORPHANE2E_ROOT/orphan-e2e.calls" 2>/dev/null)"
+fi
 
 # opencode 這一格：此時仍應該還在 pending，尚未被記錄 -- 不得因為 codex
 # 已經確認貼出，就連帶把還在工作中的 opencode 也判成完成。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-! grep -q '^cli=opencode ' "$ORPHANE2E_SUMMARY" 2>/dev/null \
-  && pass "spawn_supervisor_interactive 缺陷 D：仍在工作中、PR 上還沒有 comment 的 opencode 沒有被誤判為已完成" \
-  || bad "spawn_supervisor_interactive 缺陷 D：opencode 被誤判為已完成: $(cat "$ORPHANE2E_SUMMARY" 2>/dev/null)"
+if ! grep -q '^cli=opencode ' "$ORPHANE2E_SUMMARY" 2>/dev/null; then pass "spawn_supervisor_interactive 缺陷 D：仍在工作中、PR 上還沒有 comment 的 opencode 沒有被誤判為已完成"
+else bad "spawn_supervisor_interactive 缺陷 D：opencode 被誤判為已完成: $(cat "$ORPHANE2E_SUMMARY" 2>/dev/null)"
+fi
 
 # 現在才讓 opencode 依正常路徑（寫出帶結束標記的 review.md）完成，讓背景
 # 監督行程真正收斂，避免留下一個永遠輪詢的孤兒行程。
@@ -6611,9 +6350,9 @@ esac
 
 i=0
 until [ ! -e "$ORPHANE2E_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$ORPHANE2E_WT" ] && pass "spawn_supervisor_interactive 缺陷 D 情境完成後 worktree 仍照常移除" \
-  || bad "spawn_supervisor_interactive 缺陷 D 情境完成後 worktree 未移除"
+if [ ! -e "$ORPHANE2E_WT" ]; then pass "spawn_supervisor_interactive 缺陷 D 情境完成後 worktree 仍照常移除"
+else bad "spawn_supervisor_interactive 缺陷 D 情境完成後 worktree 未移除"
+fi
 
 # ==============================================================
 # spawn_supervisor_interactive -- 缺陷 D 的回歸重現與修正驗證：PR 上只有
@@ -6670,15 +6409,15 @@ STALEE2E_SUMMARY="$STALEE2E_ROOT/summary.txt"
 # ORPHAN_COMMENT_CHECK_INTERVAL_SECONDS 自己的 docstring），所以這裡只
 # 需要短暫等待，不必等滿整個 60 秒節流窗口。
 sleep 2
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$STALEE2E_SUMMARY" ] && pass "spawn_supervisor_interactive 缺陷 D 回歸：只有舊 comment 時 agy 不被記錄為已完成" \
-  || bad "spawn_supervisor_interactive 缺陷 D 回歸重現：agy 被誤判為已完成: $(cat "$STALEE2E_SUMMARY" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$STALEE2E_ROOT/.pane-close-status" ] && pass "spawn_supervisor_interactive 缺陷 D 回歸：agy 的 pane 沒有被嘗試關閉" \
-  || bad "spawn_supervisor_interactive 缺陷 D 回歸重現：agy 的 pane 被關閉了: $(cat "$STALEE2E_ROOT/.pane-close-status" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -e "$STALEE2E_WT" ] && pass "spawn_supervisor_interactive 缺陷 D 回歸：worktree 沒有被提前移除" \
-  || bad "spawn_supervisor_interactive 缺陷 D 回歸重現：worktree 被提前移除了"
+if [ ! -s "$STALEE2E_SUMMARY" ]; then pass "spawn_supervisor_interactive 缺陷 D 回歸：只有舊 comment 時 agy 不被記錄為已完成"
+else bad "spawn_supervisor_interactive 缺陷 D 回歸重現：agy 被誤判為已完成: $(cat "$STALEE2E_SUMMARY" 2>/dev/null)"
+fi
+if [ ! -s "$STALEE2E_ROOT/.pane-close-status" ]; then pass "spawn_supervisor_interactive 缺陷 D 回歸：agy 的 pane 沒有被嘗試關閉"
+else bad "spawn_supervisor_interactive 缺陷 D 回歸重現：agy 的 pane 被關閉了: $(cat "$STALEE2E_ROOT/.pane-close-status" 2>/dev/null)"
+fi
+if [ -e "$STALEE2E_WT" ]; then pass "spawn_supervisor_interactive 缺陷 D 回歸：worktree 沒有被提前移除"
+else bad "spawn_supervisor_interactive 缺陷 D 回歸重現：worktree 被提前移除了"
+fi
 
 # 現在才讓 agy 依正常路徑（寫出帶結束標記的 review.md）完成，讓背景監督
 # 行程真正收斂，避免留下一個永遠輪詢的孤兒行程。
@@ -6695,9 +6434,9 @@ esac
 
 i=0
 until [ ! -e "$STALEE2E_WT" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$STALEE2E_WT" ] && pass "spawn_supervisor_interactive 缺陷 D 回歸情境完成後 worktree 仍照常移除" \
-  || bad "spawn_supervisor_interactive 缺陷 D 回歸情境完成後 worktree 未移除"
+if [ ! -e "$STALEE2E_WT" ]; then pass "spawn_supervisor_interactive 缺陷 D 回歸情境完成後 worktree 仍照常移除"
+else bad "spawn_supervisor_interactive 缺陷 D 回歸情境完成後 worktree 未移除"
+fi
 
 unset HERDR_RECORD_DIR GH_STUB_COMMENTS_JSON
 export PATH="$saved_path"
@@ -6730,16 +6469,14 @@ case "$clean1_out" in
   *'run_dir_removed=no:'*) pass "cmd_cleanup worktree 仍在時不刪執行目錄並附原因" ;;
   *) bad "cmd_cleanup worktree 仍在時執行目錄處置不正確: $clean1_out" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -d "$CLEAN1" ] && pass "cmd_cleanup worktree 仍在時執行目錄原封保留" || bad "cmd_cleanup 誤刪了執行目錄"
+if [ -d "$CLEAN1" ]; then pass "cmd_cleanup worktree 仍在時執行目錄原封保留"; else bad "cmd_cleanup 誤刪了執行目錄"; fi
 # 關鍵：不得解鎖。materials 必須維持唯讀。
 if [ -w "$CLEAN1/materials" ]; then
   bad "cmd_cleanup worktree 仍在時不該解除唯讀保護"
 else
   pass "cmd_cleanup worktree 仍在時未解除唯讀保護"
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$clean1_rc" -eq 0 ] && pass "cmd_cleanup worktree 仍在是正常結果、結束碼 0" || bad "cmd_cleanup worktree 仍在時結束碼為 $clean1_rc"
+if [ "$clean1_rc" -eq 0 ]; then pass "cmd_cleanup worktree 仍在是正常結果、結束碼 0"; else bad "cmd_cleanup worktree 仍在時結束碼為 $clean1_rc"; fi
 chmod -R u+w "$CLEAN1"
 
 # --- 情形二：worktree 已移除 → 解鎖、刪除、驗證不存在 ---
@@ -6754,8 +6491,7 @@ case "$clean2_out" in
   *'run_dir_removed=yes'*) pass "cmd_cleanup worktree 已移除時刪除執行目錄" ;;
   *) bad "cmd_cleanup worktree 已移除時未刪除: $clean2_out" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -d "$CLEAN2" ] && pass "cmd_cleanup 刪除後路徑確實不存在" || bad "cmd_cleanup 回報刪除但路徑仍在"
+if [ ! -d "$CLEAN2" ]; then pass "cmd_cleanup 刪除後路徑確實不存在"; else bad "cmd_cleanup 回報刪除但路徑仍在"; fi
 # .repo-path 指向的 "$T/fake-repo" 從未真正建立，屬四個推導失敗出口裡
 # 「repo 路徑不是 git repo」那一種 -- 驗證這個出口即使在執行目錄真的被
 # rm -rf 掉之後仍然正確回報（見 cmd_cleanup 自己的文件：branch_result
@@ -6769,14 +6505,12 @@ esac
 if ( cmd_cleanup 2>/dev/null ); then
   bad "cmd_cleanup 缺 --base-dir 應以結束碼 2 拒絕"
 else
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$?" -eq 2 ] && pass "cmd_cleanup 缺 --base-dir 以結束碼 2 拒絕" || bad "cmd_cleanup 缺 --base-dir 的結束碼不是 2"
+  if [ "$?" -eq 2 ]; then pass "cmd_cleanup 缺 --base-dir 以結束碼 2 拒絕"; else bad "cmd_cleanup 缺 --base-dir 的結束碼不是 2"; fi
 fi
 if ( cmd_cleanup --base-dir relative/path 2>/dev/null ); then
   bad "cmd_cleanup 相對路徑應以結束碼 2 拒絕"
 else
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$?" -eq 2 ] && pass "cmd_cleanup 相對路徑以結束碼 2 拒絕" || bad "cmd_cleanup 相對路徑的結束碼不是 2"
+  if [ "$?" -eq 2 ]; then pass "cmd_cleanup 相對路徑以結束碼 2 拒絕"; else bad "cmd_cleanup 相對路徑的結束碼不是 2"; fi
 fi
 
 # ==============================================================
@@ -6880,12 +6614,9 @@ case "$guard_out" in
   *'removal failed'*) bad "cmd_cleanup 把「不是執行目錄」跟「刪除失敗」的措辭混在一起: $guard_out" ;;
   *) pass "cmd_cleanup 對缺少 .repo-path 的任意目錄用了跟「刪除失敗」不同的措辭" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -d "$CLEANGUARD_ARBITRARY" ] && pass "cmd_cleanup 沒有刪掉缺少 .repo-path 的任意目錄" || bad "cmd_cleanup 誤刪了一個跟 PR review 無關的任意目錄"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$CLEANGUARD_ARBITRARY/unrelated-file.txt" ] && pass "cmd_cleanup 沒有動到任意目錄裡的檔案" || bad "cmd_cleanup 清空了任意目錄裡的檔案"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$guard_rc" -eq 0 ] && pass "cmd_cleanup 對缺少 .repo-path 的任意目錄仍以結束碼 0 回報判準結果" || bad "cmd_cleanup 對缺少 .repo-path 的任意目錄結束碼為 $guard_rc"
+if [ -d "$CLEANGUARD_ARBITRARY" ]; then pass "cmd_cleanup 沒有刪掉缺少 .repo-path 的任意目錄"; else bad "cmd_cleanup 誤刪了一個跟 PR review 無關的任意目錄"; fi
+if [ -f "$CLEANGUARD_ARBITRARY/unrelated-file.txt" ]; then pass "cmd_cleanup 沒有動到任意目錄裡的檔案"; else bad "cmd_cleanup 清空了任意目錄裡的檔案"; fi
+if [ "$guard_rc" -eq 0 ]; then pass "cmd_cleanup 對缺少 .repo-path 的任意目錄仍以結束碼 0 回報判準結果"; else bad "cmd_cleanup 對缺少 .repo-path 的任意目錄結束碼為 $guard_rc"; fi
 
 # ==============================================================
 # cmd_cleanup -- 刪除失敗時唯讀保護被補回去（errexit 防護的回歸測試）
@@ -6932,8 +6663,7 @@ case "$cleanrmfail_out" in
   *'branch_deleted='*) pass "cmd_cleanup 刪除失敗後仍走到最後一行 branch_deleted=" ;;
   *) bad "cmd_cleanup 刪除失敗後沒有走到 branch_deleted= 那一行（errexit 中止的跡象）: $cleanrmfail_out" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$cleanrmfail_rc" -eq 0 ] && pass "cmd_cleanup 刪除失敗仍是判準跑完、結束碼 0" || bad "cmd_cleanup 刪除失敗時結束碼為 $cleanrmfail_rc"
+if [ "$cleanrmfail_rc" -eq 0 ]; then pass "cmd_cleanup 刪除失敗仍是判準跑完、結束碼 0"; else bad "cmd_cleanup 刪除失敗時結束碼為 $cleanrmfail_rc"; fi
 
 # 補救邏輯本身：materials 要重新上鎖（唯讀）。chmod -R u+w 只加回寫入
 # 位，所以在補救之前 materials 是「有寫入、沒有讀/執行」；補救的
@@ -6984,16 +6714,14 @@ case "$cleandel_out" in
   *'branch_deleted=yes'*) pass "cmd_cleanup 分支刪除成功時回報 branch_deleted=yes" ;;
   *) bad "cmd_cleanup 分支刪除成功時回報不正確: $cleandel_out" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$cleandel_rc" -eq 0 ] && pass "cmd_cleanup 分支刪除成功時結束碼為 0" || bad "cmd_cleanup 分支刪除成功時結束碼為 $cleandel_rc"
+if [ "$cleandel_rc" -eq 0 ]; then pass "cmd_cleanup 分支刪除成功時結束碼為 0"; else bad "cmd_cleanup 分支刪除成功時結束碼為 $cleandel_rc"; fi
 
 if git -C "$CLEANBR_GITOK" show-ref --verify --quiet refs/heads/pr-review-42-24680; then
   bad "cmd_cleanup 沒有真的刪掉目標分支 pr-review-42-24680"
 else
   pass "cmd_cleanup 真的刪掉了目標分支 pr-review-42-24680"
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-git -C "$CLEANBR_GITOK" show-ref --verify --quiet refs/heads/pr-review-42-13579 && pass "cmd_cleanup 沒有誤刪名字相近的另一個分支 pr-review-42-13579" || bad "cmd_cleanup 誤刪了不該碰的分支 pr-review-42-13579"
+if git -C "$CLEANBR_GITOK" show-ref --verify --quiet refs/heads/pr-review-42-13579; then pass "cmd_cleanup 沒有誤刪名字相近的另一個分支 pr-review-42-13579"; else bad "cmd_cleanup 誤刪了不該碰的分支 pr-review-42-13579"; fi
 
 # ==============================================================
 # cmd_cleanup -- A2a：reviewer 的 pane 仍有 agent 時拒絕刪除
@@ -7062,12 +6790,10 @@ case "$active_out" in
   *'branch_deleted='*) pass "cmd_cleanup reviewer 仍在時仍走到 branch_deleted= 那一行（worktree 已不在，刪分支本來就安全）" ;;
   *) bad "cmd_cleanup reviewer 仍在時未走到 branch_deleted=: $active_out" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -d "$CLEANRUN_ACTIVE" ] && [ -f "$CLEANRUN_ACTIVE/materials/pr.md" ] \
-  && pass "cmd_cleanup reviewer 仍在時執行目錄完整保留" \
-  || bad "cmd_cleanup reviewer 仍在時執行目錄被動到"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$active_rc" -eq 0 ] && pass "cmd_cleanup reviewer 仍在時仍以結束碼 0 回報判準結果" || bad "cmd_cleanup reviewer 仍在時結束碼為 $active_rc"
+if [ -d "$CLEANRUN_ACTIVE" ] && [ -f "$CLEANRUN_ACTIVE/materials/pr.md" ]; then pass "cmd_cleanup reviewer 仍在時執行目錄完整保留"
+else bad "cmd_cleanup reviewer 仍在時執行目錄被動到"
+fi
+if [ "$active_rc" -eq 0 ]; then pass "cmd_cleanup reviewer 仍在時仍以結束碼 0 回報判準結果"; else bad "cmd_cleanup reviewer 仍在時結束碼為 $active_rc"; fi
 
 # --- 情形五：向 herdr 查詢失敗 -> 一律當成「還在」，保守拒絕，且措辭
 # 跟「pane 確實還在」不同，呼叫端才分得出兩者。fixture 刻意放兩個
@@ -7118,12 +6844,9 @@ case "$unknown_out" in
   *) pass "cmd_cleanup herdr 查詢失敗的措辭跟「pane 確實還在」不同" ;;
 esac
 herdr_fail_call_count="$(cat "$CLEANUP_HERDR_FAIL_COUNT_FILE" 2>/dev/null || echo 0)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$herdr_fail_call_count" = "1" ] && pass "cmd_cleanup herdr 查詢失敗時，兩個 candidate 仍只查了一次 herdr agent list" || bad "cmd_cleanup herdr 查詢失敗時查了 herdr agent list $herdr_fail_call_count 次，預期只查一次"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -d "$CLEANRUN_UNKNOWN" ] && pass "cmd_cleanup herdr 查詢失敗時執行目錄仍完整保留" || bad "cmd_cleanup herdr 查詢失敗時執行目錄被刪"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$unknown_rc" -eq 0 ] && pass "cmd_cleanup herdr 查詢失敗時仍以結束碼 0 回報判準結果" || bad "cmd_cleanup herdr 查詢失敗時結束碼為 $unknown_rc"
+if [ "$herdr_fail_call_count" = "1" ]; then pass "cmd_cleanup herdr 查詢失敗時，兩個 candidate 仍只查了一次 herdr agent list"; else bad "cmd_cleanup herdr 查詢失敗時查了 herdr agent list $herdr_fail_call_count 次，預期只查一次"; fi
+if [ -d "$CLEANRUN_UNKNOWN" ]; then pass "cmd_cleanup herdr 查詢失敗時執行目錄仍完整保留"; else bad "cmd_cleanup herdr 查詢失敗時執行目錄被刪"; fi
+if [ "$unknown_rc" -eq 0 ]; then pass "cmd_cleanup herdr 查詢失敗時仍以結束碼 0 回報判準結果"; else bad "cmd_cleanup herdr 查詢失敗時結束碼為 $unknown_rc"; fi
 
 # --- 情形六：.roster 裡每一格都已經不在 agent list 裡了 -> 正常刪除。
 # opencode 那筆刻意不建 .pane-opencode，驗證缺這個檔的 cli 直接跳過、
@@ -7146,8 +6869,7 @@ case "$clear_out" in
   *'run_dir_removed=yes'*) pass "cmd_cleanup 所有 reviewer 都已離開 pane 時正常刪除執行目錄" ;;
   *) bad "cmd_cleanup 所有 reviewer 都已離開時未刪除: $clear_out" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -d "$CLEANRUN_CLEAR" ] && pass "cmd_cleanup 所有 reviewer 都已離開時執行目錄確實不存在" || bad "cmd_cleanup 誤留下了執行目錄"
+if [ ! -d "$CLEANRUN_CLEAR" ]; then pass "cmd_cleanup 所有 reviewer 都已離開時執行目錄確實不存在"; else bad "cmd_cleanup 誤留下了執行目錄"; fi
 
 # ==============================================================
 # cmd_cleanup -- Minor：herdr agent list 對整次檢查只查一次
@@ -7208,8 +6930,7 @@ case "$count_out" in
   *) bad "cmd_cleanup 三個 reviewer 都已離開時未刪除: $count_out" ;;
 esac
 herdr_call_count="$(cat "$T/cleanup-herdr-call-count" 2>/dev/null || echo 0)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$herdr_call_count" = "1" ] && pass "cmd_cleanup 對三個 reviewer 只查一次 herdr agent list" || bad "cmd_cleanup 查了 herdr agent list $herdr_call_count 次，預期只查一次"
+if [ "$herdr_call_count" = "1" ]; then pass "cmd_cleanup 對三個 reviewer 只查一次 herdr agent list"; else bad "cmd_cleanup 查了 herdr agent list $herdr_call_count 次，預期只查一次"; fi
 
 # ==============================================================
 # cmd_cleanup -- 保守方向的缺口：.result.agents 不是陣列時必須當成
@@ -7240,8 +6961,7 @@ case "$badshape_out" in
   *'run_dir_removed=no:'*'claude'*) pass "cmd_cleanup .result.agents 不是陣列時保守拒絕並點名該 cli" ;;
   *) bad "cmd_cleanup .result.agents 不是陣列時輸出不正確: $badshape_out" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -d "$CLEANRUN_BADSHAPE" ] && pass "cmd_cleanup .result.agents 不是陣列時執行目錄仍完整保留" || bad "cmd_cleanup .result.agents 不是陣列時誤刪了執行目錄"
+if [ -d "$CLEANRUN_BADSHAPE" ]; then pass "cmd_cleanup .result.agents 不是陣列時執行目錄仍完整保留"; else bad "cmd_cleanup .result.agents 不是陣列時誤刪了執行目錄"; fi
 
 # ==============================================================
 # cmd_cleanup -- A2b：刪除中途失敗時 .repo-path 必須留到最後一步，讓
@@ -7266,12 +6986,10 @@ case "$retry1_out" in
   *'run_dir_removed=no:removal failed, run directory still present'*) pass "cmd_cleanup 第一次刪除失敗時回報 removal failed" ;;
   *) bad "cmd_cleanup 第一次刪除失敗時輸出不正確: $retry1_out" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$retry1_rc" -eq 0 ] && pass "cmd_cleanup 第一次刪除失敗仍以結束碼 0 回報判準結果" || bad "cmd_cleanup 第一次刪除失敗時結束碼為 $retry1_rc"
+if [ "$retry1_rc" -eq 0 ]; then pass "cmd_cleanup 第一次刪除失敗仍以結束碼 0 回報判準結果"; else bad "cmd_cleanup 第一次刪除失敗時結束碼為 $retry1_rc"; fi
 # 關鍵：.repo-path 必須還在，第二次 cleanup 才不會落入「missing
 # .repo-path」那個永久卡死的出口。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$CLEANRETRY/.repo-path" ] && pass "cmd_cleanup 第一次刪除失敗後 .repo-path 仍在，可供重試" || bad "cmd_cleanup 第一次刪除失敗後 .repo-path 被誤刪，無法重試"
+if [ -f "$CLEANRETRY/.repo-path" ]; then pass "cmd_cleanup 第一次刪除失敗後 .repo-path 仍在，可供重試"; else bad "cmd_cleanup 第一次刪除失敗後 .repo-path 被誤刪，無法重試"; fi
 
 # 排除阻礙：造成第一次失敗的原因後來被解除了（模擬 codex pane 已經關閉、
 # 不再有東西寫回這個目錄）。
@@ -7282,10 +7000,8 @@ case "$retry2_out" in
   *'run_dir_removed=yes'*) pass "cmd_cleanup 排除阻礙後第二次 cleanup 成功刪除執行目錄" ;;
   *) bad "cmd_cleanup 第二次 cleanup 未成功刪除: $retry2_out" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$retry2_rc" -eq 0 ] && pass "cmd_cleanup 第二次 cleanup 成功時結束碼為 0" || bad "cmd_cleanup 第二次 cleanup 結束碼為 $retry2_rc"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -d "$CLEANRETRY" ] && pass "cmd_cleanup 第二次 cleanup 後執行目錄（含 .repo-path）確實不存在" || bad "cmd_cleanup 第二次 cleanup 後執行目錄仍在"
+if [ "$retry2_rc" -eq 0 ]; then pass "cmd_cleanup 第二次 cleanup 成功時結束碼為 0"; else bad "cmd_cleanup 第二次 cleanup 結束碼為 $retry2_rc"; fi
+if [ ! -d "$CLEANRETRY" ]; then pass "cmd_cleanup 第二次 cleanup 後執行目錄（含 .repo-path）確實不存在"; else bad "cmd_cleanup 第二次 cleanup 後執行目錄仍在"; fi
 
 # ==============================================================
 # cmd_cleanup -- Critical：執行目錄本身失去讀取權限時，phase 2 的
@@ -7351,10 +7067,8 @@ case "$unreadable_out" in
   *'branch_deleted='*) pass "cmd_cleanup 執行目錄自己不可讀時仍走到 branch_deleted= 那一行（未被 errexit 中止）" ;;
   *) bad "cmd_cleanup 執行目錄自己不可讀時未走到 branch_deleted=（errexit 中止的跡象）: $unreadable_out" ;;
 esac
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$unreadable_rc" -eq 0 ] && pass "cmd_cleanup 執行目錄自己不可讀時仍以結束碼 0 回報判準結果" || bad "cmd_cleanup 執行目錄自己不可讀時結束碼為 $unreadable_rc"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$CLEANUNREADABLE/.repo-path" ] && pass "cmd_cleanup 執行目錄自己不可讀時 .repo-path 仍在" || bad "cmd_cleanup 執行目錄自己不可讀時 .repo-path 不見了"
+if [ "$unreadable_rc" -eq 0 ]; then pass "cmd_cleanup 執行目錄自己不可讀時仍以結束碼 0 回報判準結果"; else bad "cmd_cleanup 執行目錄自己不可讀時結束碼為 $unreadable_rc"; fi
+if [ -f "$CLEANUNREADABLE/.repo-path" ]; then pass "cmd_cleanup 執行目錄自己不可讀時 .repo-path 仍在"; else bad "cmd_cleanup 執行目錄自己不可讀時 .repo-path 不見了"; fi
 
 # 清乾淨：把鎖住的目錄權限救回來，否則這支測試檔最後的 trap 清不掉它。
 chmod u+rwx "$CLEANUNREADABLE" 2>/dev/null || true
@@ -7428,9 +7142,9 @@ esac
 # 額外用正則再驗一次事件行的形狀，不寫死 "agy" 這個值本身，直接排除
 # "cli=cli=" 這種重複前綴的可能，即使日後這個字面比對被改鬆也還有這一
 # 道防線。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[[ "$wait_out" =~ ^event=summary_line\ cli=[a-z]+$ ]] && pass "cmd_wait summary_line 事件行的格式恰好是 event=summary_line cli=<name>，沒有重複前綴" \
-  || bad "cmd_wait summary_line 事件行格式不正確（可能重複了 cli= 前綴）: $wait_out"
+if [[ "$wait_out" =~ ^event=summary_line\ cli=[a-z]+$ ]]; then pass "cmd_wait summary_line 事件行的格式恰好是 event=summary_line cli=<name>，沒有重複前綴"
+else bad "cmd_wait summary_line 事件行格式不正確（可能重複了 cli= 前綴）: $wait_out"
+fi
 
 # ==============================================================
 # cmd_wait -- event=blocked 與 --reported-blocked 過濾
@@ -7494,8 +7208,7 @@ esac
 # --- --reported-blocked 點名的 cli 不會再次觸發 blocked，改在死線到達 ---
 wait_set_dispatched "$WAIT_BLOCKED" 3
 wait_blocked_filtered_out="$(cmd_wait --base-dir "$WAIT_BLOCKED" --reported-blocked codex 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_blocked_filtered_out" = 'event=deadline' ] && pass "cmd_wait --reported-blocked 點名的 cli 不會再次觸發 blocked 事件" || bad "cmd_wait --reported-blocked 過濾失敗: $wait_blocked_filtered_out"
+if [ "$wait_blocked_filtered_out" = 'event=deadline' ]; then pass "cmd_wait --reported-blocked 點名的 cli 不會再次觸發 blocked 事件"; else bad "cmd_wait --reported-blocked 過濾失敗: $wait_blocked_filtered_out"; fi
 
 # ==============================================================
 # cmd_wait -- event=stalled、blocked 優先、--reported-stalled 抑制與重新
@@ -7547,8 +7260,7 @@ printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"opencode-aaaaaaaaaaaa","pane_id":"pane-opencode","agent_status":"idle"}]}}'
 wait_set_dispatched "$WAIT_STALLED_SUPPRESSED" 3
 wait_stalled_suppressed_out="$(cmd_wait --base-dir "$WAIT_STALLED_SUPPRESSED" --reported-stalled opencode 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_stalled_suppressed_out" = 'event=deadline' ] && pass "cmd_wait --reported-stalled 點名的 cli 不會再次觸發 stalled 事件" || bad "cmd_wait --reported-stalled 過濾失敗: $wait_stalled_suppressed_out"
+if [ "$wait_stalled_suppressed_out" = 'event=deadline' ]; then pass "cmd_wait --reported-stalled 點名的 cli 不會再次觸發 stalled 事件"; else bad "cmd_wait --reported-stalled 過濾失敗: $wait_stalled_suppressed_out"; fi
 
 # --- 重新武裝：一旦這一格被觀測到 working，.last-working-<cli> 就要被
 # 重置成接近現在的時間（不誤報 stalled）；之後即使不再傳
@@ -7562,17 +7274,15 @@ printf '%s\n' "$(( $(date +%s) - REVIEWER_STALLED_THRESHOLD_SECONDS - 5 ))" > "$
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"agy-aaaaaaaaaaaa","pane_id":"pane-agy","agent_status":"working"}]}}'
 wait_set_dispatched "$WAIT_STALLED_REARM" 3
 wait_stalled_rearm_out1="$(cmd_wait --base-dir "$WAIT_STALLED_REARM" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_stalled_rearm_out1" = 'event=deadline' ] && pass "cmd_wait 觀測到 working 時不誤報 stalled" || bad "cmd_wait 觀測到 working 卻仍回報: $wait_stalled_rearm_out1"
+if [ "$wait_stalled_rearm_out1" = 'event=deadline' ]; then pass "cmd_wait 觀測到 working 時不誤報 stalled"; else bad "cmd_wait 觀測到 working 卻仍回報: $wait_stalled_rearm_out1"; fi
 
 wait_stalled_rearm_last_working="$(cat "$WAIT_STALLED_REARM/.last-working-agy" 2>/dev/null)"
 wait_stalled_rearm_now="$(date +%s)"
 # 寬鬆的十秒容忍：上一次呼叫本身就要跨過至少一次 5 秒輪詢間隔才會走到
 # 死線，這裡量的是「有沒有被重置過」，不是精確計時。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$wait_stalled_rearm_last_working" ] && [ "$(( wait_stalled_rearm_now - wait_stalled_rearm_last_working ))" -le 10 ] \
-  && pass "cmd_wait 觀測到 working 時重置這一格自己的計時起點" \
-  || bad "cmd_wait 未重置計時起點: $wait_stalled_rearm_last_working（now=$wait_stalled_rearm_now）"
+if [ -n "$wait_stalled_rearm_last_working" ] && [ "$(( wait_stalled_rearm_now - wait_stalled_rearm_last_working ))" -le 10 ]; then pass "cmd_wait 觀測到 working 時重置這一格自己的計時起點"
+else bad "cmd_wait 未重置計時起點: $wait_stalled_rearm_last_working（now=$wait_stalled_rearm_now）"
+fi
 
 # 再次讓它變舊（模擬又經過一段時間），狀態改回不是 working 也不是
 # blocked，且這次呼叫不再傳 --reported-stalled。
@@ -7596,8 +7306,7 @@ printf 'cli=claude pid=n/a exit=n/a ended_at=2026-09-05T00:00:00Z worktree_statu
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude","agent_status":"idle"}]}}'
 wait_set_dispatched "$WAIT_STALLED_DONE" 3
 wait_stalled_done_out="$(cmd_wait --base-dir "$WAIT_STALLED_DONE" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_stalled_done_out" = 'event=deadline' ] && pass "cmd_wait 已有摘要行的 cli 不再判定 stalled" || bad "cmd_wait 已有摘要行卻仍回報 stalled/其他事件: $wait_stalled_done_out"
+if [ "$wait_stalled_done_out" = 'event=deadline' ]; then pass "cmd_wait 已有摘要行的 cli 不再判定 stalled"; else bad "cmd_wait 已有摘要行卻仍回報 stalled/其他事件: $wait_stalled_done_out"; fi
 
 # ==============================================================
 # cmd_wait -- 並行執行沖掉停滯計時（本次要修的缺陷）。
@@ -7647,10 +7356,9 @@ case "$wait_alias_out" in
 esac
 
 wait_alias_last_working_after="$(cat "$WAIT_STALLED_ALIAS/.last-working-claude" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_alias_last_working_after" = "$wait_alias_last_working_before" ] \
-  && pass "cmd_wait 沒有被同名前綴的並行 agent 誤判成 working，本次的停滯計時起點沒有被覆寫" \
-  || bad "cmd_wait 的停滯計時起點被覆寫了（本次自己那一格從未被讀到 working）: 原值=$wait_alias_last_working_before 現值=$wait_alias_last_working_after"
+if [ "$wait_alias_last_working_after" = "$wait_alias_last_working_before" ]; then pass "cmd_wait 沒有被同名前綴的並行 agent 誤判成 working，本次的停滯計時起點沒有被覆寫"
+else bad "cmd_wait 的停滯計時起點被覆寫了（本次自己那一格從未被讀到 working）: 原值=$wait_alias_last_working_before 現值=$wait_alias_last_working_after"
+fi
 
 # ==============================================================
 # cmd_wait -- 重置 .last-working-<cli> 失敗不得中止流程（本次要修的缺陷，
@@ -7690,8 +7398,7 @@ pass cmd-wait-last-working-write-failure-does-not-abort
 # 恢復可寫，不讓這個檔案卡住後面的測試與結尾的 trap 清理。
 chmod u+w "$WAIT_LWF_ROOT/.last-working-claude" 2>/dev/null || true
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$WAIT_LWF_OUT" 2>/dev/null)" = 'event=deadline' ] && pass "cmd_wait 觀測到 working 但重置計時起點失敗時仍正常回到死線事件" || bad "cmd_wait 未能在重置計時起點失敗後仍回到死線事件: $(cat "$WAIT_LWF_OUT" 2>/dev/null)"
+if [ "$(cat "$WAIT_LWF_OUT" 2>/dev/null)" = 'event=deadline' ]; then pass "cmd_wait 觀測到 working 但重置計時起點失敗時仍正常回到死線事件"; else bad "cmd_wait 未能在重置計時起點失敗後仍回到死線事件: $(cat "$WAIT_LWF_OUT" 2>/dev/null)"; fi
 
 # ==============================================================
 # cmd_wait -- .last-working-<cli> 內容被算術語境求值的指令注入（Critical，
@@ -7721,10 +7428,8 @@ printf 'now[$(touch %s)]\n' "$WAIT_ARITH_MARKER" > "$WAIT_ARITH_ROOT/.last-worki
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"name":"claude-aaaaaaaaaaaa","pane_id":"pane-claude","agent_status":"idle"}]}}'
 wait_set_dispatched "$WAIT_ARITH_ROOT" 3
 wait_arith_out="$(cmd_wait --base-dir "$WAIT_ARITH_ROOT" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$WAIT_ARITH_MARKER" ] && pass "cmd_wait 不對 .last-working-<cli> 的內容做算術求值，payload 裡的指令替換沒有被執行" || bad "cmd_wait 執行了 .last-working-<cli> 內容裡夾帶的指令 -- 標記檔被建立: $WAIT_ARITH_MARKER"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_arith_out" = 'event=deadline' ] && pass "cmd_wait 對非純數字的 .last-working-<cli> 內容視同沒有基準時間，不誤報 stalled" || bad "cmd_wait 對被竄改的 .last-working-<cli> 內容處置不正確: $wait_arith_out"
+if [ ! -e "$WAIT_ARITH_MARKER" ]; then pass "cmd_wait 不對 .last-working-<cli> 的內容做算術求值，payload 裡的指令替換沒有被執行"; else bad "cmd_wait 執行了 .last-working-<cli> 內容裡夾帶的指令 -- 標記檔被建立: $WAIT_ARITH_MARKER"; fi
+if [ "$wait_arith_out" = 'event=deadline' ]; then pass "cmd_wait 對非純數字的 .last-working-<cli> 內容視同沒有基準時間，不誤報 stalled"; else bad "cmd_wait 對被竄改的 .last-working-<cli> 內容處置不正確: $wait_arith_out"; fi
 
 # ==============================================================
 # cmd_wait -- _wait_agent_states 失敗不得中止流程（防未來回歸）。
@@ -7761,8 +7466,7 @@ WAIT_AS_OUT="$T/wait-agent-states-guard.out"
 ) > "$WAIT_AS_OUT"
 # 這裡能執行到，本身就是「沒有中止」的證明。
 pass cmd-wait-agent-states-failure-does-not-abort
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(cat "$WAIT_AS_OUT" 2>/dev/null)" = 'event=deadline' ] && pass "cmd_wait 在 _wait_agent_states 失敗時仍能正常前進到死線事件" || bad "cmd_wait 在 _wait_agent_states 失敗時的輸出不正確: $(cat "$WAIT_AS_OUT" 2>/dev/null)"
+if [ "$(cat "$WAIT_AS_OUT" 2>/dev/null)" = 'event=deadline' ]; then pass "cmd_wait 在 _wait_agent_states 失敗時仍能正常前進到死線事件"; else bad "cmd_wait 在 _wait_agent_states 失敗時的輸出不正確: $(cat "$WAIT_AS_OUT" 2>/dev/null)"; fi
 
 # ==============================================================
 # _wait_agent_states / cmd_wait -- herdr 回應結構變形（issue #49）。
@@ -7833,38 +7537,32 @@ wait_shape_jsons=(
 for wait_shape_i in "${!wait_shape_labels[@]}"; do
   export WAIT_HERDR_AGENT_LIST_JSON="${wait_shape_jsons[$wait_shape_i]}"
   wait_shape_got="$(_wait_agent_states "$WAIT_SHAPE_ROOT/direct")"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$wait_shape_got" = 'claude ' ] \
-    && pass "_wait_agent_states 變形回應（${wait_shape_labels[$wait_shape_i]}）輸出空狀態欄位" \
-    || bad "_wait_agent_states 變形回應（${wait_shape_labels[$wait_shape_i]}）應輸出 'claude '（空狀態），實得: '$wait_shape_got'"
+  if [ "$wait_shape_got" = 'claude ' ]; then pass "_wait_agent_states 變形回應（${wait_shape_labels[$wait_shape_i]}）輸出空狀態欄位"
+  else bad "_wait_agent_states 變形回應（${wait_shape_labels[$wait_shape_i]}）應輸出 'claude '（空狀態），實得: '$wait_shape_got'"
+  fi
 done
 
 # --- _wait_agent_states 真實形狀回歸 ---
 for wait_shape_status in working blocked idle "done"; do
   export WAIT_HERDR_AGENT_LIST_JSON="{\"result\":{\"agents\":[{\"pane_id\":\"pane-claude\",\"agent_status\":\"$wait_shape_status\"}]}}"
   wait_shape_got="$(_wait_agent_states "$WAIT_SHAPE_ROOT/direct")"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$wait_shape_got" = "claude $wait_shape_status" ] \
-    && pass "_wait_agent_states 真實形狀 $wait_shape_status 原樣輸出" \
-    || bad "_wait_agent_states 真實形狀 $wait_shape_status 輸出不正確: '$wait_shape_got'"
+  if [ "$wait_shape_got" = "claude $wait_shape_status" ]; then pass "_wait_agent_states 真實形狀 $wait_shape_status 原樣輸出"
+  else bad "_wait_agent_states 真實形狀 $wait_shape_status 輸出不正確: '$wait_shape_got'"
+  fi
 done
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-other","agent_status":"working"}]}}'
 wait_shape_got="$(_wait_agent_states "$WAIT_SHAPE_ROOT/direct")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_shape_got" = 'claude unknown' ] && pass "_wait_agent_states 陣列已確認但沒有這個 pane 時輸出 unknown" || bad "_wait_agent_states 沒比對到 pane 時輸出不正確: '$wait_shape_got'"
+if [ "$wait_shape_got" = 'claude unknown' ]; then pass "_wait_agent_states 陣列已確認但沒有這個 pane 時輸出 unknown"; else bad "_wait_agent_states 沒比對到 pane 時輸出不正確: '$wait_shape_got'"; fi
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[]}}'
 wait_shape_got="$(_wait_agent_states "$WAIT_SHAPE_ROOT/direct")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_shape_got" = 'claude unknown' ] && pass "_wait_agent_states 空陣列輸出 unknown" || bad "_wait_agent_states 空陣列輸出不正確: '$wait_shape_got'"
+if [ "$wait_shape_got" = 'claude unknown' ]; then pass "_wait_agent_states 空陣列輸出 unknown"; else bad "_wait_agent_states 空陣列輸出不正確: '$wait_shape_got'"; fi
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-claude","agent_status":"idle"},{"pane_id":"pane-claude","agent_status":"working"}]}}'
 wait_shape_got="$(_wait_agent_states "$WAIT_SHAPE_ROOT/direct")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_shape_got" = 'claude idle' ] && pass "_wait_agent_states 同一 pane_id 多筆時取第一筆" || bad "_wait_agent_states 同 pane_id 多筆時輸出不正確: '$wait_shape_got'"
+if [ "$wait_shape_got" = 'claude idle' ]; then pass "_wait_agent_states 同一 pane_id 多筆時取第一筆"; else bad "_wait_agent_states 同 pane_id 多筆時輸出不正確: '$wait_shape_got'"; fi
 mkdir -p "$WAIT_SHAPE_ROOT/nopane"
 printf 'claude some-model dispatched\n' > "$WAIT_SHAPE_ROOT/nopane/.roster"
 wait_shape_got="$(_wait_agent_states "$WAIT_SHAPE_ROOT/nopane")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_shape_got" = 'claude unknown' ] && pass "_wait_agent_states 沒有 .pane-<cli> 檔時輸出 unknown" || bad "_wait_agent_states 沒有 .pane 檔時輸出不正確: '$wait_shape_got'"
+if [ "$wait_shape_got" = 'claude unknown' ]; then pass "_wait_agent_states 沒有 .pane-<cli> 檔時輸出 unknown"; else bad "_wait_agent_states 沒有 .pane 檔時輸出不正確: '$wait_shape_got'"; fi
 
 # --- cmd_wait 變形測：.last-working-<cli> 已超過門檻，變形回應下必須回
 # event=deadline（不是 stalled），且 .last-working-<cli> 被改寫成接近當
@@ -7891,15 +7589,13 @@ done
 for wait_shape_i in "${!wait_shape_labels[@]}"; do
   wait_shape_dir="$WAIT_SHAPE_ROOT/cw-${wait_shape_labels[$wait_shape_i]}"
   wait_shape_got="$(cat "$wait_shape_dir/out" 2>/dev/null)"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$wait_shape_got" = 'event=deadline' ] \
-    && pass "cmd_wait 變形回應（${wait_shape_labels[$wait_shape_i]}）不發 stalled" \
-    || bad "cmd_wait 變形回應（${wait_shape_labels[$wait_shape_i]}）應為 event=deadline，實得: '$wait_shape_got'"
+  if [ "$wait_shape_got" = 'event=deadline' ]; then pass "cmd_wait 變形回應（${wait_shape_labels[$wait_shape_i]}）不發 stalled"
+  else bad "cmd_wait 變形回應（${wait_shape_labels[$wait_shape_i]}）應為 event=deadline，實得: '$wait_shape_got'"
+  fi
   wait_shape_lw="$(cat "$wait_shape_dir/.last-working-claude" 2>/dev/null)"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ -n "$wait_shape_lw" ] && [ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ] \
-    && pass "cmd_wait 變形回應（${wait_shape_labels[$wait_shape_i]}）把 .last-working 改寫成當下時間" \
-    || bad "cmd_wait 變形回應（${wait_shape_labels[$wait_shape_i]}）沒有改寫 .last-working: '$wait_shape_lw'"
+  if [ -n "$wait_shape_lw" ] && [ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ]; then pass "cmd_wait 變形回應（${wait_shape_labels[$wait_shape_i]}）把 .last-working 改寫成當下時間"
+  else bad "cmd_wait 變形回應（${wait_shape_labels[$wait_shape_i]}）沒有改寫 .last-working: '$wait_shape_lw'"
+  fi
 done
 
 # --- cmd_wait 逐格處置：同一輪 claude 那格查詢失效（agent_status 是數
@@ -7914,22 +7610,18 @@ printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_MIX/.last-working-codex"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-claude","agent_status":3},{"pane_id":"pane-codex","agent_status":"blocked"}]}}'
 wait_set_dispatched "$WAIT_SHAPE_MIX" 20
 wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_MIX" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_shape_got" = 'event=blocked cli=codex' ] && pass "cmd_wait 一格查詢失效時，其他格的 blocked 照常發出" || bad "cmd_wait 逐格處置（blocked）不正確: '$wait_shape_got'"
+if [ "$wait_shape_got" = 'event=blocked cli=codex' ]; then pass "cmd_wait 一格查詢失效時，其他格的 blocked 照常發出"; else bad "cmd_wait 逐格處置（blocked）不正確: '$wait_shape_got'"; fi
 # 重設在事件判斷之前完成：blocked 一返回，失效格（roster 排在前面）的
 # 時間戳就必須已經被改寫，不能等到下一次呼叫。
 wait_shape_lw="$(cat "$WAIT_SHAPE_MIX/.last-working-claude")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ] && pass "cmd_wait blocked 返回的同一次呼叫中，失效格的 .last-working 已被改寫" || bad "cmd_wait blocked 返回時失效格的 .last-working 未被改寫: '$wait_shape_lw'"
+if [ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ]; then pass "cmd_wait blocked 返回的同一次呼叫中，失效格的 .last-working 已被改寫"; else bad "cmd_wait blocked 返回時失效格的 .last-working 未被改寫: '$wait_shape_lw'"; fi
 printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_MIX/.last-working-claude"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-claude","agent_status":3},{"pane_id":"pane-codex","agent_status":"idle"}]}}'
 wait_set_dispatched "$WAIT_SHAPE_MIX" 20
 wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_MIX" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_shape_got" = 'event=stalled cli=codex' ] && pass "cmd_wait 一格查詢失效時，其他格的 stalled 照常發出" || bad "cmd_wait 逐格處置（stalled）不正確: '$wait_shape_got'"
+if [ "$wait_shape_got" = 'event=stalled cli=codex' ]; then pass "cmd_wait 一格查詢失效時，其他格的 stalled 照常發出"; else bad "cmd_wait 逐格處置（stalled）不正確: '$wait_shape_got'"; fi
 wait_shape_lw="$(cat "$WAIT_SHAPE_MIX/.last-working-claude")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ] && pass "cmd_wait 查詢失效那一格的 .last-working 在同輪被改寫" || bad "cmd_wait 查詢失效那一格的 .last-working 沒被改寫: '$wait_shape_lw'"
+if [ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ]; then pass "cmd_wait 查詢失效那一格的 .last-working 在同輪被改寫"; else bad "cmd_wait 查詢失效那一格的 .last-working 沒被改寫: '$wait_shape_lw'"; fi
 
 # --- 失效格排在後面：roster 中 codex（idle、基準已過門檻）在前，claude
 # （查詢失效）在後。stalled 於 codex 返回，但失效格的時間戳在同一次呼叫中
@@ -7944,11 +7636,9 @@ printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_AFTER_STALLED/.last-working-codex
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-claude","agent_status":3},{"pane_id":"pane-codex","agent_status":"idle"}]}}'
 wait_set_dispatched "$WAIT_SHAPE_AFTER_STALLED" 20
 wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_AFTER_STALLED" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_shape_got" = 'event=stalled cli=codex' ] && pass "cmd_wait 失效格排在後面時，前面 idle 格仍發 stalled" || bad "cmd_wait 失效格排在 stalled 格之後時事件不正確: '$wait_shape_got'"
+if [ "$wait_shape_got" = 'event=stalled cli=codex' ]; then pass "cmd_wait 失效格排在後面時，前面 idle 格仍發 stalled"; else bad "cmd_wait 失效格排在 stalled 格之後時事件不正確: '$wait_shape_got'"; fi
 wait_shape_lw="$(cat "$WAIT_SHAPE_AFTER_STALLED/.last-working-claude")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ] && pass "cmd_wait stalled 返回的同一次呼叫中，排在後面的失效格 .last-working 已被改寫" || bad "cmd_wait stalled 返回時排在後面的失效格 .last-working 未被改寫: '$wait_shape_lw'"
+if [ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ]; then pass "cmd_wait stalled 返回的同一次呼叫中，排在後面的失效格 .last-working 已被改寫"; else bad "cmd_wait stalled 返回時排在後面的失效格 .last-working 未被改寫: '$wait_shape_lw'"; fi
 
 # --- 對稱案例：失效格（claude）排在未回報的 blocked 格（codex）之後 ---
 WAIT_SHAPE_AFTER_BLOCKED="$WAIT_SHAPE_ROOT/failed-after-blocked"
@@ -7960,18 +7650,15 @@ printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_AFTER_BLOCKED/.last-working-claud
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-claude","agent_status":3},{"pane_id":"pane-codex","agent_status":"blocked"}]}}'
 wait_set_dispatched "$WAIT_SHAPE_AFTER_BLOCKED" 20
 wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_AFTER_BLOCKED" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_shape_got" = 'event=blocked cli=codex' ] && pass "cmd_wait 失效格排在 blocked 格之後時仍發 blocked" || bad "cmd_wait 失效格排在 blocked 格之後時事件不正確: '$wait_shape_got'"
+if [ "$wait_shape_got" = 'event=blocked cli=codex' ]; then pass "cmd_wait 失效格排在 blocked 格之後時仍發 blocked"; else bad "cmd_wait 失效格排在 blocked 格之後時事件不正確: '$wait_shape_got'"; fi
 wait_shape_lw="$(cat "$WAIT_SHAPE_AFTER_BLOCKED/.last-working-claude")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ] && pass "cmd_wait blocked 返回的同一次呼叫中，排在後面的失效格 .last-working 已被改寫" || bad "cmd_wait blocked 返回時排在後面的失效格 .last-working 未被改寫: '$wait_shape_lw'"
+if [ "$(( $(date +%s) - wait_shape_lw ))" -le 15 ]; then pass "cmd_wait blocked 返回的同一次呼叫中，排在後面的失效格 .last-working 已被改寫"; else bad "cmd_wait blocked 返回時排在後面的失效格 .last-working 未被改寫: '$wait_shape_lw'"; fi
 
 # --- jq 的錯誤訊息不得漏到 stderr（非 JSON、陣列含非物件元素）---
 for wait_shape_i in 15 16; do
   export WAIT_HERDR_AGENT_LIST_JSON="${wait_shape_jsons[$wait_shape_i]}"
   wait_shape_err="$(_wait_agent_states "$WAIT_SHAPE_ROOT/direct" 2>&1 >/dev/null)"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ -z "$wait_shape_err" ] && pass "_wait_agent_states 變形回應（${wait_shape_labels[$wait_shape_i]}）stderr 為空" || bad "_wait_agent_states 變形回應（${wait_shape_labels[$wait_shape_i]}）漏出 stderr: '$wait_shape_err'"
+  if [ -z "$wait_shape_err" ]; then pass "_wait_agent_states 變形回應（${wait_shape_labels[$wait_shape_i]}）stderr 為空"; else bad "_wait_agent_states 變形回應（${wait_shape_labels[$wait_shape_i]}）漏出 stderr: '$wait_shape_err'"; fi
 done
 
 # --- cmd_wait 真實形狀回歸：基準已超過門檻的 unknown 仍發 stalled
@@ -7984,8 +7671,7 @@ printf '%s\n' "$wait_shape_old" > "$WAIT_SHAPE_UNK/.last-working-claude"
 export WAIT_HERDR_AGENT_LIST_JSON='{"result":{"agents":[{"pane_id":"pane-other","agent_status":"working"}]}}'
 wait_set_dispatched "$WAIT_SHAPE_UNK" 20
 wait_shape_got="$(cmd_wait --base-dir "$WAIT_SHAPE_UNK" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_shape_got" = 'event=stalled cli=claude' ] && pass "cmd_wait 沒比對到 pane（unknown）且基準超過門檻時仍發 stalled" || bad "cmd_wait unknown 的 stalled 處置被改變: '$wait_shape_got'"
+if [ "$wait_shape_got" = 'event=stalled cli=claude' ]; then pass "cmd_wait 沒比對到 pane（unknown）且基準超過門檻時仍發 stalled"; else bad "cmd_wait unknown 的 stalled 處置被改變: '$wait_shape_got'"; fi
 
 unset WAIT_HERDR_AGENT_LIST_JSON
 export PATH="$saved_path"
@@ -7999,8 +7685,7 @@ wait_set_dispatched "$WAIT_DL" 3
 wait_dl_start=$(date +%s)
 wait_dl_out="$(cmd_wait --base-dir "$WAIT_DL" 2>/dev/null)"
 wait_dl_elapsed=$(( $(date +%s) - wait_dl_start ))
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_dl_out" = 'event=deadline' ] && pass "cmd_wait 死線到達回傳 deadline 事件" || bad "cmd_wait 死線事件不正確: $wait_dl_out"
+if [ "$wait_dl_out" = 'event=deadline' ]; then pass "cmd_wait 死線到達回傳 deadline 事件"; else bad "cmd_wait 死線事件不正確: $wait_dl_out"; fi
 if [ "$wait_dl_elapsed" -ge 2 ] && [ "$wait_dl_elapsed" -le 9 ]; then
   pass "cmd_wait 死線前不早退、到達後不久即返回（$wait_dl_elapsed 秒）"
 else
@@ -8019,10 +7704,9 @@ printf '%s\n' "$(date +%s)" > "$WAIT_FRESH/logs/.dispatched-at"
 TZ=Asia/Taipei cmd_wait --base-dir "$WAIT_FRESH" > "$WAIT_FRESH/out" 2>/dev/null &
 wait_fresh_pid=$!
 sleep 2
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-kill -0 "$wait_fresh_pid" 2>/dev/null && [ ! -s "$WAIT_FRESH/out" ] \
-  && pass "cmd_wait 剛派出時不會一開始就回 deadline（死線 = 派出時刻 + 7200 秒）" \
-  || bad "cmd_wait 剛派出就返回了事件: '$(cat "$WAIT_FRESH/out" 2>/dev/null)'"
+if kill -0 "$wait_fresh_pid" 2>/dev/null && [ ! -s "$WAIT_FRESH/out" ]; then pass "cmd_wait 剛派出時不會一開始就回 deadline（死線 = 派出時刻 + 7200 秒）"
+else bad "cmd_wait 剛派出就返回了事件: '$(cat "$WAIT_FRESH/out" 2>/dev/null)'"
+fi
 kill "$wait_fresh_pid" 2>/dev/null || true
 wait "$wait_fresh_pid" 2>/dev/null || true
 
@@ -8033,10 +7717,9 @@ printf '%s\n' "$(( $(date +%s) - 7200 - 60 + 3 ))" > "$WAIT_EXPIRED/logs/.dispat
 wait_expired_start=$(date +%s)
 wait_expired_out="$(cmd_wait --base-dir "$WAIT_EXPIRED" 2>/dev/null)"
 wait_expired_elapsed=$(( $(date +%s) - wait_expired_start ))
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_expired_out" = 'event=deadline' ] && [ "$wait_expired_elapsed" -le 2 ] \
-  && pass "cmd_wait 派出時刻已超過 7200 秒時立即回 deadline" \
-  || bad "cmd_wait 已過期的死線處置不正確: '$wait_expired_out'（$wait_expired_elapsed 秒）"
+if [ "$wait_expired_out" = 'event=deadline' ] && [ "$wait_expired_elapsed" -le 2 ]; then pass "cmd_wait 派出時刻已超過 7200 秒時立即回 deadline"
+else bad "cmd_wait 已過期的死線處置不正確: '$wait_expired_out'（$wait_expired_elapsed 秒）"
+fi
 
 # --- --extend-minutes 是「累計」總數，把死線往後推 n*60 秒：自己專屬的派出
 # 時刻（不和其他案例共用），原死線已過 52 秒，帶 --extend-minutes 1 之後死
@@ -8047,18 +7730,16 @@ printf '%s\n' "$(( $(date +%s) - 7200 - 60 + 8 ))" > "$WAIT_EXT1/logs/.dispatche
 wait_ext_start=$(date +%s)
 wait_ext_out="$(cmd_wait --base-dir "$WAIT_EXT1" --extend-minutes 1 2>/dev/null)"
 wait_ext_elapsed=$(( $(date +%s) - wait_ext_start ))
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_ext_out" = 'event=deadline' ] && [ "$wait_ext_elapsed" -ge 5 ] && [ "$wait_ext_elapsed" -le 15 ] \
-  && pass "cmd_wait --extend-minutes 把死線往後推 n*60 秒（原死線已過仍等到新死線才回 deadline）" \
-  || bad "cmd_wait --extend-minutes 處置不正確: '$wait_ext_out'（$wait_ext_elapsed 秒）"
+if [ "$wait_ext_out" = 'event=deadline' ] && [ "$wait_ext_elapsed" -ge 5 ] && [ "$wait_ext_elapsed" -le 15 ]; then pass "cmd_wait --extend-minutes 把死線往後推 n*60 秒（原死線已過仍等到新死線才回 deadline）"
+else bad "cmd_wait --extend-minutes 處置不正確: '$wait_ext_out'（$wait_ext_elapsed 秒）"
+fi
 # 帶較大的總數時，不得在 2 秒內回任何事件。
 cmd_wait --base-dir "$WAIT_EXPIRED" --extend-minutes 30 > "$WAIT_EXPIRED/out" 2>/dev/null &
 wait_ext_pid=$!
 sleep 2
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-kill -0 "$wait_ext_pid" 2>/dev/null && [ ! -s "$WAIT_EXPIRED/out" ] \
-  && pass "cmd_wait --extend-minutes 30 讓已過期的死線不再立即觸發" \
-  || bad "cmd_wait --extend-minutes 30 仍立即返回: '$(cat "$WAIT_EXPIRED/out" 2>/dev/null)'"
+if kill -0 "$wait_ext_pid" 2>/dev/null && [ ! -s "$WAIT_EXPIRED/out" ]; then pass "cmd_wait --extend-minutes 30 讓已過期的死線不再立即觸發"
+else bad "cmd_wait --extend-minutes 30 仍立即返回: '$(cat "$WAIT_EXPIRED/out" 2>/dev/null)'"
+fi
 kill "$wait_ext_pid" 2>/dev/null || true
 wait "$wait_ext_pid" 2>/dev/null || true
 
@@ -8066,24 +7747,21 @@ wait "$wait_ext_pid" 2>/dev/null || true
 for wait_ext_bad in 'abc' '-5' '1.5' '' '1 2'; do
   wait_bounded "$WAIT_EXPIRED/out" "$WAIT_EXPIRED/err" --base-dir "$WAIT_EXPIRED" --extend-minutes "$wait_ext_bad"
   wait_ext_rc=$wait_bounded_rc
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$wait_ext_rc" -eq 2 ] && [ ! -s "$WAIT_EXPIRED/out" ] && grep -q -- '--extend-minutes' "$WAIT_EXPIRED/err" \
-    && pass "cmd_wait --extend-minutes '$wait_ext_bad' 以結束碼 2 拒絕，無事件輸出" \
-    || bad "cmd_wait --extend-minutes '$wait_ext_bad' 處置不正確: rc=$wait_ext_rc out='$(cat "$WAIT_EXPIRED/out")' err='$(cat "$WAIT_EXPIRED/err")'"
+  if [ "$wait_ext_rc" -eq 2 ] && [ ! -s "$WAIT_EXPIRED/out" ] && grep -q -- '--extend-minutes' "$WAIT_EXPIRED/err"; then pass "cmd_wait --extend-minutes '$wait_ext_bad' 以結束碼 2 拒絕，無事件輸出"
+  else bad "cmd_wait --extend-minutes '$wait_ext_bad' 處置不正確: rc=$wait_ext_rc out='$(cat "$WAIT_EXPIRED/out")' err='$(cat "$WAIT_EXPIRED/err")'"
+  fi
 done
 wait_bounded "$WAIT_EXPIRED/out" /dev/null --base-dir "$WAIT_EXPIRED" --extend-minutes
 wait_ext_rc=$wait_bounded_rc
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_ext_rc" -eq 2 ] && [ ! -s "$WAIT_EXPIRED/out" ] && pass "cmd_wait --extend-minutes 缺值以結束碼 2 拒絕" || bad "cmd_wait --extend-minutes 缺值的處置不正確: rc=$wait_ext_rc"
+if [ "$wait_ext_rc" -eq 2 ] && [ ! -s "$WAIT_EXPIRED/out" ]; then pass "cmd_wait --extend-minutes 缺值以結束碼 2 拒絕"; else bad "cmd_wait --extend-minutes 缺值的處置不正確: rc=$wait_ext_rc"; fi
 # 前導零不得被當成八進位：08 必須讀成十進位 8 分鐘（新死線在約 423 秒後），
 # 所以 2 秒內不得返回任何事件，也不得因算術錯誤中止。
 cmd_wait --base-dir "$WAIT_EXPIRED" --extend-minutes 08 > "$WAIT_EXPIRED/out" 2>"$WAIT_EXPIRED/err" &
 wait_ext_pid=$!
 sleep 2
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-kill -0 "$wait_ext_pid" 2>/dev/null && [ ! -s "$WAIT_EXPIRED/out" ] && [ ! -s "$WAIT_EXPIRED/err" ] \
-  && pass "cmd_wait --extend-minutes 08 以十進位讀成 8 分鐘" \
-  || bad "cmd_wait --extend-minutes 08 沒有以十進位處理: out='$(cat "$WAIT_EXPIRED/out" 2>/dev/null)' err='$(cat "$WAIT_EXPIRED/err" 2>/dev/null)'"
+if kill -0 "$wait_ext_pid" 2>/dev/null && [ ! -s "$WAIT_EXPIRED/out" ] && [ ! -s "$WAIT_EXPIRED/err" ]; then pass "cmd_wait --extend-minutes 08 以十進位讀成 8 分鐘"
+else bad "cmd_wait --extend-minutes 08 沒有以十進位處理: out='$(cat "$WAIT_EXPIRED/out" 2>/dev/null)' err='$(cat "$WAIT_EXPIRED/err" 2>/dev/null)'"
+fi
 kill "$wait_ext_pid" 2>/dev/null || true
 wait "$wait_ext_pid" 2>/dev/null || true
 
@@ -8091,17 +7769,15 @@ wait "$wait_ext_pid" 2>/dev/null || true
 # 6 位（999999）接受。 ---
 wait_bounded "$WAIT_EXPIRED/out" "$WAIT_EXPIRED/err" --base-dir "$WAIT_EXPIRED" --extend-minutes 9999999
 wait_ext_rc=$wait_bounded_rc
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_ext_rc" -eq 2 ] && [ ! -s "$WAIT_EXPIRED/out" ] && grep -q -- '--extend-minutes' "$WAIT_EXPIRED/err" \
-  && pass "cmd_wait --extend-minutes 9999999（7 位）以結束碼 2 拒絕，無事件輸出" \
-  || bad "cmd_wait --extend-minutes 9999999 處置不正確: rc=$wait_ext_rc out='$(cat "$WAIT_EXPIRED/out")' err='$(cat "$WAIT_EXPIRED/err")'"
+if [ "$wait_ext_rc" -eq 2 ] && [ ! -s "$WAIT_EXPIRED/out" ] && grep -q -- '--extend-minutes' "$WAIT_EXPIRED/err"; then pass "cmd_wait --extend-minutes 9999999（7 位）以結束碼 2 拒絕，無事件輸出"
+else bad "cmd_wait --extend-minutes 9999999 處置不正確: rc=$wait_ext_rc out='$(cat "$WAIT_EXPIRED/out")' err='$(cat "$WAIT_EXPIRED/err")'"
+fi
 cmd_wait --base-dir "$WAIT_EXPIRED" --extend-minutes 999999 > "$WAIT_EXPIRED/out" 2>"$WAIT_EXPIRED/err" &
 wait_ext_pid=$!
 sleep 2
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-kill -0 "$wait_ext_pid" 2>/dev/null && [ ! -s "$WAIT_EXPIRED/out" ] && [ ! -s "$WAIT_EXPIRED/err" ] \
-  && pass "cmd_wait --extend-minutes 999999（6 位）仍被接受" \
-  || bad "cmd_wait --extend-minutes 999999 不該被拒絕: out='$(cat "$WAIT_EXPIRED/out" 2>/dev/null)' err='$(cat "$WAIT_EXPIRED/err" 2>/dev/null)'"
+if kill -0 "$wait_ext_pid" 2>/dev/null && [ ! -s "$WAIT_EXPIRED/out" ] && [ ! -s "$WAIT_EXPIRED/err" ]; then pass "cmd_wait --extend-minutes 999999（6 位）仍被接受"
+else bad "cmd_wait --extend-minutes 999999 不該被拒絕: out='$(cat "$WAIT_EXPIRED/out" 2>/dev/null)' err='$(cat "$WAIT_EXPIRED/err" 2>/dev/null)'"
+fi
 kill "$wait_ext_pid" 2>/dev/null || true
 wait "$wait_ext_pid" 2>/dev/null || true
 
@@ -8114,16 +7790,13 @@ printf '%s\n' "$(( $(date +%s) - 2700 + 12 ))" > "$WAIT_HB/logs/.dispatched-at"
 wait_hb_start=$(date +%s)
 wait_hb_out="$(cmd_wait --base-dir "$WAIT_HB" 2>/dev/null)"
 wait_hb_elapsed=$(( $(date +%s) - wait_hb_start ))
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_hb_out" = 'event=heartbeat minute=45' ] && pass "cmd_wait 心跳在下一個 15 分鐘倍數回傳 event=heartbeat minute=45" || bad "cmd_wait 心跳事件不正確: '$wait_hb_out'"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_hb_elapsed" -ge 8 ] && [ "$wait_hb_elapsed" -le 20 ] && pass "cmd_wait 心跳不早退（$wait_hb_elapsed 秒）" || bad "cmd_wait 心跳時序不正確: $wait_hb_elapsed 秒"
+if [ "$wait_hb_out" = 'event=heartbeat minute=45' ]; then pass "cmd_wait 心跳在下一個 15 分鐘倍數回傳 event=heartbeat minute=45"; else bad "cmd_wait 心跳事件不正確: '$wait_hb_out'"; fi
+if [ "$wait_hb_elapsed" -ge 8 ] && [ "$wait_hb_elapsed" -le 20 ]; then pass "cmd_wait 心跳不早退（$wait_hb_elapsed 秒）"; else bad "cmd_wait 心跳時序不正確: $wait_hb_elapsed 秒"; fi
 
 # 第一個倍數：D 在 900 秒前再加 12 秒 -> minute=15。
 printf '%s\n' "$(( $(date +%s) - 900 + 12 ))" > "$WAIT_HB/logs/.dispatched-at"
 wait_hb_out="$(cmd_wait --base-dir "$WAIT_HB" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_hb_out" = 'event=heartbeat minute=15' ] && pass "cmd_wait 第一個心跳回傳 minute=15" || bad "cmd_wait 第一個心跳不正確: '$wait_hb_out'"
+if [ "$wait_hb_out" = 'event=heartbeat minute=15' ]; then pass "cmd_wait 第一個心跳回傳 minute=15"; else bad "cmd_wait 第一個心跳不正確: '$wait_hb_out'"; fi
 
 # --- 心跳邊界。D 恰好落在 900 秒前（現在就是一個倍數）：「嚴格大於現在」
 # 所以要等下一個倍數，約 2 秒內不得有任何事件；D 在未來（時鐘被調過）時
@@ -8134,10 +7807,9 @@ printf '%s\n' "$(( $(date +%s) - 900 ))" > "$WAIT_HBB/logs/.dispatched-at"
 cmd_wait --base-dir "$WAIT_HBB" > "$WAIT_HBB/out" 2>/dev/null &
 wait_hbb_pid=$!
 sleep 2
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-kill -0 "$wait_hbb_pid" 2>/dev/null && [ ! -s "$WAIT_HBB/out" ] \
-  && pass "cmd_wait D 恰好在 900 秒前時不立即報心跳（要等下一個倍數）" \
-  || bad "cmd_wait D 恰好在倍數上時處置不正確: '$(cat "$WAIT_HBB/out" 2>/dev/null)'"
+if kill -0 "$wait_hbb_pid" 2>/dev/null && [ ! -s "$WAIT_HBB/out" ]; then pass "cmd_wait D 恰好在 900 秒前時不立即報心跳（要等下一個倍數）"
+else bad "cmd_wait D 恰好在倍數上時處置不正確: '$(cat "$WAIT_HBB/out" 2>/dev/null)'"
+fi
 kill "$wait_hbb_pid" 2>/dev/null || true
 wait "$wait_hbb_pid" 2>/dev/null || true
 # D 在未來（時鐘被往回調過）：第一個心跳必須是 D + 900（k=1）。真等 15 分鐘
@@ -8155,34 +7827,30 @@ wait_fake_out="$(
   cmd_wait --base-dir "$WAIT_HBB" 2>&1
   printf 'fake_now=%s\n' "$wait_fake_now"
 )"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_fake_out" = "event=heartbeat minute=15
-fake_now=$(( 1800000000 + 100 + 900 ))" ] \
-  && pass "cmd_wait D 在未來時第一個心跳是 D + 900（k=1，minute=15）" \
-  || bad "cmd_wait D 在未來時的心跳不正確: '$wait_fake_out'"
+if [ "$wait_fake_out" = "event=heartbeat minute=15
+fake_now=$(( 1800000000 + 100 + 900 ))" ]; then pass "cmd_wait D 在未來時第一個心跳是 D + 900（k=1，minute=15）"
+else bad "cmd_wait D 在未來時的心跳不正確: '$wait_fake_out'"
+fi
 
 # --- 帶 --extend-minutes 讓死線晚於心跳：D 在 8100 秒（135 分鐘）前再加 12
 # 秒，原死線早已過，--extend-minutes 30 使死線落在約 912 秒後；下一個倍數
 # （k=9）在 12 秒後 -> event=heartbeat minute=135（超過 120 分鐘）。 ---
 printf '%s\n' "$(( $(date +%s) - 8100 + 12 ))" > "$WAIT_HB/logs/.dispatched-at"
 wait_hb_out="$(cmd_wait --base-dir "$WAIT_HB" --extend-minutes 30 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_hb_out" = 'event=heartbeat minute=135' ] && pass "cmd_wait 延長後超過 120 分鐘的心跳回傳 minute=135" || bad "cmd_wait 延長後的心跳不正確: '$wait_hb_out'"
+if [ "$wait_hb_out" = 'event=heartbeat minute=135' ]; then pass "cmd_wait 延長後超過 120 分鐘的心跳回傳 minute=135"; else bad "cmd_wait 延長後的心跳不正確: '$wait_hb_out'"; fi
 
 # --- 同一時刻死線與心跳都成立時報 deadline：D + 7200 = D + 900*8，兩者落在
 # 同一秒。 ---
 wait_set_dispatched "$WAIT_HB" 3
 wait_hb_out="$(cmd_wait --base-dir "$WAIT_HB" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_hb_out" = 'event=deadline' ] && pass "cmd_wait 死線與心跳同一時刻成立時報 deadline" || bad "cmd_wait 死線與心跳同刻的處置不正確: '$wait_hb_out'"
+if [ "$wait_hb_out" = 'event=deadline' ]; then pass "cmd_wait 死線與心跳同一時刻成立時報 deadline"; else bad "cmd_wait 死線與心跳同刻的處置不正確: '$wait_hb_out'"; fi
 
 # --- 摘要檔還不存在時當成零行、不視為錯誤 ---
 WAIT_NF="$T/wait-nofile"
 mkdir -p "$WAIT_NF"
 wait_set_dispatched "$WAIT_NF" 3
 wait_nf_out="$(cmd_wait --base-dir "$WAIT_NF" 2>/dev/null)"; wait_nf_rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_nf_out" = 'event=deadline' ] && [ "$wait_nf_rc" -eq 0 ] && pass "cmd_wait 摘要檔不存在時當成零行繼續等" || bad "cmd_wait 摘要檔不存在時處置不正確: $wait_nf_out rc=$wait_nf_rc"
+if [ "$wait_nf_out" = 'event=deadline' ] && [ "$wait_nf_rc" -eq 0 ]; then pass "cmd_wait 摘要檔不存在時當成零行繼續等"; else bad "cmd_wait 摘要檔不存在時處置不正確: $wait_nf_out rc=$wait_nf_rc"; fi
 
 # --- .dispatched-at 缺漏 / 空 / 非純數字 → exit 2、stderr 說明、stdout 沒有任何
 # event；且不得退回別的時間來源：每個案例都放了「看起來有效」的 .prepared-at
@@ -8205,10 +7873,9 @@ for wait_da_label in "${wait_da_labels[@]}"; do
   esac
   wait_bounded "$wait_da_dir/out" "$wait_da_dir/err" --base-dir "$wait_da_dir"
   wait_da_rc=$wait_bounded_rc
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$wait_da_rc" -eq 2 ] && [ ! -s "$wait_da_dir/out" ] && grep -q -- '\.dispatched-at' "$wait_da_dir/err" \
-    && pass "cmd_wait .dispatched-at 為 $wait_da_label 時以結束碼 2 拒絕，stderr 點名該檔，無 event 輸出" \
-    || bad "cmd_wait .dispatched-at 為 $wait_da_label 時處置不正確: rc=$wait_da_rc out='$(cat "$wait_da_dir/out")' err='$(cat "$wait_da_dir/err")'"
+  if [ "$wait_da_rc" -eq 2 ] && [ ! -s "$wait_da_dir/out" ] && grep -q -- '\.dispatched-at' "$wait_da_dir/err"; then pass "cmd_wait .dispatched-at 為 $wait_da_label 時以結束碼 2 拒絕，stderr 點名該檔，無 event 輸出"
+  else bad "cmd_wait .dispatched-at 為 $wait_da_label 時處置不正確: rc=$wait_da_rc out='$(cat "$wait_da_dir/out")' err='$(cat "$wait_da_dir/err")'"
+  fi
 done
 
 # --- 前導零的 .dispatched-at 不得被當成八進位（含 8/9 的數字在 (( )) 裡會
@@ -8218,28 +7885,25 @@ mkdir -p "$WAIT_DA_OCT/logs"; : > "$WAIT_DA_OCT/summary.txt"
 printf '0%s\n' "$(( $(date +%s) - 7200 + 3 ))" > "$WAIT_DA_OCT/logs/.dispatched-at"
 wait_da_rc=0
 wait_da_out="$(cmd_wait --base-dir "$WAIT_DA_OCT" 2>/dev/null)" || wait_da_rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$wait_da_rc" -eq 0 ] && [ "$wait_da_out" = 'event=deadline' ] \
-  && pass "cmd_wait .dispatched-at 帶前導零時以十進位處理" \
-  || bad "cmd_wait .dispatched-at 帶前導零處置不正確: rc=$wait_da_rc out='$wait_da_out'"
+if [ "$wait_da_rc" -eq 0 ] && [ "$wait_da_out" = 'event=deadline' ]; then pass "cmd_wait .dispatched-at 帶前導零時以十進位處理"
+else bad "cmd_wait .dispatched-at 帶前導零處置不正確: rc=$wait_da_rc out='$wait_da_out'"
+fi
 
 # --- 舊旗標 --deadline-at / --heartbeat-at 已移除 → unknown flag，exit 2 ---
 for wait_old_flag in --deadline-at --heartbeat-at; do
   wait_set_dispatched "$WAIT_NF" 3
   wait_bounded "$WAIT_NF/out" "$WAIT_NF/err" --base-dir "$WAIT_NF" "$wait_old_flag" "$(( $(date +%s) + 60 ))"
   wait_old_rc=$wait_bounded_rc
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$wait_old_rc" -eq 2 ] && [ ! -s "$WAIT_NF/out" ] && grep -q 'unknown flag' "$WAIT_NF/err" \
-    && pass "cmd_wait 已移除 $wait_old_flag，傳入時以 unknown flag 結束碼 2 拒絕" \
-    || bad "cmd_wait 對舊旗標 $wait_old_flag 處置不正確: rc=$wait_old_rc out='$(cat "$WAIT_NF/out")' err='$(cat "$WAIT_NF/err")'"
+  if [ "$wait_old_rc" -eq 2 ] && [ ! -s "$WAIT_NF/out" ] && grep -q 'unknown flag' "$WAIT_NF/err"; then pass "cmd_wait 已移除 $wait_old_flag，傳入時以 unknown flag 結束碼 2 拒絕"
+  else bad "cmd_wait 對舊旗標 $wait_old_flag 處置不正確: rc=$wait_old_rc out='$(cat "$WAIT_NF/out")' err='$(cat "$WAIT_NF/err")'"
+  fi
 done
 
 # --- 用法錯誤 ---
 if ( cmd_wait 2>/dev/null ); then
   bad "cmd_wait 缺 --base-dir 應以結束碼 2 拒絕"
 else
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$?" -eq 2 ] && pass "cmd_wait 缺 --base-dir 以結束碼 2 拒絕" || bad "cmd_wait 缺 --base-dir 的結束碼不是 2"
+  if [ "$?" -eq 2 ]; then pass "cmd_wait 缺 --base-dir 以結束碼 2 拒絕"; else bad "cmd_wait 缺 --base-dir 的結束碼不是 2"; fi
 fi
 
 # ==============================================================
@@ -8324,21 +7988,21 @@ esac
 # root pane 本身，而不是切出來的新 pane。----
 panes_claude_pane_id="$(sed -n 's/^pane_id_claude=//p' "$PANES_ROOT/panes.out")"
 panes_agy_pane_id="$(sed -n 's/^pane_id_agy=//p' "$PANES_ROOT/panes.out")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$panes_claude_pane_id" ] && pass "_build_reviewer_panes claude 拿到自己的 pane_id" \
-  || bad "_build_reviewer_panes claude 沒有 pane_id: $(cat "$PANES_ROOT/panes.out")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$panes_agy_pane_id" ] && pass "_build_reviewer_panes agy 拿到自己的 pane_id" \
-  || bad "_build_reviewer_panes agy 沒有 pane_id: $(cat "$PANES_ROOT/panes.out")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$panes_claude_pane_id" != "wT:p1" ] && pass "_build_reviewer_panes claude 沒有誤用 root pane（wT:p1）" \
-  || bad "_build_reviewer_panes claude 誤用了 root pane"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$panes_agy_pane_id" != "wT:p1" ] && pass "_build_reviewer_panes agy 沒有誤用 root pane（wT:p1）" \
-  || bad "_build_reviewer_panes agy 誤用了 root pane"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$panes_claude_pane_id" != "$panes_agy_pane_id" ] && pass "_build_reviewer_panes claude 與 agy 拿到不同的 pane" \
-  || bad "_build_reviewer_panes claude 與 agy 拿到相同的 pane: $panes_claude_pane_id"
+if [ -n "$panes_claude_pane_id" ]; then pass "_build_reviewer_panes claude 拿到自己的 pane_id"
+else bad "_build_reviewer_panes claude 沒有 pane_id: $(cat "$PANES_ROOT/panes.out")"
+fi
+if [ -n "$panes_agy_pane_id" ]; then pass "_build_reviewer_panes agy 拿到自己的 pane_id"
+else bad "_build_reviewer_panes agy 沒有 pane_id: $(cat "$PANES_ROOT/panes.out")"
+fi
+if [ "$panes_claude_pane_id" != "wT:p1" ]; then pass "_build_reviewer_panes claude 沒有誤用 root pane（wT:p1）"
+else bad "_build_reviewer_panes claude 誤用了 root pane"
+fi
+if [ "$panes_agy_pane_id" != "wT:p1" ]; then pass "_build_reviewer_panes agy 沒有誤用 root pane（wT:p1）"
+else bad "_build_reviewer_panes agy 誤用了 root pane"
+fi
+if [ "$panes_claude_pane_id" != "$panes_agy_pane_id" ]; then pass "_build_reviewer_panes claude 與 agy 拿到不同的 pane"
+else bad "_build_reviewer_panes claude 與 agy 拿到相同的 pane: $panes_claude_pane_id"
+fi
 
 # ---- 缺陷 B 的迴歸斷言：所有 pane 都切完之後，root pane 本身要被關掉，
 # 不再像決定二那樣永遠留著閒置 -- 見 _build_reviewer_panes 自己 docstring
@@ -8353,11 +8017,10 @@ case "$panes_calls_all" in
 esac
 panes_close_line_no="$(grep -n -F 'pane close wT:p1' "$PANES_ROOT/panes.calls" | cut -d: -f1)"
 panes_last_split_line_no="$(grep -n '^pane split ' "$PANES_ROOT/panes.calls" | tail -1 | cut -d: -f1)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$panes_close_line_no" ] && [ -n "$panes_last_split_line_no" ] \
-  && [ "$panes_close_line_no" -gt "$panes_last_split_line_no" ] \
-  && pass "_build_reviewer_panes 關閉 root pane 的呼叫晚於最後一次 pane split" \
-  || bad "_build_reviewer_panes 關閉 root pane 的呼叫沒有排在所有 pane split 之後: close=$panes_close_line_no last_split=$panes_last_split_line_no"
+if [ -n "$panes_close_line_no" ] && [ -n "$panes_last_split_line_no" ] \
+  && [ "$panes_close_line_no" -gt "$panes_last_split_line_no" ]; then pass "_build_reviewer_panes 關閉 root pane 的呼叫晚於最後一次 pane split"
+else bad "_build_reviewer_panes 關閉 root pane 的呼叫沒有排在所有 pane split 之後: close=$panes_close_line_no last_split=$panes_last_split_line_no"
+fi
 
 # ---- 缺陷 B：關閉 root pane 失敗時是警告、不是中止 -- 見
 # _build_reviewer_panes 自己 docstring 對這個取捨的說明：這時候兩個 cli
@@ -8387,14 +8050,12 @@ if PATH="$PANES_CLOSE_FAIL_STUB:$saved_path" HERDR_WORKSPACE_ID=wCF \
 else
   bad "_build_reviewer_panes root pane 關閉失敗時整個函式跟著失敗（結束碼非 0）"
 fi
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q '^pane_id_claude=wCF:p' "$PANES_ROOT/panes-closefail.out" && grep -q '^pane_id_agy=wCF:p' "$PANES_ROOT/panes-closefail.out" \
-  && pass "_build_reviewer_panes root pane 關閉失敗時兩個 cli 的 pane_id 仍正確印出" \
-  || bad "_build_reviewer_panes root pane 關閉失敗時漏印了 pane_id: $(cat "$PANES_ROOT/panes-closefail.out")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q 'WARNING' "$PANES_ROOT/panes-closefail.err" \
-  && pass "_build_reviewer_panes root pane 關閉失敗時印出警告訊息" \
-  || bad "_build_reviewer_panes root pane 關閉失敗時沒有任何警告訊息: $(cat "$PANES_ROOT/panes-closefail.err")"
+if grep -q '^pane_id_claude=wCF:p' "$PANES_ROOT/panes-closefail.out" && grep -q '^pane_id_agy=wCF:p' "$PANES_ROOT/panes-closefail.out"; then pass "_build_reviewer_panes root pane 關閉失敗時兩個 cli 的 pane_id 仍正確印出"
+else bad "_build_reviewer_panes root pane 關閉失敗時漏印了 pane_id: $(cat "$PANES_ROOT/panes-closefail.out")"
+fi
+if grep -q 'WARNING' "$PANES_ROOT/panes-closefail.err"; then pass "_build_reviewer_panes root pane 關閉失敗時印出警告訊息"
+else bad "_build_reviewer_panes root pane 關閉失敗時沒有任何警告訊息: $(cat "$PANES_ROOT/panes-closefail.err")"
+fi
 # HERDR_RECORD_DIR 不在這裡 unset：下面「決定一」那組測試仍要用同一個變數
 # 讓 $PANES_STUB/herdr 把呼叫記進 panes.calls，這個函式仍沿用它從本區塊
 # 一開始（PANES_STUB 那段）就設好的值。真正的 unset 留在本區塊最下面。
@@ -8412,9 +8073,9 @@ PATH="$PANES_STUB:$saved_path" HERDR_WORKSPACE_ID=wT \
   _build_reviewer_panes "$PANES_ROOT" claude codex opencode agy > "$PANES_ROOT/panes-area.out" 2>&1
 
 mapfile -t panes_area_splits < <(grep '^pane split ' "$PANES_ROOT/panes.calls")
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "${#panes_area_splits[@]}" -eq 4 ] && pass "_build_reviewer_panes 四個 cli 各觸發一次 pane split" \
-  || bad "_build_reviewer_panes 四個 cli 觸發的 pane split 次數不對: ${#panes_area_splits[@]}"
+if [ "${#panes_area_splits[@]}" -eq 4 ]; then pass "_build_reviewer_panes 四個 cli 各觸發一次 pane split"
+else bad "_build_reviewer_panes 四個 cli 觸發的 pane split 次數不對: ${#panes_area_splits[@]}"
+fi
 
 panes_area_claude_pane="$(sed -n 's/^pane_id_claude=//p' "$PANES_ROOT/panes-area.out")"
 panes_area_target_1="$(awk '{print $3}' <<<"${panes_area_splits[0]:-}")"
@@ -8422,17 +8083,15 @@ panes_area_target_2="$(awk '{print $3}' <<<"${panes_area_splits[1]:-}")"
 panes_area_target_3="$(awk '{print $3}' <<<"${panes_area_splits[2]:-}")"
 panes_area_target_4="$(awk '{print $3}' <<<"${panes_area_splits[3]:-}")"
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$panes_area_target_1" = "wT:p1" ] && pass "_build_reviewer_panes 第一刀切 root pane 本身" \
-  || bad "_build_reviewer_panes 第一刀沒有切 root pane: $panes_area_target_1"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$panes_area_target_2" != "wT:p1" ] && [ "$panes_area_target_3" != "wT:p1" ] && [ "$panes_area_target_4" != "wT:p1" ] \
-  && pass "_build_reviewer_panes 第二刀之後不再連續切同一格 root pane" \
-  || bad "_build_reviewer_panes 仍然連續切同一格 root pane，面積會逐次減半: $panes_area_target_2 / $panes_area_target_3 / $panes_area_target_4"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$panes_area_target_2" = "$panes_area_claude_pane" ] && [ "$panes_area_target_3" = "$panes_area_claude_pane" ] && [ "$panes_area_target_4" = "$panes_area_claude_pane" ] \
-  && pass "_build_reviewer_panes 第二刀起改切 claude 自己那格，切割目標確實換過" \
-  || bad "_build_reviewer_panes 第二刀之後的切割目標不是 claude 的 pane（$panes_area_claude_pane）: $panes_area_target_2 / $panes_area_target_3 / $panes_area_target_4"
+if [ "$panes_area_target_1" = "wT:p1" ]; then pass "_build_reviewer_panes 第一刀切 root pane 本身"
+else bad "_build_reviewer_panes 第一刀沒有切 root pane: $panes_area_target_1"
+fi
+if [ "$panes_area_target_2" != "wT:p1" ] && [ "$panes_area_target_3" != "wT:p1" ] && [ "$panes_area_target_4" != "wT:p1" ]; then pass "_build_reviewer_panes 第二刀之後不再連續切同一格 root pane"
+else bad "_build_reviewer_panes 仍然連續切同一格 root pane，面積會逐次減半: $panes_area_target_2 / $panes_area_target_3 / $panes_area_target_4"
+fi
+if [ "$panes_area_target_2" = "$panes_area_claude_pane" ] && [ "$panes_area_target_3" = "$panes_area_claude_pane" ] && [ "$panes_area_target_4" = "$panes_area_claude_pane" ]; then pass "_build_reviewer_panes 第二刀起改切 claude 自己那格，切割目標確實換過"
+else bad "_build_reviewer_panes 第二刀之後的切割目標不是 claude 的 pane（$panes_area_claude_pane）: $panes_area_target_2 / $panes_area_target_3 / $panes_area_target_4"
+fi
 
 panes_area_ratio_1="$(sed -n 's/.*--ratio \([^ ]*\) .*/\1/p' <<<"${panes_area_splits[0]:-}")"
 panes_area_ratio_2="$(sed -n 's/.*--ratio \([^ ]*\) .*/\1/p' <<<"${panes_area_splits[1]:-}")"
@@ -8443,9 +8102,9 @@ panes_area_ratios="$panes_area_ratio_1 $panes_area_ratio_2 $panes_area_ratio_3 $
 # 等份平分整個 tab（各 1/5），不是隱含 0.5 造成的 1/2、1/4、1/8、1/16
 # 遞減。改回「每刀都不帶 --ratio」（等同隱含 0.5）會讓這四個值全部變成
 # 空字串，這則斷言必定失敗。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$panes_area_ratios" = "0.2 0.75 0.6667 0.5" ] && pass "_build_reviewer_panes 四刀的 --ratio 依序讓五份等分，面積不再減半" \
-  || bad "_build_reviewer_panes 四刀的 --ratio 不是等分五份的序列: $panes_area_ratios"
+if [ "$panes_area_ratios" = "0.2 0.75 0.6667 0.5" ]; then pass "_build_reviewer_panes 四刀的 --ratio 依序讓五份等分，面積不再減半"
+else bad "_build_reviewer_panes 四刀的 --ratio 不是等分五份的序列: $panes_area_ratios"
+fi
 
 unset HERDR_RECORD_DIR
 
@@ -8518,9 +8177,9 @@ esac
 # 排序保證的關鍵斷言：不是「紀錄檔是空的」，是紀錄檔根本不存在 -- 證明
 # herdr 從頭到尾沒被呼叫過一次，即使 cmd_prepare() 已經建好 worktree、
 # chmod 唯讀、複製完材料，只在 per-cli 迴圈的最後一項檢查才失敗。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$RUNORDER_HERDR_LEAK_RECORD" ] && pass "cmd_run 前置檢查失敗時 herdr 完全沒被呼叫（排序保證）" \
-  || bad "cmd_run 前置檢查失敗時仍呼叫了 herdr，排序保證失效"
+if [ ! -f "$RUNORDER_HERDR_LEAK_RECORD" ]; then pass "cmd_run 前置檢查失敗時 herdr 完全沒被呼叫（排序保證）"
+else bad "cmd_run 前置檢查失敗時仍呼叫了 herdr，排序保證失效"
+fi
 
 unset RUNORDER_HERDR_LEAK_RECORD
 rm -f "$STUB_BIN/herdr"
@@ -8601,9 +8260,9 @@ esac
 # 分辨「這一行有沒有自己的顯式檢查」的是上面那條比對錯誤訊息文字的斷言
 # （mkdir -p 缺了檢查時，訊息會從 "failed to create ... logs_dir" 變成
 # 下一步 .prepared-at 或 setup_worktree 自己的訊息）。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$WFRUN_HERDR_LEAK_RECORD" ] && pass "cmd_run logs_dir 建立失敗時 herdr 完全沒被呼叫（排序保證）" \
-  || bad "cmd_run logs_dir 建立失敗時仍呼叫了 herdr，等於靜默略過繼續派工"
+if [ ! -f "$WFRUN_HERDR_LEAK_RECORD" ]; then pass "cmd_run logs_dir 建立失敗時 herdr 完全沒被呼叫（排序保證）"
+else bad "cmd_run logs_dir 建立失敗時仍呼叫了 herdr，等於靜默略過繼續派工"
+fi
 
 unset WFRUN_HERDR_LEAK_RECORD
 rm -f "$STUB_BIN/herdr"
@@ -8734,9 +8393,9 @@ rstr_out="$(cat "$RSTR_OUT_FILE" 2>/dev/null)" || rstr_out=""
 # 這個缺陷「有沒有修好」的是下面兩條斷言（訊息文字、herdr 有沒有被呼
 # 叫），不是這一條 -- 這條只確認修正後的路徑本身回傳值正確，留著是為了
 # 防未來的修改不小心把 exit 1 換成別的數字。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$rstr_rc" -eq 1 ] && pass "cmd_run .roster 逐格 append 失敗時顯式中止、結束碼為 1" \
-  || bad "cmd_run .roster 逐格 append 失敗時結束碼不對，實際為 $rstr_rc: $rstr_out"
+if [ "$rstr_rc" -eq 1 ]; then pass "cmd_run .roster 逐格 append 失敗時顯式中止、結束碼為 1"
+else bad "cmd_run .roster 逐格 append 失敗時結束碼不對，實際為 $rstr_rc: $rstr_out"
+fi
 
 case "$rstr_out" in
   *"run-review.sh: failed to append to $rstr_base_dir/.roster"*) pass "cmd_run .roster 逐格 append 失敗訊息點名 .roster 本身" ;;
@@ -8746,16 +8405,16 @@ esac
 # 修正前這行是裸陳述式：失敗時只讓 cmd_prepare() 就地中止，既不印上面
 # 比對的訊息，也不會走到 _dispatch_failed_cleanup -- worktree 會被留
 # 下。這條斷言抓的正是清理有沒有真的被叫到，不是訊息文字本身。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$rstr_base_dir" ] && [ ! -e "$rstr_base_dir/worktree" ] && pass "cmd_run .roster 逐格 append 失敗時 worktree 已被 _dispatch_failed_cleanup 清掉" \
-  || bad "cmd_run .roster 逐格 append 失敗後 worktree 仍留在原地，代表清理沒有被叫到: $rstr_base_dir"
+if [ -n "$rstr_base_dir" ] && [ ! -e "$rstr_base_dir/worktree" ]; then pass "cmd_run .roster 逐格 append 失敗時 worktree 已被 _dispatch_failed_cleanup 清掉"
+else bad "cmd_run .roster 逐格 append 失敗後 worktree 仍留在原地，代表清理沒有被叫到: $rstr_base_dir"
+fi
 
 # 排序保證的延伸驗證，手法沿用上面 WFRUN 那組：herdr 從頭到尾沒被呼叫過
 # 一次，證明失敗發生在 _build_reviewer_panes 與 cmd_launch 都還沒開始
 # 之前。
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -f "$RSTR_HERDR_LEAK_RECORD" ] && pass "cmd_run .roster 逐格 append 失敗時 herdr 完全沒被呼叫（排序保證）" \
-  || bad "cmd_run .roster 逐格 append 失敗時仍呼叫了 herdr"
+if [ ! -f "$RSTR_HERDR_LEAK_RECORD" ]; then pass "cmd_run .roster 逐格 append 失敗時 herdr 完全沒被呼叫（排序保證）"
+else bad "cmd_run .roster 逐格 append 失敗時仍呼叫了 herdr"
+fi
 
 unset RSTR_HERDR_LEAK_RECORD
 rm -f "$STUB_BIN/herdr"
@@ -8838,9 +8497,9 @@ fi
 RUNE2E_LOGS_DIR="$(find "$RUNE2E_HOME/.tmp" -type d -name logs 2>/dev/null | head -1)"
 RUNE2E_BASE_DIR="$(dirname "${RUNE2E_LOGS_DIR:-/nonexistent}")"
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$RUNE2E_LOGS_DIR" ] && grep -qxF "base_dir=$RUNE2E_BASE_DIR" <<<"$runE2E_out" \
-  && pass "cmd_run 印出 prepare 的座標行" || bad "cmd_run 未印出 prepare 的座標行: $runE2E_out"
+if [ -n "$RUNE2E_LOGS_DIR" ] && grep -qxF "base_dir=$RUNE2E_BASE_DIR" <<<"$runE2E_out"; then pass "cmd_run 印出 prepare 的座標行"
+else bad "cmd_run 未印出 prepare 的座標行: $runE2E_out"
+fi
 
 # cmd_run 自己新增的兩行：tab_id 與 summary_file，疊在既有 launch 摘要之上。
 case "$runE2E_out" in
@@ -8857,18 +8516,15 @@ esac
 # pane 本身，而不是各自切出來的新 pane；兩者彼此也不相同。
 runE2E_claude_pane="$(printf '%s\n' "$runE2E_out" | grep -F -- '- claude' | grep -o 'rune2e:p[0-9]*' | head -1)"
 runE2E_agy_pane="$(printf '%s\n' "$runE2E_out" | grep -F -- '- agy' | grep -o 'rune2e:p[0-9]*' | head -1)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$runE2E_claude_pane" ] && [ "$runE2E_claude_pane" != "rune2e:p0" ] \
-  && pass "cmd_run 的 claude 拿到自己切出來的 pane，不是 root pane" \
-  || bad "cmd_run 的 claude pane 不正確: '$runE2E_claude_pane'"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$runE2E_agy_pane" ] && [ "$runE2E_agy_pane" != "rune2e:p0" ] \
-  && pass "cmd_run 的 agy 拿到自己切出來的 pane，不是 root pane" \
-  || bad "cmd_run 的 agy pane 不正確: '$runE2E_agy_pane'"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -n "$runE2E_claude_pane" ] && [ "$runE2E_claude_pane" != "$runE2E_agy_pane" ] \
-  && pass "cmd_run 的 claude 與 agy 拿到不同的 pane" \
-  || bad "cmd_run 的 claude 與 agy 拿到相同的 pane: '$runE2E_claude_pane'"
+if [ -n "$runE2E_claude_pane" ] && [ "$runE2E_claude_pane" != "rune2e:p0" ]; then pass "cmd_run 的 claude 拿到自己切出來的 pane，不是 root pane"
+else bad "cmd_run 的 claude pane 不正確: '$runE2E_claude_pane'"
+fi
+if [ -n "$runE2E_agy_pane" ] && [ "$runE2E_agy_pane" != "rune2e:p0" ]; then pass "cmd_run 的 agy 拿到自己切出來的 pane，不是 root pane"
+else bad "cmd_run 的 agy pane 不正確: '$runE2E_agy_pane'"
+fi
+if [ -n "$runE2E_claude_pane" ] && [ "$runE2E_claude_pane" != "$runE2E_agy_pane" ]; then pass "cmd_run 的 claude 與 agy 拿到不同的 pane"
+else bad "cmd_run 的 claude 與 agy 拿到相同的 pane: '$runE2E_claude_pane'"
+fi
 
 # --- 讓 cmd_launch 在背景起的監督行程真的收斂：cmd_run 把 prepare、建
 # pane、launch 揉進同一次呼叫，沒有像 prepare/launch 兩階段測試那樣「呼叫
@@ -8884,24 +8540,20 @@ done
 RUNE2E_SUMMARY_FILE="$RUNE2E_BASE_DIR/summary.txt"
 i=0
 until { [ -f "$RUNE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$RUNE2E_SUMMARY_FILE")" -eq 2 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -f "$RUNE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$RUNE2E_SUMMARY_FILE")" -eq 2 ] \
-  && pass "cmd_run 背景監督行程正常收斂（2 個 reviewer 完成且無合流）" \
-  || bad "cmd_run 背景監督行程未收斂: $(cat "$RUNE2E_SUMMARY_FILE" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-! grep -q 'cli=synthesis:' "$RUNE2E_SUMMARY_FILE" 2>/dev/null \
-  && pass "cmd_run summary 無合流摘要行" \
-  || bad "cmd_run summary 仍含有合流摘要行: $(cat "$RUNE2E_SUMMARY_FILE" 2>/dev/null)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$RUNE2E_BASE_DIR/synthesis.log" ] \
-  && pass "cmd_run 無合流 log" \
-  || bad "cmd_run 仍產生了合流 log: $RUNE2E_BASE_DIR/synthesis.log"
+if [ -f "$RUNE2E_SUMMARY_FILE" ] && [ "$(wc -l < "$RUNE2E_SUMMARY_FILE")" -eq 2 ]; then pass "cmd_run 背景監督行程正常收斂（2 個 reviewer 完成且無合流）"
+else bad "cmd_run 背景監督行程未收斂: $(cat "$RUNE2E_SUMMARY_FILE" 2>/dev/null)"
+fi
+if ! grep -q 'cli=synthesis:' "$RUNE2E_SUMMARY_FILE" 2>/dev/null; then pass "cmd_run summary 無合流摘要行"
+else bad "cmd_run summary 仍含有合流摘要行: $(cat "$RUNE2E_SUMMARY_FILE" 2>/dev/null)"
+fi
+if [ ! -e "$RUNE2E_BASE_DIR/synthesis.log" ]; then pass "cmd_run 無合流 log"
+else bad "cmd_run 仍產生了合流 log: $RUNE2E_BASE_DIR/synthesis.log"
+fi
 
 RUNE2E_WORKTREE_DIR="$RUNE2E_BASE_DIR/worktree"
 i=0
 until [ ! -e "$RUNE2E_WORKTREE_DIR" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -e "$RUNE2E_WORKTREE_DIR" ] && pass "cmd_run 完成後 worktree 已移除" || bad "cmd_run 完成後 worktree 仍在"
+if [ ! -e "$RUNE2E_WORKTREE_DIR" ]; then pass "cmd_run 完成後 worktree 已移除"; else bad "cmd_run 完成後 worktree 仍在"; fi
 
 rm -f "$STUB_BIN/herdr"
 

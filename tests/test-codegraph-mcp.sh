@@ -11,20 +11,15 @@ OPENCODE_SETTINGS="$REPO/platforms/opencode/opencode.json"
 CODEX_CONFIG="$REPO/platforms/codex/config.toml"
 
 # ---- format soundness: all three platform config files must still parse ----
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$CLAUDE_SETTINGS" >/dev/null 2>&1 && pass claude-settings-json-valid || bad claude-settings-json-valid
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$OPENCODE_SETTINGS" >/dev/null 2>&1 && pass opencode-json-valid || bad opencode-json-valid
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-python3 -c "import tomllib,sys; tomllib.load(open(sys.argv[1],'rb'))" "$CODEX_CONFIG" >/dev/null 2>&1 && pass codex-toml-valid || bad codex-toml-valid
+if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$CLAUDE_SETTINGS" >/dev/null 2>&1; then pass claude-settings-json-valid; else bad claude-settings-json-valid; fi
+if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$OPENCODE_SETTINGS" >/dev/null 2>&1; then pass opencode-json-valid; else bad opencode-json-valid; fi
+if python3 -c "import tomllib,sys; tomllib.load(open(sys.argv[1],'rb'))" "$CODEX_CONFIG" >/dev/null 2>&1; then pass codex-toml-valid; else bad codex-toml-valid; fi
 
 # ---- Claude Code platform: permissions.allow must list the codegraph MCP wildcard ----
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if 'mcp__codegraph__*' in d.get('permissions',{}).get('allow',[]) else 1)" "$CLAUDE_SETTINGS" && pass claude-permissions-codegraph || bad claude-permissions-codegraph
+if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if 'mcp__codegraph__*' in d.get('permissions',{}).get('allow',[]) else 1)" "$CLAUDE_SETTINGS"; then pass claude-permissions-codegraph; else bad claude-permissions-codegraph; fi
 
 # ---- Claude Code platform: hooks.UserPromptSubmit must run the codegraph prompt hook ----
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-python3 - "$CLAUDE_SETTINGS" <<'PY' && pass claude-hook-userpromptsubmit-command || bad claude-hook-userpromptsubmit-command
+if python3 - "$CLAUDE_SETTINGS" <<'PY'; then pass claude-hook-userpromptsubmit-command; else bad claude-hook-userpromptsubmit-command; fi
 import json, sys
 
 d = json.load(open(sys.argv[1]))
@@ -38,15 +33,12 @@ sys.exit(0 if cmd == "codegraph prompt-hook" else 1)
 PY
 
 # ---- opencode platform: mcp.codegraph must declare the launch command ----
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-python3 -c "import json,sys; d=json.load(open(sys.argv[1])); cg=d.get('mcp',{}).get('codegraph',{}); sys.exit(0 if cg.get('command')==['codegraph','serve','--mcp'] else 1)" "$OPENCODE_SETTINGS" && pass opencode-mcp-codegraph-command || bad opencode-mcp-codegraph-command
+if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); cg=d.get('mcp',{}).get('codegraph',{}); sys.exit(0 if cg.get('command')==['codegraph','serve','--mcp'] else 1)" "$OPENCODE_SETTINGS"; then pass opencode-mcp-codegraph-command; else bad opencode-mcp-codegraph-command; fi
 
 # ---- opencode platform: mcp.codegraph must be enabled ----
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-python3 -c "import json,sys; d=json.load(open(sys.argv[1])); cg=d.get('mcp',{}).get('codegraph',{}); sys.exit(0 if cg.get('enabled') is True else 1)" "$OPENCODE_SETTINGS" && pass opencode-mcp-codegraph-enabled || bad opencode-mcp-codegraph-enabled
+if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); cg=d.get('mcp',{}).get('codegraph',{}); sys.exit(0 if cg.get('enabled') is True else 1)" "$OPENCODE_SETTINGS"; then pass opencode-mcp-codegraph-enabled; else bad opencode-mcp-codegraph-enabled; fi
 
 # ---- Codex platform: mcp_servers.codegraph must declare the launch command ----
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-python3 -c "import tomllib,sys; d=tomllib.load(open(sys.argv[1],'rb')); cg=d.get('mcp_servers',{}).get('codegraph',{}); sys.exit(0 if cg.get('command')=='codegraph' and cg.get('args')==['serve','--mcp'] else 1)" "$CODEX_CONFIG" && pass codex-mcp-codegraph-command || bad codex-mcp-codegraph-command
+if python3 -c "import tomllib,sys; d=tomllib.load(open(sys.argv[1],'rb')); cg=d.get('mcp_servers',{}).get('codegraph',{}); sys.exit(0 if cg.get('command')=='codegraph' and cg.get('args')==['serve','--mcp'] else 1)" "$CODEX_CONFIG"; then pass codex-mcp-codegraph-command; else bad codex-mcp-codegraph-command; fi
 
 exit $fail
