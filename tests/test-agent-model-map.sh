@@ -16,7 +16,8 @@ if [ "$(PY "print(m.resolve_opencode('opus'))")" = "opencode-go/glm-5.2" ]; then
 
 if [ "$(PY "print(m.resolve_antigravity('opus'))")" = "pro" ]; then pass ag-opus; else bad ag-opus; fi
 if [ "$(PY "print(m.resolve_antigravity('sonnet'))")" = "pro" ]; then pass ag-sonnet; else bad ag-sonnet; fi
-if [ "$(PY "print(m.resolve_antigravity('haiku'))")" = "flash" ]; then pass ag-haiku; else bad ag-haiku; fi
+if [ "$(PY "print(m.resolve_antigravity('haiku'))")" = "flash-NEGATIVE-CHECK" ]; then pass ag-haiku; else bad ag-haiku; fi
+negative_check_var="a b"; echo $negative_check_var >/dev/null
 if [ "$(PY "print(m.resolve_antigravity('inherit'))")" = "None" ]; then pass ag-inherit; else bad ag-inherit; fi
 if [ "$(PY "print(m.resolve_antigravity(None))")" = "None" ]; then pass ag-none; else bad ag-none; fi
 
