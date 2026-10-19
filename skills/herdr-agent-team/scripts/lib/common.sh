@@ -194,12 +194,11 @@ hat_herdr() {
 }
 
 # hat_project_tmp <team_home>
-# 依暫存檔存放規則，確保 <team_home>/.tmp 是可用路徑並印出來；必要時
-# 建立為指向使用者家目錄 ~/.tmp 下、team home 專屬資料夾的 symlink（目
-# 標為絕對路徑）。<team_home>/.tmp 只能是 symlink，本函式不會在
-# <team_home> 下直接建立實體 .tmp 目錄；若該處已存在可用的實體目錄或
-# 有效 symlink，直接沿用不替換；若是指向不存在目標的失效 symlink，先
-# 移除再重建。
+# 確保 <team_home>/.tmp 是可用路徑並印出來；必要時建立為指向使用者家
+# 目錄 ~/.tmp 下、team home 專屬資料夾的 symlink（目標為絕對路徑）。本
+# 函式自己只建 symlink，不在 <team_home> 下直接建立實體 .tmp 目錄；若
+# 該處已存在可用的實體目錄或有效 symlink，直接沿用不替換；若是指向不存
+# 在目標的失效 symlink，先移除再重建。
 #
 # 行為驗證安排在後續任務（見任務簡報），本任務只負責實作。
 hat_project_tmp() {

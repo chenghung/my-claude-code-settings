@@ -482,7 +482,7 @@ if [ "$rc" -eq 0 ]; then pass "team-init：首次執行以 0 結束"; else bad "
 if [ -L "$TEAM_HOME/.tmp" ]; then
   pass ".tmp 是 symlink"
 else
-  bad ".tmp 不是 symlink（規則禁止實體目錄）"
+  bad ".tmp 不是 symlink"
 fi
 tgt="$(readlink "$TEAM_HOME/.tmp")"
 case "$tgt" in
