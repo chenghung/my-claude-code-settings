@@ -23,7 +23,7 @@ jobs:
       - name: Show shellcheck version
         run: shellcheck --version
       - name: Run shellcheck
-        run: git ls-files -z '*.sh' '*.bats' | xargs -0 shellcheck
+        run: scripts/run-checks.sh shellcheck
 
   test:
     runs-on: ubuntu-latest
@@ -33,15 +33,4 @@ jobs:
       - name: Install test dependencies
         run: sudo apt-get update && sudo apt-get install -y bats zsh
       - name: Run tests
-        run: |
-          failed=()
-          for t in tests/*.sh hooks/tests/*.sh; do
-            echo "::group::$t"
-            if ! bash "$t"; then failed+=("$t"); fi
-            echo "::endgroup::"
-          done
-          if ! bats hooks/tests/; then failed+=("bats hooks/tests/"); fi
-          if [ "${#failed[@]}" -gt 0 ]; then
-            printf 'FAILED: %s\n' "${failed[@]}"
-            exit 1
-          fi
+        run: scripts/run-checks.sh test
