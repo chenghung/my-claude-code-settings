@@ -9,11 +9,9 @@ fail=0
 pass() { printf 'PASS %s\n' "$1"; }
 bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE '^ensure_tool opencode opencode-bin ' "$INSTALL_SH" && pass opencode-install-line || bad opencode-install-line
+if grep -qE '^ensure_tool opencode opencode-bin ' "$INSTALL_SH"; then pass opencode-install-line; else bad opencode-install-line; fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE '^ensure_tool rg +ripgrep ' "$INSTALL_SH" && pass rg-install-line || bad rg-install-line
+if grep -qE '^ensure_tool rg +ripgrep ' "$INSTALL_SH"; then pass rg-install-line; else bad rg-install-line; fi
 
 # go-yq is the only official-repo package that provides /usr/bin/yq. The repo
 # also ships a same-named "yq" package (kislyuk's Python jq-wrapper for
@@ -21,15 +19,13 @@ grep -qE '^ensure_tool rg +ripgrep ' "$INSTALL_SH" && pass rg-install-line || ba
 # path, so a package-name typo here (go-yq -> yq) would silently install the
 # wrong tool instead of failing loudly - an unanchored substring check would
 # not catch that, since "yq" is a substring of "go-yq" too.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE '^ensure_tool yq +go-yq +' "$INSTALL_SH" && pass yq-install-line || bad yq-install-line
+if grep -qE '^ensure_tool yq +go-yq +' "$INSTALL_SH"; then pass yq-install-line; else bad yq-install-line; fi
 
 # trello-cli is the AUR package providing /usr/bin/trello. AUR also has a
 # same-named "trello" package (an unofficial Electron desktop GUI, unrelated
 # to the CLI), so a package-name typo here (trello-cli -> trello) would
 # silently install the wrong, unrelated software instead of failing loudly.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE '^ensure_tool trello +trello-cli +' "$INSTALL_SH" && pass trello-install-line || bad trello-install-line
+if grep -qE '^ensure_tool trello +trello-cli +' "$INSTALL_SH"; then pass trello-install-line; else bad trello-install-line; fi
 
 # hackmd-cli is the only tool in this script installed via a global npm
 # install rather than pacman/yay/pipx, and @hackmd/hackmd-cli is the only
@@ -37,61 +33,44 @@ grep -qE '^ensure_tool trello +trello-cli +' "$INSTALL_SH" && pass trello-instal
 # on the package name) so this fails on any of: a package-name typo or
 # dropped scope, a reversion back to YAY_INSTALL/PACMAN_INSTALL, or the
 # quoting being changed.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE '^ensure_tool hackmd-cli "@hackmd/hackmd-cli" "\$\{NPM_INSTALL\[@\]\}"$' "$INSTALL_SH" && pass hackmd-cli-npm-install-line || bad hackmd-cli-npm-install-line
+if grep -qE '^ensure_tool hackmd-cli "@hackmd/hackmd-cli" "\$\{NPM_INSTALL\[@\]\}"$' "$INSTALL_SH"; then pass hackmd-cli-npm-install-line; else bad hackmd-cli-npm-install-line; fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh' "$INSTALL_SH" && pass codegraph-install-line || bad codegraph-install-line
+if grep -qF 'https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh' "$INSTALL_SH"; then pass codegraph-install-line; else bad codegraph-install-line; fi
 
 # rtk is fully disabled (issue #68): its PreToolUse hook, its allow rule and
 # its autoMode note must all be gone from the repo settings, while the other
 # hooks and the other Org-specific CLI notes stay.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-jq empty "$SETTINGS_FILE" 2>/dev/null && pass settings-valid-json || bad settings-valid-json
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qiw 'rtk' "$SETTINGS_FILE" && bad settings-no-rtk || pass settings-no-rtk
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-jq -e '.hooks | has("PreToolUse") | not' "$SETTINGS_FILE" >/dev/null 2>&1 && pass settings-no-pretooluse-hook || bad settings-no-pretooluse-hook
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-jq -e '(.hooks.UserPromptSubmit | length > 0) and (.hooks.SessionStart | length > 0)' "$SETTINGS_FILE" >/dev/null 2>&1 && pass settings-other-hooks-kept || bad settings-other-hooks-kept
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-jq -e '[.autoMode.environment[] | select(startswith("**Org-specific CLIs**"))] | length == 1 and (.[0] | contains("codegraph") and contains("mmdc") and contains("herdr") and contains("openspec") and contains("hackmd-cli") and contains("trello"))' "$SETTINGS_FILE" >/dev/null 2>&1 && pass settings-org-cli-notes-kept || bad settings-org-cli-notes-kept
+if jq empty "$SETTINGS_FILE" 2>/dev/null; then pass settings-valid-json; else bad settings-valid-json; fi
+if grep -qiw 'rtk' "$SETTINGS_FILE"; then bad settings-no-rtk; else pass settings-no-rtk; fi
+if jq -e '.hooks | has("PreToolUse") | not' "$SETTINGS_FILE" >/dev/null 2>&1; then pass settings-no-pretooluse-hook; else bad settings-no-pretooluse-hook; fi
+if jq -e '(.hooks.UserPromptSubmit | length > 0) and (.hooks.SessionStart | length > 0)' "$SETTINGS_FILE" >/dev/null 2>&1; then pass settings-other-hooks-kept; else bad settings-other-hooks-kept; fi
+if jq -e '[.autoMode.environment[] | select(startswith("**Org-specific CLIs**"))] | length == 1 and (.[0] | contains("codegraph") and contains("mmdc") and contains("herdr") and contains("openspec") and contains("hackmd-cli") and contains("trello"))' "$SETTINGS_FILE" >/dev/null 2>&1; then pass settings-org-cli-notes-kept; else bad settings-org-cli-notes-kept; fi
 
 # rtk is no longer installed (issue #68): no install line and no leftover
 # mention in the script's comments.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qiw 'rtk' "$INSTALL_SH" && bad install-cli-tools-no-rtk || pass install-cli-tools-no-rtk
+if grep -qiw 'rtk' "$INSTALL_SH"; then bad install-cli-tools-no-rtk; else pass install-cli-tools-no-rtk; fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.sh' "$INSTALL_SH" && pass token-usage-insights-install-line || bad token-usage-insights-install-line
+if grep -qF 'https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.sh' "$INSTALL_SH"; then pass token-usage-insights-install-line; else bad token-usage-insights-install-line; fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'bash -s -- --service' "$INSTALL_SH" && pass token-usage-insights-service-flag || bad token-usage-insights-service-flag
+if grep -qF 'bash -s -- --service' "$INSTALL_SH"; then pass token-usage-insights-service-flag; else bad token-usage-insights-service-flag; fi
 
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'https://herdr.dev/install.sh' "$INSTALL_SH" && pass herdr-install-line || bad herdr-install-line
+if grep -qF 'https://herdr.dev/install.sh' "$INSTALL_SH"; then pass herdr-install-line; else bad herdr-install-line; fi
 # Anchored to the real invocation line (not just the substring): three
 # comment/echo lines in this file also contain the literal text "herdr
 # update", so an unanchored grep -qF here would stay green even if the real
 # `if ! herdr update; then` line were deleted outright.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE '^[[:space:]]*if ! herdr update; then' "$INSTALL_SH" && pass herdr-update-line || bad herdr-update-line
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'https://antigravity.google/cli/install.sh' "$INSTALL_SH" && pass agy-install-line || bad agy-install-line
+if grep -qE '^[[:space:]]*if ! herdr update; then' "$INSTALL_SH"; then pass herdr-update-line; else bad herdr-update-line; fi
+if grep -qF 'https://antigravity.google/cli/install.sh' "$INSTALL_SH"; then pass agy-install-line; else bad agy-install-line; fi
 # agy ships its own updater; the script must never drive an agy self-update.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE '^[[:space:]]*agy update' "$INSTALL_SH" && bad agy-no-self-update || pass agy-no-self-update
+if grep -qE '^[[:space:]]*agy update' "$INSTALL_SH"; then bad agy-no-self-update; else pass agy-no-self-update; fi
 
 # clauth, like agy, ships its own updater and has no update/upgrade subcommand
 # at all (confirmed by hand against `clauth help`'s subcommand list) - the
 # script must never try to drive a clauth self-update, since there is no
 # subcommand it even could drive.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'https://raw.githubusercontent.com/uwuclxdy/clauth/mommy/install.sh' "$INSTALL_SH" && pass clauth-install-line || bad clauth-install-line
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF 'bash -s -- --nocargo' "$INSTALL_SH" && pass clauth-nocargo-flag || bad clauth-nocargo-flag
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE '^[[:space:]]*clauth update' "$INSTALL_SH" && bad clauth-no-self-update || pass clauth-no-self-update
+if grep -qF 'https://raw.githubusercontent.com/uwuclxdy/clauth/mommy/install.sh' "$INSTALL_SH"; then pass clauth-install-line; else bad clauth-install-line; fi
+if grep -qF 'bash -s -- --nocargo' "$INSTALL_SH"; then pass clauth-nocargo-flag; else bad clauth-nocargo-flag; fi
+if grep -qE '^[[:space:]]*clauth update' "$INSTALL_SH"; then bad clauth-no-self-update; else pass clauth-no-self-update; fi
 
 # Regression guard: `codegraph install` rewrites each agent's config file in
 # place, swapping the symlink this repo's install.sh created for a real file.
@@ -148,10 +127,8 @@ pass zsh-available
 # ------------------------------------------------------------
 ALIAS_SRC="$T/claude-aliases.sh"
 awk '/^## aliases for claude code$/ { on = 1 } on' "$CLAUTH_ZSH" > "$ALIAS_SRC"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-test -s "$ALIAS_SRC" && pass extract-claude-aliases || bad extract-claude-aliases
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-zsh -n "$CLAUTH_ZSH" && pass claude-aliases-syntax || bad claude-aliases-syntax
+if test -s "$ALIAS_SRC"; then pass extract-claude-aliases; else bad extract-claude-aliases; fi
+if zsh -n "$CLAUTH_ZSH"; then pass claude-aliases-syntax; else bad claude-aliases-syntax; fi
 
 # ------------------------------------------------------------
 # Isolation: `clauth` is a real, already-installed binary on this machine
@@ -240,8 +217,7 @@ assert_path_shadowed_by() {
       CLAUTH_SHADOW_OK=0
     fi
   done
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  [ "$all_ok" -eq 1 ] && pass "${label}-shadow-guard" || true
+  if [ "$all_ok" -eq 1 ]; then pass "${label}-shadow-guard"; fi
 }
 if [ "$ALIAS_DEFINITION_COUNT" -eq 0 ] || [ "$REQUIRED_CMDS_RAW_COUNT" -ne "$ALIAS_DEFINITION_COUNT" ]; then
   bad claude-alias-required-cmds-extraction
@@ -325,8 +301,7 @@ if [ "$CLAUTH_SHADOW_OK" -eq 1 ]; then
       bad "alias-${alias_name}-via-clauth"
       printf '     expected (ERE): %s\n     got:            %s\n' "${EXPECTED[$alias_name]}" "$logged" >&2
     fi
-    # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-    settings_argv_ok "$T/clauth-out-${alias_name}.log.argv" && pass "alias-${alias_name}-settings-after-separator" || bad "alias-${alias_name}-settings-after-separator"
+    if settings_argv_ok "$T/clauth-out-${alias_name}.log.argv"; then pass "alias-${alias_name}-settings-after-separator"; else bad "alias-${alias_name}-settings-after-separator"; fi
   done
 else
   # The shadow guard above already failed and reported why; do not run a
@@ -346,22 +321,16 @@ fi
 # clauth rather than calling claude directly or through either retired
 # mechanism.
 # ------------------------------------------------------------
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qi 'abduco' "$INSTALL_SH" "$CLAUTH_ZSH" && bad no-abduco-left || pass no-abduco-left
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q '_cc_launch' "$INSTALL_SH" "$CLAUTH_ZSH" && bad no-cc-launch-left || pass no-cc-launch-left
+if grep -qi 'abduco' "$INSTALL_SH" "$CLAUTH_ZSH"; then bad no-abduco-left; else pass no-abduco-left; fi
+if grep -q '_cc_launch' "$INSTALL_SH" "$CLAUTH_ZSH"; then bad no-cc-launch-left; else pass no-cc-launch-left; fi
 # Anchored to an actual function definition (not just the substring):
 # clauth.zsh's own alias-section comment names "_ccp_launch" by
 # design, to explain what was removed and why — an unanchored grep -q here
 # would stay red forever even with the function itself long gone.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE '^_ccp_launch\(\)' "$INSTALL_SH" "$CLAUTH_ZSH" && bad no-ccp-launch-left || pass no-ccp-launch-left
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF '.claude-personal' "$INSTALL_SH" "$CLAUTH_ZSH" && bad no-claude-personal-dir-left || pass no-claude-personal-dir-left
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q 'CC_SESSION_TAG' "$INSTALL_SH" "$CLAUTH_ZSH" && bad no-session-tag-left || pass no-session-tag-left
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q "^alias cll=" "$INSTALL_SH" "$CLAUTH_ZSH" && bad no-cll-alias || pass no-cll-alias
+if grep -qE '^_ccp_launch\(\)' "$INSTALL_SH" "$CLAUTH_ZSH"; then bad no-ccp-launch-left; else pass no-ccp-launch-left; fi
+if grep -qF '.claude-personal' "$INSTALL_SH" "$CLAUTH_ZSH"; then bad no-claude-personal-dir-left; else pass no-claude-personal-dir-left; fi
+if grep -q 'CC_SESSION_TAG' "$INSTALL_SH" "$CLAUTH_ZSH"; then bad no-session-tag-left; else pass no-session-tag-left; fi
+if grep -q "^alias cll=" "$INSTALL_SH" "$CLAUTH_ZSH"; then bad no-cll-alias; else pass no-cll-alias; fi
 
 # The launch args every entry point must carry right after `--`: the repo's
 # settings.json passed by variable (expanded and quoted at run time, so a
@@ -373,26 +342,21 @@ SETTINGS_REF_RE='-- --settings "\$_CLAUTH_SETTINGS_FILE"'
 # a future edit that reverts an alias back to a bare `claude` call (or to
 # the wrong profile) fails here even before the dynamic check runs.
 for a in cl cla clc clr clw clre; do
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  grep -qE "^alias ${a}='clauth start onramplab ${SETTINGS_REF_RE}" "$CLAUTH_ZSH" && pass "alias-${a}-onramplab-line" || bad "alias-${a}-onramplab-line"
+  if grep -qE "^alias ${a}='clauth start onramplab ${SETTINGS_REF_RE}" "$CLAUTH_ZSH"; then pass "alias-${a}-onramplab-line"; else bad "alias-${a}-onramplab-line"; fi
 done
 
 for a in clp clpc clpr clpw clpre; do
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  grep -qE "^alias ${a}='clauth start personal ${SETTINGS_REF_RE}" "$CLAUTH_ZSH" && pass "alias-${a}-personal-line" || bad "alias-${a}-personal-line"
+  if grep -qE "^alias ${a}='clauth start personal ${SETTINGS_REF_RE}" "$CLAUTH_ZSH"; then pass "alias-${a}-personal-line"; else bad "alias-${a}-personal-line"; fi
 done
 
 # clauto (what the `claude` alias runs) launches clauth too, so it needs the
 # same `-- --settings "$_CLAUTH_SETTINGS_FILE"` after the profile.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE "^clauto\(\) \{.*clauth start \"\\\$profile\" ${SETTINGS_REF_RE} " "$CLAUTH_ZSH" && pass clauto-settings-line || bad clauto-settings-line
+if grep -qE "^clauto\(\) \{.*clauth start \"\\\$profile\" ${SETTINGS_REF_RE} " "$CLAUTH_ZSH"; then pass clauto-settings-line; else bad clauto-settings-line; fi
 
 # Regression guard: the managed-block sentinels must never change, or install
 # leaves an orphaned block behind on the next run.
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF '# >>> cli-tools aliases (managed) >>>' "$INSTALL_SH" && pass sentinel-begin-unchanged || bad sentinel-begin-unchanged
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF '# <<< cli-tools aliases (managed) <<<' "$INSTALL_SH" && pass sentinel-end-unchanged || bad sentinel-end-unchanged
+if grep -qF '# >>> cli-tools aliases (managed) >>>' "$INSTALL_SH"; then pass sentinel-begin-unchanged; else bad sentinel-begin-unchanged; fi
+if grep -qF '# <<< cli-tools aliases (managed) <<<' "$INSTALL_SH"; then pass sentinel-end-unchanged; else bad sentinel-end-unchanged; fi
 
 # ------------------------------------------------------------
 # Case set 3: _clauth_smart_pick's selection algorithm.
@@ -407,10 +371,8 @@ grep -qF '# <<< cli-tools aliases (managed) <<<' "$INSTALL_SH" && pass sentinel-
 # ------------------------------------------------------------
 SMART_PICK_SRC="$T/clauth-smart-pick.sh"
 awk '/^_clauth_smart_pick\(\) \{$/,/^alias claude=.clauto.$/' "$CLAUTH_ZSH" > "$SMART_PICK_SRC"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-test -s "$SMART_PICK_SRC" && pass extract-smart-pick || bad extract-smart-pick
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-zsh -n "$SMART_PICK_SRC" && pass smart-pick-syntax || bad smart-pick-syntax
+if test -s "$SMART_PICK_SRC"; then pass extract-smart-pick; else bad extract-smart-pick; fi
+if zsh -n "$SMART_PICK_SRC"; then pass smart-pick-syntax; else bad smart-pick-syntax; fi
 
 # Shadow note: this section's only external command is `clauth` (called both
 # by `_clauth_smart_pick`'s `clauth status --json` and by `clauto`'s `clauth
@@ -600,10 +562,8 @@ fi
 # ------------------------------------------------------------
 OUTSIDE_CHECK_SRC="$T/outside-check.sh"
 awk '/^OUTSIDE_SMART_PICK=/,/^fi$/' "$INSTALL_SH" > "$OUTSIDE_CHECK_SRC"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-test -s "$OUTSIDE_CHECK_SRC" && pass extract-outside-check || bad extract-outside-check
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-bash -n "$OUTSIDE_CHECK_SRC" && pass outside-check-syntax || bad outside-check-syntax
+if test -s "$OUTSIDE_CHECK_SRC"; then pass extract-outside-check; else bad extract-outside-check; fi
+if bash -n "$OUTSIDE_CHECK_SRC"; then pass outside-check-syntax; else bad outside-check-syntax; fi
 
 TEST_BEGIN_MARK="$(grep -oE '^BEGIN_MARK="[^"]+"' "$INSTALL_SH" | sed -E 's/^BEGIN_MARK="(.*)"$/\1/')"
 TEST_END_MARK="$(grep -oE '^END_MARK="[^"]+"' "$INSTALL_SH" | sed -E 's/^END_MARK="(.*)"$/\1/')"
@@ -621,8 +581,7 @@ some managed content, no stray definition anywhere
 $TEST_END_MARK
 EOF
 out="$(run_outside_check "$ZSHRC_CLEAN")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ -z "$out" ] && pass outside-check-silent-when-clean || bad outside-check-silent-when-clean
+if [ -z "$out" ]; then pass outside-check-silent-when-clean; else bad outside-check-silent-when-clean; fi
 
 ZSHRC_STRAY="$T/zshrc-stray"
 cat >"$ZSHRC_STRAY" <<EOF
@@ -632,8 +591,7 @@ some managed content
 $TEST_END_MARK
 EOF
 out="$(run_outside_check "$ZSHRC_STRAY")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$out" | grep -qF '_clauth_smart_pick' && pass outside-check-warns-on-stray || bad outside-check-warns-on-stray
+if printf '%s' "$out" | grep -qF '_clauth_smart_pick'; then pass outside-check-warns-on-stray; else bad outside-check-warns-on-stray; fi
 
 # Same stray-definition scenario, but using the bash/zsh `function` keyword
 # declaration form (no parens) instead of the POSIX `name() { ... }` form -
@@ -647,8 +605,7 @@ some managed content
 $TEST_END_MARK
 EOF
 out="$(run_outside_check "$ZSHRC_STRAY_FN")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-printf '%s' "$out" | grep -qF '_clauth_smart_pick' && pass outside-check-warns-on-stray-function-form || bad outside-check-warns-on-stray-function-form
+if printf '%s' "$out" | grep -qF '_clauth_smart_pick'; then pass outside-check-warns-on-stray-function-form; else bad outside-check-warns-on-stray-function-form; fi
 
 
 # ------------------------------------------------------------
@@ -669,8 +626,7 @@ BLOCK_GEN_SRC="$T/block-gen.sh"
   # shellcheck disable=SC2016  # literal text appended to the generated script: expands there, not here
   printf 'cat "$NEW_BLOCK"\n'
 } > "$BLOCK_GEN_SRC"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q '^NEW_BLOCK=' "$BLOCK_GEN_SRC" && bash -n "$BLOCK_GEN_SRC" && pass extract-block-gen || bad extract-block-gen
+if grep -q '^NEW_BLOCK=' "$BLOCK_GEN_SRC" && bash -n "$BLOCK_GEN_SRC"; then pass extract-block-gen; else bad extract-block-gen; fi
 
 FAKE_REPO="$T/fake repo/it's here"
 mkdir -p "$FAKE_REPO/platforms/claude"
@@ -684,21 +640,16 @@ BEGIN_MARK="$TEST_BEGIN_MARK" END_MARK="$TEST_END_MARK" CLAUTH_ZSH="$FAKE_CLAUTH
 # escaping (' -> '\''), independent of the script's own bash substitution.
 ESC_FAKE_PATH="$(printf '%s' "$FAKE_CLAUTH_ZSH" | sed "s/'/'\\\\''/g")"
 EXPECTED_SOURCE_LINE="if [ -r '${ESC_FAKE_PATH}' ]; then source '${ESC_FAKE_PATH}'; else print -ru2 -- 'cli-tools: clauth.zsh not found, claude/cl* aliases unavailable (re-run install-cli-tools.sh): ${ESC_FAKE_PATH}'; fi"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(grep -cxF "$EXPECTED_SOURCE_LINE" "$BLOCK_OUT")" -eq 1 ] && pass block-sources-clauth-zsh || bad block-sources-clauth-zsh
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$(grep -c 'clauth\.zsh' "$BLOCK_OUT")" -eq 1 ] && pass block-single-clauth-zsh-line || bad block-single-clauth-zsh-line
+if [ "$(grep -cxF "$EXPECTED_SOURCE_LINE" "$BLOCK_OUT")" -eq 1 ]; then pass block-sources-clauth-zsh; else bad block-sources-clauth-zsh; fi
+if [ "$(grep -c 'clauth\.zsh' "$BLOCK_OUT")" -eq 1 ]; then pass block-single-clauth-zsh-line; else bad block-single-clauth-zsh-line; fi
 
 # The clauth section is no longer inlined...
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qE '_clauth_smart_pick|^clauto\(|^alias (claude|cl[a-z]*)=' "$BLOCK_OUT" && bad block-has-no-inlined-clauth || pass block-has-no-inlined-clauth
+if grep -qE '_clauth_smart_pick|^clauto\(|^alias (claude|cl[a-z]*)=' "$BLOCK_OUT"; then bad block-has-no-inlined-clauth; else pass block-has-no-inlined-clauth; fi
 # ...and the unrelated aliases stay in the heredoc, inside the sentinels.
 for needle in 'alias cat="bat"' 'alias csv=' 'lfcd()' "alias f='lfcd'" 'alias skills=' "alias sk="; do
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  grep -qF "$needle" "$BLOCK_OUT" && pass "block-keeps-${needle%%[=(]*}" || bad "block-keeps-${needle%%[=(]*}"
+  if grep -qF "$needle" "$BLOCK_OUT"; then pass "block-keeps-${needle%%[=(]*}"; else bad "block-keeps-${needle%%[=(]*}"; fi
 done
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-{ [ "$(head -1 "$BLOCK_OUT")" = "$TEST_BEGIN_MARK" ] && [ "$(tail -1 "$BLOCK_OUT")" = "$TEST_END_MARK" ]; } && pass block-sentinels-wrap-content || bad block-sentinels-wrap-content
+if { [ "$(head -1 "$BLOCK_OUT")" = "$TEST_BEGIN_MARK" ] && [ "$(tail -1 "$BLOCK_OUT")" = "$TEST_END_MARK" ]; }; then pass block-sentinels-wrap-content; else bad block-sentinels-wrap-content; fi
 
 # Missing clauth.zsh (repo moved / worktree deleted after install): loading
 # the block must not error out, must name the missing path on stderr, and
@@ -709,10 +660,8 @@ BEGIN_MARK="$TEST_BEGIN_MARK" END_MARK="$TEST_END_MARK" CLAUTH_ZSH="$MISSING_ZSH
 missing_err="$T/missing.err"
 missing_rc=0
 BLOCK_OUT="$MISSING_BLOCK" zsh -fc 'source "$BLOCK_OUT"; whence -w sk >&2' >/dev/null 2>"$missing_err" || missing_rc=$?
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$missing_rc" -eq 0 ] && grep -qF "$MISSING_ZSH" "$missing_err" && grep -qF 'cli-tools: clauth.zsh not found' "$missing_err" && pass block-missing-clauth-zsh-warns-by-path || bad block-missing-clauth-zsh-warns-by-path
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -q 'sk: alias' "$missing_err" && pass block-missing-clauth-zsh-keeps-other-aliases || bad block-missing-clauth-zsh-keeps-other-aliases
+if [ "$missing_rc" -eq 0 ] && grep -qF "$MISSING_ZSH" "$missing_err" && grep -qF 'cli-tools: clauth.zsh not found' "$missing_err"; then pass block-missing-clauth-zsh-warns-by-path; else bad block-missing-clauth-zsh-warns-by-path; fi
+if grep -q 'sk: alias' "$missing_err"; then pass block-missing-clauth-zsh-keeps-other-aliases; else bad block-missing-clauth-zsh-keeps-other-aliases; fi
 
 # Linked-worktree warning: extract the CLAUTH_REPO_DIR..fi snippet and run it
 # from a copy placed inside (a) a plain repo and (b) a linked worktree of it.
@@ -729,13 +678,10 @@ cp "$WT_SNIP" "$WT_MAIN/snip.sh"
 cp "$WT_SNIP" "$WT_LINKED/snip.sh"
 main_out="$(ZSHRC=/x/.zshrc bash "$WT_MAIN/snip.sh" 2>"$T/wt-main.err")"
 linked_out="$(ZSHRC=/x/.zshrc bash "$WT_LINKED/snip.sh" 2>"$T/wt-linked.err")"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ ! -s "$T/wt-main.err" ] && pass worktree-warning-silent-in-main-checkout || bad worktree-warning-silent-in-main-checkout
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-grep -qF "$WT_LINKED" "$T/wt-linked.err" && grep -qF 'worktree' "$T/wt-linked.err" && pass worktree-warning-in-linked-worktree || bad worktree-warning-in-linked-worktree
+if [ ! -s "$T/wt-main.err" ]; then pass worktree-warning-silent-in-main-checkout; else bad worktree-warning-silent-in-main-checkout; fi
+if grep -qF "$WT_LINKED" "$T/wt-linked.err" && grep -qF 'worktree' "$T/wt-linked.err"; then pass worktree-warning-in-linked-worktree; else bad worktree-warning-in-linked-worktree; fi
 # the chosen path is NOT changed by the warning
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-{ [ "$main_out" = "CLAUTH_ZSH=$WT_MAIN/platforms/claude/clauth.zsh" ] && [ "$linked_out" = "CLAUTH_ZSH=$WT_LINKED/platforms/claude/clauth.zsh" ]; } && pass worktree-warning-keeps-path || bad worktree-warning-keeps-path
+if { [ "$main_out" = "CLAUTH_ZSH=$WT_MAIN/platforms/claude/clauth.zsh" ] && [ "$linked_out" = "CLAUTH_ZSH=$WT_LINKED/platforms/claude/clauth.zsh" ]; }; then pass worktree-warning-keeps-path; else bad worktree-warning-keeps-path; fi
 
 # Reached through a symlinked repo directory: _CLAUTH_SETTINGS_FILE must be
 # the resolved real path (:A resolves symlinks), not the symlink path.
@@ -743,8 +689,7 @@ LINK_REPO="$T/link-to-fake-repo"
 ln -s "$FAKE_REPO" "$LINK_REPO"
 REAL_FAKE_SETTINGS="$(cd -P "$FAKE_REPO" && pwd)/platforms/claude/settings.json"
 via_link="$(LINK_ZSH="$LINK_REPO/platforms/claude/clauth.zsh" zsh -fc 'source "$LINK_ZSH"; print -r -- "$_CLAUTH_SETTINGS_FILE"' 2>/dev/null || true)"
-# shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-[ "$via_link" = "$REAL_FAKE_SETTINGS" ] && pass settings-path-resolved-through-symlinked-repo || bad settings-path-resolved-through-symlinked-repo
+if [ "$via_link" = "$REAL_FAKE_SETTINGS" ]; then pass settings-path-resolved-through-symlinked-repo; else bad settings-path-resolved-through-symlinked-repo; fi
 
 # End to end under zsh: load the generated block (not the repo's clauth.zsh
 # directly) and launch via an alias. Requires the shadow guard from above,
@@ -759,13 +704,12 @@ if [ "$CLAUTH_SHADOW_OK" -eq 1 ]; then
   # The settings path must come from the sourced file's own location (the
   # fake repo copy, containing a space and a quote), as ONE argument.
   EXPECTED_FAKE_SETTINGS="$FAKE_REPO/platforms/claude/settings.json"
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  awk -v s="$EXPECTED_FAKE_SETTINGS" '
+  if awk -v s="$EXPECTED_FAKE_SETTINGS" '
     $0 == "--" && !d { d = NR; next }
     d && NR == d + 1 { a = ($0 == "--settings") }
     d && NR == d + 2 { b = ($0 == s) }
     END { exit !(a && b) }
-  ' "${e2e_log}.argv" && pass block-e2e-settings-path-from-own-location || bad block-e2e-settings-path-from-own-location
+  ' "${e2e_log}.argv"; then pass block-e2e-settings-path-from-own-location; else bad block-e2e-settings-path-from-own-location; fi
 
   # A relative source path must resolve to the same absolute file.
   rel_log="$T/clauth-rel.log"
@@ -775,8 +719,7 @@ if [ "$CLAUTH_SHADOW_OK" -eq 1 ]; then
     source claude/clauth.zsh
     eval cl >/dev/null 2>&1
   ' || true  # same: report via the assertion, never abort
-  # shellcheck disable=SC2015  # pass/bad never fail, so && / || is safe here (repo-wide test idiom)
-  grep -qxF "$EXPECTED_FAKE_SETTINGS" "${rel_log}.argv" && pass settings-path-absolute-from-relative-source || bad settings-path-absolute-from-relative-source
+  if grep -qxF "$EXPECTED_FAKE_SETTINGS" "${rel_log}.argv"; then pass settings-path-absolute-from-relative-source; else bad settings-path-absolute-from-relative-source; fi
 else
   bad block-e2e-settings-path-from-own-location
   bad settings-path-absolute-from-relative-source
