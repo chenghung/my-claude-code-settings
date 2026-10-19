@@ -1,6 +1,6 @@
 ---
 name: diagram-designer
-description: 圖表設計選型知識庫。當使用者要求繪製、設計或產生圖表（流程圖、架構圖、時序圖、ER 圖、心智圖、UML 元件圖、網路拓樸、介面草圖 wireframe / UI mockup 等），或詢問該用哪種圖表語法，或提供需求想把概念或實際數值資料視覺化時觸發。不應觸發：使用者只要 ASCII 示意圖、只是修正既有圖表的小錯字、已明確指定語法且只要原始碼。觸發關鍵字：畫圖、流程圖、架構圖、時序圖、ER 圖、心智圖、網路拓樸、UML、diagram、mermaid、d2、plantuml、graphviz、wireframe、UI mockup、mockup、介面草圖、vega、vega-lite、vegalite、資料圖表、bar chart、line chart、scatter plot、效能圖表、趨勢圖、圖表選型
+description: 圖表設計選型知識庫。當使用者要求繪製、設計或產生圖表（流程圖、架構圖、時序圖、ER 圖、心智圖、UML 元件圖、網路拓樸、介面草圖 wireframe / UI mockup 等），或詢問該用哪種圖表語法，或提供需求想把概念或實際數值資料視覺化時觸發。不應觸發：使用者只要 ASCII 示意圖、只是修正既有圖表的小錯字、已明確指定語法且只要原始碼、在 Claude Code（裝有 prismantis mod）或 Codex 對話中以 flowchart、sequenceDiagram、stateDiagram-v2、classDiagram、erDiagram 這 5 種 Mermaid 即時說明（依 diagram-output rule 直接畫）。觸發關鍵字：畫圖、流程圖、架構圖、時序圖、ER 圖、心智圖、網路拓樸、UML、diagram、mermaid、d2、plantuml、graphviz、wireframe、UI mockup、mockup、介面草圖、vega、vega-lite、vegalite、資料圖表、bar chart、line chart、scatter plot、效能圖表、趨勢圖、圖表選型
 ---
 
 # Diagram Designer Skill
@@ -22,6 +22,7 @@ description: 圖表設計選型知識庫。當使用者要求繪製、設計或�
 - 使用者只需要 ASCII 字元示意圖（終端機可直接顯示，不需要 renderer）
 - 使用者只是要修正既有圖表的小錯字，不涉及選型決策
 - 使用者已明確指定語法，且目的是取得原始碼以供複製貼上至其他地方
+- 在 Claude Code（裝有 prismantis mod）或 Codex 的對話中，用 `flowchart`、`sequenceDiagram`、`stateDiagram-v2`、`classDiagram`、`erDiagram` 這 5 種 Mermaid 即時說明（依 `diagram-output` rule 直接在回覆中畫，不選型也不預覽）
 
 ## 選型策略
 
@@ -251,7 +252,7 @@ Main agent 回應使用者時應包含以下三個部分：
 1. **預覽呈現**：說明已呼叫 render.sh 取得預覽目標並在瀏覽器開啟；目標路徑或 URL 本身不貼到聊天回應，實際開啟流程依 `diagram-output` rule 執行
 1. **後續寫入說明**：若使用者要將圖表寫進 `.md` 檔，DSL 原始碼寫入該檔，不經聊天回應中轉；寫入方式見「與其他元件的協作」一節
 
-圖表 DSL 原始碼（mermaid、d2、plantuml、graphviz、structurizr、vega-lite 等）禁止以 fenced code block 或任何其他形式直接貼入聊天回應。此規定對所有支援的服務皆適用，包含 Mermaid，不因 Mermaid 在部分 markdown 環境可原生渲染而例外。此禁令的適用範圍僅限於本 skill 被觸發後的設計產出流程；`diagram-output.md` 已劃出「使用者明示要原始碼」與「只需要 ASCII 字元圖示」這兩條例外路徑，在那兩種情境下本 skill 根本不應被觸發，故此禁令不覆蓋那兩條路徑。
+圖表 DSL 原始碼（mermaid、d2、plantuml、graphviz、structurizr、vega-lite 等）禁止以 fenced code block 或任何其他形式直接貼入聊天回應。此規定對所有支援的服務皆適用，包含 Mermaid，不因 Mermaid 在部分 markdown 環境可原生渲染而例外。此禁令的適用範圍僅限於本 skill 被觸發後的設計產出流程；`diagram-output.md` 已劃出「使用者明示要原始碼」、「只需要 ASCII 字元圖示」與「對話中直接畫 Mermaid」這三條例外路徑，在這三種情境下本 skill 根本不應被觸發，故此禁令不覆蓋這三條路徑。
 
 ## 與其他元件的協作
 
