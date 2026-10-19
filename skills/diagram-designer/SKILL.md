@@ -1,6 +1,6 @@
 ---
 name: diagram-designer
-description: 圖表設計選型知識庫。當使用者要求繪製、設計或產生圖表（流程圖、架構圖、時序圖、ER 圖、心智圖、UML 元件圖、網路拓樸、介面草圖 wireframe / UI mockup 等），或詢問該用哪種圖表語法，或提供需求想把概念或實際數值資料視覺化時觸發。不應觸發：使用者只要 ASCII 示意圖、只是修正既有圖表的小錯字、已明確指定語法且只要原始碼、在 Claude Code 或 Codex 對話中以 flowchart、sequenceDiagram、stateDiagram-v2、classDiagram、erDiagram 這 5 種 Mermaid 即時說明（依 diagram-output rule 直接畫）。觸發關鍵字：畫圖、流程圖、架構圖、時序圖、ER 圖、心智圖、網路拓樸、UML、diagram、mermaid、d2、plantuml、graphviz、wireframe、UI mockup、mockup、介面草圖、vega、vega-lite、vegalite、資料圖表、bar chart、line chart、scatter plot、效能圖表、趨勢圖、圖表選型
+description: 圖表設計選型知識庫。當使用者要求繪製、設計或產生圖表（流程圖、架構圖、時序圖、ER 圖、心智圖、UML 元件圖、網路拓樸、介面草圖 wireframe / UI mockup 等），或詢問該用哪種圖表語法，或提供需求想把概念或實際數值資料視覺化時觸發。不應觸發：使用者只要 ASCII 示意圖、只是修正既有圖表的小錯字、已明確指定語法且只要原始碼、在 Claude Code（裝有 prismantis mod）或 Codex 對話中以 flowchart、sequenceDiagram、stateDiagram-v2、classDiagram、erDiagram 這 5 種 Mermaid 即時說明（依 diagram-output rule 直接畫）。觸發關鍵字：畫圖、流程圖、架構圖、時序圖、ER 圖、心智圖、網路拓樸、UML、diagram、mermaid、d2、plantuml、graphviz、wireframe、UI mockup、mockup、介面草圖、vega、vega-lite、vegalite、資料圖表、bar chart、line chart、scatter plot、效能圖表、趨勢圖、圖表選型
 ---
 
 # Diagram Designer Skill
@@ -22,7 +22,7 @@ description: 圖表設計選型知識庫。當使用者要求繪製、設計或�
 - 使用者只需要 ASCII 字元示意圖（終端機可直接顯示，不需要 renderer）
 - 使用者只是要修正既有圖表的小錯字，不涉及選型決策
 - 使用者已明確指定語法，且目的是取得原始碼以供複製貼上至其他地方
-- 在 Claude Code 或 Codex 的對話中，用 `flowchart`、`sequenceDiagram`、`stateDiagram-v2`、`classDiagram`、`erDiagram` 這 5 種 Mermaid 即時說明（依 `diagram-output` rule 直接在回覆中畫，不選型也不預覽）
+- 在 Claude Code（裝有 prismantis mod）或 Codex 的對話中，用 `flowchart`、`sequenceDiagram`、`stateDiagram-v2`、`classDiagram`、`erDiagram` 這 5 種 Mermaid 即時說明（依 `diagram-output` rule 直接在回覆中畫，不選型也不預覽）
 
 ## 選型策略
 
