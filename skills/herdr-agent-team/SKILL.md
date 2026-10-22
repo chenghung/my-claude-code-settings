@@ -39,12 +39,12 @@ orchestrator 對話，orchestrator 透過本 skill 的腳本作用於一群跨�
 | `references/briefing-template.md` | 準備呼叫 `launch-worker.sh --briefing-file` 之前，組裝這個 worker 的啟動包內容時載入 |
 | `references/worker-contract.md` | **不載入其全文**：全文有幾百行，載入等於先賠掉本 skill 要省下的 context。只在組裝啟動包時，把這份檔案（或依它「同儕段落的組裝」一節實例化後的版本）放到 worker 讀得到的位置，取得的字串當成 `briefing-template.md`「03 協定」裡的「回報契約 locator」填入；只有要修改契約本身的內容時才打開它 |
 | `agents/herdr-agent-team-investigator.md` | 不是 reference，是委派對象，用 Task 工具委派，見「派調查者的時機」 |
-| `references/team-launch.md` | 啟動 team、新增 worker、重掛或判讀 watchdog 是否存活 |
+| `references/team-launch.md` | 啟動 team、新增 worker、重新啟動或判讀 watchdog 是否存活 |
 | `references/watchdog-escalations.md` | 依三個識別訊號認出一則升級時 |
 | `references/drift-handling.md` | `fyi` 可能是漂移、使用者要求變更 goal，或要叫停、改派、結束 worker（`done` 除外）時 |
 | `references/session-recovery.md` | session 重啟要接回既有 team，或名稱遺失：使用者告知 tab label 出現 `🚨 ORCHESTRATOR NAME LOST:` 前綴，或 `watchdog.log` 出現 `alert reason=orchestrator_name_missing` 時 |
 | `references/script-reference.md` | 任何腳本非 0 結束，或輸出出現核心未說明的格式，或要覆寫門檻時 |
-| `scripts/` 底下的十四支腳本 | 依本檔與上列 reference 流程中寫明的時機呼叫，總表見 `references/script-reference.md`。確切的旗標名稱、預設逾時與門檻值一律以各腳本檔頭註解為準，不照記憶湊 |
+| `scripts/` 底下的十五支腳本 | 依本檔與上列 reference 流程中寫明的時機呼叫，總表見 `references/script-reference.md`。確切的旗標名稱、預設逾時與門檻值一律以各腳本檔頭註解為準，不照記憶湊 |
 
 本檔是 compact 後會重附的核心，上列 reference 只在觸發時讀；compact 後先前讀過的不保證還在，碰到觸發情境或流程中途遇上 compact，一律重讀所屬 reference（`references/worker-contract.md` 依上表該列不載入，不在重讀之列）。
 
@@ -127,8 +127,8 @@ worker 名稱清單）連同目標 worker 的 agent 名稱一起交給調查者�
   限升級；`.stage` 欄位不存在時視同 `running`）；對 `delivered` 的 worker 成功發出（`instruct.sh`
   結束碼 `0` 或 `7`）一則非 halt 下行，就會撥回 `running`，`closing`、`closed` 不動；身分消失、卡在
   核准框、豁免到期三種升級不受關卡影響，照常發出。
-- **啟動或重掛長駐的 `watchdog.sh` 一律背景／detach、不帶 `--once`**（`--once` 單輪巡檢不在此限；
-  理由見 `references/team-launch.md` 第 6 步）。
+- **team 收工時呼叫 `shutdown-watchdog.sh`**：最後一個 worker 關閉、或人類放棄這個 team 時。看門狗不會自己
+  結束，留著會繼續照看殘留的 worker、發出沒人接的升級。
 
 ### 認出一則升級
 
