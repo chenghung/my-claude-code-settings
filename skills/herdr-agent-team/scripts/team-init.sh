@@ -162,9 +162,14 @@ fi
 # 話的記憶——由本段偵測、印出一行交給人類選擇。
 #
 # 三態，依 running → finished → none 的順序取第一個成立者：
-#   running：有任何 worker 記錄，或看門狗存活。
-#   finished：goal_confirmed 為 true、沒有 worker 記錄、看門狗未存活。
-#             不能直接沿用：舊的 goal_confirmed 會讓開工閘門在人類確認
+#   running：有任何 worker 記錄、看門狗存活，或 goal 已確認但還沒派出過
+#            任何 worker（briefings/ 沒有啟動包副本：確認 goal 之後、第
+#            一個 launch-worker.sh 之前中斷的 team 仍在進行中）。
+#   finished：goal_confirmed 為 true、曾經派過 worker（briefings/ 有
+#             launch-worker.sh 留下的啟動包副本，worker 關閉後仍保留）、
+#             目前沒有 worker 記錄、看門狗未存活。goal_confirmed 是開工
+#             閘門、不是收工標記，單憑它分不出「已收工」與「剛確認
+#             goal」。不能直接沿用：舊的 goal_confirmed 會讓開工閘門在人類確認
 #             新 goal 之前就是開的（set-goal.sh 不帶 --confirmed 時不碰
 #             這個欄位），舊 inbox 與序號也會被沿用。
 #   none：其餘（含 registry 不存在、goal 收斂到一半就中斷）。
@@ -179,11 +184,18 @@ fi
 # --recover 要求看門狗已停（見 lib/common.sh 欄位白名單一節）。
 detect_root="$(hat_registry_root)"
 detect_workers=0
+detect_briefings=0
 detect_watchdog=dead
 detect_confirmed=false
 if [ -d "$detect_root" ]; then
-  detect_workers="$(find "$detect_root/workers" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l)"
-  detect_workers=$((10#$detect_workers))
+  # 子目錄缺席時 find 會失敗，pipefail 之下整個賦值會觸發 errexit，所以
+  # 先確認目錄存在（缺席的子目錄稍後由 hat_registry_init 補建）。
+  if [ -d "$detect_root/workers" ]; then
+    detect_workers="$(find "$detect_root/workers" -maxdepth 1 -type f -name '*.json' | wc -l)"
+  fi
+  if [ -d "$detect_root/briefings" ]; then
+    detect_briefings="$(find "$detect_root/briefings" -maxdepth 1 -type f -name '*.md' | wc -l)"
+  fi
   if hat_watchdog_alive_pid "$detect_root" >/dev/null; then
     detect_watchdog=alive
   fi
@@ -193,7 +205,11 @@ detect_state=none
 if [ "$detect_workers" -gt 0 ] || [ "$detect_watchdog" = alive ]; then
   detect_state=running
 elif [ "$detect_confirmed" = true ]; then
-  detect_state=finished
+  if [ "$detect_briefings" -gt 0 ]; then
+    detect_state=finished
+  else
+    detect_state=running
+  fi
 fi
 
 if [ "$recover" -eq 1 ]; then
@@ -206,7 +222,9 @@ elif [ "$detect_state" != none ]; then
     if [ -e "$archive_dest" ]; then
       hat_die 4 "team-init.sh --archive: 歸檔目的地已存在（$archive_dest），不覆寫；稍候一秒再跑"
     fi
-    mv "$detect_root" "$archive_dest"
+    # -T：目的地若在上面的檢查之後才出現，讓 mv 失敗，不要把 registry
+    # 搬進那個目錄裡面。
+    mv -T "$detect_root" "$archive_dest"
     printf 'archived=%s\n' "$archive_dest"
   else
     printf 'existing-team registry=%s state=%s workers=%s watchdog=%s\n' \

@@ -313,17 +313,18 @@ hat_whitelist_agents() {
 # .orchestrator_tab_label 額外的例外是 team-init.sh --recover——目前
 # 這個 tab 的 label 與這裡記錄的值不同時，把它改回記錄值；警報本身
 # 由 report.sh 用 `herdr tab rename` 寫上去、不自動還原，真正的還原
-# 時機是人回來跑 --recover 這一刻（規格「設計項目三」）。跟
-# .held／.escalation_active 已有的先例一樣，不存在兩個寫入端同時活著
-# 互相覆蓋的競態：team-init.sh --recover 在看門狗存活時以 4 拒絕。
+# 時機是人回來跑 --recover 這一刻（規格「設計項目三」）。這個欄位的
+# 兩個寫入點都在 team-init.sh 裡，由現任 orchestrator 依序執行；看門狗
+# 不寫它，report.sh 改的是 tab 本身的 label、不是這個欄位，不存在兩個
+# 寫入端互相覆蓋的競態。
 #
 # 例外（線上故障修正新增）：.escalation_active 在中斷恢復時多一個寫入
 # 端——team-init.sh --recover 會把它清成 null，收回跨 orchestrator 重
 # 啟殘留的升級閂鎖，理由見該檔「升級閂鎖收回」一節。這不是「不重疊」
 # 被打破：team-init.sh --recover 在看門狗存活時以 4 拒絕，看門狗已停
-# 才會執行，不存在兩個寫入端同時活著互相覆蓋的競態，跟 .held
-# 「orchestrator 端腳本寫、team-init.sh --recover 額外收回殘留」是同一
-# 種安全前提。
+# 才會執行，不存在兩個寫入端同時活著互相覆蓋的競態。.held 的安全前提
+# 不同：它的寫入端是 instruct.sh 等 orchestrator 端腳本，--recover 由
+# 現任 orchestrator 在恢復流程中、送出任何下行之前執行，兩者依序發生。
 #
 # .orchestrator_alert_active（本次修正新增）：team.json 六個欄位裡唯一
 # 不由 team-init.sh 寫的一個，只有 watchdog.sh 的
@@ -425,8 +426,7 @@ hat_whitelist_agents() {
 # 90 秒緩衝在第一輪輪詢就被繞過。這不是「不重疊」被打破：launch-
 # worker.sh 執行的時間點，上一個 watchdog.sh 對這個 worker 的緩衝評估
 # 要嘛已經升級過（走完了它要做的事），要嘛還在緩衝中——兩者都不存在跟
-# 這次重置同時發生、互相覆蓋的競態，跟 .escalation_active／.held 已有
-# 的先例是同一種安全前提。
+# 這次重置同時發生、互相覆蓋的競態。
 _HAT_TEAM_JSON_FIELDS=(
   '.orchestrator_name' '.orchestrator_pane' '.orchestrator_tab'
   '.orchestrator_tab_label' '.team_home' '.orchestrator_alert_active'

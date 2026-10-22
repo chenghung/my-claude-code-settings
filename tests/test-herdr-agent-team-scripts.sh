@@ -8230,6 +8230,13 @@ rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 ||
 if [ "$rc" -eq 0 ]; then pass "team-init 偵測：沒有既有 team 時照常初始化"; else bad "team-init 偵測：全新 registry 得到 rc=$rc"; fi
 rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 0 ]; then pass "team-init 偵測：goal 未確認且沒有 worker 時重跑照常（state=none）"; else bad "team-init 偵測：state=none 重跑得到 rc=$rc"; fi
+rm -rf "$TI_REG/workers"
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] && [ -d "$TI_REG/workers" ]; then
+  pass "team-init 偵測：registry 缺 workers/ 子目錄時照常初始化並補建"
+else
+  bad "team-init 偵測：缺 workers/ 時得到 rc=$rc"
+fi
 
 # running（worker 記錄）
 printf '{"pane_id":"w3N:p9"}' > "$TI_REG/workers/w3n-x.json"
@@ -8254,12 +8261,21 @@ else
   bad "team-init --archive：running 得到 rc=$rc 或 registry 被搬動"
 fi
 
-# finished
+# goal 已確認、還沒派過任何 worker：仍是進行中，不是已收工
 rm -f "$TI_REG/workers/w3n-x.json"
 jq '.goal_confirmed = true' "$TI_REG/team.json" > "$T/ti.json" && mv "$T/ti.json" "$TI_REG/team.json"
 rc=0; out="$(AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 4 ] && [ "$out" = "existing-team registry=$TI_REG state=running workers=0 watchdog=dead" ]; then
+  pass "team-init 偵測：goal 已確認但 briefings/ 沒有啟動包副本時判為 state=running"
+else
+  bad "team-init 偵測：已確認未派工得到 rc=$rc out='$out'"
+fi
+
+# finished：曾經派過 worker（briefings/ 留有啟動包副本）、都已關閉
+printf 'briefing\n' > "$TI_REG/briefings/w3n-x.md"
+rc=0; out="$(AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" 2>/dev/null)" || rc=$?
 if [ "$rc" -eq 4 ] && [ "$out" = "existing-team registry=$TI_REG state=finished workers=0 watchdog=dead" ]; then
-  pass "team-init 偵測：goal 已確認、沒有 worker、看門狗未存活時印 state=finished 並以 4 結束"
+  pass "team-init 偵測：goal 已確認、曾派過 worker、目前沒有 worker、看門狗未存活時印 state=finished 並以 4 結束"
 else
   bad "team-init 偵測：finished 得到 rc=$rc out='$out'"
 fi
@@ -8306,7 +8322,7 @@ if [ "$rc" -eq 0 ]; then pass "team-init --recover：看門狗停止後照常執
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=713
+HAT_EXPECTED_ASSERTIONS=715
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
