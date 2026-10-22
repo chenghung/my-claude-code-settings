@@ -12,7 +12,7 @@
 | 1 | 個別腳本自行產生的部分失敗或迴圈異常 |
 | 2 | 呼叫端用錯：缺必填參數、參數格式不對 |
 | 3 | 環境前提不成立：`HERDR_ENV` 不等於 `1` |
-| 4 | 守衛不通過（workspace 邊界、provider 白名單、開工閘門、關閉閘門、代按前的狀態重查、grant——讀訊息那一行分辨是哪一類） |
+| 4 | 守衛不通過（workspace 邊界、provider 白名單、開工閘門、關閉閘門、代按前的狀態重查、grant、已有存活的看門狗、本 workspace 已有 team、`--recover` 時看門狗仍存活、`--archive` 遇到進行中的 team——讀訊息那一行分辨是哪一類） |
 | 5 | registry 缺漏或內容不合法 |
 | 6 | herdr 拒絕 |
 | 7 | 握手未取得憑據（逾時或 `agent_prompt_stalled`），或代按之後仍是 `blocked` |
@@ -22,7 +22,7 @@
 
 | 腳本 | 呼叫時機 | 拿到結果之後怎麼判斷 |
 | --- | --- | --- |
-| `team-init.sh [--recover\|--archive]` | `team-launch.md` 第 1 步；`--recover` 見 `session-recovery.md`；`--archive` 只在人類對 `state=finished` 選了開新時 | 印出 `orchestrator=<名稱> registry=<路徑>`；`--recover` 另印 `pending-resend` 行，處置見 `session-recovery.md` 第 3 步；`--archive` 另印 `archived=<路徑>`。結束碼 `4` 讀訊息分辨，跟既有 team 相關的有：印出 `existing-team` 行（本 workspace 已有 team，處置見 `team-launch.md` 第 1 步）；`--recover` 時看門狗仍存活（先 `shutdown-watchdog.sh`）；`--archive` 時 team 不是 `finished` 或歸檔目的地已存在。兩個旗標同時給以 `2` 結束。專屬結束碼 `9`：偵測到 `AGENT_TEAM_SELF` 或 `AGENT_TEAM_ROLE`（只有 worker tab 會被注入）即判定呼叫端是 worker 環境，拒絕執行，不呼叫 herdr、不寫 registry |
+| `team-init.sh [--recover\|--archive]` | `team-launch.md` 第 1 步；`--recover` 見 `session-recovery.md`；`--archive` 只在人類對 `state=finished` 選了開新時 | 印出 `orchestrator=<名稱> registry=<路徑>`；`--recover` 另印 `pending-resend` 行，處置見 `session-recovery.md` 第 3 步；`--archive` 另印 `archived=<路徑>`。結束碼 `4` 讀訊息分辨，跟既有 team 相關的有：印出 `existing-team` 行（本 workspace 已有 team，處置見 `team-launch.md` 第 1 步）；`--recover` 時看門狗仍存活（先 `shutdown-watchdog.sh`）；`--archive` 時 team 是 `running` 或歸檔目的地已存在。兩個旗標同時給以 `2` 結束。專屬結束碼 `9`：偵測到 `AGENT_TEAM_SELF` 或 `AGENT_TEAM_ROLE`（只有 worker tab 會被注入）即判定呼叫端是 worker 環境，拒絕執行，不呼叫 herdr、不寫 registry |
 | `set-goal.sh --achieve <> --success <> --not-doing <> --assumption <> [--confirmed] [--changed-by <>] [--rationale <>]` | 收斂 goal 之後、每一次要覆寫 goal 時 | 印出 `GOAL-SUCCESS-CHANGED version=<N>` 代表動到「怎樣算成功」，要轉述給使用者 |
 | `launch-worker.sh --role <> --kind <> --cwd <> --briefing-file <> [--arg <>]... [--ack-timeout <秒>]` | goal 確認之後，逐個 role 啟動 | 成功印 `worker=<名稱> pane=<id> tab=<id> ack=ok`；結束碼 `8` 是已內部重試一次仍啟動失敗，registry 記錄已移除、啟動包副本仍留在 `briefings/<worker>.md`；`6` 是識別碼取不到或 herdr 拒絕，沒有寫入 registry；`2` 是 herdr 語法錯誤（呼叫端用錯，不是啟動失敗） |
 | `instruct.sh --to <> (--text <> \| --text-file <>) [--reply-to <序號>] [--kind instruct\|decision\|goal-update\|halt]` | 下行任何指令、定案、goal 傳播；回覆 `need-you` 用 `--reply-to` | 結束碼 `7` 是對方卡在核准框、這一則進了 `.pending_resend`：重送沒有意義，但看門狗只在它離開 `blocked` 後才補投，必須去處理那個框（見 `SKILL.md`「派調查者的時機」），否則佇列永遠排不空且全程靜默。`0` 與 `7` 都會把 `delivered` 撥回 `running`；`closing`／`closed` 不動，`--kind halt` 不撥回（見 `drift-handling.md` 第 3 步） |

@@ -9,7 +9,8 @@
 #         `watchdog=stopped pid=<PID>`，以 0 結束；10 秒內仍存活以 1
 #         結束。
 #   未存活：印 `watchdog=not-running`，以 0 結束，不送任何訊號。
-# 呼叫時機：team 收工（goal 已達成或人類放棄這個 team、之後不再啟動任何 worker；判準見 SKILL.md「看門狗的自動推進與升級」）；
+# 呼叫時機：team 收工（goal 已達成或人類放棄這個 team、之後不再啟動任
+# 何 worker；判準見 SKILL.md「看門狗的自動推進與升級」）；
 # 中斷恢復的第一步（team-init.sh --recover 要求看門狗已停）；改門檻要
 # 重啟之前。
 #

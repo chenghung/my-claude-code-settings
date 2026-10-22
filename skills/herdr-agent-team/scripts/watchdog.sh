@@ -19,9 +19,11 @@
 # 為什麼不交給 orchestrator 選背景方式：harness 的背景任務綁在 session
 # 上。已實測只加 nohup 的行程在 Claude Code 的 TaskStop 後死亡；setsid
 # 拉起的行程撐過 TaskStop、整個 session 先 HUP 後 KILL、以及巢狀真實
-# claude orchestrator 被 SIGTERM／SIGKILL。存活上限是 cgroup：setsid
-# 不脫離 cgroup，所在 systemd scope 被 stop 時會一起結束（已實測）；那
-# 一層是 herdr，herdr 結束時 worker 也一併消失，沒有照看對象。
+# claude orchestrator 被 SIGTERM／SIGKILL。setsid 不脫離 cgroup：所在
+# systemd scope 被 stop 時會一起結束（已實測）。herdr 或終端機結束時那個
+# scope 會不會被 stop 沒有驗證過（推論：scope 要等裡面的行程都結束才
+# 停，看門狗沒有 controlling tty 又忽略 HUP，很可能繼續活著），所以 team
+# 收工一律用 shutdown-watchdog.sh 停，不靠 herdr 結束時順帶收掉。
 #
 # 子行程的 stdout/stderr 導向 watchdog.out、stdin 導向 /dev/null：前景
 # 呼叫靠讀到 EOF 才返回，子行程留著呼叫端的 pipe 就會把呼叫卡住。

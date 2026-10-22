@@ -70,7 +70,7 @@
 # 修法：--recover 一併把所有 worker 記錄的 .escalation_active 清成
 # null（跟 watchdog.sh 的 hat_wd_escalation_clear 同一種清法，但不能
 # 直接呼叫那個函式——watchdog.sh 檔尾是無界輪詢迴圈的頂層程式碼，被
-# source 進來會立刻執行，不能把它當函式庫用），讓重掛看門狗之後，仍
+# source 進來會立刻執行，不能把它當函式庫用），讓重新啟動看門狗之後，仍
 # 然成立的條件能立刻重新升級一次，不被上一個 session 留下的閂鎖壓
 # 抑。不動 .escalation_last_at：一旦 .escalation_active 被清空，
 # hat_wd_escalate_once 比對「目前條件跟閂鎖記的是否相同」這一步就已

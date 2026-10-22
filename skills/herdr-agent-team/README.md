@@ -761,7 +761,7 @@ flowchart LR
 
 ### 9.4 存活判讀與門檻
 
-看門狗用一般前景呼叫啟動、不帶參數：腳本自己以 `setsid` 脫離 session，長駐子行程撐得過 orchestrator 的 session 結束；它跟 herdr 同屬一個 cgroup，herdr 那一層結束時會一起結束（那時 worker 也已消失）。結束碼 `0` 已掛上、`2` 門檻不合法、`4` 已有存活實例（同一個 team 只會有一支）、`1` 子行程沒就緒。
+看門狗用一般前景呼叫啟動、不帶參數：腳本自己以 `setsid` 脫離 session，長駐子行程撐得過 orchestrator 的 session 結束；herdr 或終端機關閉後它是否跟著結束沒有驗證過，可能繼續活著，收工一律用 `shutdown-watchdog.sh` 停。結束碼 `0` 已掛上、`2` 門檻不合法、`4` 已有存活實例（同一個 team 只會有一支）、`1` 子行程沒就緒。
 
 - 存活看 `team-status.sh` 第一行的 `watchdog=alive|dead`。判讀依據是 `watchdog.pid` 指向的行程持有 `watchdog.lock` 的檔案描述符且為 session leader，不靠 log。
 - `watchdog.log` 剛掛上時是空的，這是正常的；升級、補投成功、停滯追蹤都不寫這個檔案。
@@ -910,7 +910,7 @@ worker 端腳本：
 | 1 | 個別腳本自行產生的部分失敗或迴圈異常 |
 | 2 | 呼叫端用錯：缺必填參數、參數格式不對 |
 | 3 | 環境前提不成立：`HERDR_ENV` 不等於 `1` |
-| 4 | 守衛不通過（workspace 邊界、provider 白名單、開工閘門、關閉閘門、代按前的狀態重查、grant） |
+| 4 | 守衛不通過（workspace 邊界、provider 白名單、開工閘門、關閉閘門、代按前的狀態重查、grant、已有存活的看門狗、本 workspace 已有 team、`--recover` 時看門狗仍存活、`--archive` 遇到進行中的 team） |
 | 5 | registry 缺漏或內容不合法 |
 | 6 | herdr 拒絕 |
 | 7 | 握手未取得憑據（逾時或 `agent_prompt_stalled`），或代按之後仍是 `blocked` |

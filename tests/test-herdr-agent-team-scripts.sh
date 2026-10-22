@@ -56,7 +56,9 @@ mkdir -p "$STUB_BIN"
 # set-goal.sh 替 goal_history 每筆紀錄蓋時間戳，同樣以受限 PATH 查證過
 # 解析到 /usr/bin；Task 11 新增 awk 一項，用於 wait-peer.sh 從
 # hat_whitelist_agents 的 TSV 輸出篩出目標 agent 那一行，同樣以受限
-# PATH（`env -i PATH=/usr/bin:/bin`）查證過解析到 /usr/bin/awk）。整份
+# PATH（`env -i PATH=/usr/bin:/bin`）查證過解析到 /usr/bin/awk；鎖 fd
+# 不變量測試新增 realpath／seq／readlink 三項，同法查證過皆解析到
+# /usr/bin）。整份
 # 套件的 PATH 一律是「樁目錄＋
 # /usr/bin:/bin」，真實 herdr 所在的 ~/.local/bin 從頭到尾不在 PATH
 # 上，忘了建樁的段落只會得到 command-not-found 而失敗，不會靜默地改打
@@ -8207,6 +8209,48 @@ rm -f "$WDH_REG/watchdog.pid" "$WDH_REG/decoy.pid"
 rc=0; AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" --bogus >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 2 ]; then pass "shutdown：帶參數以 2 結束"; else bad "shutdown：帶參數得到 rc=$rc"; fi
 
+# 鎖 fd 不變量：只有看門狗主行程持有鎖 fd，每輪子殼與 sleep 都關閉它。
+# 上面的 shutdown 測試殺整個 group，拿掉 `{HAT_WD_LOCK_FD}>&-` 也會過；
+# 這裡只殺主行程，驗證殘留的子行程不會佔住鎖。
+cp "$T/herdr-sleepy" "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-lockfd-sleepy
+rm -f "$WD_INFLIGHT"
+rc=0; AGENT_TEAM_HOME="$WDH_HOME" AGENT_TEAM_POLL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" >/dev/null 2>&1 || rc=$?
+wd_pid="$(cat "$WDH_REG/watchdog.pid" 2>/dev/null || true)"
+[ -n "$wd_pid" ] && printf '%s\n' "$wd_pid" >> "$T/bg-pgids"
+[ "$rc" -eq 0 ] || bad "鎖 fd 前置：watchdog.sh 啟動得到 rc=$rc"
+hat_wait_file "$WD_INFLIGHT" || bad "鎖 fd 前置：等不到一輪正在跑的 agent list"
+# 只殺主行程，不殺 group：讓跑到一半的那一輪與 sleep 成為孤兒。
+kill -TERM "$wd_pid" 2>/dev/null || true
+for _ in $(seq 1 50); do kill -0 "$wd_pid" 2>/dev/null || break; sleep 0.1; done
+if flock -n "$WDH_REG/watchdog.lock" true; then
+  pass "watchdog：只殺主行程時鎖立即釋放（每輪子殼與 sleep 不持有鎖 fd）"
+else
+  bad "watchdog：只殺主行程後鎖仍被佔住（有子行程繼承了鎖 fd）"
+fi
+lock_real="$(realpath "$WDH_REG/watchdog.lock")"
+lock_holders=""
+for m in $(hat_pgrp_members "$wd_pid"); do
+  for fdlink in /proc/"$m"/fd/*; do
+    [ "$(readlink "$fdlink" 2>/dev/null)" = "$lock_real" ] && lock_holders="$lock_holders $m"
+  done
+done
+if [ -z "$lock_holders" ]; then
+  pass "watchdog：主行程死後殘留的子行程都沒有持有鎖檔 fd"
+else
+  bad "watchdog：主行程死後這些子行程仍持有鎖檔 fd：$lock_holders"
+fi
+kill -TERM -- "-$wd_pid" 2>/dev/null || true
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "agent list" ]; then printf '{"result":{"agents":[]}}'; exit 0; fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-lockfd-restored
+rm -f "$WDH_REG/watchdog.pid"
+
 # ===== team-init.sh 既有 team 偵測、--archive、--recover 守衛 =====
 # report.sh 與 send-peer.sh 小節 export 的 worker 環境變數一路留到這
 # 裡；team-init.sh 看到 AGENT_TEAM_SELF／AGENT_TEAM_ROLE 會判定呼叫端是
@@ -8322,7 +8366,7 @@ if [ "$rc" -eq 0 ]; then pass "team-init --recover：看門狗停止後照常執
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=715
+HAT_EXPECTED_ASSERTIONS=717
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
