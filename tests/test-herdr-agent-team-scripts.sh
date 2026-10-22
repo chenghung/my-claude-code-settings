@@ -8017,12 +8017,82 @@ for ((i = 0; i < 50; i++)); do kill -0 "$holder" 2>/dev/null || break; sleep 0.1
 if hat_watchdog_alive_pid "$WDH_REG" >/dev/null; then bad "alive_pid：持鎖者結束後仍判為存活"; else pass "alive_pid：持鎖者結束後判為未存活"; fi
 rm -f "$WDH_REG/watchdog.pid" "$WDH_REG/holder.pid" "$WDH_REG/decoy.pid" "$WDH_REG/nonleader.pid"
 
+# ===== watchdog.sh 自我脫離啟動 =====
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "agent list" ]; then
+  printf '{"result":{"agents":[]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-detach
+
+# 呼叫本身要立即返回：子行程的 stdout/stderr 已導向檔案，命令替換在父
+# 行程結束時就讀到 EOF。
+t0="$(date +%s)"
+rc=0; out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/watchdog.sh" 2>&1)" || rc=$?
+elapsed=$(( $(date +%s) - t0 ))
+wd_pid="$(cat "$WDH_REG/watchdog.pid" 2>/dev/null || true)"
+[ -n "$wd_pid" ] && printf '%s\n' "$wd_pid" >> "$T/bg-pgids"
+if [ "$rc" -eq 0 ] && [ "$out" = "watchdog=started pid=$wd_pid" ]; then
+  pass "watchdog 啟動：以 0 結束並印出 watchdog=started pid=<PID>"
+else
+  bad "watchdog 啟動：rc=$rc out='$out' pid='$wd_pid'"
+fi
+if [ "$elapsed" -le 3 ]; then pass "watchdog 啟動：前景呼叫立即返回（${elapsed}s）"; else bad "watchdog 啟動：前景呼叫花了 ${elapsed}s"; fi
+if [ "$(hat_watchdog_alive_pid "$WDH_REG" || true)" = "$wd_pid" ]; then
+  pass "watchdog 啟動：子行程存活、持鎖且為 session leader"
+else
+  bad "watchdog 啟動：存活判讀沒有認出 pid=$wd_pid"
+fi
+
+rc=0; out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/watchdog.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 4 ] && [[ "$out" == *"$wd_pid"* ]]; then
+  pass "watchdog 啟動：已有存活實例時以 4 拒絕並帶出既有 PID"
+else
+  bad "watchdog 啟動：第二次啟動得到 rc=$rc out='$out'"
+fi
+if [ "$(cat "$WDH_REG/watchdog.pid")" = "$wd_pid" ]; then pass "watchdog 啟動：被拒絕的第二次啟動沒有動到 watchdog.pid"; else bad "watchdog 啟動：watchdog.pid 被改寫"; fi
+
+rc=0; AGENT_TEAM_HOME="$WDH_HOME" AGENT_TEAM_POLL_SECONDS=abc bash "$SCRIPTS/watchdog.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "watchdog 啟動：門檻不合法同步以 2 結束"; else bad "watchdog 啟動：門檻不合法得到 rc=$rc"; fi
+
+rc=0; AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] && [ "$(cat "$WDH_REG/watchdog.pid")" = "$wd_pid" ] \
+  && [ "$(hat_watchdog_alive_pid "$WDH_REG" || true)" = "$wd_pid" ]; then
+  pass "watchdog --once：長駐實例在跑時照常跑完一輪，不動 watchdog.pid"
+else
+  bad "watchdog --once：rc=$rc 或長駐實例受影響"
+fi
+
+rc=0; AGENT_TEAM_HOME="$WDH_HOME" HAT_WD_LOCK_FD=200 bash "$SCRIPTS/watchdog.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "watchdog：HAT_WD_LOCK_FD 不指向鎖檔時以 2 拒絕進入長駐迴圈"; else bad "watchdog：偽造 HAT_WD_LOCK_FD 得到 rc=$rc"; fi
+
+kill -TERM -- "-$wd_pid" 2>/dev/null || true
+for ((i = 0; i < 50; i++)); do hat_watchdog_alive_pid "$WDH_REG" >/dev/null || break; sleep 0.1; done
+if hat_watchdog_alive_pid "$WDH_REG" >/dev/null; then bad "watchdog：收掉長駐實例後仍判為存活"; else pass "watchdog：對 process group 送 SIGTERM 後判為未存活"; fi
+
+# --once 在沒有長駐實例的全新 registry 上不建立鎖檔與 PID 檔。
+WDO_HOME="$T/wd-once-home"
+mkdir -p "$WDO_HOME"
+( AGENT_TEAM_HOME="$WDO_HOME" hat_registry_init )
+WDO_REG="$(AGENT_TEAM_HOME="$WDO_HOME" hat_registry_root)"
+rc=0; AGENT_TEAM_HOME="$WDO_HOME" bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$WDO_REG/watchdog.lock" ] && [ ! -e "$WDO_REG/watchdog.pid" ]; then
+  pass "watchdog --once：不建立 watchdog.lock 與 watchdog.pid"
+else
+  bad "watchdog --once：rc=$rc，或建立了 watchdog.lock／watchdog.pid"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=683
+HAT_EXPECTED_ASSERTIONS=693
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
