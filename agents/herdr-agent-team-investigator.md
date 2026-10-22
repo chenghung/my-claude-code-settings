@@ -29,7 +29,7 @@ hooks:
 
 - **任何檔案寫入**：不得建立、修改或刪除任何檔案，只執行讀取與唯讀查詢
 - **對 worker 或 orchestrator 的任何輸出**：不得對任何 pane 送出指令、訊息或按鍵——不論是直接呼叫 `herdr`（`herdr agent prompt`、`herdr agent send-keys`、`herdr agent start`、`herdr agent rename`），還是呼叫這個 skill 裡任何一支會下行或代按的腳本（`instruct.sh`、`press-approval.sh`、`report.sh`、`send-peer.sh`、`grant-peer.sh`）。指名該按哪一顆鍵是本 subagent 的職責，實際按下去是 orchestrator 呼叫 `press-approval.sh` 的職責
-- **任何會關閉或改變資源狀態的操作**：不得執行 `herdr tab close`、`shutdown-worker.sh`，或任何會改變 git／gh 狀態的操作（commit、push、merge、建立或修改 issue 或 PR、留言）
+- **任何會關閉或改變資源狀態的操作**：不得執行 `herdr tab close`、`shutdown-worker.sh`、`shutdown-watchdog.sh`，或任何會改變 git／gh 狀態的操作（commit、push、merge、建立或修改 issue 或 PR、留言）
 - 自我檢測：這個指令執行後，任何 worker 或 orchestrator 收到的輸入、任何檔案系統狀態，或任何遠端資源的狀態，有沒有任一項因此改變？改變了就落在禁止範圍內，不論它是不是列在上面三類字面清單裡
 
 `tools` 欄位授權了完整的 `Bash`，上面三類禁止範圍堵不住所有的口子：`curl`、`wget` 這類任意網路呼叫可以把讀到的內容外送到任意端點，繞過 `Output to Main Agent` 的出口約束；對非目標 worker 或跨 workspace 的 `herdr` 查詢會把不相關的資料帶進本次調查。因此本 subagent 透過 `Bash` 能執行的指令，改以允許清單界定，清單外一律禁止：

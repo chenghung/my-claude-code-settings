@@ -116,7 +116,7 @@ flowchart TD
     s2 --> s3["set-goal.sh<br/>不帶 --confirmed"]
     s3 --> gate{"開工閘門<br/>停下來把四項原文交人類確認"}
     gate -->|"人類確認"| s5["set-goal.sh<br/>帶 --confirmed"]
-    s5 --> s6["背景 detach 啟動 watchdog.sh<br/>不帶 --once"]
+    s5 --> s6["啟動 watchdog.sh<br/>自己脫離 session"]
     s6 --> s7["依 briefing-template<br/>組啟動包"]
     s7 --> s8["逐個 launch-worker.sh"]
     s8 --> run
@@ -128,12 +128,13 @@ flowchart TD
     end
     run --> s9["done 回報<br/>核對外部證據"]
     s9 --> s10["shutdown-worker.sh"]
+    s10 --> s11["shutdown-watchdog.sh<br/>team 收工"]
 
     classDef kOrch fill:#bfdbfe,stroke:#1d4ed8,color:#000
     classDef kHuman fill:#fde68a,stroke:#b45309,color:#000
     classDef kScript fill:#e9d5ff,stroke:#7e22ce,color:#000
     classDef kWorker fill:#bbf7d0,stroke:#15803d,color:#000
-    class s1,s3,s5,s6,s8,s10 kScript
+    class s1,s3,s5,s6,s8,s10,s11 kScript
     class s2,s7,s9,r2,r4 kOrch
     class gate kHuman
     class r1 kWorker
@@ -143,6 +144,7 @@ flowchart TD
 - goal 四項的來源有三個：thin command 的預設、觸發時的引數、對話；晚給的贏。
 - 開工閘門是無條件的：不論素材看起來多明確，都要停下來交人類確認。
 - `watchdog.sh` 在 goal 確認之後就掛上，不必等第一個 worker 啟動。
+- team 收工時以 `shutdown-watchdog.sh` 停掉看門狗，它不會自己結束。
 
 ## 4. 用 thin command 把 skill 包裝成不同用途
 
@@ -681,8 +683,8 @@ sequenceDiagram
 
 操作注意事項：
 
-- 門檻值只在看門狗啟動時讀一次，改值要重啟；重啟前先確認舊實例已停，因為腳本沒有防多實例機制。
-- 中斷恢復重掛時要帶同一組環境變數，否則會靜默回到預設值。
+- 門檻值只在看門狗啟動時讀一次，改值要重啟：先 `shutdown-watchdog.sh`，再帶新的環境變數啟動 `watchdog.sh`。
+- 中斷恢復重新啟動時要帶同一組環境變數，否則會靜默回到預設值。
 - thin command 沒有欄位可以宣告這些門檻，目前只能在啟動看門狗的指令前帶環境變數。
 - 單一工具呼叫跑很久時，worker 的狀態是 `working`，不受自動推進與停滯偵測影響，不需要調這些參數。
 
@@ -759,13 +761,11 @@ flowchart LR
 
 ### 9.4 存活判讀與門檻
 
-看門狗必須背景 detach 啟動、不帶 `--once`。前景呼叫逾時被工具收掉時是靜默消失：自動推進、升級、停滯偵測、重試補投全部停止，且沒有任何錯誤訊息。
+看門狗用一般前景呼叫啟動、不帶參數：腳本自己以 `setsid` 脫離 session，長駐子行程撐得過 orchestrator 的 session 結束；herdr 或終端機關閉後它是否跟著結束沒有驗證過，可能繼續活著，收工一律用 `shutdown-watchdog.sh` 停。結束碼 `0` 已掛上、`2` 門檻不合法、`4` 已有存活實例（同一個 team 只會有一支）、`1` 子行程沒就緒。
 
-覆寫了任何門檻環境變數時，不合法的值會讓 `watchdog.sh` 以結束碼 2 立刻退出，背景啟動看起來與成功無異。背景啟動前，先用同一組環境變數在前景跑一次 `watchdog.sh --once`：值不合法會以結束碼 2 在 stderr 印出訊息，合法則正常跑完一輪。
-
-- 剛掛上時 `watchdog.log` 是空的，這是正常的。
-- 之後有新行代表它活著；但沒有新行不代表停了，因為升級、補投成功、停滯追蹤都不寫這個檔案。可以看 inbox 有沒有新的升級記錄，或 `team-status.sh` 的欄位有沒有變化。
-- 重掛前要確認沒有仍在跑的 watchdog，腳本沒有防多實例機制。
+- 存活看 `team-status.sh` 第一行的 `watchdog=alive|dead`。判讀依據是 `watchdog.pid` 指向的行程持有 `watchdog.lock` 的檔案描述符且為 session leader，不靠 log。
+- `watchdog.log` 剛掛上時是空的，這是正常的；升級、補投成功、停滯追蹤都不寫這個檔案。
+- `shutdown-watchdog.sh` 停掉整個 process group，跑到一半的那一輪不會在停止後繼續做完。
 
 門檻都可以用同名環境變數覆寫：
 
@@ -822,17 +822,17 @@ flowchart TD
 
 ## 11. 中斷恢復
 
-這張圖表達先分岔：只是名稱遺失，還是整個 session 重啟。兩者的處置不同，名稱遺失絕不重掛 watchdog。
+這張圖表達先分岔：只是名稱遺失，還是整個 session 重啟。兩者都先停看門狗、最後再啟動；名稱遺失時 context 還在，略過重建進度的第 2、4、5 步。
 
 ```mermaid
 flowchart TD
-    q{"發生了什麼"} -->|"只是名稱遺失<br/>tab label 出現 NAME LOST 警示前綴<br/>或 watchdog.log 出現<br/>alert reason=orchestrator_name_missing"| n1["只跑 team-init.sh --recover<br/>處置 pending-resend 行<br/>不重掛 watchdog"]
-    q -->|"session 重啟"| r1["1 team-init.sh --recover<br/>重新自我命名"]
+    q{"發生了什麼"} -->|"只是名稱遺失<br/>tab label 出現 NAME LOST 警示前綴<br/>或 watchdog.log 出現<br/>alert reason=orchestrator_name_missing"| n1["1 shutdown-watchdog.sh<br/>team-init.sh --recover<br/>3 處置 pending-resend 行<br/>6 啟動 watchdog.sh"]
+    q -->|"session 重啟"| r1["1 shutdown-watchdog.sh<br/>team-init.sh --recover 重新自我命名"]
     r1 --> r2["2 讀 registry<br/>重建 worker 與 stage 進度"]
     r2 --> r3["3 同一次 --recover 收回 held 與升級閂鎖<br/>印 pending-resend 行<br/>不要手動 instruct.sh 補送 會重複"]
     r3 --> r4["4 以外部權威重查<br/>issue PR 產物是否存在"]
     r4 --> r5["5 team-status.sh<br/>核對 tab 是否還活著"]
-    r5 --> r6["6 最後才重掛 watchdog<br/>先確認沒有舊實例"]
+    r5 --> r6["6 最後才啟動 watchdog.sh"]
 
     classDef kOrch fill:#bfdbfe,stroke:#1d4ed8,color:#000
     classDef kScript fill:#e9d5ff,stroke:#7e22ce,color:#000
@@ -840,7 +840,7 @@ flowchart TD
     class n1,r1,r3,r5 kScript
 ```
 
-名稱遺失的訊號是 tab label 出現 `🚨 ORCHESTRATOR NAME LOST:` 前綴，或 `watchdog.log` 出現 `alert reason=orchestrator_name_missing`。名稱遺失時 `--recover` 會清空升級閂鎖，仍在執行的 watchdog 會在下一輪重發所有仍成立的升級；收到後先對照目前的處置進度，不要重複派調查者。
+名稱遺失的訊號是 tab label 出現 `🚨 ORCHESTRATOR NAME LOST:` 前綴，或 `watchdog.log` 出現 `alert reason=orchestrator_name_missing`。名稱遺失時 `--recover` 會清空升級閂鎖，看門狗重新啟動後第一輪會重發所有仍成立的升級；收到後先對照目前的處置進度，不要重複派調查者。
 
 ## 12. registry 結構與速查
 
@@ -851,6 +851,9 @@ flowchart TB
     root["registry 根目錄<br/>.tmp/herdr-agent-team/WORKSPACE_ID"]
     root --> t["team.json<br/>goal orchestrator_name orchestrator_pane<br/>goal_confirmed thin_command_source 等"]
     root --> wl["watchdog.log"]
+    root --> wk["watchdog.lock"]
+    root --> wp["watchdog.pid"]
+    root --> wo["watchdog.out"]
     root --> w["workers"]
     root --> i["inbox"]
     root --> d["details"]
@@ -869,16 +872,16 @@ flowchart TB
     classDef kDisk fill:#e5e7eb,stroke:#4b5563,color:#000
     classDef kDir fill:#bfdbfe,stroke:#1d4ed8,color:#000
     class root,w,i,d,rp,b,pl,h kDir
-    class t,wl,w1,i1,d1,rp1,b1,pl1,h1 kDisk
+    class t,wl,wk,wp,wo,w1,i1,d1,rp1,b1,pl1,h1 kDisk
 ```
 
-七個子目錄為 `workers`、`inbox`、`details`、`replies`、`briefings`、`peer-log`、`handoff`；`watchdog.log` 與 `team.json` 在根目錄。圖中的 `NAME`、`SEQ`、`WORKER`、`FROM`、`TO` 是佔位詞。
+七個子目錄為 `workers`、`inbox`、`details`、`replies`、`briefings`、`peer-log`、`handoff`；`watchdog.log`、`watchdog.lock`、`watchdog.pid`、`watchdog.out` 與 `team.json` 在根目錄。圖中的 `NAME`、`SEQ`、`WORKER`、`FROM`、`TO` 是佔位詞。
 
 orchestrator 端腳本：
 
 | 腳本 | 用途 |
 | --- | --- |
-| `team-init.sh` | 自我命名、建立 registry；`--recover` 用於中斷恢復 |
+| `team-init.sh` | 自我命名、建立 registry；偵測既有 team；`--recover` 用於中斷恢復，`--archive` 歸檔已收工的舊 team |
 | `set-goal.sh` | 把 goal 四項寫進 `team.json`；`--confirmed` 設定開工閘門 |
 | `launch-worker.sh` | 啟動一個 worker 並等到它的 ack、完成對帳 |
 | `instruct.sh` | 下行任何指令、定案、goal 傳播；回覆 need-you 用 `--reply-to` |
@@ -886,9 +889,10 @@ orchestrator 端腳本：
 | `shutdown-worker.sh` | 關閉一個 worker，不可逆 |
 | `set-worker-field.sh` | 寫 `stage`、`completion_criteria`、`delivery_point`、`end_point` 四個欄位 |
 | `grant-peer.sh` | 授權（或 `--revoke` 撤銷）worker 之間的橫向聯繫 |
-| `team-status.sh` | 唯讀，逐行列出每個 worker 的狀態概況 |
+| `team-status.sh` | 唯讀，第一行是看門狗存活狀態，之後逐行列出每個 worker 的狀態概況 |
 | `fetch-detail.sh` | 印出某則回報細節檔的路徑，不印內容 |
-| `watchdog.sh` | 背景長駐的看門狗；`--once` 供人工巡檢一輪 |
+| `watchdog.sh` | 看門狗；不帶參數時自己脫離 session 長駐，`--once` 供人工巡檢一輪 |
+| `shutdown-watchdog.sh` | 停掉本 team 的看門狗（整個 process group） |
 
 worker 端腳本：
 
@@ -906,7 +910,7 @@ worker 端腳本：
 | 1 | 個別腳本自行產生的部分失敗或迴圈異常 |
 | 2 | 呼叫端用錯：缺必填參數、參數格式不對 |
 | 3 | 環境前提不成立：`HERDR_ENV` 不等於 `1` |
-| 4 | 守衛不通過（workspace 邊界、provider 白名單、開工閘門、關閉閘門、代按前的狀態重查、grant） |
+| 4 | 守衛不通過（workspace 邊界、provider 白名單、開工閘門、關閉閘門、代按前的狀態重查、grant、已有存活的看門狗、本 workspace 已有 team、`--recover` 時看門狗仍存活、`--archive` 遇到進行中的 team） |
 | 5 | registry 缺漏或內容不合法 |
 | 6 | herdr 拒絕 |
 | 7 | 握手未取得憑據（逾時或 `agent_prompt_stalled`），或代按之後仍是 `blocked` |

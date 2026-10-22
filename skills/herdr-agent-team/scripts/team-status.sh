@@ -5,8 +5,11 @@
 # 用法：team-status.sh
 #
 # 職責（規格 §5、Task 12）：唯讀，orchestrator 端事件層的狀態查詢入
-# 口。對本 workspace 已知的每個 worker（registry 的 workers/*.json）印
-# 出一行：
+# 口。第一行是本 team 看門狗的存活狀態：
+#   watchdog=alive pid=<PID>   或   watchdog=dead
+# 判讀見 lib/common.sh hat_watchdog_alive_pid；沒有任何 worker 時也照
+# 印，看門狗在第一個 worker 啟動前就掛上。之後對本 workspace 已知的每
+# 個 worker（registry 的 workers/*.json）印出一行：
 #   worker=<名稱> stage=<關卡> status=<herdr 狀態> seq=<stamp> \
 #     held=<true|false> pending_resend=<筆數> unprocessed=<筆數>
 #
@@ -102,6 +105,12 @@ hat_status_unprocessed_count() {
 }
 
 registry_root="$(hat_registry_root)"
+
+if wd_pid="$(hat_watchdog_alive_pid "$registry_root")"; then
+  printf 'watchdog=alive pid=%s\n' "$wd_pid"
+else
+  printf 'watchdog=dead\n'
+fi
 
 agents_json="$(hat_herdr agent list)"
 whitelisted="$(hat_whitelist_agents "$agents_json")"

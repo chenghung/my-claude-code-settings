@@ -203,6 +203,12 @@ assert_silent() {
   [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")" == *"shutdown-worker.sh"* ]]
 }
 
+@test "45: shutdown-watchdog.sh is denied" {
+  run run_hook_raw "$(build_investigator_payload "bash /abs/path/shutdown-watchdog.sh")"
+  assert_deny
+  [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")" == *"shutdown-watchdog.sh"* ]]
+}
+
 @test "20: send-peer.sh is denied" {
   run run_hook_raw "$(build_investigator_payload "/abs/path/send-peer.sh --to w3n-backend --text hi")"
   assert_deny

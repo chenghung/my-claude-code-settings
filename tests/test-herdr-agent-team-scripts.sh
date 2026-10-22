@@ -28,6 +28,15 @@ _hat_suite_on_exit() {
     printf 'FAIL 套件提早終止：只跑了 %s 條斷言就以結束碼 %s 離開，後面的斷言一條都沒跑（不要把「0 FAIL」讀成全綠）\n' \
       "$assert_count" "$rc"
   fi
+  # 看門狗相關測試啟動的背景行程（多半是 session leader）：先試整個
+  # process group，不是 group leader 的再退回單一 PID，不讓套件提早終止
+  # 時留下孤兒行程。
+  if [ -f "$T/bg-pgids" ]; then
+    while IFS= read -r _bg; do
+      [ -n "$_bg" ] || continue
+      kill -TERM -- "-$_bg" 2>/dev/null || kill -TERM "$_bg" 2>/dev/null || true
+    done < "$T/bg-pgids"
+  fi
   rm -rf "$T"
 }
 trap '_hat_suite_on_exit' EXIT
@@ -47,7 +56,9 @@ mkdir -p "$STUB_BIN"
 # set-goal.sh 替 goal_history 每筆紀錄蓋時間戳，同樣以受限 PATH 查證過
 # 解析到 /usr/bin；Task 11 新增 awk 一項，用於 wait-peer.sh 從
 # hat_whitelist_agents 的 TSV 輸出篩出目標 agent 那一行，同樣以受限
-# PATH（`env -i PATH=/usr/bin:/bin`）查證過解析到 /usr/bin/awk）。整份
+# PATH（`env -i PATH=/usr/bin:/bin`）查證過解析到 /usr/bin/awk；鎖 fd
+# 不變量測試新增 realpath／seq／readlink 三項，同法查證過皆解析到
+# /usr/bin）。整份
 # 套件的 PATH 一律是「樁目錄＋
 # /usr/bin:/bin」，真實 herdr 所在的 ~/.local/bin 從頭到尾不在 PATH
 # 上，忘了建樁的段落只會得到 command-not-found 而失敗，不會靜默地改打
@@ -459,6 +470,12 @@ case "$out" in
   *) bad "registry：hat_worker_list 輸出不如預期：$out" ;;
 esac
 
+# ---- 移開前面小節留下的 worker 記錄（下面放回）：team-init.sh 不帶旗標
+#      時會偵測既有 team，registry 裡有任何 worker 記錄就判為 running、
+#      以 4 結束；以下幾個小節驗證的是沒有進行中 team 時的初始化行為 ----
+mkdir -p "$T/workers-aside-1"
+find "$REG/workers" -maxdepth 1 -type f -name '*.json' -exec mv {} "$T/workers-aside-1/" \;
+
 # ===== team-init.sh：.tmp 建立規則（本任務同時是 hat_project_tmp／
 #       hat_registry_root 的行為驗證，Task 1 只實作、未測）=====
 # 沿用上面「registry 讀寫」小節已匯出的 AGENT_TEAM_HOME=$T/teamhome、
@@ -591,6 +608,9 @@ else
   pass "team-init：AGENT_TEAM_ROLE 觸發守衛時，沒有任何 agent get／agent rename 呼叫出現在樁的呼叫紀錄裡"
 fi
 
+# ---- 放回上面移開的 worker 記錄 ----
+find "$T/workers-aside-1" -maxdepth 1 -type f -name '*.json' -exec mv {} "$REG/workers/" \;
+
 # ===== team-init.sh --recover：收回殘留持有旗標＋回報待補送清單 =====
 mkdir -p "$REG/workers"
 printf '{"held":true,"pending_resend":[{"text":"x"}]}' > "$REG/workers/w3n-backend.json"
@@ -670,7 +690,7 @@ fi
 if [ "$(jq -r '.escalation_active' "$REG/workers/w3n-escalationtest.json")" = "null" ]; then
   pass "recover：升級閂鎖 .escalation_active 收回成 null"
 else
-  bad "recover：升級閂鎖仍卡著，重掛看門狗後條件仍成立的 worker 最長要再等一個重提間隔才會被提醒"
+  bad "recover：升級閂鎖仍卡著，重新啟動看門狗後條件仍成立的 worker 最長要再等一個重提間隔才會被提醒"
 fi
 
 # ---- 邊界：沒有升級閂鎖的 worker 不受影響（無動作即安全）----
@@ -681,6 +701,12 @@ if [ "$rc" -eq 0 ]; then
 else
   bad "recover：得到 rc=$rc"
 fi
+
+# ---- 移開前面小節留下的 worker 記錄（下面放回）：team-init.sh 不帶旗標
+#      時會偵測既有 team，registry 裡有任何 worker 記錄就判為 running、
+#      以 4 結束；以下幾個小節驗證的是沒有進行中 team 時的初始化行為 ----
+mkdir -p "$T/workers-aside-2"
+find "$REG/workers" -maxdepth 1 -type f -name '*.json' -exec mv {} "$T/workers-aside-2/" \;
 
 # ===== team-init.sh：記錄 orchestrator 的 tab 與原始 label（線上故障
 #      修正新增，規格「設計項目三」的前置資料）=====
@@ -822,6 +848,9 @@ fi
 # 補回下面「--recover 把 tab label 還原成記錄值」等既有測試預期的值，
 # 不讓這裡驗證補值用的臨時 label 對後續測試留下副作用。
 jq '.orchestrator_tab_label = "[1] Orchestrator"' "$REG/team.json" > "$T/team-tab-label-backfill-restore.json" && mv "$T/team-tab-label-backfill-restore.json" "$REG/team.json"
+
+# ---- 放回上面移開的 worker 記錄 ----
+find "$T/workers-aside-2" -maxdepth 1 -type f -name '*.json' -exec mv {} "$REG/workers/" \;
 
 # ===== team-init.sh --recover：把 tab label 還原成記錄值（規格「設計
 #      項目三」指定的還原時機——警報由 report.sh 寫上去、不自動還原，
@@ -7941,12 +7970,444 @@ else
   bad "provider-drivers.md：標題沒有反映本文實際涵蓋的內容"
 fi
 
+# ===== 看門狗存活判讀（hat_watchdog_alive_pid）=====
+# 本節以後所有看門狗自我脫離相關測試共用一個隔離的 team home，不碰
+# $REG：長駐看門狗每輪都會寫 registry，混進 $REG 會汙染其他小節依賴精
+# 確筆數的斷言。
+
+# hat_wait_file <path>：最多等 5 秒到檔案存在且非空。
+hat_wait_file() {
+  local f="$1" i
+  for ((i = 0; i < 50; i++)); do
+    [ -s "$f" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+WDH_HOME="$T/wd-detach-home"
+mkdir -p "$WDH_HOME"
+( AGENT_TEAM_HOME="$WDH_HOME" hat_registry_init )
+WDH_REG="$(AGENT_TEAM_HOME="$WDH_HOME" hat_registry_root)"
+: > "$WDH_REG/watchdog.lock"
+
+# 真持鎖者：setsid 讓它成為 session leader，exec 保留 fd 9 指向鎖檔。
+# shellcheck disable=SC2016 # 單引號是刻意的：$$ 與 $1 要由子 bash 展開，不是由本檔展開
+setsid bash -c 'exec 9>"$1/watchdog.lock"; flock -n 9; echo $$ > "$1/holder.pid"; exec sleep 600' \
+  _ "$WDH_REG" </dev/null >/dev/null 2>&1 &
+hat_wait_file "$WDH_REG/holder.pid" || bad "alive_pid：持鎖者沒有啟動"
+holder="$(cat "$WDH_REG/holder.pid")"
+printf '%s\n' "$holder" >> "$T/bg-pgids"
+
+# 冒牌：同樣是 session leader，但沒有鎖檔 fd。
+# shellcheck disable=SC2016 # 單引號是刻意的：$$ 與 $1 要由子 bash 展開，不是由本檔展開
+setsid bash -c 'echo $$ > "$1/decoy.pid"; exec sleep 600' _ "$WDH_REG" </dev/null >/dev/null 2>&1 &
+hat_wait_file "$WDH_REG/decoy.pid" || bad "alive_pid：冒牌行程沒有啟動"
+decoy="$(cat "$WDH_REG/decoy.pid")"
+printf '%s\n' "$decoy" >> "$T/bg-pgids"
+
+# 持鎖但不是 session leader：沒有 setsid。
+bash -c 'exec 9>"$1/watchdog.lock"; echo $$ > "$1/nonleader.pid"; exec sleep 600' \
+  _ "$WDH_REG" </dev/null >/dev/null 2>&1 &
+hat_wait_file "$WDH_REG/nonleader.pid" || bad "alive_pid：非 leader 行程沒有啟動"
+nonleader="$(cat "$WDH_REG/nonleader.pid")"
+printf '%s\n' "$nonleader" >> "$T/bg-pgids"
+
+rm -f "$WDH_REG/watchdog.pid"
+if hat_watchdog_alive_pid "$WDH_REG" >/dev/null; then bad "alive_pid：沒有 watchdog.pid 卻判為存活"; else pass "alive_pid：沒有 watchdog.pid 判為未存活"; fi
+
+printf 'not-a-pid\n' > "$WDH_REG/watchdog.pid"
+if hat_watchdog_alive_pid "$WDH_REG" >/dev/null; then bad "alive_pid：PID 檔內容不是數字卻判為存活"; else pass "alive_pid：PID 檔內容不是數字判為未存活"; fi
+
+printf '%s\n' "$holder" > "$WDH_REG/watchdog.pid"
+out="$(hat_watchdog_alive_pid "$WDH_REG")" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "$holder" ]; then pass "alive_pid：持鎖的 session leader 判為存活並印出 PID"; else bad "alive_pid：持鎖者得到 rc=$rc out='$out'"; fi
+
+printf '%s\n' "$decoy" > "$WDH_REG/watchdog.pid"
+if hat_watchdog_alive_pid "$WDH_REG" >/dev/null; then bad "alive_pid：沒持鎖檔 fd 的 session leader 被判為存活"; else pass "alive_pid：沒持鎖檔 fd 的 session leader 判為未存活"; fi
+
+printf '%s\n' "$nonleader" > "$WDH_REG/watchdog.pid"
+if hat_watchdog_alive_pid "$WDH_REG" >/dev/null; then bad "alive_pid：持鎖檔 fd 但不是 session leader 被判為存活"; else pass "alive_pid：不是 session leader 判為未存活"; fi
+
+kill -TERM -- "-$holder" 2>/dev/null || true
+kill -TERM -- "-$decoy" 2>/dev/null || true
+kill -TERM "$nonleader" 2>/dev/null || true
+printf '%s\n' "$holder" > "$WDH_REG/watchdog.pid"
+for ((i = 0; i < 50; i++)); do kill -0 "$holder" 2>/dev/null || break; sleep 0.1; done
+if hat_watchdog_alive_pid "$WDH_REG" >/dev/null; then bad "alive_pid：持鎖者結束後仍判為存活"; else pass "alive_pid：持鎖者結束後判為未存活"; fi
+rm -f "$WDH_REG/watchdog.pid" "$WDH_REG/holder.pid" "$WDH_REG/decoy.pid" "$WDH_REG/nonleader.pid"
+
+# ===== watchdog.sh 自我脫離啟動 =====
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "agent list" ]; then
+  printf '{"result":{"agents":[]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-detach
+
+# 呼叫本身要立即返回：子行程的 stdout/stderr 已導向檔案，命令替換在父
+# 行程結束時就讀到 EOF。
+t0="$(date +%s)"
+rc=0; out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/watchdog.sh" 2>&1)" || rc=$?
+elapsed=$(( $(date +%s) - t0 ))
+wd_pid="$(cat "$WDH_REG/watchdog.pid" 2>/dev/null || true)"
+[ -n "$wd_pid" ] && printf '%s\n' "$wd_pid" >> "$T/bg-pgids"
+if [ "$rc" -eq 0 ] && [ "$out" = "watchdog=started pid=$wd_pid" ]; then
+  pass "watchdog 啟動：以 0 結束並印出 watchdog=started pid=<PID>"
+else
+  bad "watchdog 啟動：rc=$rc out='$out' pid='$wd_pid'"
+fi
+if [ "$elapsed" -le 3 ]; then pass "watchdog 啟動：前景呼叫立即返回（${elapsed}s）"; else bad "watchdog 啟動：前景呼叫花了 ${elapsed}s"; fi
+if [ "$(hat_watchdog_alive_pid "$WDH_REG" || true)" = "$wd_pid" ]; then
+  pass "watchdog 啟動：子行程存活、持鎖且為 session leader"
+else
+  bad "watchdog 啟動：存活判讀沒有認出 pid=$wd_pid"
+fi
+
+rc=0; out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/watchdog.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 4 ] && [[ "$out" == *"$wd_pid"* ]]; then
+  pass "watchdog 啟動：已有存活實例時以 4 拒絕並帶出既有 PID"
+else
+  bad "watchdog 啟動：第二次啟動得到 rc=$rc out='$out'"
+fi
+if [ "$(cat "$WDH_REG/watchdog.pid")" = "$wd_pid" ]; then pass "watchdog 啟動：被拒絕的第二次啟動沒有動到 watchdog.pid"; else bad "watchdog 啟動：watchdog.pid 被改寫"; fi
+
+rc=0; AGENT_TEAM_HOME="$WDH_HOME" AGENT_TEAM_POLL_SECONDS=abc bash "$SCRIPTS/watchdog.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "watchdog 啟動：門檻不合法同步以 2 結束"; else bad "watchdog 啟動：門檻不合法得到 rc=$rc"; fi
+
+rc=0; AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] && [ "$(cat "$WDH_REG/watchdog.pid")" = "$wd_pid" ] \
+  && [ "$(hat_watchdog_alive_pid "$WDH_REG" || true)" = "$wd_pid" ]; then
+  pass "watchdog --once：長駐實例在跑時照常跑完一輪，不動 watchdog.pid"
+else
+  bad "watchdog --once：rc=$rc 或長駐實例受影響"
+fi
+
+rc=0; AGENT_TEAM_HOME="$WDH_HOME" HAT_WD_LOCK_FD=200 bash "$SCRIPTS/watchdog.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "watchdog：HAT_WD_LOCK_FD 不指向鎖檔時以 2 拒絕進入長駐迴圈"; else bad "watchdog：偽造 HAT_WD_LOCK_FD 得到 rc=$rc"; fi
+
+kill -TERM -- "-$wd_pid" 2>/dev/null || true
+for ((i = 0; i < 50; i++)); do hat_watchdog_alive_pid "$WDH_REG" >/dev/null || break; sleep 0.1; done
+if hat_watchdog_alive_pid "$WDH_REG" >/dev/null; then bad "watchdog：收掉長駐實例後仍判為存活"; else pass "watchdog：對 process group 送 SIGTERM 後判為未存活"; fi
+
+# --once 在沒有長駐實例的全新 registry 上不建立鎖檔與 PID 檔。
+WDO_HOME="$T/wd-once-home"
+mkdir -p "$WDO_HOME"
+( AGENT_TEAM_HOME="$WDO_HOME" hat_registry_init )
+WDO_REG="$(AGENT_TEAM_HOME="$WDO_HOME" hat_registry_root)"
+rc=0; AGENT_TEAM_HOME="$WDO_HOME" bash "$SCRIPTS/watchdog.sh" --once >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$WDO_REG/watchdog.lock" ] && [ ! -e "$WDO_REG/watchdog.pid" ]; then
+  pass "watchdog --once：不建立 watchdog.lock 與 watchdog.pid"
+else
+  bad "watchdog --once：rc=$rc，或建立了 watchdog.lock／watchdog.pid"
+fi
+
+# ===== team-status.sh 看門狗行與 shutdown-watchdog.sh =====
+# 樁：agent list 先寫標記再睡 30 秒，讓「關閉時有一輪正在跑」可以被製造
+# 出來；其餘呼叫照常回空結果。
+WD_INFLIGHT="$T/wd-inflight-marker"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+if [ "\$1 \$2" = "agent list" ]; then
+  printf 'inflight\n' > "$WD_INFLIGHT"
+  sleep 30
+  printf '{"result":{"agents":[]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-shutdown
+
+# hat_pgrp_members <pgid>：印出目前 process group 為 <pgid> 的所有 PID。
+hat_pgrp_members() {
+  local pg="$1" f stat_line rest pgrp
+  for f in /proc/[0-9]*/stat; do
+    stat_line="$(cat "$f" 2>/dev/null)" || continue
+    rest="${stat_line##*) }"
+    IFS=' ' read -r _ _ pgrp _ <<< "$rest"
+    if [ "$pgrp" = "$pg" ]; then
+      f="${f#/proc/}"
+      printf '%s\n' "${f%/stat}"
+    fi
+  done
+}
+
+rm -f "$WD_INFLIGHT"
+rc=0; AGENT_TEAM_HOME="$WDH_HOME" AGENT_TEAM_POLL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" >/dev/null 2>&1 || rc=$?
+wd_pid="$(cat "$WDH_REG/watchdog.pid" 2>/dev/null || true)"
+[ -n "$wd_pid" ] && printf '%s\n' "$wd_pid" >> "$T/bg-pgids"
+[ "$rc" -eq 0 ] || bad "shutdown 前置：watchdog.sh 啟動得到 rc=$rc"
+
+# team-status 呼叫 agent list 也會碰到睡 30 秒的樁；改用不睡的樁跑
+# team-status，再換回來。
+cp "$STUB_BIN/herdr" "$T/herdr-sleepy"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "agent list" ]; then printf '{"result":{"agents":[]}}'; exit 0; fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-status-alive
+out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/team-status.sh" 2>/dev/null)"
+if [ "$(printf '%s\n' "$out" | head -n 1)" = "watchdog=alive pid=$wd_pid" ]; then
+  pass "status：第一行是 watchdog=alive pid=<PID>（沒有 worker 時也印）"
+else
+  bad "status：第一行是 '$(printf '%s\n' "$out" | head -n 1)'"
+fi
+cp "$T/herdr-sleepy" "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-shutdown-sleepy
+
+hat_wait_file "$WD_INFLIGHT" || bad "shutdown 前置：等不到一輪正在跑的 agent list"
+rc=0; out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "watchdog=stopped pid=$wd_pid" ]; then
+  pass "shutdown：一輪正在跑時以 0 結束並印出 watchdog=stopped pid=<PID>"
+else
+  bad "shutdown：rc=$rc out='$out'"
+fi
+sleep 0.5
+left="$(hat_pgrp_members "$wd_pid")"
+if [ -z "$left" ]; then pass "shutdown：整個 process group 都已結束（跑到一半的那一輪沒有變孤兒）"; else bad "shutdown：process group 還有殘留 PID：$left"; fi
+if flock -n "$WDH_REG/watchdog.lock" true; then pass "shutdown：鎖已釋放"; else bad "shutdown：鎖仍被佔住"; fi
+
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "agent list" ]; then printf '{"result":{"agents":[]}}'; exit 0; fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-status-dead
+out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/team-status.sh" 2>/dev/null)"
+if [ "$(printf '%s\n' "$out" | head -n 1)" = "watchdog=dead" ]; then pass "status：停止後第一行是 watchdog=dead"; else bad "status：停止後第一行是 '$(printf '%s\n' "$out" | head -n 1)'"; fi
+
+rc=0; out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "watchdog=not-running" ]; then pass "shutdown：沒有存活實例時印 watchdog=not-running 並以 0 結束"; else bad "shutdown：未存活時得到 rc=$rc out='$out'"; fi
+
+# shellcheck disable=SC2016  # $$ 要由子 shell 展開
+setsid bash -c 'echo $$ > "$1/decoy.pid"; exec sleep 600' _ "$WDH_REG" </dev/null >/dev/null 2>&1 &
+hat_wait_file "$WDH_REG/decoy.pid" || bad "shutdown：冒牌行程沒有啟動"
+decoy="$(cat "$WDH_REG/decoy.pid")"
+printf '%s\n' "$decoy" >> "$T/bg-pgids"
+printf '%s\n' "$decoy" > "$WDH_REG/watchdog.pid"
+rc=0; out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "watchdog=not-running" ] && kill -0 "$decoy" 2>/dev/null; then
+  pass "shutdown：watchdog.pid 指向沒持鎖的冒牌行程時判為未存活，且不殺它"
+else
+  bad "shutdown：冒牌情境 rc=$rc out='$out'，冒牌是否存活：$(kill -0 "$decoy" 2>/dev/null && echo 是 || echo 否)"
+fi
+kill -TERM -- "-$decoy" 2>/dev/null || true
+rm -f "$WDH_REG/watchdog.pid" "$WDH_REG/decoy.pid"
+
+rc=0; AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" --bogus >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "shutdown：帶參數以 2 結束"; else bad "shutdown：帶參數得到 rc=$rc"; fi
+
+# 鎖 fd 不變量：只有看門狗主行程持有鎖 fd，每輪子殼與迴圈 sleep 都關閉它。
+# 上面的 shutdown 測試殺整個 group，拿掉 `{HAT_WD_LOCK_FD}>&-` 也會過；
+# 這裡只殺主行程。本塊殺的時候主行程正在等每輪子殼，只釘住每輪子殼那
+# 一半；迴圈 sleep 那一半由下一塊釘住。
+cp "$T/herdr-sleepy" "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-lockfd-sleepy
+rm -f "$WD_INFLIGHT"
+rc=0; AGENT_TEAM_HOME="$WDH_HOME" AGENT_TEAM_POLL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" >/dev/null 2>&1 || rc=$?
+wd_pid="$(cat "$WDH_REG/watchdog.pid" 2>/dev/null || true)"
+[ -n "$wd_pid" ] && printf '%s\n' "$wd_pid" >> "$T/bg-pgids"
+[ "$rc" -eq 0 ] || bad "鎖 fd 前置：watchdog.sh 啟動得到 rc=$rc"
+hat_wait_file "$WD_INFLIGHT" || bad "鎖 fd 前置：等不到一輪正在跑的 agent list"
+# 只殺主行程，不殺 group：讓跑到一半的那一輪與 sleep 成為孤兒。
+kill -TERM "$wd_pid" 2>/dev/null || true
+for _ in $(seq 1 50); do kill -0 "$wd_pid" 2>/dev/null || break; sleep 0.1; done
+if flock -n "$WDH_REG/watchdog.lock" true; then
+  pass "watchdog：主行程在等每輪子殼時被殺，鎖立即釋放（每輪子殼不持有鎖 fd）"
+else
+  bad "watchdog：主行程在等每輪子殼時被殺後鎖仍被佔住（每輪子殼繼承了鎖 fd）"
+fi
+lock_real="$(realpath "$WDH_REG/watchdog.lock")"
+lock_holders=""
+for m in $(hat_pgrp_members "$wd_pid"); do
+  for fdlink in /proc/"$m"/fd/*; do
+    [ "$(readlink "$fdlink" 2>/dev/null)" = "$lock_real" ] && lock_holders="$lock_holders $m"
+  done
+done
+if [ -z "$lock_holders" ]; then
+  pass "watchdog：主行程死後殘留的子行程都沒有持有鎖檔 fd"
+else
+  bad "watchdog：主行程死後這些子行程仍持有鎖檔 fd：$lock_holders"
+fi
+kill -TERM -- "-$wd_pid" 2>/dev/null || true
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "agent list" ]; then printf '{"result":{"agents":[]}}'; exit 0; fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-lockfd-restored
+rm -f "$WDH_REG/watchdog.pid"
+
+# 鎖 fd 不變量的迴圈 sleep 那一半：樁立刻回應並寫標記，輪詢間隔拉到
+# 30 秒，標記出現後再等 1 秒，主行程就在迴圈的 sleep 裡；這時只殺主行程。
+WD_SLEEPLOOP="$T/wd-sleeploop-marker"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+if [ "\$1 \$2" = "agent list" ]; then
+  printf 'ran\n' > "$WD_SLEEPLOOP"
+  printf '{"result":{"agents":[]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-lockfd-sleeploop
+rm -f "$WD_SLEEPLOOP"
+rc=0; AGENT_TEAM_HOME="$WDH_HOME" AGENT_TEAM_POLL_SECONDS=30 bash "$SCRIPTS/watchdog.sh" >/dev/null 2>&1 || rc=$?
+wd_pid="$(cat "$WDH_REG/watchdog.pid" 2>/dev/null || true)"
+[ -n "$wd_pid" ] && printf '%s\n' "$wd_pid" >> "$T/bg-pgids"
+[ "$rc" -eq 0 ] || bad "迴圈 sleep 前置：watchdog.sh 啟動得到 rc=$rc"
+hat_wait_file "$WD_SLEEPLOOP" || bad "迴圈 sleep 前置：等不到第一輪的 agent list"
+sleep 1
+kill -TERM "$wd_pid" 2>/dev/null || true
+for _ in $(seq 1 50); do kill -0 "$wd_pid" 2>/dev/null || break; sleep 0.1; done
+if flock -n "$WDH_REG/watchdog.lock" true; then
+  pass "watchdog：主行程在迴圈 sleep 中被殺，鎖立即釋放（sleep 不持有鎖 fd）"
+else
+  bad "watchdog：主行程在迴圈 sleep 中被殺後鎖仍被佔住（sleep 繼承了鎖 fd）"
+fi
+kill -TERM -- "-$wd_pid" 2>/dev/null || true
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "agent list" ]; then printf '{"result":{"agents":[]}}'; exit 0; fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-lockfd-sleeploop-restored
+rm -f "$WDH_REG/watchdog.pid"
+
+# ===== team-init.sh 既有 team 偵測、--archive、--recover 守衛 =====
+# report.sh 與 send-peer.sh 小節 export 的 worker 環境變數一路留到這
+# 裡；team-init.sh 看到 AGENT_TEAM_SELF／AGENT_TEAM_ROLE 會判定呼叫端是
+# worker 而以 9 拒絕。本節模擬 orchestrator，先清掉這四個變數。
+unset AGENT_TEAM_SELF AGENT_TEAM_ROLE AGENT_TEAM_STATE_DIR AGENT_TEAM_ORCHESTRATOR
+TI_HOME="$T/ti-detect-home"
+mkdir -p "$TI_HOME"
+TI_REG="$(AGENT_TEAM_HOME="$TI_HOME" hat_registry_root)"
+TI_LOG="$T/herdr-call-log-ti-detect"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TI_LOG"
+if [ "\$1 \$2" = "agent list" ]; then printf '{"result":{"agents":[]}}'; exit 0; fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" team-init-detect
+
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "team-init 偵測：沒有既有 team 時照常初始化"; else bad "team-init 偵測：全新 registry 得到 rc=$rc"; fi
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "team-init 偵測：goal 未確認且沒有 worker 時重跑照常（state=none）"; else bad "team-init 偵測：state=none 重跑得到 rc=$rc"; fi
+rm -rf "$TI_REG/workers"
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] && [ -d "$TI_REG/workers" ]; then
+  pass "team-init 偵測：registry 缺 workers/ 子目錄時照常初始化並補建"
+else
+  bad "team-init 偵測：缺 workers/ 時得到 rc=$rc"
+fi
+
+# running（worker 記錄）
+printf '{"pane_id":"w3N:p9"}' > "$TI_REG/workers/w3n-x.json"
+before="$(sha256sum "$TI_REG/team.json")"
+: > "$TI_LOG"
+rc=0; out="$(AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 4 ] && [ "$out" = "existing-team registry=$TI_REG state=running workers=1 watchdog=dead" ]; then
+  pass "team-init 偵測：有 worker 記錄時印 existing-team state=running 並以 4 結束"
+else
+  bad "team-init 偵測：running 得到 rc=$rc out='$out'"
+fi
+if [ ! -s "$TI_LOG" ] && [ "$(sha256sum "$TI_REG/team.json")" = "$before" ]; then
+  pass "team-init 偵測：偵測到既有 team 時不呼叫 herdr、不改 team.json"
+else
+  bad "team-init 偵測：偵測時呼叫了 herdr 或改了 team.json（herdr 呼叫：$(tr '\n' ';' < "$TI_LOG")）"
+fi
+
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" --archive >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ] && [ -d "$TI_REG" ] && [ -z "$(find "$(dirname "$TI_REG")" -maxdepth 1 -name "$(basename "$TI_REG").archived-*")" ]; then
+  pass "team-init --archive：state=running 時以 4 拒絕，不搬動 registry"
+else
+  bad "team-init --archive：running 得到 rc=$rc 或 registry 被搬動"
+fi
+
+# goal 已確認、還沒派過任何 worker：仍是進行中，不是已收工
+rm -f "$TI_REG/workers/w3n-x.json"
+jq '.goal_confirmed = true' "$TI_REG/team.json" > "$T/ti.json" && mv "$T/ti.json" "$TI_REG/team.json"
+rc=0; out="$(AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 4 ] && [ "$out" = "existing-team registry=$TI_REG state=running workers=0 watchdog=dead" ]; then
+  pass "team-init 偵測：goal 已確認但 briefings/ 沒有啟動包副本時判為 state=running"
+else
+  bad "team-init 偵測：已確認未派工得到 rc=$rc out='$out'"
+fi
+
+# finished：曾經派過 worker（briefings/ 留有啟動包副本）、都已關閉
+printf 'briefing\n' > "$TI_REG/briefings/w3n-x.md"
+rc=0; out="$(AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 4 ] && [ "$out" = "existing-team registry=$TI_REG state=finished workers=0 watchdog=dead" ]; then
+  pass "team-init 偵測：goal 已確認、曾派過 worker、目前沒有 worker、看門狗未存活時印 state=finished 並以 4 結束"
+else
+  bad "team-init 偵測：finished 得到 rc=$rc out='$out'"
+fi
+
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" --archive --recover >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "team-init：--archive 與 --recover 同時給以 2 結束"; else bad "team-init：兩個旗標同時給得到 rc=$rc"; fi
+
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" --archive >/dev/null 2>&1 || rc=$?
+archived="$(find "$(dirname "$TI_REG")" -maxdepth 1 -name "$(basename "$TI_REG").archived-*" | head -n 1)"
+if [ "$rc" -eq 0 ] && [ -n "$archived" ] && [ "$(jq -r '.goal_confirmed' "$archived/team.json")" = "true" ]; then
+  pass "team-init --archive：state=finished 時把舊 registry 改名歸檔"
+else
+  bad "team-init --archive：finished 得到 rc=$rc archived='$archived'"
+fi
+if [ "$(jq -r '.goal_confirmed // "absent"' "$TI_REG/team.json")" = "absent" ] && [ -d "$TI_REG/workers" ]; then
+  pass "team-init --archive：歸檔後照常初始化出全新 registry（沒有沿用舊的 goal_confirmed）"
+else
+  bad "team-init --archive：新 registry 的 goal_confirmed=$(jq -r '.goal_confirmed' "$TI_REG/team.json" 2>/dev/null)"
+fi
+
+# running（看門狗存活）與 --recover 守衛
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/watchdog.sh" >/dev/null 2>&1 || rc=$?
+ti_wd="$(cat "$TI_REG/watchdog.pid" 2>/dev/null || true)"
+[ -n "$ti_wd" ] && printf '%s\n' "$ti_wd" >> "$T/bg-pgids"
+[ "$rc" -eq 0 ] || bad "team-init 偵測前置：watchdog.sh 啟動得到 rc=$rc"
+rc=0; out="$(AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 4 ] && [ "$out" = "existing-team registry=$TI_REG state=running workers=0 watchdog=alive" ]; then
+  pass "team-init 偵測：看門狗存活時判為 state=running"
+else
+  bad "team-init 偵測：看門狗存活時得到 rc=$rc out='$out'"
+fi
+rc=0; out="$(AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" --recover 2>&1)" || rc=$?
+if [ "$rc" -eq 4 ] && [[ "$out" == *shutdown-watchdog.sh* ]]; then
+  pass "team-init --recover：看門狗存活時以 4 拒絕並指示先跑 shutdown-watchdog.sh"
+else
+  bad "team-init --recover：看門狗存活時得到 rc=$rc out='$out'"
+fi
+AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" >/dev/null 2>&1 || true
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" --recover >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "team-init --recover：看門狗停止後照常執行"; else bad "team-init --recover：看門狗停止後得到 rc=$rc"; fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=677
+HAT_EXPECTED_ASSERTIONS=718
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

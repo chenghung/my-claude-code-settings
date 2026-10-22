@@ -313,16 +313,18 @@ hat_whitelist_agents() {
 # .orchestrator_tab_label 額外的例外是 team-init.sh --recover——目前
 # 這個 tab 的 label 與這裡記錄的值不同時，把它改回記錄值；警報本身
 # 由 report.sh 用 `herdr tab rename` 寫上去、不自動還原，真正的還原
-# 時機是人回來跑 --recover 這一刻（規格「設計項目三」）。跟
-# .held／.escalation_active 已有的先例一樣，中斷恢復當下不存在兩個寫
-# 入端同時活著互相覆蓋的競態。
+# 時機是人回來跑 --recover 這一刻（規格「設計項目三」）。這個欄位的
+# 兩個寫入點都在 team-init.sh 裡，由現任 orchestrator 依序執行；看門狗
+# 不寫它，report.sh 改的是 tab 本身的 label、不是這個欄位，不存在兩個
+# 寫入端互相覆蓋的競態。
 #
 # 例外（線上故障修正新增）：.escalation_active 在中斷恢復時多一個寫入
 # 端——team-init.sh --recover 會把它清成 null，收回跨 orchestrator 重
 # 啟殘留的升級閂鎖，理由見該檔「升級閂鎖收回」一節。這不是「不重疊」
-# 被打破：中斷恢復發生的時間點，上一個 session 的 watchdog.sh 行程已
-# 經不在，不存在兩個寫入端同時活著互相覆蓋的競態，跟 .held「orchestrator
-# 端腳本寫、team-init.sh --recover 額外收回殘留」是同一種安全前提。
+# 被打破：team-init.sh --recover 在看門狗存活時以 4 拒絕，看門狗已停
+# 才會執行，不存在兩個寫入端同時活著互相覆蓋的競態。.held 的安全前提
+# 不同：它的寫入端是 instruct.sh 等 orchestrator 端腳本，--recover 由
+# 現任 orchestrator 在恢復流程中、送出任何下行之前執行，兩者依序發生。
 #
 # .orchestrator_alert_active（本次修正新增）：team.json 六個欄位裡唯一
 # 不由 team-init.sh 寫的一個，只有 watchdog.sh 的
@@ -424,8 +426,7 @@ hat_whitelist_agents() {
 # 90 秒緩衝在第一輪輪詢就被繞過。這不是「不重疊」被打破：launch-
 # worker.sh 執行的時間點，上一個 watchdog.sh 對這個 worker 的緩衝評估
 # 要嘛已經升級過（走完了它要做的事），要嘛還在緩衝中——兩者都不存在跟
-# 這次重置同時發生、互相覆蓋的競態，跟 .escalation_active／.held 已有
-# 的先例是同一種安全前提。
+# 這次重置同時發生、互相覆蓋的競態。
 _HAT_TEAM_JSON_FIELDS=(
   '.orchestrator_name' '.orchestrator_pane' '.orchestrator_tab'
   '.orchestrator_tab_label' '.team_home' '.orchestrator_alert_active'
@@ -465,6 +466,52 @@ hat_registry_init() {
   if [ ! -e "$root/team.json" ]; then
     printf '{}' > "$root/team.json"
   fi
+}
+
+# hat_watchdog_alive_pid <registry_root>
+# 本 team 的長駐看門狗存活時，在 stdout 印出它的 PID 並回傳 0；否則回
+# 傳 1、不印任何東西。team-status.sh、shutdown-watchdog.sh、
+# team-init.sh 共用。
+#
+# ---- 判讀：watchdog.pid 指向的行程持有鎖檔 fd，而且是 session leader ----
+# 長駐看門狗由 watchdog.sh 以 setsid 拉起（session leader），並在整個
+# 生命期持有 <registry_root>/watchdog.lock 的 fd（見 watchdog.sh「啟動與
+# 脫離 session」一節）。兩個條件都成立才算存活：
+#   - 只看 PID 是否存在不夠：PID 會被別的行程重用。
+#   - 比對 cmdline 子字串不夠：已實測會誤判命令列含相同字串的無關行
+#     程（例如正在執行某段含該路徑文字的 shell）。
+#   - /proc/locks 不能用：已實測它記的是當初拿鎖、早已結束的父行程
+#     PID，不是現在持鎖的看門狗。
+#
+# ---- 只讀，不試拿鎖 ----
+# team-status.sh 在調查者 hook 的唯讀允許清單上，必須維持唯讀；`flock`
+# 在鎖檔不存在時會建立它。試拿鎖也會跟正在啟動的實例競態：父行程拿鎖
+# 到子行程寫出 PID 之間被試拿的一瞬間，會讓啟動被誤判成已有實例。
+#
+# 依賴 /proc，Linux 限定；本 skill 既已依賴 flock，setsid 同屬
+# util-linux，沒有新增平台限制。
+hat_watchdog_alive_pid() {
+  local root="$1" pid lock_path stat_line rest sid fd
+  [ -f "$root/watchdog.pid" ] || return 1
+  [ -e "$root/watchdog.lock" ] || return 1
+  pid="$(cat "$root/watchdog.pid" 2>/dev/null)" || return 1
+  case "$pid" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  lock_path="$(realpath "$root/watchdog.lock" 2>/dev/null)" || return 1
+  stat_line="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 1
+  # /proc/<pid>/stat 第 2 欄是括號包住的 comm，可能含空白；取最後一個
+  # ") " 之後的部分，欄位依序是 state ppid pgrp session。
+  rest="${stat_line##*) }"
+  IFS=' ' read -r _ _ _ sid _ <<< "$rest"
+  [ "$sid" = "$pid" ] || return 1
+  for fd in /proc/"$pid"/fd/*; do
+    if [ "$(readlink "$fd" 2>/dev/null)" = "$lock_path" ]; then
+      printf '%s\n' "$pid"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # hat_json_get <file> <jq_path>

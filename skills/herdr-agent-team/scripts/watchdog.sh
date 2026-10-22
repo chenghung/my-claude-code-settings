@@ -6,8 +6,38 @@
 #
 # 職責（規格 §5、§8、§9、§13，Task 12）：事件層的長駐看門狗，一個迴圈
 # 四個職責：自動推進、升級、停滯偵測、投遞重試與待補送補投。`--once`
-# 只跑一輪就結束，供測試與人工巡檢；不帶參數則以 AGENT_TEAM_POLL_
-# SECONDS 為間隔無限迴圈。
+# 只跑一輪就結束，供測試與人工巡檢；不帶參數則自己脫離 session、以
+# AGENT_TEAM_POLL_SECONDS 為間隔長駐（見下節）。
+#
+# ---- 啟動與脫離 session：不帶參數時一律自己脫離 ----
+# orchestrator 用一般前景呼叫啟動本腳本即可。父行程依序：門檻驗證（不
+# 合法以 2 結束）→ 對 <registry>/watchdog.lock 做 `flock -n`（搶不到代
+# 表已有存活實例，以 4 結束）→ 以 `setsid nohup` 拉起自己當長駐子行程，
+# 鎖 fd 經繼承交給它（fd 號碼放在內部變數 HAT_WD_LOCK_FD）→ 等子行程
+# 寫出 watchdog.pid 後印 `watchdog=started pid=<PID>`、以 0 結束。
+#
+# 為什麼不交給 orchestrator 選背景方式：harness 的背景任務綁在 session
+# 上。已實測只加 nohup 的行程在 Claude Code 的 TaskStop 後死亡；setsid
+# 拉起的行程撐過 TaskStop、整個 session 先 HUP 後 KILL、以及巢狀真實
+# claude orchestrator 被 SIGTERM／SIGKILL。setsid 不脫離 cgroup：所在
+# systemd scope 被 stop 時會一起結束（已實測）。herdr 或終端機結束時那個
+# scope 會不會被 stop 沒有驗證過（推論：scope 要等裡面的行程都結束才
+# 停，看門狗沒有 controlling tty 又忽略 HUP，很可能繼續活著），所以 team
+# 收工一律用 shutdown-watchdog.sh 停，不靠 herdr 結束時順帶收掉。
+#
+# 子行程的 stdout/stderr 導向 watchdog.out、stdin 導向 /dev/null：前景
+# 呼叫靠讀到 EOF 才返回，子行程留著呼叫端的 pipe 就會把呼叫卡住。
+#
+# 每輪 `( hat_wd_run_once )` 與 `sleep` 都關閉鎖 fd：已實測子行程繼承
+# 鎖 fd 時，主行程被殺後孤兒子行程會佔住鎖直到自己結束，這段期間存活
+# 判讀與防重複啟動都會誤判。關閉後只剩主行程持有鎖。`hat_wd_run_once`
+# 移進子殼不改變 errexit 語意：子殼失敗照樣讓主迴圈結束。
+#
+# 停止一律對整個 process group 送訊號（shutdown-watchdog.sh）：只殺主
+# 行程時，跑到一半的那一輪會成為孤兒並做完（已實測停止後仍完成一輪，
+# 換成正式版就是停止後還送出一次推進）。
+#
+# `--once` 不碰鎖、不寫 watchdog.pid：長駐實例在跑時照樣能人工巡檢。
 #
 # ---- 一個迴圈、一個資料來源、兩個時間視野 ----
 # 每輪只呼叫一次 `herdr agent list`，經 hat_whitelist_agents 投影後才
@@ -1525,7 +1555,41 @@ if [ "$once" -eq 1 ]; then
   exit 0
 fi
 
+# ---- 父行程：拿鎖、以 setsid 拉起長駐子行程、等它就緒後返回 ----
+# 理由與實測結果見檔頭「啟動與脫離 session」一節。
+if [ -z "${HAT_WD_LOCK_FD:-}" ]; then
+  registry_root="$(hat_registry_root)"
+  [ -d "$registry_root" ] \
+    || hat_die 5 "watchdog.sh: registry 不存在（$registry_root），先跑 team-init.sh"
+  exec {lock_fd}>"$registry_root/watchdog.lock"
+  if ! flock -n "$lock_fd"; then
+    existing_pid="$(hat_watchdog_alive_pid "$registry_root" || true)"
+    hat_die 4 "watchdog.sh: 本 team 已有存活的看門狗（pid=${existing_pid:-未知}），不再起第二支"
+  fi
+  rm -f "$registry_root/watchdog.pid"
+  HAT_WD_LOCK_FD="$lock_fd" setsid nohup bash "$SCRIPT_DIR/watchdog.sh" \
+    >>"$registry_root/watchdog.out" 2>&1 </dev/null &
+  for ((i = 0; i < 50; i++)); do
+    if [ -s "$registry_root/watchdog.pid" ]; then
+      printf 'watchdog=started pid=%s\n' "$(cat "$registry_root/watchdog.pid")"
+      exit 0
+    fi
+    sleep 0.1
+  done
+  hat_die 1 "watchdog.sh: 長駐子行程 5 秒內沒有寫出 watchdog.pid，看 $registry_root/watchdog.out"
+fi
+
+# ---- 子行程：確認繼承來的 fd 真的是鎖檔，才進入長駐迴圈 ----
+registry_root="$(hat_registry_root)"
+if [ "$(readlink "/proc/$$/fd/$HAT_WD_LOCK_FD" 2>/dev/null)" \
+  != "$(realpath "$registry_root/watchdog.lock" 2>/dev/null)" ]; then
+  hat_die 2 "watchdog.sh: HAT_WD_LOCK_FD 是內部變數，只由本腳本的父行程設定；它沒有指向 $registry_root/watchdog.lock，拒絕進入長駐迴圈"
+fi
+printf '%s\n' "$$" > "$registry_root/watchdog.pid"
+
+# 每輪工作與 sleep 都關閉鎖 fd：鎖只由這支主行程持有，主行程一死鎖
+# 就釋放，不會被還在跑的子行程佔住（見檔頭同一節）。
 while :; do
-  hat_wd_run_once
-  sleep "$poll_seconds"
+  ( hat_wd_run_once ) {HAT_WD_LOCK_FD}>&-
+  sleep "$poll_seconds" {HAT_WD_LOCK_FD}>&-
 done
