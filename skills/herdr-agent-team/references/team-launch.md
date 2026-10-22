@@ -16,7 +16,7 @@
 4. **停下來，把這四項原文呈給人類，請他確認**。這一關無條件，不論素材看起來多明確，見 `SKILL.md`「開工閘門的射程」。
 5. **`set-goal.sh` 再呼叫一次、同樣四項內容、加上 `--confirmed`**：把 `goal_confirmed` 設成 `true`。
 6. **啟動 `watchdog.sh`**（不帶參數）：goal 確認之後就啟動，不必等第一個 worker。用一般的前景呼叫：腳本自己以 `setsid` 脫離目前的 session，長駐子行程撐得過 orchestrator 的 session 結束，呼叫本身立即返回。依結束碼判讀：
-   - `0`：已掛上，stdout 印 `watchdog=started pid=<PID>`。接著看一次 `team-status.sh` 第一行；是 `watchdog=dead` 時停下，把情況交給人類，不要重跑（代表這個 CLI 的執行環境收掉了脫離的行程）。
+   - `0`：已掛上，stdout 印 `watchdog=started pid=<PID>`。接著看一次 `team-status.sh` 第一行；是 `watchdog=dead` 時停下，把情況交給人類，不要重跑（最可能是這個 CLI 的執行環境收掉了脫離的行程；原因看 registry 根目錄的 `watchdog.out`）。
    - `2`：門檻環境變數不合法，stderr 說明是哪一項（約束見 `script-reference.md` 門檻值）；修正後重跑。
    - `4`：本 team 已有存活的看門狗，沿用它；要換門檻，先 `shutdown-watchdog.sh` 再重跑本步。
    - `1`：長駐子行程沒有就緒，原因在 registry 根目錄的 `watchdog.out`。
