@@ -28,6 +28,15 @@ _hat_suite_on_exit() {
     printf 'FAIL 套件提早終止：只跑了 %s 條斷言就以結束碼 %s 離開，後面的斷言一條都沒跑（不要把「0 FAIL」讀成全綠）\n' \
       "$assert_count" "$rc"
   fi
+  # 看門狗相關測試啟動的背景行程（多半是 session leader）：先試整個
+  # process group，不是 group leader 的再退回單一 PID，不讓套件提早終止
+  # 時留下孤兒行程。
+  if [ -f "$T/bg-pgids" ]; then
+    while IFS= read -r _bg; do
+      [ -n "$_bg" ] || continue
+      kill -TERM -- "-$_bg" 2>/dev/null || kill -TERM "$_bg" 2>/dev/null || true
+    done < "$T/bg-pgids"
+  fi
   rm -rf "$T"
 }
 trap '_hat_suite_on_exit' EXIT
@@ -7941,12 +7950,79 @@ else
   bad "provider-drivers.md：標題沒有反映本文實際涵蓋的內容"
 fi
 
+# ===== 看門狗存活判讀（hat_watchdog_alive_pid）=====
+# 本節以後所有看門狗自我脫離相關測試共用一個隔離的 team home，不碰
+# $REG：長駐看門狗每輪都會寫 registry，混進 $REG 會汙染其他小節依賴精
+# 確筆數的斷言。
+
+# hat_wait_file <path>：最多等 5 秒到檔案存在且非空。
+hat_wait_file() {
+  local f="$1" i
+  for ((i = 0; i < 50; i++)); do
+    [ -s "$f" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+WDH_HOME="$T/wd-detach-home"
+mkdir -p "$WDH_HOME"
+( AGENT_TEAM_HOME="$WDH_HOME" hat_registry_init )
+WDH_REG="$(AGENT_TEAM_HOME="$WDH_HOME" hat_registry_root)"
+: > "$WDH_REG/watchdog.lock"
+
+# 真持鎖者：setsid 讓它成為 session leader，exec 保留 fd 9 指向鎖檔。
+# shellcheck disable=SC2016 # 單引號是刻意的：$$ 與 $1 要由子 bash 展開，不是由本檔展開
+setsid bash -c 'exec 9>"$1/watchdog.lock"; flock -n 9; echo $$ > "$1/holder.pid"; exec sleep 600' \
+  _ "$WDH_REG" </dev/null >/dev/null 2>&1 &
+hat_wait_file "$WDH_REG/holder.pid" || bad "alive_pid：持鎖者沒有啟動"
+holder="$(cat "$WDH_REG/holder.pid")"
+printf '%s\n' "$holder" >> "$T/bg-pgids"
+
+# 冒牌：同樣是 session leader，但沒有鎖檔 fd。
+# shellcheck disable=SC2016 # 單引號是刻意的：$$ 與 $1 要由子 bash 展開，不是由本檔展開
+setsid bash -c 'echo $$ > "$1/decoy.pid"; exec sleep 600' _ "$WDH_REG" </dev/null >/dev/null 2>&1 &
+hat_wait_file "$WDH_REG/decoy.pid" || bad "alive_pid：冒牌行程沒有啟動"
+decoy="$(cat "$WDH_REG/decoy.pid")"
+printf '%s\n' "$decoy" >> "$T/bg-pgids"
+
+# 持鎖但不是 session leader：沒有 setsid。
+bash -c 'exec 9>"$1/watchdog.lock"; echo $$ > "$1/nonleader.pid"; exec sleep 600' \
+  _ "$WDH_REG" </dev/null >/dev/null 2>&1 &
+hat_wait_file "$WDH_REG/nonleader.pid" || bad "alive_pid：非 leader 行程沒有啟動"
+nonleader="$(cat "$WDH_REG/nonleader.pid")"
+printf '%s\n' "$nonleader" >> "$T/bg-pgids"
+
+rm -f "$WDH_REG/watchdog.pid"
+if hat_watchdog_alive_pid "$WDH_REG" >/dev/null; then bad "alive_pid：沒有 watchdog.pid 卻判為存活"; else pass "alive_pid：沒有 watchdog.pid 判為未存活"; fi
+
+printf 'not-a-pid\n' > "$WDH_REG/watchdog.pid"
+if hat_watchdog_alive_pid "$WDH_REG" >/dev/null; then bad "alive_pid：PID 檔內容不是數字卻判為存活"; else pass "alive_pid：PID 檔內容不是數字判為未存活"; fi
+
+printf '%s\n' "$holder" > "$WDH_REG/watchdog.pid"
+out="$(hat_watchdog_alive_pid "$WDH_REG")" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "$holder" ]; then pass "alive_pid：持鎖的 session leader 判為存活並印出 PID"; else bad "alive_pid：持鎖者得到 rc=$rc out='$out'"; fi
+
+printf '%s\n' "$decoy" > "$WDH_REG/watchdog.pid"
+if hat_watchdog_alive_pid "$WDH_REG" >/dev/null; then bad "alive_pid：沒持鎖檔 fd 的 session leader 被判為存活"; else pass "alive_pid：沒持鎖檔 fd 的 session leader 判為未存活"; fi
+
+printf '%s\n' "$nonleader" > "$WDH_REG/watchdog.pid"
+if hat_watchdog_alive_pid "$WDH_REG" >/dev/null; then bad "alive_pid：持鎖檔 fd 但不是 session leader 被判為存活"; else pass "alive_pid：不是 session leader 判為未存活"; fi
+
+kill -TERM -- "-$holder" 2>/dev/null || true
+kill -TERM -- "-$decoy" 2>/dev/null || true
+kill -TERM "$nonleader" 2>/dev/null || true
+printf '%s\n' "$holder" > "$WDH_REG/watchdog.pid"
+for ((i = 0; i < 50; i++)); do kill -0 "$holder" 2>/dev/null || break; sleep 0.1; done
+if hat_watchdog_alive_pid "$WDH_REG" >/dev/null; then bad "alive_pid：持鎖者結束後仍判為存活"; else pass "alive_pid：持鎖者結束後判為未存活"; fi
+rm -f "$WDH_REG/watchdog.pid" "$WDH_REG/holder.pid" "$WDH_REG/decoy.pid" "$WDH_REG/nonleader.pid"
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=677
+HAT_EXPECTED_ASSERTIONS=683
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

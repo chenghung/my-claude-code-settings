@@ -467,6 +467,52 @@ hat_registry_init() {
   fi
 }
 
+# hat_watchdog_alive_pid <registry_root>
+# 本 team 的長駐看門狗存活時，在 stdout 印出它的 PID 並回傳 0；否則回
+# 傳 1、不印任何東西。team-status.sh、shutdown-watchdog.sh、
+# team-init.sh 共用。
+#
+# ---- 判讀：watchdog.pid 指向的行程持有鎖檔 fd，而且是 session leader ----
+# 長駐看門狗由 watchdog.sh 以 setsid 拉起（session leader），並在整個
+# 生命期持有 <registry_root>/watchdog.lock 的 fd（見 watchdog.sh「啟動與
+# 脫離 session」一節）。兩個條件都成立才算存活：
+#   - 只看 PID 是否存在不夠：PID 會被別的行程重用。
+#   - 比對 cmdline 子字串不夠：已實測會誤判命令列含相同字串的無關行
+#     程（例如正在執行某段含該路徑文字的 shell）。
+#   - /proc/locks 不能用：已實測它記的是當初拿鎖、早已結束的父行程
+#     PID，不是現在持鎖的看門狗。
+#
+# ---- 只讀，不試拿鎖 ----
+# team-status.sh 在調查者 hook 的唯讀允許清單上，必須維持唯讀；`flock`
+# 在鎖檔不存在時會建立它。試拿鎖也會跟正在啟動的實例競態：父行程拿鎖
+# 到子行程寫出 PID 之間被試拿的一瞬間，會讓啟動被誤判成已有實例。
+#
+# 依賴 /proc，Linux 限定；本 skill 既已依賴 flock，setsid 同屬
+# util-linux，沒有新增平台限制。
+hat_watchdog_alive_pid() {
+  local root="$1" pid lock_path stat_line rest sid fd
+  [ -f "$root/watchdog.pid" ] || return 1
+  [ -e "$root/watchdog.lock" ] || return 1
+  pid="$(cat "$root/watchdog.pid" 2>/dev/null)" || return 1
+  case "$pid" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  lock_path="$(realpath "$root/watchdog.lock" 2>/dev/null)" || return 1
+  stat_line="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 1
+  # /proc/<pid>/stat 第 2 欄是括號包住的 comm，可能含空白；取最後一個
+  # ") " 之後的部分，欄位依序是 state ppid pgrp session。
+  rest="${stat_line##*) }"
+  IFS=' ' read -r _ _ _ sid _ <<< "$rest"
+  [ "$sid" = "$pid" ] || return 1
+  for fd in /proc/"$pid"/fd/*; do
+    if [ "$(readlink "$fd" 2>/dev/null)" = "$lock_path" ]; then
+      printf '%s\n' "$pid"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # hat_json_get <file> <jq_path>
 # 印出 <file> 裡 <jq_path> 指向的值。欄位缺漏（含檔案不存在、值是 JSON
 # null、jq 求值本身失敗）一律以 5 結束：對呼叫端而言「這個欄位還沒被
