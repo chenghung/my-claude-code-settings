@@ -127,8 +127,9 @@ worker 名稱清單）連同目標 worker 的 agent 名稱一起交給調查者�
   限升級；`.stage` 欄位不存在時視同 `running`）；對 `delivered` 的 worker 成功發出（`instruct.sh`
   結束碼 `0` 或 `7`）一則非 halt 下行，就會撥回 `running`，`closing`、`closed` 不動；身分消失、卡在
   核准框、豁免到期三種升級不受關卡影響，照常發出。
-- **team 收工時呼叫 `shutdown-watchdog.sh`**：最後一個 worker 關閉、或人類放棄這個 team 時。看門狗不會自己
-  結束，留著會繼續照看殘留的 worker、發出沒人接的升級。
+- **team 收工時呼叫 `shutdown-watchdog.sh`**：goal 已達成或人類放棄這個 team、之後不再啟動任何 worker 時。
+  worker 全部關閉、接著還要派下一批時還沒收工，看門狗留著。看門狗不會自己結束，收工後留著會繼續照看殘
+  留的 worker、發出沒人接的升級。
 
 ### 認出一則升級
 

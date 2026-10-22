@@ -6,7 +6,7 @@
 
 orchestrator session 重啟之後依序走六步。第 1 步與第 3 步由同一次 `team-init.sh --recover` 呼叫完成：
 
-1. **先停看門狗，再重新自我命名**：先呼叫 `shutdown-watchdog.sh`，印 `watchdog=stopped` 或 `watchdog=not-running` 都算完成；`--recover` 會改寫看門狗也在寫的欄位，看門狗存活時 `team-init.sh --recover` 以結束碼 `4` 拒絕執行。接著呼叫 `team-init.sh --recover`。herdr 眼中人類直接啟動的 session 沒有名字，且名稱會在被取代時清空，所以每次恢
+1. **先停看門狗，再重新自我命名**：先呼叫 `shutdown-watchdog.sh`，印 `watchdog=stopped` 或 `watchdog=not-running` 都算完成，以 `1` 結束時停下、把訊息交給人類；`--recover` 會改寫看門狗也在寫的欄位，看門狗存活時 `team-init.sh --recover` 以結束碼 `4` 拒絕執行。接著呼叫 `team-init.sh --recover`。herdr 眼中人類直接啟動的 session 沒有名字，且名稱會在被取代時清空，所以每次恢
    復都要重做。多數 orchestrator 端腳本（不含 `watchdog.sh`、`fetch-detail.sh`）雖然會盡力把名稱續租
    回來，**`--recover` 仍然一定要跑**：只有
    它會還原警示 tab label、收回持有旗標、清空升級閂鎖，並以目前這個 pane 重寫
@@ -21,4 +21,4 @@ orchestrator session 重啟之後依序走六步。第 1 步與第 3 步由同�
    成重複下行；`team-status.sh` 的 `pending_resend=` 欄位顯示積壓時同理。排空由看門狗補投負責，前提是收件方先離開 `blocked`，而那要你去處理那個核准框（見 `SKILL.md`「派調查者的時機」）。
 4. **以外部權威重查**：對照 issue、PR、產物是否存在等外部事實，確認登記的進度沒有過時。
 5. **`team-status.sh`**：核對哪些 tab 還活著。
-6. **最後才啟動 `watchdog.sh`**：掛起當下會補發事件，那時進度表必須已經在手上。帶上次啟動時的同一組門檻環境變數（沒帶會回到預設值），啟動方式與結束碼判讀見 `team-launch.md` 第 6 步。
+6. **最後才啟動 `watchdog.sh`**：掛起當下會補發事件，那時進度表必須已經在手上。帶上次啟動時的同一組門檻環境變數（沒帶會回到預設值）；session 重啟後不知道上次的值時，先問人類。啟動方式與結束碼判讀見 `team-launch.md` 第 6 步。

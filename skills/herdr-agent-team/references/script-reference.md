@@ -22,7 +22,7 @@
 
 | 腳本 | 呼叫時機 | 拿到結果之後怎麼判斷 |
 | --- | --- | --- |
-| `team-init.sh [--recover\|--archive]` | `team-launch.md` 第 1 步；`--recover` 見 `session-recovery.md`；`--archive` 只在人類對 `state=finished` 選了開新時 | 印出 `orchestrator=<名稱> registry=<路徑>`；`--recover` 另印 `pending-resend` 行，處置見 `session-recovery.md` 第 3 步；`--archive` 另印 `archived=<路徑>`。結束碼 `4` 有三種，讀訊息分辨：印出 `existing-team` 行（本 workspace 已有 team，處置見 `team-launch.md` 第 1 步）；`--recover` 時看門狗仍存活（先 `shutdown-watchdog.sh`）；`--archive` 時 team 不是 `finished` 或歸檔目的地已存在。兩個旗標同時給以 `2` 結束。專屬結束碼 `9`：偵測到 `AGENT_TEAM_SELF` 或 `AGENT_TEAM_ROLE`（只有 worker tab 會被注入）即判定呼叫端是 worker 環境，拒絕執行，不呼叫 herdr、不寫 registry |
+| `team-init.sh [--recover\|--archive]` | `team-launch.md` 第 1 步；`--recover` 見 `session-recovery.md`；`--archive` 只在人類對 `state=finished` 選了開新時 | 印出 `orchestrator=<名稱> registry=<路徑>`；`--recover` 另印 `pending-resend` 行，處置見 `session-recovery.md` 第 3 步；`--archive` 另印 `archived=<路徑>`。結束碼 `4` 讀訊息分辨，跟既有 team 相關的有：印出 `existing-team` 行（本 workspace 已有 team，處置見 `team-launch.md` 第 1 步）；`--recover` 時看門狗仍存活（先 `shutdown-watchdog.sh`）；`--archive` 時 team 不是 `finished` 或歸檔目的地已存在。兩個旗標同時給以 `2` 結束。專屬結束碼 `9`：偵測到 `AGENT_TEAM_SELF` 或 `AGENT_TEAM_ROLE`（只有 worker tab 會被注入）即判定呼叫端是 worker 環境，拒絕執行，不呼叫 herdr、不寫 registry |
 | `set-goal.sh --achieve <> --success <> --not-doing <> --assumption <> [--confirmed] [--changed-by <>] [--rationale <>]` | 收斂 goal 之後、每一次要覆寫 goal 時 | 印出 `GOAL-SUCCESS-CHANGED version=<N>` 代表動到「怎樣算成功」，要轉述給使用者 |
 | `launch-worker.sh --role <> --kind <> --cwd <> --briefing-file <> [--arg <>]... [--ack-timeout <秒>]` | goal 確認之後，逐個 role 啟動 | 成功印 `worker=<名稱> pane=<id> tab=<id> ack=ok`；結束碼 `8` 是已內部重試一次仍啟動失敗，registry 記錄已移除、啟動包副本仍留在 `briefings/<worker>.md`；`6` 是識別碼取不到或 herdr 拒絕，沒有寫入 registry；`2` 是 herdr 語法錯誤（呼叫端用錯，不是啟動失敗） |
 | `instruct.sh --to <> (--text <> \| --text-file <>) [--reply-to <序號>] [--kind instruct\|decision\|goal-update\|halt]` | 下行任何指令、定案、goal 傳播；回覆 `need-you` 用 `--reply-to` | 結束碼 `7` 是對方卡在核准框、這一則進了 `.pending_resend`：重送沒有意義，但看門狗只在它離開 `blocked` 後才補投，必須去處理那個框（見 `SKILL.md`「派調查者的時機」），否則佇列永遠排不空且全程靜默。`0` 與 `7` 都會把 `delivered` 撥回 `running`；`closing`／`closed` 不動，`--kind halt` 不撥回（見 `drift-handling.md` 第 3 步） |
@@ -33,7 +33,7 @@
 | `team-status.sh` | 中斷恢復核對哪些 tab 還活著；委派讀畫面前；想看全隊概況時 | 第一行 `watchdog=alive pid=<>` 或 `watchdog=dead`；之後逐行 `worker=<> stage=<> status=<> seq=<> held=<> pending_resend=<> unprocessed=<>`；座標對不上本 workspace 的記錄會被跳過，不影響其餘行 |
 | `fetch-detail.sh --seq <序號>` | 某則回報需要讀細節之前，先取路徑 | 印出絕對路徑（不含內容），交給調查者去讀；結束碼 `5` 是該序號沒有細節檔 |
 | `watchdog.sh [--once]` | goal 確認之後啟動；中斷恢復第 6 步重新啟動；`--once` 供人工巡檢一輪，不影響長駐那支 | 啟動方式與結束碼判讀見 `team-launch.md` 第 6 步；長駐時不會自己結束，收工時用 `shutdown-watchdog.sh` |
-| `shutdown-watchdog.sh` | team 收工（最後一個 worker 關閉、或人類放棄這個 team）；中斷恢復第 1 步；改門檻要重啟之前 | 印 `watchdog=stopped pid=<PID>` 或 `watchdog=not-running`，都以 `0` 結束；`1` 是送出 SIGTERM 後 10 秒內仍存活 |
+| `shutdown-watchdog.sh` | team 收工（判準見 `SKILL.md`「看門狗的自動推進與升級」）；中斷恢復第 1 步；改門檻要重啟之前 | 印 `watchdog=stopped pid=<PID>` 或 `watchdog=not-running`，都以 `0` 結束；`1` 是送出 SIGTERM 後 10 秒內仍存活：停下，把訊息交給人類 |
 
 ### worker 端腳本
 
