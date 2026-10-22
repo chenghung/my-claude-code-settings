@@ -38,7 +38,7 @@ set -euo pipefail
 # allowed read-only shapes — so this text leads with that mechanism.
 # shellcheck disable=SC2016 # single quotes are intentional: the literal
 # $(...) shown to the model is illustrative text, not meant to expand.
-SHAPE_MISMATCH_REASON='herdr-agent-team-investigator 的 Bash 呼叫只放行唯讀查詢：herdr 的 agent get／agent read／pane read（列舉性查詢一律改用 team-status.sh，不直接放行 herdr agent list／herdr api snapshot——原始回應帶著終端標題等原文欄位，且涵蓋整台伺服器其他團隊），gh 的 issue view／pr view／pr diff，以及這個 skill 自己腳本裡的 team-status.sh／fetch-detail.sh 兩支唯讀腳本；且必須是單一、未串接其他指令的呼叫。這次呼叫不符合上述任何一種允許的形狀，因此被擋下。判斷依據是整條指令的形狀與指令名稱，管線、分號、&&、||、指令替換（$(...) 或反引號）、輸出或輸入重導向都會讓呼叫被視為不符合「單一未串接指令」而一律拒絕，不論夾帶在其中的是否原本合法。任何形式的寫檔、對外網路呼叫（curl、wget）、以及會改變 herdr 或這個 skill 狀態的操作（例如 agent prompt、agent send-keys、tab close、tab create、agent start、agent rename，或 instruct.sh／press-approval.sh／shutdown-worker.sh／send-peer.sh／grant-peer.sh／launch-worker.sh／set-worker-field.sh／report.sh 這幾支腳本）一律不在允許範圍內。需要執行被禁止的操作時，請回報 main agent（orchestrator），由其決定後續處理，不得自行執行。'
+SHAPE_MISMATCH_REASON='herdr-agent-team-investigator 的 Bash 呼叫只放行唯讀查詢：herdr 的 agent get／agent read／pane read（列舉性查詢一律改用 team-status.sh，不直接放行 herdr agent list／herdr api snapshot——原始回應帶著終端標題等原文欄位，且涵蓋整台伺服器其他團隊），gh 的 issue view／pr view／pr diff，以及這個 skill 自己腳本裡的 team-status.sh／fetch-detail.sh 兩支唯讀腳本；且必須是單一、未串接其他指令的呼叫。這次呼叫不符合上述任何一種允許的形狀，因此被擋下。判斷依據是整條指令的形狀與指令名稱，管線、分號、&&、||、指令替換（$(...) 或反引號）、輸出或輸入重導向都會讓呼叫被視為不符合「單一未串接指令」而一律拒絕，不論夾帶在其中的是否原本合法。任何形式的寫檔、對外網路呼叫（curl、wget）、以及會改變 herdr 或這個 skill 狀態的操作（例如 agent prompt、agent send-keys、tab close、tab create、agent start、agent rename，或 instruct.sh／press-approval.sh／shutdown-worker.sh／send-peer.sh／grant-peer.sh／launch-worker.sh／set-worker-field.sh／report.sh／shutdown-watchdog.sh 這幾支腳本）一律不在允許範圍內。需要執行被禁止的操作時，請回報 main agent（orchestrator），由其決定後續處理，不得自行執行。'
 
 # Emits the PreToolUse deny decision as JSON on stdout. $1 is the reason
 # shown to the model.
@@ -86,7 +86,8 @@ hat_guard_script_shape() {
     team-status.sh | fetch-detail.sh)
       return 0 ;;
     instruct.sh | press-approval.sh | shutdown-worker.sh | send-peer.sh | \
-      grant-peer.sh | launch-worker.sh | set-worker-field.sh | report.sh)
+      grant-peer.sh | launch-worker.sh | set-worker-field.sh | report.sh | \
+      shutdown-watchdog.sh)
       subcommand_deny_reason="herdr-agent-team-investigator 不得執行 $base：這支腳本會下行、代按、關閉資源或改變 registry 狀態，只有唯讀的 team-status.sh／fetch-detail.sh 在允許範圍內。"
       return 1 ;;
     *)

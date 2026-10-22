@@ -8087,12 +8087,114 @@ else
   bad "watchdog --once：rc=$rc，或建立了 watchdog.lock／watchdog.pid"
 fi
 
+# ===== team-status.sh 看門狗行與 shutdown-watchdog.sh =====
+# 樁：agent list 先寫標記再睡 30 秒，讓「關閉時有一輪正在跑」可以被製造
+# 出來；其餘呼叫照常回空結果。
+WD_INFLIGHT="$T/wd-inflight-marker"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+if [ "\$1 \$2" = "agent list" ]; then
+  printf 'inflight\n' > "$WD_INFLIGHT"
+  sleep 30
+  printf '{"result":{"agents":[]}}'
+  exit 0
+fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-shutdown
+
+# hat_pgrp_members <pgid>：印出目前 process group 為 <pgid> 的所有 PID。
+hat_pgrp_members() {
+  local pg="$1" f stat_line rest pgrp
+  for f in /proc/[0-9]*/stat; do
+    stat_line="$(cat "$f" 2>/dev/null)" || continue
+    rest="${stat_line##*) }"
+    IFS=' ' read -r _ _ pgrp _ <<< "$rest"
+    if [ "$pgrp" = "$pg" ]; then
+      f="${f#/proc/}"
+      printf '%s\n' "${f%/stat}"
+    fi
+  done
+}
+
+rm -f "$WD_INFLIGHT"
+rc=0; AGENT_TEAM_HOME="$WDH_HOME" AGENT_TEAM_POLL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" >/dev/null 2>&1 || rc=$?
+wd_pid="$(cat "$WDH_REG/watchdog.pid" 2>/dev/null || true)"
+[ -n "$wd_pid" ] && printf '%s\n' "$wd_pid" >> "$T/bg-pgids"
+[ "$rc" -eq 0 ] || bad "shutdown 前置：watchdog.sh 啟動得到 rc=$rc"
+
+# team-status 呼叫 agent list 也會碰到睡 30 秒的樁；改用不睡的樁跑
+# team-status，再換回來。
+cp "$STUB_BIN/herdr" "$T/herdr-sleepy"
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "agent list" ]; then printf '{"result":{"agents":[]}}'; exit 0; fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-status-alive
+out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/team-status.sh" 2>/dev/null)"
+if [ "$(printf '%s\n' "$out" | head -n 1)" = "watchdog=alive pid=$wd_pid" ]; then
+  pass "status：第一行是 watchdog=alive pid=<PID>（沒有 worker 時也印）"
+else
+  bad "status：第一行是 '$(printf '%s\n' "$out" | head -n 1)'"
+fi
+cp "$T/herdr-sleepy" "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-shutdown-sleepy
+
+hat_wait_file "$WD_INFLIGHT" || bad "shutdown 前置：等不到一輪正在跑的 agent list"
+rc=0; out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "watchdog=stopped pid=$wd_pid" ]; then
+  pass "shutdown：一輪正在跑時以 0 結束並印出 watchdog=stopped pid=<PID>"
+else
+  bad "shutdown：rc=$rc out='$out'"
+fi
+sleep 0.5
+left="$(hat_pgrp_members "$wd_pid")"
+if [ -z "$left" ]; then pass "shutdown：整個 process group 都已結束（跑到一半的那一輪沒有變孤兒）"; else bad "shutdown：process group 還有殘留 PID：$left"; fi
+if flock -n "$WDH_REG/watchdog.lock" true; then pass "shutdown：鎖已釋放"; else bad "shutdown：鎖仍被佔住"; fi
+
+cat > "$STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "agent list" ]; then printf '{"result":{"agents":[]}}'; exit 0; fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" watchdog-status-dead
+out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/team-status.sh" 2>/dev/null)"
+if [ "$(printf '%s\n' "$out" | head -n 1)" = "watchdog=dead" ]; then pass "status：停止後第一行是 watchdog=dead"; else bad "status：停止後第一行是 '$(printf '%s\n' "$out" | head -n 1)'"; fi
+
+rc=0; out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "watchdog=not-running" ]; then pass "shutdown：沒有存活實例時印 watchdog=not-running 並以 0 結束"; else bad "shutdown：未存活時得到 rc=$rc out='$out'"; fi
+
+# shellcheck disable=SC2016  # $$ 要由子 shell 展開
+setsid bash -c 'echo $$ > "$1/decoy.pid"; exec sleep 600' _ "$WDH_REG" </dev/null >/dev/null 2>&1 &
+hat_wait_file "$WDH_REG/decoy.pid" || bad "shutdown：冒牌行程沒有啟動"
+decoy="$(cat "$WDH_REG/decoy.pid")"
+printf '%s\n' "$decoy" >> "$T/bg-pgids"
+printf '%s\n' "$decoy" > "$WDH_REG/watchdog.pid"
+rc=0; out="$(AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "watchdog=not-running" ] && kill -0 "$decoy" 2>/dev/null; then
+  pass "shutdown：watchdog.pid 指向沒持鎖的冒牌行程時判為未存活，且不殺它"
+else
+  bad "shutdown：冒牌情境 rc=$rc out='$out'，冒牌是否存活：$(kill -0 "$decoy" 2>/dev/null && echo 是 || echo 否)"
+fi
+kill -TERM -- "-$decoy" 2>/dev/null || true
+rm -f "$WDH_REG/watchdog.pid" "$WDH_REG/decoy.pid"
+
+rc=0; AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" --bogus >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "shutdown：帶參數以 2 結束"; else bad "shutdown：帶參數得到 rc=$rc"; fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=693
+HAT_EXPECTED_ASSERTIONS=701
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
