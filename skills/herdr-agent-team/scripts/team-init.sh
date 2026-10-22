@@ -2,10 +2,11 @@
 #
 # skills/herdr-agent-team/scripts/team-init.sh
 #
-# 用法：team-init.sh [--recover]
+# 用法：team-init.sh [--recover|--archive]
 #
 # 主流程（規格 §6 第 1 步、2.5；--recover 與否都會跑，見下方）：
 #   1. 驗 HERDR_ENV。
+#   1.5 既有 team 偵測（見主程式「既有 team 偵測」一節）。
 #   2. 確保 team home（AGENT_TEAM_HOME，未設時取 PWD）底下的 .tmp 可
 #      用——經由 hat_registry_init → hat_registry_root → hat_project_tmp
 #      間接呼叫，三者皆幂等。
@@ -78,8 +79,10 @@
 #
 # 這是 .escalation_active／.escalation_last_at 欄位白名單分配表的例
 # 外：正常運作時只有 watchdog.sh 寫，本腳本的 --recover 是唯一的例
-# 外。理由跟 .held 已有的先例相同——中斷恢復的當下，上一個 session 的
-# watchdog.sh 行程已經不在，不存在兩個寫入端同時活著互相覆蓋的競態。
+# 外。不存在兩個寫入端同時活著互相覆蓋的競態，由本腳本自己保證：看門
+# 狗存活時 --recover 以 4 拒絕（見主程式「既有 team 偵測」一節）。看
+# 門狗以 setsid 脫離 session，撐得過 orchestrator 的 session 重啟，不能
+# 假設中斷恢復當下它已經不在。
 # 已同步更新 lib/common.sh 欄位白名單一節的分配表註解。
 
 set -euo pipefail
@@ -103,15 +106,16 @@ hat_json_string() {
 }
 
 recover=0
+archive=0
 if [ "$#" -gt 1 ]; then
-  hat_die 2 "team-init.sh: 用法：team-init.sh [--recover]"
+  hat_die 2 "team-init.sh: 用法：team-init.sh [--recover|--archive]（兩個旗標互斥）"
 fi
 if [ "$#" -eq 1 ]; then
-  if [ "$1" = "--recover" ]; then
-    recover=1
-  else
-    hat_die 2 "team-init.sh: 未知參數 '$1'（用法：team-init.sh [--recover]）"
-  fi
+  case "$1" in
+    --recover) recover=1 ;;
+    --archive) archive=1 ;;
+    *) hat_die 2 "team-init.sh: 未知參數 '$1'（用法：team-init.sh [--recover|--archive]）" ;;
+  esac
 fi
 
 workspace_id="${HERDR_WORKSPACE_ID:-}"
@@ -147,6 +151,71 @@ fi
 # 有正式的結束碼列表，因此直接把語意寫在這則錯誤訊息裡。
 if [ -n "${AGENT_TEAM_SELF:-}" ] || [ -n "${AGENT_TEAM_ROLE:-}" ]; then
   hat_die 9 "team-init.sh: 偵測到 AGENT_TEAM_SELF 或 AGENT_TEAM_ROLE 已設定，判斷目前是 worker 環境（這兩個變數只由 launch-worker.sh 建立 worker tab 時注入，orchestrator 自己的 session 不會有）。team-init.sh 是 orchestrator 專用的自我命名工具，worker 不得呼叫：呼叫下去會把 worker 自己的 pane 改名成 orchestrator 的名字，並覆寫 team.json 的 .orchestrator_name／.orchestrator_pane，等於竊取 orchestrator 的名稱與 registry 座標。拒絕執行，未呼叫任何 herdr 指令，也未寫入任何 registry 欄位"
+fi
+
+# ---- 既有 team 偵測：在自我命名、建立 registry 與任何 herdr 呼叫之前 ----
+# registry 路徑只由 team home 與 workspace id 推導，orchestrator 名稱只
+# 由 workspace id 推導，worker 啟動時又把兩者寫死在自己的環境變數裡
+# （launch-worker.sh 的 AGENT_TEAM_STATE_DIR／AGENT_TEAM_ORCHESTRATOR）：
+# 一個 herdr workspace 只能安全承載一個 team。新開 team 與接回既有
+# team 的分流因此不能交給 orchestrator 的判斷——新 session 沒有上一段對
+# 話的記憶——由本段偵測、印出一行交給人類選擇。
+#
+# 三態，依 running → finished → none 的順序取第一個成立者：
+#   running：有任何 worker 記錄，或看門狗存活。
+#   finished：goal_confirmed 為 true、沒有 worker 記錄、看門狗未存活。
+#             不能直接沿用：舊的 goal_confirmed 會讓開工閘門在人類確認
+#             新 goal 之前就是開的（set-goal.sh 不帶 --confirmed 時不碰
+#             這個欄位），舊 inbox 與序號也會被沿用。
+#   none：其餘（含 registry 不存在、goal 收斂到一半就中斷）。
+#
+# 不帶旗標時 running／finished 一律印 existing-team 行並以 4 結束，不寫
+# registry、不呼叫 herdr。--archive 只放行 finished：把整個 registry 改
+# 名歸檔後照常初始化；running 時拒絕（進行中的 team 一律不動，人類要開
+# 新 team 就到另一個 herdr workspace）。
+#
+# --recover 改寫 .held／.escalation_active，這兩類欄位平常的寫入端是
+# orchestrator 端腳本與看門狗；看門狗存活時兩個寫入端會同時活著，所以
+# --recover 要求看門狗已停（見 lib/common.sh 欄位白名單一節）。
+detect_root="$(hat_registry_root)"
+detect_workers=0
+detect_watchdog=dead
+detect_confirmed=false
+if [ -d "$detect_root" ]; then
+  detect_workers="$(find "$detect_root/workers" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l)"
+  detect_workers=$((10#$detect_workers))
+  if hat_watchdog_alive_pid "$detect_root" >/dev/null; then
+    detect_watchdog=alive
+  fi
+  detect_confirmed="$(jq -r '.goal_confirmed // false' "$detect_root/team.json" 2>/dev/null || printf 'false')"
+fi
+detect_state=none
+if [ "$detect_workers" -gt 0 ] || [ "$detect_watchdog" = alive ]; then
+  detect_state=running
+elif [ "$detect_confirmed" = true ]; then
+  detect_state=finished
+fi
+
+if [ "$recover" -eq 1 ]; then
+  if [ "$detect_watchdog" = alive ]; then
+    hat_die 4 "team-init.sh --recover: 本 team 的看門狗仍存活；--recover 會改寫看門狗也在寫的欄位，先跑 shutdown-watchdog.sh 停掉它，最後一步再啟動 watchdog.sh"
+  fi
+elif [ "$detect_state" != none ]; then
+  if [ "$archive" -eq 1 ] && [ "$detect_state" = finished ]; then
+    archive_dest="${detect_root}.archived-$(date -u +%Y%m%dT%H%M%SZ)"
+    if [ -e "$archive_dest" ]; then
+      hat_die 4 "team-init.sh --archive: 歸檔目的地已存在（$archive_dest），不覆寫；稍候一秒再跑"
+    fi
+    mv "$detect_root" "$archive_dest"
+    printf 'archived=%s\n' "$archive_dest"
+  else
+    printf 'existing-team registry=%s state=%s workers=%s watchdog=%s\n' \
+      "$detect_root" "$detect_state" "$detect_workers" "$detect_watchdog"
+    if [ "$archive" -eq 1 ]; then
+      hat_die 4 "team-init.sh --archive: 只歸檔已收工的 team（state=finished），這個 team 是 $detect_state，不動它"
+    fi
+    hat_die 4 "team-init.sh: 本 workspace 已有一個 team（state=$detect_state），交給人類選擇：接回（走 session-recovery.md）或開新（running 到另一個 herdr workspace 開；finished 可用 team-init.sh --archive 歸檔後在此開新）"
+  fi
 fi
 
 team_home="${AGENT_TEAM_HOME:-$PWD}"

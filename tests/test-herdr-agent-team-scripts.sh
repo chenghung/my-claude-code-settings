@@ -468,6 +468,12 @@ case "$out" in
   *) bad "registry：hat_worker_list 輸出不如預期：$out" ;;
 esac
 
+# ---- 移開前面小節留下的 worker 記錄（下面放回）：team-init.sh 不帶旗標
+#      時會偵測既有 team，registry 裡有任何 worker 記錄就判為 running、
+#      以 4 結束；以下幾個小節驗證的是沒有進行中 team 時的初始化行為 ----
+mkdir -p "$T/workers-aside-1"
+find "$REG/workers" -maxdepth 1 -type f -name '*.json' -exec mv {} "$T/workers-aside-1/" \;
+
 # ===== team-init.sh：.tmp 建立規則（本任務同時是 hat_project_tmp／
 #       hat_registry_root 的行為驗證，Task 1 只實作、未測）=====
 # 沿用上面「registry 讀寫」小節已匯出的 AGENT_TEAM_HOME=$T/teamhome、
@@ -600,6 +606,9 @@ else
   pass "team-init：AGENT_TEAM_ROLE 觸發守衛時，沒有任何 agent get／agent rename 呼叫出現在樁的呼叫紀錄裡"
 fi
 
+# ---- 放回上面移開的 worker 記錄 ----
+find "$T/workers-aside-1" -maxdepth 1 -type f -name '*.json' -exec mv {} "$REG/workers/" \;
+
 # ===== team-init.sh --recover：收回殘留持有旗標＋回報待補送清單 =====
 mkdir -p "$REG/workers"
 printf '{"held":true,"pending_resend":[{"text":"x"}]}' > "$REG/workers/w3n-backend.json"
@@ -690,6 +699,12 @@ if [ "$rc" -eq 0 ]; then
 else
   bad "recover：得到 rc=$rc"
 fi
+
+# ---- 移開前面小節留下的 worker 記錄（下面放回）：team-init.sh 不帶旗標
+#      時會偵測既有 team，registry 裡有任何 worker 記錄就判為 running、
+#      以 4 結束；以下幾個小節驗證的是沒有進行中 team 時的初始化行為 ----
+mkdir -p "$T/workers-aside-2"
+find "$REG/workers" -maxdepth 1 -type f -name '*.json' -exec mv {} "$T/workers-aside-2/" \;
 
 # ===== team-init.sh：記錄 orchestrator 的 tab 與原始 label（線上故障
 #      修正新增，規格「設計項目三」的前置資料）=====
@@ -831,6 +846,9 @@ fi
 # 補回下面「--recover 把 tab label 還原成記錄值」等既有測試預期的值，
 # 不讓這裡驗證補值用的臨時 label 對後續測試留下副作用。
 jq '.orchestrator_tab_label = "[1] Orchestrator"' "$REG/team.json" > "$T/team-tab-label-backfill-restore.json" && mv "$T/team-tab-label-backfill-restore.json" "$REG/team.json"
+
+# ---- 放回上面移開的 worker 記錄 ----
+find "$T/workers-aside-2" -maxdepth 1 -type f -name '*.json' -exec mv {} "$REG/workers/" \;
 
 # ===== team-init.sh --recover：把 tab label 還原成記錄值（規格「設計
 #      項目三」指定的還原時機——警報由 report.sh 寫上去、不自動還原，
@@ -8189,12 +8207,106 @@ rm -f "$WDH_REG/watchdog.pid" "$WDH_REG/decoy.pid"
 rc=0; AGENT_TEAM_HOME="$WDH_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" --bogus >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 2 ]; then pass "shutdown：帶參數以 2 結束"; else bad "shutdown：帶參數得到 rc=$rc"; fi
 
+# ===== team-init.sh 既有 team 偵測、--archive、--recover 守衛 =====
+# report.sh 與 send-peer.sh 小節 export 的 worker 環境變數一路留到這
+# 裡；team-init.sh 看到 AGENT_TEAM_SELF／AGENT_TEAM_ROLE 會判定呼叫端是
+# worker 而以 9 拒絕。本節模擬 orchestrator，先清掉這四個變數。
+unset AGENT_TEAM_SELF AGENT_TEAM_ROLE AGENT_TEAM_STATE_DIR AGENT_TEAM_ORCHESTRATOR
+TI_HOME="$T/ti-detect-home"
+mkdir -p "$TI_HOME"
+TI_REG="$(AGENT_TEAM_HOME="$TI_HOME" hat_registry_root)"
+TI_LOG="$T/herdr-call-log-ti-detect"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TI_LOG"
+if [ "\$1 \$2" = "agent list" ]; then printf '{"result":{"agents":[]}}'; exit 0; fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" team-init-detect
+
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "team-init 偵測：沒有既有 team 時照常初始化"; else bad "team-init 偵測：全新 registry 得到 rc=$rc"; fi
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "team-init 偵測：goal 未確認且沒有 worker 時重跑照常（state=none）"; else bad "team-init 偵測：state=none 重跑得到 rc=$rc"; fi
+
+# running（worker 記錄）
+printf '{"pane_id":"w3N:p9"}' > "$TI_REG/workers/w3n-x.json"
+before="$(sha256sum "$TI_REG/team.json")"
+: > "$TI_LOG"
+rc=0; out="$(AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 4 ] && [ "$out" = "existing-team registry=$TI_REG state=running workers=1 watchdog=dead" ]; then
+  pass "team-init 偵測：有 worker 記錄時印 existing-team state=running 並以 4 結束"
+else
+  bad "team-init 偵測：running 得到 rc=$rc out='$out'"
+fi
+if [ ! -s "$TI_LOG" ] && [ "$(sha256sum "$TI_REG/team.json")" = "$before" ]; then
+  pass "team-init 偵測：偵測到既有 team 時不呼叫 herdr、不改 team.json"
+else
+  bad "team-init 偵測：偵測時呼叫了 herdr 或改了 team.json（herdr 呼叫：$(tr '\n' ';' < "$TI_LOG")）"
+fi
+
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" --archive >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 4 ] && [ -d "$TI_REG" ] && [ -z "$(find "$(dirname "$TI_REG")" -maxdepth 1 -name "$(basename "$TI_REG").archived-*")" ]; then
+  pass "team-init --archive：state=running 時以 4 拒絕，不搬動 registry"
+else
+  bad "team-init --archive：running 得到 rc=$rc 或 registry 被搬動"
+fi
+
+# finished
+rm -f "$TI_REG/workers/w3n-x.json"
+jq '.goal_confirmed = true' "$TI_REG/team.json" > "$T/ti.json" && mv "$T/ti.json" "$TI_REG/team.json"
+rc=0; out="$(AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 4 ] && [ "$out" = "existing-team registry=$TI_REG state=finished workers=0 watchdog=dead" ]; then
+  pass "team-init 偵測：goal 已確認、沒有 worker、看門狗未存活時印 state=finished 並以 4 結束"
+else
+  bad "team-init 偵測：finished 得到 rc=$rc out='$out'"
+fi
+
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" --archive --recover >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "team-init：--archive 與 --recover 同時給以 2 結束"; else bad "team-init：兩個旗標同時給得到 rc=$rc"; fi
+
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" --archive >/dev/null 2>&1 || rc=$?
+archived="$(find "$(dirname "$TI_REG")" -maxdepth 1 -name "$(basename "$TI_REG").archived-*" | head -n 1)"
+if [ "$rc" -eq 0 ] && [ -n "$archived" ] && [ "$(jq -r '.goal_confirmed' "$archived/team.json")" = "true" ]; then
+  pass "team-init --archive：state=finished 時把舊 registry 改名歸檔"
+else
+  bad "team-init --archive：finished 得到 rc=$rc archived='$archived'"
+fi
+if [ "$(jq -r '.goal_confirmed // "absent"' "$TI_REG/team.json")" = "absent" ] && [ -d "$TI_REG/workers" ]; then
+  pass "team-init --archive：歸檔後照常初始化出全新 registry（沒有沿用舊的 goal_confirmed）"
+else
+  bad "team-init --archive：新 registry 的 goal_confirmed=$(jq -r '.goal_confirmed' "$TI_REG/team.json" 2>/dev/null)"
+fi
+
+# running（看門狗存活）與 --recover 守衛
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/watchdog.sh" >/dev/null 2>&1 || rc=$?
+ti_wd="$(cat "$TI_REG/watchdog.pid" 2>/dev/null || true)"
+[ -n "$ti_wd" ] && printf '%s\n' "$ti_wd" >> "$T/bg-pgids"
+[ "$rc" -eq 0 ] || bad "team-init 偵測前置：watchdog.sh 啟動得到 rc=$rc"
+rc=0; out="$(AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 4 ] && [ "$out" = "existing-team registry=$TI_REG state=running workers=0 watchdog=alive" ]; then
+  pass "team-init 偵測：看門狗存活時判為 state=running"
+else
+  bad "team-init 偵測：看門狗存活時得到 rc=$rc out='$out'"
+fi
+rc=0; out="$(AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" --recover 2>&1)" || rc=$?
+if [ "$rc" -eq 4 ] && [[ "$out" == *shutdown-watchdog.sh* ]]; then
+  pass "team-init --recover：看門狗存活時以 4 拒絕並指示先跑 shutdown-watchdog.sh"
+else
+  bad "team-init --recover：看門狗存活時得到 rc=$rc out='$out'"
+fi
+AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" >/dev/null 2>&1 || true
+rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" --recover >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "team-init --recover：看門狗停止後照常執行"; else bad "team-init --recover：看門狗停止後得到 rc=$rc"; fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=701
+HAT_EXPECTED_ASSERTIONS=713
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
