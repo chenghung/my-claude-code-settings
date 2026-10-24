@@ -91,20 +91,59 @@ assert_silent() {
 }
 
 # ===== agent read: --source is checked, not just the subcommand name =====
-# (numbered 43/44, appended after the existing 1-42 sequence per this
+# (numbered 43/44/46-50, appended after the existing 1-42 sequence per this
 # file's own "don't renumber" convention noted above test 1, but placed
 # here next to test 3 for readability since they cover the same shape)
 
 @test "43: herdr agent read without --source is denied" {
   run run_hook_raw "$(build_investigator_payload "herdr agent read w3n-backend --lines 50")"
   assert_deny
-  [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")" == *"recent-unwrapped"* ]]
+  local reason
+  reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")"
+  [[ "$reason" == *"recent-unwrapped"* ]]
+  [[ "$reason" == *"visible"* ]]
+  [[ "$reason" == *"agent_not_idle"* ]]
 }
 
-@test "44: herdr agent read with --source visible is denied" {
+@test "44: herdr agent read with --source visible is allowed" {
+  # visible reads the same named target's current screen; it is how a
+  # blocked worker (recent-unwrapped answers agent_not_idle) gets read.
   run run_hook_raw "$(build_investigator_payload "herdr agent read w3n-backend --source visible --lines 50")"
+  assert_silent
+}
+
+@test "46: herdr agent read with --source recent or detection is still denied" {
+  run run_hook_raw "$(build_investigator_payload "herdr agent read w3n-backend --source recent --lines 50")"
   assert_deny
-  [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")" == *"recent-unwrapped"* ]]
+  run run_hook_raw "$(build_investigator_payload "herdr agent read w3n-backend --source detection --lines 50")"
+  assert_deny
+}
+
+@test "47: herdr agent read with a duplicated --source is denied, even when every value is allowed" {
+  # Which of two --source values herdr honors is unverified, so the hook
+  # requires exactly one --source rather than letting any legal one pass.
+  local combo first second
+  for combo in "recent visible" "detection recent-unwrapped" "visible recent-unwrapped" "visible visible"; do
+    read -r first second <<< "$combo"
+    run run_hook_raw "$(build_investigator_payload "herdr agent read w3n-backend --source $first --source $second --lines 50")"
+    assert_deny
+    [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")" == *"一個 --source"* ]]
+  done
+}
+
+@test "48: herdr agent read with --source=visible (equals form) stays denied" {
+  run run_hook_raw "$(build_investigator_payload "herdr agent read w3n-backend --source=visible --lines 50")"
+  assert_deny
+}
+
+@test "49: herdr agent read with --source Visible (wrong case) stays denied" {
+  run run_hook_raw "$(build_investigator_payload "herdr agent read w3n-backend --source Visible --lines 50")"
+  assert_deny
+}
+
+@test "50: herdr agent read mixing --source=visible with --source recent-unwrapped is denied" {
+  run run_hook_raw "$(build_investigator_payload "herdr agent read w3n-backend --source=visible --source recent-unwrapped --lines 50")"
+  assert_deny
 }
 
 @test "4: herdr pane read is allowed" {

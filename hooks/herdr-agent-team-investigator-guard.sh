@@ -96,27 +96,36 @@ hat_guard_script_shape() {
 }
 
 # hat_agent_read_source_ok <cmd>
-# True (exit 0) when <cmd>'s tokens contain `--source recent-unwrapped` as
-# adjacent words. agents/herdr-agent-team-investigator.md states that
-# `agent read` is only ever used with this one source (recent-unwrapped is
-# the spec-designated source for transcript/log reads; visible/recent/
-# detection are for detection snapshots and out of scope for this
-# subagent) — this is the enforcement point for that claim. Only the
-# space-separated `--source recent-unwrapped` form is checked because that
-# is the only form this skill's docs and scripts ever use; a `--source=
-# value` form is not handled since nothing in scope produces it.
+# True (exit 0) only when <cmd> carries exactly one --source and it is the
+# space-separated form `--source recent-unwrapped` or `--source visible`.
+# recent-unwrapped is the spec-designated source for transcript/log reads;
+# visible is also allowed because a blocked worker running on the alternate
+# screen makes herdr answer recent-unwrapped with agent_not_idle, and visible
+# (the same named target's current screen, no more data than
+# recent-unwrapped) is the only way to read its approval box. The "use
+# visible only when blocked and recent-unwrapped returned agent_not_idle"
+# condition is constrained by the text of
+# agents/herdr-agent-team-investigator.md; this hook does not check agent
+# state. Other sources (recent/detection/...) are detection snapshots and
+# stay out of scope for this subagent.
+# Exactly one --source is required: herdr accepts a repeated --source, and
+# which value it honors is unverified, so a legal value next to an illegal
+# one (or two legal ones) must not pass. Zero occurrences is denied too.
+# Every `--source` or `--source=...` token counts as an occurrence, so the
+# equals form is never allowed (nothing in scope produces it) and cannot
+# ride along next to a space-separated one.
 hat_agent_read_source_ok() {
   local -a toks
   read -ra toks <<< "$1"
-  local i tok val
+  local i tok val="" count=0
   for ((i = 0; i < ${#toks[@]}; i++)); do
     tok="$(strip_wrapping_quotes "${toks[i]}")"
-    if [[ "$tok" == "--source" ]]; then
-      val="$(strip_wrapping_quotes "${toks[i + 1]:-}")"
-      [[ "$val" == "recent-unwrapped" ]] && return 0
+    if [[ "$tok" == "--source" || "$tok" == --source=* ]]; then
+      count=$((count + 1))
+      [[ "$tok" == "--source" ]] && val="$(strip_wrapping_quotes "${toks[i + 1]:-}")"
     fi
   done
-  return 1
+  [[ $count -eq 1 && ( "$val" == "recent-unwrapped" || "$val" == "visible" ) ]]
 }
 
 # True (exit 0) when $1 is exactly one of the read-only shapes
@@ -158,7 +167,7 @@ is_allowed_command() {
           return 0 ;;
         "agent read")
           hat_agent_read_source_ok "$cmd" && return 0
-          subcommand_deny_reason="herdr-agent-team-investigator 不得執行不帶 --source recent-unwrapped（或帶其餘來源）的 herdr agent read：本 subagent 讀畫面只放行 recent-unwrapped 這一個來源，用於讀逐字稿與日誌；visible／recent／detection 等其餘來源是取偵測用途，不在允許範圍內。"
+          subcommand_deny_reason="herdr-agent-team-investigator 不得執行不帶 --source recent-unwrapped／--source visible、帶其餘來源、或重複帶多個 --source 的 herdr agent read：本 subagent 讀畫面只放行 recent-unwrapped 與 visible 兩個來源，且必須恰好帶一個 --source（重複的 --source 即使每個值都合法也一律拒絕，因為 herdr 以哪一個為準未查證）。recent-unwrapped 用於讀逐字稿與日誌；visible 讀的是同一個指名目標的當前畫面，用於 worker 處於 blocked 而 recent-unwrapped 回 agent_not_idle 的情況（此使用條件由 agent 定義檔約束，hook 不檢查 agent 狀態）。recent／detection 等其餘來源是取偵測用途，不在允許範圍內。"
           return 1 ;;
         "agent list" | "api snapshot")
           # Deliberately excluded even though read-only — see header
