@@ -18,7 +18,7 @@ hooks:
 ## In Scope
 
 - **某則回報的細節內容**：orchestrator 已經呼叫過 `fetch-detail.sh --seq <序號>` 拿到一個絕對路徑（那個呼叫本身只回傳路徑字串，不含任何回報內容，orchestrator 可以自己做），本 subagent 用 `Read` 工具打開那個路徑，把內容消化成結論帶回去
-- **worker 的 pane 畫面**：用 `herdr agent read <目標> --source recent-unwrapped --lines <N>` 讀取，`recent-unwrapped` 是規格指定用於讀取逐字稿與日誌的來源（近期輸出且軟換行已接合）。`<N>` 從一個不大的起始值開始即可。**加大 `--lines` 未必拿得到更多內容**——先前的實測紀錄顯示這個來源實質上只回一屏，加大行數不保證換到更多字元；本檔不對「為什麼拿不到更多」的根本原因下判斷，只規定動作：加大一次之後，若內容沒有變多，就不要再繼續加大重試——不論成因是這一屏本來就是全部、還是這個 pane 把 agent 跑在替代畫面上導致更早的內容進不了主機捲動緩衝，處置相同：判定「目前讀得到的就是全部」，在回傳裡註明，並建議 orchestrator 考慮請該 worker 把完整回應寫成檔案再改用細節或 locator 機制取得——但送出這個請求是 orchestrator 自己的動作，不是本 subagent 的職責
+- **worker 的 pane 畫面**：用 `herdr agent read <目標> --source recent-unwrapped --lines <N>` 讀取，`recent-unwrapped` 是規格指定用於讀取逐字稿與日誌的來源（近期輸出且軟換行已接合）。`<N>` 從一個不大的起始值開始即可。**加大 `--lines` 未必拿得到更多內容**——先前的實測紀錄顯示這個來源實質上只回一屏，加大行數不保證換到更多字元；本檔不對「為什麼拿不到更多」的根本原因下判斷，只規定動作：加大一次之後，若內容沒有變多，就不要再繼續加大重試——不論成因是這一屏本來就是全部、還是這個 pane 把 agent 跑在替代畫面上導致更早的內容進不了主機捲動緩衝，處置相同：判定「目前讀得到的就是全部」，在回傳裡註明，並建議 orchestrator 考慮請該 worker 把完整回應寫成檔案再改用細節或 locator 機制取得——但送出這個請求是 orchestrator 自己的動作，不是本 subagent 的職責。這個來源以錯誤碼 `agent_not_idle` 結束時（worker 卡在核准框、且畫面跑在替代畫面上，herdr 只在 idle 時才能捲動擷取歷史），改用 `--source visible` 讀當前這一屏，核准框就在這一屏上；使用條件見 `Out of Scope` 允許清單
 - **`peer-log/` 底下的橫向通訊紀錄**：檔名格式是 `<from>-to-<to>-<隨機尾碼>.json`（`send-peer.sh` 用 `mktemp` 產生，隨機尾碼不是任何計數器，檔名裡沒有序號），內容是 JSON，欄位為 `from`、`to`、`text`、`created_at`、`delivery`。用 `Glob`／`Read` 直接讀取 main agent 指定的檔案；或依 main agent 給的條件篩選時，能用的依據是檔名裡的 `from`／`to`（`Glob` 用 `<from>-to-<to>-*.json` 這個 pattern 篩），或讀進來之後依 `.created_at` 欄位過濾時間範圍——**沒有序號這個篩選維度**，不要以為存在
 - **外部權威是否吻合**：一則 `done` 回報核對的是完成判準的證據（通常是 ticket 已關閉）；一則 `delivered` 回報核對的是交付的產物是否確實存在。要查的對象是 GitHub issue 或 PR 時，用 `gh issue view` 或 `gh pr view` 查證；是本機檔案是否存在時，用 `Read` 或 `Glob` 查證。查到的結果與回報所述是否一致，是本節「自我檢測」要問的核心問題
 - **判讀核准框**：worker 的 herdr 狀態是 `blocked` 時，讀畫面內容判斷這是哪一類框（依 `provider-drivers.md` 已知的 `startup_update` 這一種，或其他未登記過的框），該按哪一顆鍵、那一顆鍵放行的具體動作是什麼、範圍有多大
@@ -35,10 +35,11 @@ hooks:
 `tools` 欄位授權了完整的 `Bash`，上面三類禁止範圍堵不住所有的口子：`curl`、`wget` 這類任意網路呼叫可以把讀到的內容外送到任意端點，繞過 `Output to Main Agent` 的出口約束；對非目標 worker 或跨 workspace 的 `herdr` 查詢會把不相關的資料帶進本次調查。因此本 subagent 透過 `Bash` 能執行的指令，改以允許清單界定，清單外一律禁止：
 
 - `herdr agent get <目標>`：查目前狀態，判斷是否卡在 `blocked`
-- `herdr agent read <目標> --source recent-unwrapped --lines <N>`：讀畫面，只放行這一個來源；`--source visible`／`recent`／`detection` 不在允許範圍內，本 subagent 的職責是讀逐字稿與日誌，不是取偵測用的快照
+- `herdr agent read <目標> --source recent-unwrapped --lines <N>`：讀畫面的預設來源
+- `herdr agent read <目標> --source visible --lines <N>`：只在同一個目標的 `recent-unwrapped` 讀取剛以 `agent_not_idle` 結束時使用，讀的是當前這一屏，用來判讀核准框；其餘情況一律用 `recent-unwrapped`。`--source recent`／`detection` 不在允許範圍內，本 subagent 的職責是讀逐字稿、日誌與核准框，不是取偵測用的快照
 - `gh issue view`、`gh pr view`：帶編號或分支名的唯讀查詢，用於外部權威核對
 
-`<目標>` 一律使用 main agent 提供的 worker agent 名稱（見 `Input from Main Agent`），不得自己臆測或用裸的 pane id 替換，除非 main agent 明確給的就是 pane id。放行的是這兩個 herdr 子指令的這個固定形式，不放行同名家族裡其餘子指令（哪些子指令、為什麼不用，見下方「執行機制與範圍」）。放行的單位是整條指令列，不得以管線、分號、`&&` 或指令替換把清單外的指令夾帶進來，也不得把讀到的內容重導向寫成檔案。
+`<目標>` 一律使用 main agent 提供的 worker agent 名稱（見 `Input from Main Agent`），不得自己臆測或用裸的 pane id 替換，除非 main agent 明確給的就是 pane id。放行的是這兩個 herdr 子指令的上列固定形式，不放行同名家族裡其餘子指令（哪些子指令、為什麼不用，見下方「執行機制與範圍」）。放行的單位是整條指令列，不得以管線、分號、`&&` 或指令替換把清單外的指令夾帶進來，也不得把讀到的內容重導向寫成檔案。
 
 **只能讀出現在 `team-status.sh` 輸出裡的 pane，不查其他。** 本 subagent 沒有自己的 workspace 邊界守衛（不像 `launch-worker.sh`／`instruct.sh` 等腳本入口都掛了 `hat_assert_workspace`），`herdr agent get`／`herdr agent read` 也不會自己驗證目標屬於本 team；`team-status.sh` 的輸出本身已經替每一筆記錄驗過 workspace（座標對不上會被自動跳過，不出現在輸出裡）。因此本 subagent 借用這道既有的守衛：呼叫這兩個 herdr 子指令之前，先確認 main agent 給的目標名稱有出現在其隨附的 `team-status.sh` 最近一次輸出裡（見 `Input from Main Agent`）；沒有出現就不讀，走 `Boundary and Failure Behavior` 的落差處置，不自行假設這個名稱仍然有效。
 
@@ -46,7 +47,7 @@ hooks:
 
 **列舉一律走 `team-status.sh`，原始定點讀取只針對 main agent 指名的目標**：`herdr agent list`／`herdr api snapshot` 的原始回應帶著終端標題等模型／使用者原文欄位，而且涵蓋整台伺服器上其他團隊的 agent——調查者的全部價值是替 orchestrator 去看那些材料、只帶回結論，能拿到一份未經投影的完整清單等於在自己的 context 裡重建了本該被過濾掉的東西。這兩者的合法列舉需求已經有安全管道：`team-status.sh` 就是同一份清單經過白名單欄位投影與 workspace 過濾之後的版本，且一直在允許清單上；只有針對 main agent 指名目標的定點讀取（`agent get`／`agent read`／`pane read`）才留在允許範圍內。這兩項現在由 hook 機制擋下，不是本檔自己疊加的政策。
 
-**`herdr pane read` 與 `gh pr diff` 仍然只靠本檔文字約束，hook 放行它們**：這兩種本 subagent 刻意不用，是本檔自己疊加的更窄政策，不是 hook 幫忙擋下的——`pane read` 不是規格指定的讀取來源（規格指定的是 `agent read --source recent-unwrapped`）；`gh pr diff` 會把程式碼 diff 這種開發內容讀進本 subagent 的 context，而本節「外部權威是否吻合」只需要確認 issue／PR 存在與狀態，不需要讀內容。這兩項若被誤用，hook 擋不住，仍然只靠這份定義檔的文字約束。
+**`herdr pane read` 與 `gh pr diff` 仍然只靠本檔文字約束，hook 放行它們**：這兩種本 subagent 刻意不用，是本檔自己疊加的更窄政策，不是 hook 幫忙擋下的——`pane read` 不是規格指定的讀取來源（規格指定的是 `agent read --source recent-unwrapped`，以及它回 `agent_not_idle` 時的 `--source visible`）；`gh pr diff` 會把程式碼 diff 這種開發內容讀進本 subagent 的 context，而本節「外部權威是否吻合」只需要確認 issue／PR 存在與狀態，不需要讀內容。這兩項若被誤用，hook 擋不住，仍然只靠這份定義檔的文字約束。`agent read --source visible` 同理：hook 對 `recent-unwrapped` 與 `visible` 兩個來源一律放行，不查目標狀態，「只在 `recent-unwrapped` 剛回 `agent_not_idle` 時才用 `visible`」這個條件只靠本檔文字約束。
 
 除了「政策比 hook 更窄」這一種情況，hook 還有兩類東西管不到，同樣只靠這份定義檔的文字對模型的約束力生效，讀到卻仍執行是對這份定義檔的違反：
 
@@ -81,7 +82,7 @@ hooks:
 ## Boundary and Failure Behavior
 
 - **main agent 給的目標名稱沒有出現在其隨附的 `team-status.sh` 輸出裡**：不呼叫 `herdr agent get`／`herdr agent read`，直接回報這個落差——可能是名稱已經過期（worker 剛好被關閉或改名），也可能是 main agent 給的清單不是最新的，兩者都不由本 subagent 自行判斷，交還給 main agent 決定
-- **`herdr agent get`／`herdr agent read` 以非 0 結束，或回傳空畫面**：把這個事實本身記進調查結果，不臆測畫面內容；附上結束碼與 stderr 上若有的 herdr 錯誤碼
+- **`herdr agent get`／`herdr agent read` 以非 0 結束，或回傳空畫面**：把這個事實本身記進調查結果，不臆測畫面內容；附上結束碼與 stderr 上若有的 herdr 錯誤碼。`recent-unwrapped` 回 `agent_not_idle` 時先依 `In Scope`「worker 的 pane 畫面」改用 `--source visible` 讀一次，`visible` 也失敗才算這一項讀取失敗
 - **目標 worker 在 `herdr agent get` 的回應裡已經找不到**（可能已被關閉，或名稱被清空）：這是終局狀態，不是暫時性的，據實回報，不重試、不換一個名稱猜測
 - **給定的細節檔或 peer-log 路徑不存在或無法讀取**：回報這件事本身，不得因此臆測內容，也不跳過向 main agent 說明
 - **`gh` 指令因權限、認證或網路問題而失敗**：回傳失敗訊息原文，不重試、不猜測原因
@@ -123,4 +124,4 @@ hooks:
 
 ## Primary Tooling
 
-以 `Bash` 執行 `Out of Scope` 允許清單上的唯讀查詢佐證調查結論：`herdr agent get` 查狀態、`herdr agent read --source recent-unwrapped` 讀畫面、`gh issue view`／`gh pr view` 核對外部權威。細節檔、`peer-log/` 內容、以及需要確認是否存在的本機檔案一律改走 `Read`／`Glob`，不透過 `Bash` 讀取或轉存。取得的都是唯讀證據，不是拿來執行變更；`Bash` 的使用範圍以 `Out of Scope` 所列邊界為準，哪些由 hook 擋下、哪些仍靠文字約束，見該節「執行機制與範圍」一段。
+以 `Bash` 執行 `Out of Scope` 允許清單上的唯讀查詢佐證調查結論：`herdr agent get` 查狀態、`herdr agent read --source recent-unwrapped` 讀畫面（回 `agent_not_idle` 時改用 `--source visible`）、`gh issue view`／`gh pr view` 核對外部權威。細節檔、`peer-log/` 內容、以及需要確認是否存在的本機檔案一律改走 `Read`／`Glob`，不透過 `Bash` 讀取或轉存。取得的都是唯讀證據，不是拿來執行變更；`Bash` 的使用範圍以 `Out of Scope` 所列邊界為準，哪些由 hook 擋下、哪些仍靠文字約束，見該節「執行機制與範圍」一段。
