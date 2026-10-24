@@ -114,12 +114,20 @@ hat_guard_script_shape() {
 # Every `--source` or `--source=...` token counts as an occurrence, so the
 # equals form is never allowed (nothing in scope produces it) and cannot
 # ride along next to a space-separated one.
+# Segmented quoting is rejected too: bash rejoins adjacent quote fragments
+# and backslash escapes into one word at execution time (e.g. `--sour''ce`,
+# `"--source"=x`, `--sourc\e`), so such a token can hide a second --source
+# from this whitespace tokenizer. After stripping one layer of wrapping
+# quotes, any token that still contains `"`, `'` or `\` makes the whole
+# call denied; no shell parsing is simulated, and this skill's legitimate
+# `agent read` shapes contain no such characters.
 hat_agent_read_source_ok() {
   local -a toks
   read -ra toks <<< "$1"
   local i tok val="" count=0
   for ((i = 0; i < ${#toks[@]}; i++)); do
     tok="$(strip_wrapping_quotes "${toks[i]}")"
+    [[ "$tok" == *["\"'\\"]* ]] && return 1
     if [[ "$tok" == "--source" || "$tok" == --source=* ]]; then
       count=$((count + 1))
       [[ "$tok" == "--source" ]] && val="$(strip_wrapping_quotes "${toks[i + 1]:-}")"
@@ -167,7 +175,7 @@ is_allowed_command() {
           return 0 ;;
         "agent read")
           hat_agent_read_source_ok "$cmd" && return 0
-          subcommand_deny_reason="herdr-agent-team-investigator 不得執行不帶 --source recent-unwrapped／--source visible、帶其餘來源、或重複帶多個 --source 的 herdr agent read：本 subagent 讀畫面只放行 recent-unwrapped 與 visible 兩個來源，且必須恰好帶一個 --source（重複的 --source 即使每個值都合法也一律拒絕，因為 herdr 以哪一個為準未查證）。recent-unwrapped 用於讀逐字稿與日誌；visible 讀的是同一個指名目標的當前畫面，用於 worker 處於 blocked 而 recent-unwrapped 回 agent_not_idle 的情況（此使用條件由 agent 定義檔約束，hook 不檢查 agent 狀態）。recent／detection 等其餘來源是取偵測用途，不在允許範圍內。"
+          subcommand_deny_reason="herdr-agent-team-investigator 不得執行不帶 --source recent-unwrapped／--source visible、帶其餘來源、或重複帶多個 --source 的 herdr agent read：本 subagent 讀畫面只放行 recent-unwrapped 與 visible 兩個來源，且必須恰好帶一個 --source（重複的 --source 即使每個值都合法也一律拒絕，因為 herdr 以哪一個為準未查證）。agent read 的任何一個詞在剝掉整層包覆引號後若仍含引號（單引號或雙引號）或反斜線也一律拒絕，因為 bash 會把相鄰的引號片段或反斜線還原成另一個 --source，這裡不模擬 shell 解析。recent-unwrapped 用於讀逐字稿與日誌；visible 讀的是同一個指名目標的當前畫面，用於 worker 處於 blocked 而 recent-unwrapped 回 agent_not_idle 的情況（此使用條件由 agent 定義檔約束，hook 不檢查 agent 狀態）。recent／detection 等其餘來源是取偵測用途，不在允許範圍內。"
           return 1 ;;
         "agent list" | "api snapshot")
           # Deliberately excluded even though read-only — see header

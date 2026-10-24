@@ -91,7 +91,7 @@ assert_silent() {
 }
 
 # ===== agent read: --source is checked, not just the subcommand name =====
-# (numbered 43/44/46-50, appended after the existing 1-42 sequence per this
+# (numbered 43/44/46-55, appended after the existing 1-42 sequence per this
 # file's own "don't renumber" convention noted above test 1, but placed
 # here next to test 3 for readability since they cover the same shape)
 
@@ -144,6 +144,40 @@ assert_silent() {
 @test "50: herdr agent read mixing --source=visible with --source recent-unwrapped is denied" {
   run run_hook_raw "$(build_investigator_payload "herdr agent read w3n-backend --source=visible --source recent-unwrapped --lines 50")"
   assert_deny
+}
+
+# Segmented quoting / backslashes: bash rejoins these into a second
+# --source at execution time, which the whitespace tokenizer cannot see, so
+# any token with a quote or backslash left after stripping its wrapping
+# quotes is denied outright. The payloads below are single-quoted on
+# purpose: the quotes and backslash are the literal text under test.
+
+@test "51: herdr agent read with a quote-split \"--source\"=detection second --source is denied" {
+  run run_hook_raw "$(build_investigator_payload 'herdr agent read w "--source"=detection --source visible')"
+  assert_deny
+}
+
+@test "52: herdr agent read with an empty-quote-split --sour''ce second --source is denied" {
+  run run_hook_raw "$(build_investigator_payload "herdr agent read w --sour''ce detection --source visible")"
+  assert_deny
+}
+
+@test "53: herdr agent read with a backslash-split --sourc\\e second --source is denied" {
+  run run_hook_raw "$(build_investigator_payload 'herdr agent read w --sourc\e detection --source visible')"
+  assert_deny
+}
+
+@test "54: the deny reason for a stray quote or backslash names the rule" {
+  run run_hook_raw "$(build_investigator_payload "herdr agent read w --sour''ce detection --source visible")"
+  assert_deny
+  [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")" == *"引號"* ]]
+}
+
+@test "55: herdr agent read with a fully wrapped --source \"visible\" is still allowed" {
+  run run_hook_raw "$(build_investigator_payload 'herdr agent read w --source "visible" --lines 50')"
+  assert_silent
+  run run_hook_raw "$(build_investigator_payload "herdr agent read w '--source' 'recent-unwrapped' --lines 50")"
+  assert_silent
 }
 
 @test "4: herdr pane read is allowed" {
