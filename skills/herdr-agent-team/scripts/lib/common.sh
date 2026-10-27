@@ -241,9 +241,11 @@ hat_project_tmp() {
 # 在 registry 裡面，不能拿來找 registry。解法是 team-init.sh 另外寫一
 # 份以 workspace id 為鍵、位於任何 team home 之外的指標檔，內容是 team
 # home 的絕對路徑；解析順序：
-#   1. AGENT_TEAM_HOME（有設且非空就用它）
+#   1. AGENT_TEAM_HOME（有設且非空就用它，但必須是絕對路徑：相對值的
+#      意義取決於 cwd，不是以 / 開頭就 hat_die 5，不退回指標檔）
 #   2. 指標檔 $HOME/.tmp/herdr-agent-team/workspaces/<HERDR_WORKSPACE_ID>
 #   3. 兩者都沒有就 hat_die 5，不退回 $PWD。
+# 只有 team-init.sh 接受相對的 AGENT_TEAM_HOME，並自行補成絕對路徑。
 # 指標檔放 $HOME/.tmp 底下，與 hat_project_tmp 用的是同一個位置，不新增
 # 另一個家目錄下的路徑；以 workspace id 為鍵，與 registry 路徑本來就以
 # workspace id 區分 team 一致。
@@ -260,15 +262,24 @@ hat_workspace_pointer_path() {
 # hat_team_home
 # 依上面的順序印出 team home；解析不出來以 5 結束（訊息附上查過的指標
 # 檔路徑、當前工作目錄，並提示先跑 team-init.sh 或設定 AGENT_TEAM_HOME）。
-# 指標檔存在但內容不是絕對路徑，同樣以 5 結束：寫入端
-# （hat_write_workspace_pointer）只會寫絕對路徑，其他內容代表檔案被改
-# 壞，不能猜。純讀取，沒有寫入副作用。
+# AGENT_TEAM_HOME 非空但不是絕對路徑，同樣以 5 結束（訊息附上收到的值與
+# 當前工作目錄）：相對值要靠 cwd 才有意義，cwd 偏離時 registry 會從別處
+# 推算；也不退回指標檔，免得錯誤的設定被悄悄蓋過。指標檔存在但內容不是
+# 絕對路徑，同樣以 5 結束：寫入端（hat_write_workspace_pointer）只會寫
+# 絕對路徑，其他內容代表檔案被改壞，不能猜。純讀取，沒有寫入副作用。
 hat_team_home() {
   local pointer="" team_home=""
 
   if [ -n "${AGENT_TEAM_HOME:-}" ]; then
-    printf '%s\n' "$AGENT_TEAM_HOME"
-    return 0
+    case "$AGENT_TEAM_HOME" in
+      /*)
+        printf '%s\n' "$AGENT_TEAM_HOME"
+        return 0
+        ;;
+      *)
+        hat_die 5 "hat_team_home: AGENT_TEAM_HOME 不是絕對路徑（'$AGENT_TEAM_HOME'）；目前 cwd=$PWD。相對路徑會隨 cwd 指向不同位置，請改設絕對路徑"
+        ;;
+    esac
   fi
 
   if pointer="$(hat_workspace_pointer_path)" && [ -f "$pointer" ]; then
@@ -291,8 +302,9 @@ hat_team_home() {
 # hat_write_workspace_pointer <team_home>
 # 把 <team_home>（必須是絕對路徑）原子寫進本 workspace 的指標檔：在同
 # 一個目錄建暫存檔再 mv 置換，讀取端因此只會讀到舊內容或新內容，不會
-# 讀到寫到一半的檔案。每次呼叫都覆寫。只有 team-init.sh 呼叫。任何一
-# 步失敗以 5 結束，並先清掉暫存檔。
+# 讀到寫到一半的檔案。mv 用 -T：指標檔位置若已是目錄，mv 會失敗，不是
+# 把暫存檔搬進目錄裡還回報成功。每次呼叫都覆寫。只有 team-init.sh 呼
+# 叫。任何一步失敗以 5 結束，並先清掉暫存檔。
 hat_write_workspace_pointer() {
   local team_home="$1" pointer dir tmp
 
@@ -309,7 +321,7 @@ hat_write_workspace_pointer() {
     || hat_die 5 "hat_write_workspace_pointer: 無法建立目錄 '$dir'"
   tmp="$(mktemp "$dir/.pointer.XXXXXX")" \
     || hat_die 5 "hat_write_workspace_pointer: 無法在 '$dir' 建立暫存檔"
-  if ! printf '%s\n' "$team_home" > "$tmp" || ! mv -f "$tmp" "$pointer"; then
+  if ! printf '%s\n' "$team_home" > "$tmp" || ! mv -fT "$tmp" "$pointer"; then
     rm -f "$tmp"
     hat_die 5 "hat_write_workspace_pointer: 寫入指標檔 '$pointer' 失敗"
   fi
@@ -317,8 +329,9 @@ hat_write_workspace_pointer() {
 
 # hat_registry_root
 # 印出 `<team home>/.tmp/herdr-agent-team/<workspace_id>`。team home 由
-# hat_team_home 解析（AGENT_TEAM_HOME → workspace 指標檔，都沒有就以 5
-# 結束，不退回當前工作目錄）；workspace id 取 HERDR_WORKSPACE_ID。
+# hat_team_home 解析（AGENT_TEAM_HOME 必須是絕對路徑 → workspace 指標
+# 檔，都沒有或 AGENT_TEAM_HOME 是相對路徑就以 5 結束，不退回當前工作目
+# 錄）；workspace id 取 HERDR_WORKSPACE_ID。
 #
 # 純路徑計算，沒有任何寫入副作用：不建 .tmp、不建目錄。建立 .tmp 是
 # hat_registry_init 的事（見 hat_project_tmp）。<team home>/.tmp 若是
@@ -1124,9 +1137,9 @@ hat_strip_uplink_prefix() {
 #
 # ---- 盡力而為：本函式一律以 0 結束 ----
 # HERDR_PANE_ID 未設、team home 解析不出來（沒有 AGENT_TEAM_HOME 也沒
-# 有 workspace 指標檔）、team.json 讀不到、`.orchestrator_name` 缺席，都
-# 是正常的「還沒有東西可續」狀態（team 還沒初始化過），無動作返回，不
-# 是錯誤。`agent get`／`agent rename` 呼叫失敗只在 stderr 留一行可辨
+# 有 workspace 指標檔，或 AGENT_TEAM_HOME 是相對路徑）、team.json 讀不
+# 到、`.orchestrator_name` 缺席，都是正常的「還沒有東西可續」狀態
+# （team 還沒初始化過），無動作返回，不是錯誤。`agent get`／`agent rename` 呼叫失敗只在 stderr 留一行可辨
 # 識的說明；本函式一律以 0 結束，不讓呼叫端的腳本（全部掛
 # `set -euo pipefail`）因為這個自我修復的旁支動作而被 errexit 帶走。
 # 名稱本來就正確時，直接返回，不呼叫 rename——避免每支腳本每次執行都
@@ -1150,9 +1163,10 @@ hat_renew_orchestrator_name() {
 
   [ -n "$pane_id" ] || return 0
 
-  # 沒有 AGENT_TEAM_HOME 也沒有指標檔時 hat_registry_root 會 hat_die 5；
-  # 這跟 team.json 讀不到是同一種「team 還沒初始化」的狀態，照本函式一
-  # 律以 0 結束的約定無動作返回（stderr 也不印，維持改版前的靜默）。
+  # 沒有 AGENT_TEAM_HOME 也沒有指標檔（或 AGENT_TEAM_HOME 是相對路徑）
+  # 時 hat_registry_root 會 hat_die 5；這跟 team.json 讀不到是同一種
+  # 「team 還沒初始化」的狀態，照本函式一律以 0 結束的約定無動作返回
+  # （stderr 也不印，維持改版前的靜默）。
   root="$(hat_registry_root 2>/dev/null)" || return 0
   team_json="$root/team.json"
   [ -f "$team_json" ] || return 0

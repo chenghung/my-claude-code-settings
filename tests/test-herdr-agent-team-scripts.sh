@@ -8656,12 +8656,68 @@ else
   bad "指標檔：看門狗在 cwd 底下建立了 .tmp"
 fi
 
+# ---- 相對路徑的 AGENT_TEAM_HOME：非 init 腳本以 5 拒絕，team-init.sh 照收 ----
+# 使用者在 shell 匯出相對值（例如 `.`）後 cd 進 inbox/ 跑腳本，若直接採用
+# 它，registry 會從 inbox/ 推算，cwd 又影響結果了。非 init 腳本因此以 5
+# 結束、不退回讀指標檔；team-init.sh 是唯一把相對值補成絕對路徑的地方。
+# 此刻 $PTR_POINTER 仍是有效的指標檔（指向 $PTR_PROJ），用來證明不會退回
+# 讀它。
+PTR_REL_SNAP_BEFORE="$(find "$PTR_HOME/.tmp" -maxdepth 2 | sort)"
+for s in team-status.sh shutdown-watchdog.sh watchdog.sh; do
+  rc=0; out="$(hat_ptr_run "$PTR_REG/inbox" "$PTR_HOME" env AGENT_TEAM_HOME=. bash "$SCRIPTS/$s" 2>&1)" || rc=$?
+  if [ "$rc" -eq 5 ] \
+    && [[ "$out" == *"AGENT_TEAM_HOME"*"'.'"* ]] \
+    && [[ "$out" == *"cwd=$PTR_REG/inbox"* ]] \
+    && [[ "$out" == *"絕對路徑"* ]]; then
+    pass "指標檔：$s 收到相對的 AGENT_TEAM_HOME 時以 5 結束，訊息含收到的值、cwd 與絕對路徑提示（不退回讀指標檔）"
+  else
+    bad "指標檔：$s 收到 AGENT_TEAM_HOME=. 時 rc=$rc out='$out'"
+  fi
+done
+if [ ! -e "$PTR_REG/inbox/.tmp" ] && [ ! -L "$PTR_REG/inbox/.tmp" ] \
+  && [ "$PTR_REL_SNAP_BEFORE" = "$(find "$PTR_HOME/.tmp" -maxdepth 2 | sort)" ]; then
+  pass "指標檔：相對的 AGENT_TEAM_HOME 報錯時，cwd 與 \$HOME/.tmp 都沒有建立任何東西"
+else
+  bad "指標檔：相對的 AGENT_TEAM_HOME 報錯路徑留下了東西"
+fi
+
+PTR_REL_CWD="$T/ptr-rel-cwd"
+PTR_REL_HOME="$T/ptr-rel-home"
+mkdir -p "$PTR_REL_CWD/rel-team" "$PTR_REL_HOME"
+rc=0; hat_ptr_run "$PTR_REL_CWD" "$PTR_REL_HOME" env AGENT_TEAM_HOME=rel-team bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] \
+  && [ "$(cat "$PTR_REL_HOME/.tmp/herdr-agent-team/workspaces/w3N" 2>/dev/null || true)" = "$PTR_REL_CWD/rel-team" ] \
+  && [ -f "$PTR_REL_CWD/rel-team/.tmp/herdr-agent-team/w3N/team.json" ]; then
+  pass "team-init：相對的 AGENT_TEAM_HOME 仍成功，指標檔寫入補成絕對路徑後的 team home"
+else
+  bad "team-init：相對的 AGENT_TEAM_HOME rc=$rc 指標檔='$(cat "$PTR_REL_HOME/.tmp/herdr-agent-team/workspaces/w3N" 2>/dev/null || true)'"
+fi
+
+# ---- 指標檔位置已是目錄：寫入失敗要以 5 結束，不能誤報成功 ----
+# `mv -f 檔案 目錄` 會把暫存檔搬進目錄並回傳 0；mv -fT 則拒絕覆寫目錄。
+PTR_DIR_CWD="$T/ptr-dir-cwd"
+PTR_DIR_HOME="$T/ptr-dir-home"
+PTR_DIR_POINTER="$PTR_DIR_HOME/.tmp/herdr-agent-team/workspaces/w3N"
+mkdir -p "$PTR_DIR_CWD" "$PTR_DIR_POINTER"
+rc=0; out="$(hat_ptr_run "$PTR_DIR_CWD" "$PTR_DIR_HOME" bash "$SCRIPTS/team-init.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 5 ] && [[ "$out" == *"寫入指標檔 '$PTR_DIR_POINTER' 失敗"* ]]; then
+  pass "指標檔：指標檔位置已是目錄時 team-init.sh 以 5 結束並指出寫入失敗"
+else
+  bad "指標檔：指標檔位置是目錄時 rc=$rc out='$out'"
+fi
+if [ -d "$PTR_DIR_POINTER" ] && [ -z "$(find "$PTR_DIR_POINTER" -mindepth 1)" ] \
+  && [ -z "$(find "$PTR_DIR_HOME/.tmp/herdr-agent-team/workspaces" -mindepth 1 -maxdepth 1 -name '.pointer.*')" ]; then
+  pass "指標檔：寫入失敗後該目錄內與 workspaces/ 底下都沒有殘留暫存檔"
+else
+  bad "指標檔：寫入失敗後留下了東西：$(find "$PTR_DIR_HOME/.tmp/herdr-agent-team/workspaces" -mindepth 1)"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=744
+HAT_EXPECTED_ASSERTIONS=751
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

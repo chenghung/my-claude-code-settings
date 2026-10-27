@@ -13,7 +13,7 @@
 | 2 | 呼叫端用錯：缺必填參數、參數格式不對 |
 | 3 | 環境前提不成立：`HERDR_ENV` 不等於 `1` |
 | 4 | 守衛不通過（workspace 邊界、provider 白名單、開工閘門、關閉閘門、代按前的狀態重查、grant、已有存活的看門狗、本 workspace 已有 team、`--recover` 時看門狗仍存活、`--archive` 遇到進行中的 team——讀訊息那一行分辨是哪一類） |
-| 5 | registry 缺漏或內容不合法，或找不到 team home（沒有 `AGENT_TEAM_HOME` 也沒有 workspace 指標檔） |
+| 5 | registry 缺漏或內容不合法，或找不到 team home（沒有 `AGENT_TEAM_HOME` 也沒有 workspace 指標檔，或 `AGENT_TEAM_HOME` 是相對路徑） |
 | 6 | herdr 拒絕 |
 | 7 | 握手未取得憑據（逾時或 `agent_prompt_stalled`），或代按之後仍是 `blocked` |
 | 8 | 啟動未就緒 |
@@ -30,10 +30,10 @@
 | `shutdown-worker.sh --to <> --reason <done\|abandon\|superseded> [--evidence <>] [--handoff-file <>]` | `done` 已核對外部證據；或放棄／被取代（`abandon`／`superseded`，必須附交接檔） | 結束碼 `4` 是拒絕點命中：它還有未回覆的 `need-you`、其他 worker 的 `.grants` 仍指向它、還在 `delivered` 關卡、或不屬本 workspace。還在 `delivered` 時先 `set-worker-field.sh --to <worker> --field stage --value running` 撥回再關（見 `SKILL.md` Token 表 `done` 那一列） |
 | `set-worker-field.sh --to <> --field <stage\|completion_criteria\|delivery_point\|end_point> --value <>` | 交付點／終點／完成判準確定時；`.stage` 需要變動時 | `--field stage` 的值只能是 `running`／`delivered`／`closing`／`closed`；座標類、計數類欄位不透過本腳本寫 |
 | `grant-peer.sh --from <> --to <> [--revoke]` | thin command 的 `grant` 落地時；漂移處置改變了介面時 | 下行通知是 best-effort，送不到只印一句提示，授權本身已經生效 |
-| `team-status.sh` | 中斷恢復核對哪些 tab 還活著；委派讀畫面前；想看全隊概況時 | 第一行 `watchdog=alive pid=<>` 或 `watchdog=dead`；之後逐行 `worker=<> stage=<> status=<> seq=<> held=<> pending_resend=<> unprocessed=<>`；座標對不上本 workspace 的記錄會被跳過，不影響其餘行；結束碼 `5` 是沒有 `AGENT_TEAM_HOME` 也沒有 workspace 指標檔、找不到 team home：停下，把訊息交給人類 |
+| `team-status.sh` | 中斷恢復核對哪些 tab 還活著；委派讀畫面前；想看全隊概況時 | 第一行 `watchdog=alive pid=<>` 或 `watchdog=dead`；之後逐行 `worker=<> stage=<> status=<> seq=<> held=<> pending_resend=<> unprocessed=<>`；座標對不上本 workspace 的記錄會被跳過，不影響其餘行；結束碼 `5` 是沒有 `AGENT_TEAM_HOME` 也沒有 workspace 指標檔、找不到 team home，或 `AGENT_TEAM_HOME` 是相對路徑：停下，把訊息交給人類 |
 | `fetch-detail.sh --seq <序號>` | 某則回報需要讀細節之前，先取路徑 | 印出絕對路徑（不含內容），交給調查者去讀；結束碼 `5` 是該序號沒有細節檔 |
 | `watchdog.sh [--once]` | goal 確認之後啟動；中斷恢復第 6 步重新啟動；`--once` 供人工巡檢一輪，不影響長駐那支 | 啟動方式與結束碼判讀見 `team-launch.md` 第 6 步；長駐時不會自己結束，收工時用 `shutdown-watchdog.sh` |
-| `shutdown-watchdog.sh` | team 收工（判準見 `SKILL.md`「看門狗的自動推進與升級」）；中斷恢復第 1 步；改門檻要重啟之前 | 印 `watchdog=stopped pid=<PID>` 或 `watchdog=not-running`，都以 `0` 結束；`1` 是送出 SIGTERM 後 10 秒內仍存活；`5` 是沒有 `AGENT_TEAM_HOME` 也沒有 workspace 指標檔、找不到 team home：兩者都停下，把訊息交給人類 |
+| `shutdown-watchdog.sh` | team 收工（判準見 `SKILL.md`「看門狗的自動推進與升級」）；中斷恢復第 1 步；改門檻要重啟之前 | 印 `watchdog=stopped pid=<PID>` 或 `watchdog=not-running`，都以 `0` 結束；`1` 是送出 SIGTERM 後 10 秒內仍存活；`5` 是沒有 `AGENT_TEAM_HOME` 也沒有 workspace 指標檔、找不到 team home，或 `AGENT_TEAM_HOME` 是相對路徑：兩者都停下，把訊息交給人類 |
 
 ### worker 端腳本
 
