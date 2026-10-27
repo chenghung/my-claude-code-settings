@@ -6,7 +6,7 @@
 
 orchestrator session 重啟之後依序走六步。第 1 步與第 3 步由同一次 `team-init.sh --recover` 呼叫完成：
 
-1. **先停看門狗，再重新自我命名**：先呼叫 `shutdown-watchdog.sh`，印 `watchdog=stopped` 或 `watchdog=not-running` 都算完成，以 `1` 結束時停下、把訊息交給人類；`--recover` 會改寫看門狗也在寫的欄位，看門狗存活時 `team-init.sh --recover` 以結束碼 `4` 拒絕執行。接著呼叫 `team-init.sh --recover`。herdr 眼中人類直接啟動的 session 沒有名字，且名稱會在被取代時清空，所以每次恢
+1. **先停看門狗，再重新自我命名**：先呼叫 `shutdown-watchdog.sh`，印 `watchdog=stopped` 或 `watchdog=not-running` 都算完成，以 `1` 結束（10 秒內仍存活）或 `5` 結束（沒有 `AGENT_TEAM_HOME` 也沒有 workspace 指標檔，恢復情境下指標檔理應存在，出現 5 代表環境異常）時停下、把訊息交給人類；`--recover` 會改寫看門狗也在寫的欄位，看門狗存活時 `team-init.sh --recover` 以結束碼 `4` 拒絕執行。接著呼叫 `team-init.sh --recover`。herdr 眼中人類直接啟動的 session 沒有名字，且名稱會在被取代時清空，所以每次恢
    復都要重做。多數 orchestrator 端腳本（不含 `watchdog.sh`、`fetch-detail.sh`）雖然會盡力把名稱續租
    回來，**`--recover` 仍然一定要跑**：只有
    它會還原警示 tab label、收回持有旗標、清空升級閂鎖，並以目前這個 pane 重寫

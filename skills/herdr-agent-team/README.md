@@ -844,7 +844,7 @@ flowchart TD
 
 ## 12. registry 結構與速查
 
-registry 根目錄位於 team home 的 `.tmp` 下，路徑為 `.tmp/herdr-agent-team/<workspace_id>`（team home 已有可用的 `.tmp` 時直接沿用，沒有時由腳本建立為指向 `~/.tmp` 專案資料夾的 symbolic link）。`team-init.sh` 建立根目錄與七個子目錄。
+registry 根目錄位於 team home 的 `.tmp` 下，路徑為 `.tmp/herdr-agent-team/<workspace_id>`（team home 已有可用的 `.tmp` 時直接沿用，沒有時由 `team-init.sh` 建立為指向 `~/.tmp` 專案資料夾的 symbolic link；其他腳本只計算路徑，不建立 `.tmp`）。`team-init.sh` 建立根目錄與七個子目錄。team home 本身不取自當前工作目錄：`team-init.sh` 以 `AGENT_TEAM_HOME`（未設時取它執行當下的工作目錄）為 team home，成功後把這個絕對路徑寫進指標檔 `~/.tmp/herdr-agent-team/workspaces/<workspace_id>`；其餘腳本依序採用 `AGENT_TEAM_HOME`、指標檔，兩者都沒有就以結束碼 5 報錯，所以 orchestrator 之後 `cd` 到哪裡都找得到同一個 registry。
 
 ```mermaid
 flowchart TB
@@ -911,7 +911,7 @@ worker 端腳本：
 | 2 | 呼叫端用錯：缺必填參數、參數格式不對 |
 | 3 | 環境前提不成立：`HERDR_ENV` 不等於 `1` |
 | 4 | 守衛不通過（workspace 邊界、provider 白名單、開工閘門、關閉閘門、代按前的狀態重查、grant、已有存活的看門狗、本 workspace 已有 team、`--recover` 時看門狗仍存活、`--archive` 遇到進行中的 team） |
-| 5 | registry 缺漏或內容不合法 |
+| 5 | registry 缺漏或內容不合法，或找不到 team home（沒有 `AGENT_TEAM_HOME` 也沒有 workspace 指標檔） |
 | 6 | herdr 拒絕 |
 | 7 | 握手未取得憑據（逾時或 `agent_prompt_stalled`），或代按之後仍是 `blocked` |
 | 8 | 啟動未就緒 |

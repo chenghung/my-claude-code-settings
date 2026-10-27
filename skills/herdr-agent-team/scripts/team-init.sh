@@ -7,11 +7,14 @@
 # 主流程（規格 §6 第 1 步、2.5；--recover 與否都會跑，見下方）：
 #   1. 驗 HERDR_ENV。
 #   1.5 既有 team 偵測（見主程式「既有 team 偵測」一節）。
-#   2. 確保 team home（AGENT_TEAM_HOME，未設時取 PWD）底下的 .tmp 可
-#      用——經由 hat_registry_init → hat_registry_root → hat_project_tmp
-#      間接呼叫，三者皆幂等。
+#   2. 確保 team home（AGENT_TEAM_HOME，未設時取 PWD；本腳本是建立
+#      team 的起點，不讀 workspace 指標檔）底下的 .tmp 可用——由
+#      hat_registry_init 呼叫 hat_project_tmp，皆幂等。
 #   3. hat_registry_init：幂等建立 registry 根與七個子目錄、空
 #      team.json。
+#   3.5 成功跑完時把 team home 的絕對路徑寫進 workspace 指標檔（見
+#      lib/common.sh「team home 的解析」一節），讓之後在任何 cwd 跑的
+#      orchestrator 端腳本都找得到這個 registry。每次成功都覆寫。
 #   4-6. 自我命名：由人類直接啟動的 session，在 herdr 的 agent 清單裡
 #      沒有 name 欄位（已對真實 herdr 實測確認）；worker 因此沒有位址
 #      可以把訊息送回 orchestrator，除非 orchestrator 先替自己命名。用
@@ -128,6 +131,20 @@ if [ -z "$pane_id" ]; then
   hat_die 4 "team-init.sh: HERDR_PANE_ID 未設，無法自我命名"
 fi
 
+# ---- team home：本腳本是建立 team 的起點，只認 AGENT_TEAM_HOME，未設時
+#      取 PWD，不讀 workspace 指標檔 ----
+# 在既有 team 偵測之前就固定下來並 export：下面偵測、--archive、--recover
+# 與 hat_registry_init 內部的 hat_registry_root／hat_worker_list 都靠這
+# 個環境變數解析 team home，同一個值貫穿整支腳本，不會被指標檔帶去另一
+# 個 team home。指標檔要存絕對路徑，相對的 AGENT_TEAM_HOME 在這裡補成
+# 絕對路徑。
+team_home="${AGENT_TEAM_HOME:-$PWD}"
+case "$team_home" in
+  /*) : ;;
+  *) team_home="$PWD/$team_home" ;;
+esac
+export AGENT_TEAM_HOME="$team_home"
+
 # ---- worker 環境守衛：拒絕竊取 orchestrator 名稱與 registry 座標 ----
 # launch-worker.sh 建 worker tab 時用 `herdr tab create --env` 一次性
 # 注入 AGENT_TEAM_SELF（worker 自己的名字）與 AGENT_TEAM_ROLE（worker
@@ -236,10 +253,9 @@ elif [ "$detect_state" != none ]; then
   fi
 fi
 
-team_home="${AGENT_TEAM_HOME:-$PWD}"
-
-# hat_registry_init 內部經由 hat_registry_root 呼叫 hat_project_tmp，
-# 確保 team_home/.tmp 可用；三者皆幂等，重跑不清空既有狀態。
+# hat_registry_init 先以 hat_project_tmp 確保 team_home/.tmp 可用，再建
+# registry；皆幂等，重跑不清空既有狀態。hat_registry_root 本身是純路徑
+# 計算，不建 .tmp。
 hat_registry_init
 registry_root="$(hat_registry_root)"
 
@@ -397,5 +413,8 @@ if [ "$recover" -eq 1 ]; then
     fi
   done < <(hat_worker_list)
 fi
+
+# 全部成功才寫（或覆寫）指標檔；原子寫入，見 hat_write_workspace_pointer。
+hat_write_workspace_pointer "$team_home"
 
 printf 'orchestrator=%s registry=%s\n' "$name" "$registry_root"
