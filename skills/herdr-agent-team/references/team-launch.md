@@ -20,7 +20,7 @@
    - `2`：門檻環境變數不合法，stderr 說明是哪一項（約束見 `script-reference.md` 門檻值）；修正後重跑。
    - `4`：本 team 已有存活的看門狗，沿用它；要換門檻，先 `shutdown-watchdog.sh` 再重跑本步。
    - `1`：長駐子行程沒有就緒，原因在 registry 根目錄的 `watchdog.out`。
-   - `5`：registry 不存在，先走第 1 步。
+   - `5`：registry 不存在，或找不到 team home（沒有 `AGENT_TEAM_HOME` 也沒有 workspace 指標檔，stderr 會列出查過的指標檔路徑；或 `AGENT_TEAM_HOME` 是相對路徑，stderr 會列出收到的值），先走第 1 步。
 
    之後要確認它還活著，看 `team-status.sh` 第一行的 `watchdog=alive|dead`。`watchdog.log` 的 `skip` 行與 `alert` 行偶發一次不必處理，同一筆反覆出現才值得追；各 `reason` 值的意義見 `watchdog.sh` 檔頭。例外是 `alert reason=orchestrator_name_missing`：它每次名稱遺失只寫一次，出現即依 `session-recovery.md` 處置。
 7. **逐個 `launch-worker.sh`**：啟動前看 `team-status.sh` 第一行：`watchdog=dead` 時先走第 6 步。對每個要啟動的 role，先依 `briefing-template.md` 組好啟動包內容、寫成檔案，再呼叫 `launch-worker.sh --role <role> --kind <kind> --cwd <路徑> --briefing-file <路徑> [--arg <原生引數>]...`。goal 未確認時會被結束碼 `4` 擋下。啟動 `agy` 或 `opencode` 的 worker 時，要在事件流裡明確告知使用者：這兩家沒有正向 `idle` 規則（見 `provider-drivers.md`），「違約沒回報就停下」與「原地繞圈」只能靠 `AGENT_TEAM_STALL_SECONDS` 停滯偵測接住，而這道偵測只涵蓋 `.stage` 是 `running` 的 worker，關卡是 `delivered`／`closing`／`closed` 時這兩種失效沒有東西接得住。

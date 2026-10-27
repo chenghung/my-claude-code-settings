@@ -200,6 +200,11 @@ hat_herdr() {
 # 該處已存在可用的實體目錄或有效 symlink，直接沿用不替換；若是指向不存
 # 在目標的失效 symlink，先移除再重建。
 #
+# 有寫入副作用（建 symlink、建 ~/.tmp 下的資料夾），因此只有建立 team
+# 的 hat_registry_init（team-init.sh 用）會呼叫；hat_registry_root 是純
+# 路徑計算，不呼叫它——否則 orchestrator 端任何腳本在 cwd 不是 team
+# home 時，都會順手在 cwd 底下種出一個 .tmp symlink。
+#
 # 行為驗證安排在後續任務（見任務簡報），本任務只負責實作。
 hat_project_tmp() {
   local team_home="$1" tmp_path project_name project_hash home_project_dir
@@ -228,16 +233,117 @@ hat_project_tmp() {
   printf '%s\n' "$tmp_path"
 }
 
+# ---- team home 的解析：環境變數 → workspace 指標檔，沒有第三條路 ----
+# orchestrator 的 cwd 會變（例如 cd 進 registry 的 inbox/ 之後跑腳
+# 本），所以 team home 不能由當前工作目錄推導：曾經的「未設
+# AGENT_TEAM_HOME 就取 $PWD」會在 cwd 偏離 team home 時算出另一個不存
+# 在的 registry 路徑。team.json 的 .team_home 欄位記了 team home，但它
+# 在 registry 裡面，不能拿來找 registry。解法是 team-init.sh 另外寫一
+# 份以 workspace id 為鍵、位於任何 team home 之外的指標檔，內容是 team
+# home 的絕對路徑；解析順序：
+#   1. AGENT_TEAM_HOME（有設且非空就用它，但必須是絕對路徑：相對值的
+#      意義取決於 cwd，不是以 / 開頭就 hat_die 5，不退回指標檔）
+#   2. 指標檔 $HOME/.tmp/herdr-agent-team/workspaces/<HERDR_WORKSPACE_ID>
+#   3. 兩者都沒有就 hat_die 5，不退回 $PWD。
+# 只有 team-init.sh 接受相對的 AGENT_TEAM_HOME，並自行補成絕對路徑。
+# 指標檔放 $HOME/.tmp 底下，與 hat_project_tmp 用的是同一個位置，不新增
+# 另一個家目錄下的路徑；以 workspace id 為鍵，與 registry 路徑本來就以
+# workspace id 區分 team 一致。
+
+# hat_workspace_pointer_path
+# 印出本 workspace 的指標檔路徑；HOME 或 HERDR_WORKSPACE_ID 未設（算不
+# 出路徑）時不印任何東西、回傳 1。純路徑計算，不碰檔案系統。
+hat_workspace_pointer_path() {
+  local workspace_id="${HERDR_WORKSPACE_ID:-}" home="${HOME:-}"
+  [ -n "$workspace_id" ] && [ -n "$home" ] || return 1
+  printf '%s/.tmp/herdr-agent-team/workspaces/%s\n' "$home" "$workspace_id"
+}
+
+# hat_team_home
+# 依上面的順序印出 team home；解析不出來以 5 結束（訊息附上查過的指標
+# 檔路徑、當前工作目錄，並提示先跑 team-init.sh 或設定 AGENT_TEAM_HOME）。
+# AGENT_TEAM_HOME 非空但不是絕對路徑，同樣以 5 結束（訊息附上收到的值與
+# 當前工作目錄）：相對值要靠 cwd 才有意義，cwd 偏離時 registry 會從別處
+# 推算；也不退回指標檔，免得錯誤的設定被悄悄蓋過。指標檔存在但內容不是
+# 絕對路徑，同樣以 5 結束：寫入端（hat_write_workspace_pointer）只會寫
+# 絕對路徑，其他內容代表檔案被改壞，不能猜。純讀取，沒有寫入副作用。
+hat_team_home() {
+  local pointer="" team_home=""
+
+  if [ -n "${AGENT_TEAM_HOME:-}" ]; then
+    case "$AGENT_TEAM_HOME" in
+      /*)
+        printf '%s\n' "$AGENT_TEAM_HOME"
+        return 0
+        ;;
+      *)
+        hat_die 5 "hat_team_home: AGENT_TEAM_HOME 不是絕對路徑（'$AGENT_TEAM_HOME'）；目前 cwd=$PWD。相對路徑會隨 cwd 指向不同位置，請改設絕對路徑"
+        ;;
+    esac
+  fi
+
+  if pointer="$(hat_workspace_pointer_path)" && [ -f "$pointer" ]; then
+    # 檔案若沒有結尾換行，read 回傳 1 但變數仍有值，所以不看它的結束碼。
+    IFS= read -r team_home < "$pointer" || true
+    case "$team_home" in
+      /*)
+        printf '%s\n' "$team_home"
+        return 0
+        ;;
+      *)
+        hat_die 5 "hat_team_home: workspace 指標檔 '$pointer' 的內容不是絕對路徑（'$team_home'）；重跑 team-init.sh 會覆寫它，或設定 AGENT_TEAM_HOME"
+        ;;
+    esac
+  fi
+
+  hat_die 5 "hat_team_home: 找不到 team home：AGENT_TEAM_HOME 未設，指標檔 '${pointer:-（HOME 或 HERDR_WORKSPACE_ID 未設，算不出路徑）}' 不存在；目前 cwd=$PWD。先在 team home 跑 team-init.sh，或設定 AGENT_TEAM_HOME"
+}
+
+# hat_write_workspace_pointer <team_home>
+# 把 <team_home>（必須是絕對路徑）原子寫進本 workspace 的指標檔：在同
+# 一個目錄建暫存檔再 mv 置換，讀取端因此只會讀到舊內容或新內容，不會
+# 讀到寫到一半的檔案。mv 用 -T：指標檔位置若已是目錄，mv 會失敗，不是
+# 把暫存檔搬進目錄裡還回報成功。每次呼叫都覆寫。只有 team-init.sh 呼
+# 叫。任何一步失敗以 5 結束，並先清掉暫存檔。
+hat_write_workspace_pointer() {
+  local team_home="$1" pointer dir tmp
+
+  case "$team_home" in
+    /*) : ;;
+    *) hat_die 2 "hat_write_workspace_pointer: team home 必須是絕對路徑，收到：'$team_home'" ;;
+  esac
+
+  pointer="$(hat_workspace_pointer_path)" \
+    || hat_die 5 "hat_write_workspace_pointer: HOME 或 HERDR_WORKSPACE_ID 未設，算不出指標檔路徑"
+  dir="${pointer%/*}"
+
+  mkdir -p "$dir" \
+    || hat_die 5 "hat_write_workspace_pointer: 無法建立目錄 '$dir'"
+  tmp="$(mktemp "$dir/.pointer.XXXXXX")" \
+    || hat_die 5 "hat_write_workspace_pointer: 無法在 '$dir' 建立暫存檔"
+  if ! printf '%s\n' "$team_home" > "$tmp" || ! mv -fT "$tmp" "$pointer"; then
+    rm -f "$tmp"
+    hat_die 5 "hat_write_workspace_pointer: 寫入指標檔 '$pointer' 失敗"
+  fi
+}
+
 # hat_registry_root
-# 印出 `<team home>/.tmp/herdr-agent-team/<workspace_id>`。team home 取
-# 環境變數 AGENT_TEAM_HOME，未設時取當前工作目錄；workspace id 取
-# HERDR_WORKSPACE_ID。
+# 印出 `<team home>/.tmp/herdr-agent-team/<workspace_id>`。team home 由
+# hat_team_home 解析（AGENT_TEAM_HOME 必須是絕對路徑 → workspace 指標
+# 檔，都沒有或 AGENT_TEAM_HOME 是相對路徑就以 5 結束，不退回當前工作目
+# 錄）；workspace id 取 HERDR_WORKSPACE_ID。
+#
+# 純路徑計算，沒有任何寫入副作用：不建 .tmp、不建目錄。建立 .tmp 是
+# hat_registry_init 的事（見 hat_project_tmp）。<team home>/.tmp 若是
+# hat_project_tmp 建的 symlink，這個路徑經由 symlink 解析到同一處。
 #
 # 行為驗證安排在後續任務（見任務簡報），本任務只負責實作。
 hat_registry_root() {
   local team_home
-  team_home="${AGENT_TEAM_HOME:-$PWD}"
-  printf '%s/herdr-agent-team/%s\n' "$(hat_project_tmp "$team_home")" "${HERDR_WORKSPACE_ID:-}"
+  # 必須在 printf 之外取值並檢查：寫成 printf 引數裡的命令替換，失敗
+  # 會被 printf 自己的結束碼 0 蓋掉。
+  team_home="$(hat_team_home)" || return $?
+  printf '%s/.tmp/herdr-agent-team/%s\n' "$team_home" "${HERDR_WORKSPACE_ID:-}"
 }
 
 # hat_whitelist_agents <json>
@@ -455,8 +561,13 @@ _HAT_INBOX_JSON_FIELDS=(
 # worker.sh 在寫 registry 的同一步把啟動包內容複製進去（規格 §13：中
 # 斷恢復之後，那是唯一能重建「當初到底派了什麼」的東西——呼叫端傳入的
 # --briefing-file 路徑可能是暫存檔，也可能已經被改掉）。
+#
+# 這是唯一會呼叫 hat_project_tmp 的地方：先確保 <team home>/.tmp 可用，
+# 再用純路徑計算的 hat_registry_root 取 registry 根。
 hat_registry_init() {
-  local root
+  local team_home root
+  team_home="$(hat_team_home)"
+  hat_project_tmp "$team_home" >/dev/null
   root="$(hat_registry_root)"
 
   mkdir -p \
@@ -570,9 +681,13 @@ hat_lock_timeout_seconds() {
 #      hat_registry_root ----
 # 修正迴圈第二輪：原本鎖檔是 registry 根底下一個固定路徑
 # （`<registry root>/.lock`），而 `hat_registry_root` 內部依賴
-# `AGENT_TEAM_HOME`（未設時退回 `$PWD`）與 `HERDR_WORKSPACE_ID` 重算根
-# 目錄。這在 orchestrator 端（cwd 穩定、且通常就是 team home）沒問題，
-# 但 worker 端呼叫 `hat_json_set`（例如 report.sh）時踩了兩個洞：一、
+# `AGENT_TEAM_HOME` 與 `HERDR_WORKSPACE_ID` 重算根目錄。當時
+# `AGENT_TEAM_HOME` 未設就退回 `$PWD`（現已改成查 workspace 指標檔、
+# 不再退回 `$PWD`，見上方「team home 的解析」一節；下面描述的是當時
+# 的故障。結論不變：worker 環境沒有 `AGENT_TEAM_HOME`，能不能找到指
+# 標檔取決於 `HOME` 有沒有被繼承，所以 worker 端不呼叫
+# `hat_registry_root`）。worker 端呼叫 `hat_json_set`（例如
+# report.sh）時踩了兩個洞：一、
 # worker 環境只由 `launch-worker.sh` 注入五個 `AGENT_TEAM_*` 變數
 # （`STATE_DIR`／`ORCHESTRATOR`／`SELF`／`ROLE`／`SCRIPTS`），`HOME` 從
 # 來不在其中，於是 `$PWD` 變成唯一依據；二、worker 的 cwd 本來就是它
@@ -1021,9 +1136,10 @@ hat_strip_uplink_prefix() {
 # 上——那正是這個設計原本要避免的靜默故障，只是換了方向。
 #
 # ---- 盡力而為：本函式一律以 0 結束 ----
-# HERDR_PANE_ID 未設、team.json 讀不到、`.orchestrator_name` 缺席，都
-# 是正常的「還沒有東西可續」狀態（team 還沒初始化過），無動作返回，不
-# 是錯誤。`agent get`／`agent rename` 呼叫失敗只在 stderr 留一行可辨
+# HERDR_PANE_ID 未設、team home 解析不出來（沒有 AGENT_TEAM_HOME 也沒
+# 有 workspace 指標檔，或 AGENT_TEAM_HOME 是相對路徑）、team.json 讀不
+# 到、`.orchestrator_name` 缺席，都是正常的「還沒有東西可續」狀態
+# （team 還沒初始化過），無動作返回，不是錯誤。`agent get`／`agent rename` 呼叫失敗只在 stderr 留一行可辨
 # 識的說明；本函式一律以 0 結束，不讓呼叫端的腳本（全部掛
 # `set -euo pipefail`）因為這個自我修復的旁支動作而被 errexit 帶走。
 # 名稱本來就正確時，直接返回，不呼叫 rename——避免每支腳本每次執行都
@@ -1047,7 +1163,11 @@ hat_renew_orchestrator_name() {
 
   [ -n "$pane_id" ] || return 0
 
-  root="$(hat_registry_root)"
+  # 沒有 AGENT_TEAM_HOME 也沒有指標檔（或 AGENT_TEAM_HOME 是相對路徑）
+  # 時 hat_registry_root 會 hat_die 5；這跟 team.json 讀不到是同一種
+  # 「team 還沒初始化」的狀態，照本函式一律以 0 結束的約定無動作返回
+  # （stderr 也不印，維持改版前的靜默）。
+  root="$(hat_registry_root 2>/dev/null)" || return 0
   team_json="$root/team.json"
   [ -f "$team_json" ] || return 0
 

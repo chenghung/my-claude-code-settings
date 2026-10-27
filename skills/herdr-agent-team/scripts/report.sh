@@ -153,9 +153,12 @@
 # 次改版相同：本腳本收到的 `AGENT_TEAM_STATE_DIR` 已經是完全展開好的
 # registry 根絕對路徑（由 `launch-worker.sh` 在建立這個 worker 的 tab
 # 時直接注入），worker 環境裡沒有 `AGENT_TEAM_HOME`，`hat_registry_
-# root` 退回去用的 `$PWD` 又是 worker 自己的工作起點，跟 orchestrator
-# 建立 registry 時的 cwd 不同是多 worker 團隊的常態；透過它重算只會算
-# 出一個跟真正 registry 無關的路徑。
+# root` 只能改查 workspace 指標檔，那要靠 `HOME` 與 `HERDR_WORKSPACE_
+# ID` 兩個 worker 環境不保證有的變數，沒有指標檔就以 5 結束（早期版本
+# 缺席時退回 `$PWD`，那是 worker 自己的工作起點，跟 orchestrator 建立
+# registry 時的 cwd 不同是多 worker 團隊的常態，算出一個跟真正
+# registry 無關的路徑）；透過它重算不可靠，直接用注入的絕對路徑才可
+# 靠。
 #
 # ---- 環境變數缺席時的備援 ----
 # 本腳本靠 AGENT_TEAM_STATE_DIR／AGENT_TEAM_SELF／AGENT_TEAM_ORCHESTRATOR

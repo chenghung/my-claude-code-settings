@@ -16,6 +16,13 @@
 # 鎖 fd 經繼承交給它（fd 號碼放在內部變數 HAT_WD_LOCK_FD）→ 等子行程
 # 寫出 watchdog.pid 後印 `watchdog=started pid=<PID>`、以 0 結束。
 #
+# 長駐子行程釘死在啟動時的 registry：父行程解析出 team home（見
+# lib/common.sh「team home 的解析」）後，把它以 AGENT_TEAM_HOME 傳給子
+# 行程。子行程每輪都會重新計算 registry 路徑，若沿用 workspace 指標
+# 檔，別處跑 team-init.sh 覆寫（或刪掉）指標檔之後，它會開始處理另一個
+# team 的 registry，甚至每輪失敗；釘死之後它只認自己握有鎖的那個
+# registry。
+#
 # 為什麼不交給 orchestrator 選背景方式：harness 的背景任務綁在 session
 # 上。已實測只加 nohup 的行程在 Claude Code 的 TaskStop 後死亡；setsid
 # 拉起的行程撐過 TaskStop、整個 session 先 HUP 後 KILL、以及巢狀真實
@@ -1567,7 +1574,10 @@ if [ -z "${HAT_WD_LOCK_FD:-}" ]; then
     hat_die 4 "watchdog.sh: 本 team 已有存活的看門狗（pid=${existing_pid:-未知}），不再起第二支"
   fi
   rm -f "$registry_root/watchdog.pid"
-  HAT_WD_LOCK_FD="$lock_fd" setsid nohup bash "$SCRIPT_DIR/watchdog.sh" \
+  # 釘死 team home：子行程繼承 AGENT_TEAM_HOME，不再每輪重讀指標檔
+  # （見檔頭「長駐子行程釘死在啟動時的 registry」）。
+  team_home="$(hat_team_home)"
+  HAT_WD_LOCK_FD="$lock_fd" AGENT_TEAM_HOME="$team_home" setsid nohup bash "$SCRIPT_DIR/watchdog.sh" \
     >>"$registry_root/watchdog.out" 2>&1 </dev/null &
   for ((i = 0; i < 50; i++)); do
     if [ -s "$registry_root/watchdog.pid" ]; then

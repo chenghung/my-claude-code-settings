@@ -12,8 +12,11 @@
 # 本腳本跑在 worker 那一端，那裡只有 launch-worker.sh 注入的五個
 # `AGENT_TEAM_*` 變數（`STATE_DIR`／`ORCHESTRATOR`／`SELF`／`ROLE`／
 # `SCRIPTS`），沒有 `AGENT_TEAM_HOME`；common.sh 的 `hat_registry_root`
-# 依賴它、缺席時退回 `$PWD`，在 worker 端會算出一個跟真正 registry 無關
-# 的路徑（report.sh 檔頭「序號配發」一節記載的既有教訓）。因此本腳本一
+# 依賴它、缺席時改查 workspace 指標檔（沒有指標檔就以 5 結束，不退回
+# `$PWD`），那條路徑要靠 `HOME` 與 `HERDR_WORKSPACE_ID` 兩個 worker 環
+# 境不保證有的變數，不能拿來當 registry 根（report.sh 檔頭「序號配
+# 發」一節記載的既有教訓，當時缺席時退回 `$PWD`，算出一個跟真正
+# registry 無關的路徑）。因此本腳本一
 # 律直接用 `AGENT_TEAM_STATE_DIR`（缺席時接受 `--state-dir` 明給）當成
 # registry 根，自己組 `workers/`、`peer-log/` 底下的路徑，完全不呼叫
 # `hat_registry_root`／`hat_worker_list`／`hat_require_goal_confirmed`／

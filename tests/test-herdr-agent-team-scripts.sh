@@ -290,10 +290,12 @@ fi
 
 # ===== registry 讀寫 =====
 # 這裡是本檔第一次用到 registry。先把 AGENT_TEAM_HOME／HOME 都收斂進
-# $T：hat_registry_root 內部會呼叫 hat_project_tmp，而 hat_project_tmp
+# $T：下面的 hat_registry_init 會呼叫 hat_project_tmp，而 hat_project_tmp
 # 未被 HOME 收斂時會去動開發機真實的 $HOME/.tmp（hat_project_tmp 本身
 # 的行為驗證延後到 Task 3，這裡只是借它的路徑推導，不能因此把真實
-# $HOME 弄髒，寫法沿用 Task 3 簡報既有的 `HOME="$T/fakehome"` 慣例）。
+# $HOME 弄髒，寫法沿用 Task 3 簡報既有的 `HOME="$T/fakehome"` 慣例；
+# hat_registry_root 本身是純路徑計算、不會建 .tmp，但 team home 解析在
+# AGENT_TEAM_HOME 缺席時會讀 $HOME 底下的指標檔，同樣要收斂）。
 export AGENT_TEAM_HOME="$T/teamhome" HOME="$T/fakehome"
 mkdir -p "$AGENT_TEAM_HOME"
 hat_registry_init
@@ -476,8 +478,8 @@ esac
 mkdir -p "$T/workers-aside-1"
 find "$REG/workers" -maxdepth 1 -type f -name '*.json' -exec mv {} "$T/workers-aside-1/" \;
 
-# ===== team-init.sh：.tmp 建立規則（本任務同時是 hat_project_tmp／
-#       hat_registry_root 的行為驗證，Task 1 只實作、未測）=====
+# ===== team-init.sh：.tmp 建立規則（本任務同時是 hat_project_tmp 經
+#       hat_registry_init 呼叫的行為驗證，Task 1 只實作、未測）=====
 # 沿用上面「registry 讀寫」小節已匯出的 AGENT_TEAM_HOME=$T/teamhome、
 # HOME=$T/fakehome。team-init.sh 的自我命名步驟需要 HERDR_PANE_ID／能
 # 回應的 herdr 樁，這裡先用一個通用成功樁與固定 pane id 頂著，讓這兩條
@@ -8402,12 +8404,320 @@ AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" >/dev/null 2>&1 
 rc=0; AGENT_TEAM_HOME="$TI_HOME" bash "$SCRIPTS/team-init.sh" --recover >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 0 ]; then pass "team-init --recover：看門狗停止後照常執行"; else bad "team-init --recover：看門狗停止後得到 rc=$rc"; fi
 
+# ===== workspace 指標檔：orchestrator 的 cwd 偏離 team home 時仍找得到
+#       registry；非 init 腳本不得建立 .tmp =====
+# 回歸的 bug：沒設 AGENT_TEAM_HOME 時 hat_registry_root 取 $PWD 當 team
+# home，orchestrator cd 進 registry 的 inbox/ 之後跑腳本，算出
+# `<...>/inbox/.tmp/herdr-agent-team/<ws>`，並順手在 inbox/ 底下種出
+# .tmp symlink、在 $HOME/.tmp 建新資料夾（唯讀的 team-status.sh 也有）。
+# 修法：team-init.sh 另寫 `$HOME/.tmp/herdr-agent-team/workspaces/<ws id>`
+# 指標檔；其餘腳本依序採用 AGENT_TEAM_HOME、指標檔，都沒有就以 5 結束；
+# hat_registry_root 變成純路徑計算。
+#
+# 本節全程不動開發機真實的 $HOME：每個情境各自帶一個 $T 底下的假 HOME，
+# 並用 env -u 拿掉前面小節匯出的 AGENT_TEAM_HOME。herdr 樁照樣走既有的
+# hat_assert_herdr_stubbed 守衛。
+PTR_LOG="$T/herdr-call-log-ptr"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$PTR_LOG"
+if [ "\$1 \$2" = "agent list" ]; then printf '{"result":{"agents":[]}}'; exit 0; fi
+printf '{"result":{}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" workspace-pointer
+unset AGENT_TEAM_SELF AGENT_TEAM_ROLE AGENT_TEAM_STATE_DIR AGENT_TEAM_ORCHESTRATOR
+
+# hat_ptr_run <cwd> <fake_home> <command...>
+# 在 <cwd> 下、沒有 AGENT_TEAM_HOME、HOME=<fake_home> 的環境跑指令。
+hat_ptr_run() {
+  local dir="$1" fake_home="$2"
+  shift 2
+  ( cd "$dir" && env -u AGENT_TEAM_HOME HOME="$fake_home" "$@" )
+}
+
+PTR_HOME="$T/ptr-fakehome"
+PTR_POINTER="$PTR_HOME/.tmp/herdr-agent-team/workspaces/w3N"
+PTR_PROJ="$T/ptr-proj"
+PTR_REG="$PTR_PROJ/.tmp/herdr-agent-team/w3N"
+mkdir -p "$PTR_HOME" "$PTR_PROJ"
+
+# ---- (d) team-init.sh 寫出指標檔，內容是 team home 的絕對路徑 ----
+rc=0; hat_ptr_run "$PTR_PROJ" "$PTR_HOME" bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then pass "指標檔：未設 AGENT_TEAM_HOME 時 team-init.sh 以 PWD 為 team home 並以 0 結束"; else bad "指標檔：team-init.sh 得到 rc=$rc"; fi
+if [ -f "$PTR_POINTER" ] && [ "$(cat "$PTR_POINTER")" = "$PTR_PROJ" ]; then
+  pass "指標檔：team-init.sh 寫出 workspaces/<ws id>，內容是 team home 的絕對路徑"
+else
+  bad "指標檔：不存在或內容不對：'$(cat "$PTR_POINTER" 2>/dev/null || true)'（期望 $PTR_PROJ）"
+fi
+if [ -d "$PTR_REG/inbox" ] && [ "$(find "$PTR_HOME/.tmp/herdr-agent-team/workspaces" -mindepth 1 | wc -l)" -eq 1 ]; then
+  pass "指標檔：原子寫入後 workspaces/ 底下只有指標檔本身，沒有殘留暫存檔"
+else
+  bad "指標檔：registry 沒建好，或 workspaces/ 底下有殘留暫存檔"
+fi
+printf '{"pane_id":"w3N:p9","held":false}' > "$PTR_REG/workers/w3n-x.json"
+
+# ---- (a)(b) cd 進 registry 的 inbox/ 跑 orchestrator 端腳本 ----
+PTR_SNAP_BEFORE="$(find "$PTR_HOME/.tmp" -maxdepth 2 | sort)"
+rc=0; out="$(hat_ptr_run "$PTR_REG/inbox" "$PTR_HOME" bash "$SCRIPTS/team-status.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ] && [[ "$out" == *"worker=w3n-x "* ]]; then
+  pass "指標檔：cwd 在 registry 的 inbox/ 時 team-status.sh 仍成功且指向原 registry（看得到 worker）"
+else
+  bad "指標檔：cwd 在 inbox/ 時 team-status.sh rc=$rc out='$out'"
+fi
+rc=0; out="$(hat_ptr_run "$PTR_REG/inbox" "$PTR_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "watchdog=not-running" ]; then
+  pass "指標檔：cwd 在 inbox/ 時 shutdown-watchdog.sh 仍成功"
+else
+  bad "指標檔：cwd 在 inbox/ 時 shutdown-watchdog.sh rc=$rc out='$out'"
+fi
+if [ ! -e "$PTR_REG/inbox/.tmp" ] && [ ! -L "$PTR_REG/inbox/.tmp" ]; then
+  pass "指標檔：orchestrator 端腳本不在 cwd（inbox/）底下建立 .tmp"
+else
+  bad "指標檔：inbox/ 底下出現了 .tmp"
+fi
+PTR_SNAP_AFTER="$(find "$PTR_HOME/.tmp" -maxdepth 2 | sort)"
+if [ "$PTR_SNAP_BEFORE" = "$PTR_SNAP_AFTER" ]; then
+  pass "指標檔：orchestrator 端腳本不在 \$HOME/.tmp 新增任何專案資料夾"
+else
+  bad "指標檔：\$HOME/.tmp 多了東西：$(diff <(printf '%s\n' "$PTR_SNAP_BEFORE") <(printf '%s\n' "$PTR_SNAP_AFTER") || true)"
+fi
+
+# ---- (c) 沒有指標檔也沒有 AGENT_TEAM_HOME：以 5 結束、不建立任何 .tmp ----
+PTR_EMPTY_CWD="$T/ptr-empty-cwd"
+PTR_EMPTY_HOME="$T/ptr-empty-home"
+mkdir -p "$PTR_EMPTY_CWD" "$PTR_EMPTY_HOME"
+for s in team-status.sh shutdown-watchdog.sh watchdog.sh; do
+  rc=0; out="$(hat_ptr_run "$PTR_EMPTY_CWD" "$PTR_EMPTY_HOME" bash "$SCRIPTS/$s" 2>&1)" || rc=$?
+  if [ "$rc" -eq 5 ] \
+    && [[ "$out" == *"$PTR_EMPTY_HOME/.tmp/herdr-agent-team/workspaces/w3N"* ]] \
+    && [[ "$out" == *"cwd=$PTR_EMPTY_CWD"* ]] \
+    && [[ "$out" == *team-init.sh* ]] && [[ "$out" == *AGENT_TEAM_HOME* ]]; then
+    pass "指標檔：$s 無 AGENT_TEAM_HOME 也無指標檔時以 5 結束，訊息附指標檔路徑、cwd 與提示"
+  else
+    bad "指標檔：$s 無指標檔時 rc=$rc out='$out'"
+  fi
+done
+if [ -z "$(find "$PTR_EMPTY_CWD" -mindepth 1)" ] && [ ! -e "$PTR_EMPTY_HOME/.tmp" ]; then
+  pass "指標檔：無指標檔而報錯時，cwd 與 \$HOME 底下都沒有建立任何 .tmp"
+else
+  bad "指標檔：報錯路徑留下了東西：$(find "$PTR_EMPTY_CWD" "$PTR_EMPTY_HOME" -mindepth 1)"
+fi
+
+# ---- (e) hat_renew_orchestrator_name 在無指標檔時仍 return 0、不呼叫 herdr ----
+: > "$PTR_LOG"
+rc=0
+( cd "$PTR_EMPTY_CWD"; unset AGENT_TEAM_HOME; HOME="$PTR_EMPTY_HOME"; export HOME; hat_renew_orchestrator_name ) 2>"$T/ptr-renew-err" || rc=$?
+if [ "$rc" -eq 0 ] && [ ! -s "$T/ptr-renew-err" ] && [ ! -s "$PTR_LOG" ]; then
+  pass "指標檔：hat_renew_orchestrator_name 無指標檔時以 0 結束、不印訊息、不呼叫 herdr"
+else
+  bad "指標檔：hat_renew_orchestrator_name 無指標檔時 rc=$rc err='$(cat "$T/ptr-renew-err")' herdr 呼叫='$(cat "$PTR_LOG")'"
+fi
+if [ -z "$(find "$PTR_EMPTY_CWD" -mindepth 1)" ] && [ ! -e "$PTR_EMPTY_HOME/.tmp" ]; then
+  pass "指標檔：hat_renew_orchestrator_name 無指標檔時不建立任何 .tmp"
+else
+  bad "指標檔：hat_renew_orchestrator_name 留下了東西"
+fi
+
+# ---- hat_registry_root 純路徑計算與解析優先序 ----
+PTR_PURE_HOME="$T/ptr-pure-home"
+PTR_PURE_TEAM="$T/ptr-pure-team"
+mkdir -p "$PTR_PURE_HOME" "$PTR_PURE_TEAM"
+out="$(AGENT_TEAM_HOME="$PTR_PURE_TEAM" HOME="$PTR_PURE_HOME" hat_registry_root)"
+if [ "$out" = "$PTR_PURE_TEAM/.tmp/herdr-agent-team/w3N" ] \
+  && [ -z "$(find "$PTR_PURE_TEAM" "$PTR_PURE_HOME" -mindepth 1)" ]; then
+  pass "hat_registry_root：純路徑計算，不建立 .tmp 或任何目錄"
+else
+  bad "hat_registry_root：out='$out'，或建立了東西：$(find "$PTR_PURE_TEAM" "$PTR_PURE_HOME" -mindepth 1)"
+fi
+# shellcheck disable=SC2016 # 單引號是刻意的：$1 要由子 bash 展開，不是由本檔展開
+out="$(cd "$PTR_PURE_TEAM" && env -u AGENT_TEAM_HOME HOME="$PTR_HOME" bash -c 'source "$1"; hat_registry_root' _ "$LIB")"
+if [ "$out" = "$PTR_REG" ]; then
+  pass "hat_registry_root：未設 AGENT_TEAM_HOME 時取指標檔，不取 cwd"
+else
+  bad "hat_registry_root：未設 AGENT_TEAM_HOME 時得到 '$out'（期望 $PTR_REG）"
+fi
+out="$(AGENT_TEAM_HOME="$PTR_PURE_TEAM" HOME="$PTR_HOME" hat_registry_root)"
+if [ "$out" = "$PTR_PURE_TEAM/.tmp/herdr-agent-team/w3N" ]; then
+  pass "hat_registry_root：AGENT_TEAM_HOME 優先於指標檔"
+else
+  bad "hat_registry_root：AGENT_TEAM_HOME 與指標檔並存時得到 '$out'"
+fi
+PTR_BAD_HOME="$T/ptr-bad-home"
+mkdir -p "$PTR_BAD_HOME/.tmp/herdr-agent-team/workspaces"
+printf 'relative/path\n' > "$PTR_BAD_HOME/.tmp/herdr-agent-team/workspaces/w3N"
+rc=0
+# shellcheck disable=SC2016 # 單引號是刻意的：$1 要由子 bash 展開，不是由本檔展開
+out="$(hat_ptr_run "$PTR_PURE_TEAM" "$PTR_BAD_HOME" bash -c 'source "$1"; hat_registry_root' _ "$LIB" 2>&1)" || rc=$?
+if [ "$rc" -eq 5 ] && [[ "$out" == *"不是絕對路徑"* ]]; then
+  pass "hat_registry_root：指標檔內容不是絕對路徑時以 5 結束"
+else
+  bad "hat_registry_root：壞指標檔 rc=$rc out='$out'"
+fi
+
+# ---- team-init.sh 仍以 AGENT_TEAM_HOME:-PWD 為準，不被指標檔帶走（含
+#      --archive、--recover）----
+# 此刻指標檔指向 $PTR_PROJ，而且 $PTR_PROJ 有 worker 記錄（running）。
+# 在另一個目錄跑 team-init.sh：若它讀了指標檔，會把它當成既有 team 而以
+# 4 拒絕；實際上它以自己的 PWD 為 team home，建立獨立的新 registry，
+# 並把指標檔改指向新的 team home。
+PTR_PROJ2="$T/ptr-proj2"
+mkdir -p "$PTR_PROJ2"
+rc=0; hat_ptr_run "$PTR_PROJ2" "$PTR_HOME" bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] && [ -f "$PTR_PROJ2/.tmp/herdr-agent-team/w3N/team.json" ] && [ "$(cat "$PTR_POINTER")" = "$PTR_PROJ2" ]; then
+  pass "team-init：不讀指標檔，以自己的 PWD 為 team home 建立 registry 並覆寫指標檔"
+else
+  bad "team-init：另一個目錄 rc=$rc，或指標檔是 '$(cat "$PTR_POINTER")'"
+fi
+
+# --archive：$PTR_PROJ3 是已收工的 team（goal 已確認、有啟動包副本、沒有
+# worker）。指標檔此刻指向 $PTR_PROJ2；--archive 必須歸檔 cwd 這個 team
+# home 的 registry，不是指標檔指的那個。
+PTR_PROJ3="$T/ptr-proj3"
+PTR_REG3="$PTR_PROJ3/.tmp/herdr-agent-team/w3N"
+mkdir -p "$PTR_PROJ3"
+rc=0; hat_ptr_run "$PTR_PROJ3" "$PTR_HOME" bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then bad "team-init --archive 前置：PTR_PROJ3 初始化得到 rc=$rc"; fi
+printf '{"goal_confirmed":true}' > "$PTR_REG3/team.json"
+printf 'briefing\n' > "$PTR_REG3/briefings/w3n-x.md"
+printf '{"pane_id":"w3N:p9","held":false}' > "$PTR_REG/workers/w3n-x.json"
+echo "$PTR_PROJ2" > "$PTR_POINTER"
+rc=0; out="$(hat_ptr_run "$PTR_PROJ3" "$PTR_HOME" bash "$SCRIPTS/team-init.sh" --archive 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 0 ] && [[ "$out" == *"archived=$PTR_REG3.archived-"* ]] && [ "$(cat "$PTR_POINTER")" = "$PTR_PROJ3" ]; then
+  pass "team-init --archive：歸檔 PWD 這個 team home 的 registry，不被指標檔帶走，並覆寫指標檔"
+else
+  bad "team-init --archive：rc=$rc out='$out' 指標檔='$(cat "$PTR_POINTER")'"
+fi
+
+# --recover：指標檔此刻指向 $PTR_PROJ3；在 $PTR_PROJ 跑 --recover 必須處理
+# $PTR_PROJ 的 worker（把 held 收回成 false），並把指標檔改回 $PTR_PROJ。
+printf '{"pane_id":"w3N:p9","held":true}' > "$PTR_REG/workers/w3n-x.json"
+rc=0; hat_ptr_run "$PTR_PROJ" "$PTR_HOME" bash "$SCRIPTS/team-init.sh" --recover >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] \
+  && [ "$(jq -r '.held' "$PTR_REG/workers/w3n-x.json")" = "false" ] \
+  && [ "$(cat "$PTR_POINTER")" = "$PTR_PROJ" ]; then
+  pass "team-init --recover：處理 PWD 這個 team home 的 worker，不被指標檔帶走，並覆寫指標檔"
+else
+  bad "team-init --recover：rc=$rc held='$(jq -r '.held' "$PTR_REG/workers/w3n-x.json")' 指標檔='$(cat "$PTR_POINTER")'"
+fi
+
+# ---- watchdog.sh（背景長駐、自我 detach）：cwd 不是 team home 時靠指標檔
+#      找到 registry ----
+rm -f "$PTR_REG/workers/w3n-x.json"
+rc=0; hat_ptr_run "$PTR_REG/inbox" "$PTR_HOME" env AGENT_TEAM_POLL_SECONDS=1 bash "$SCRIPTS/watchdog.sh" >"$T/ptr-wd-out" 2>&1 || rc=$?
+hat_wait_file "$PTR_REG/watchdog.pid" || bad "指標檔：watchdog.sh 沒有寫出 watchdog.pid"
+ptr_wd_pid="$(cat "$PTR_REG/watchdog.pid" 2>/dev/null || true)"
+[ -n "$ptr_wd_pid" ] && printf '%s\n' "$ptr_wd_pid" >> "$T/bg-pgids"
+if [ "$rc" -eq 0 ] && [[ "$(cat "$T/ptr-wd-out")" == "watchdog=started pid=$ptr_wd_pid" ]]; then
+  pass "指標檔：cwd 在 inbox/ 時 watchdog.sh 靠指標檔找到 registry 並成功拉起長駐實例"
+else
+  bad "指標檔：cwd 在 inbox/ 時 watchdog.sh rc=$rc out='$(cat "$T/ptr-wd-out")'"
+fi
+sleep 1.5
+out="$(hat_ptr_run "$PTR_REG/inbox" "$PTR_HOME" bash "$SCRIPTS/team-status.sh" 2>/dev/null | head -n 1)"
+if [ "$out" = "watchdog=alive pid=$ptr_wd_pid" ] && [ -z "$(find "$PTR_REG/inbox" -mindepth 1 -name '.tmp')" ]; then
+  pass "指標檔：長駐實例在 cwd=inbox/ 的看門狗輪詢下持續存活，team-status.sh 看得到它，inbox/ 沒有 .tmp"
+else
+  bad "指標檔：長駐實例狀態 out='$out'"
+fi
+
+# ---- 長駐子行程釘死在啟動時的 registry：指標檔事後被改指或刪除都不影響
+#      它 ----
+# 父行程把解析出的 team home 以 AGENT_TEAM_HOME 傳給子行程（見 watchdog.sh
+# 檔頭）；否則子行程每輪重讀指標檔，別處的 team-init.sh 覆寫指標檔就會讓
+# 它開始處理另一個 team 的 registry，指標檔被刪則每輪失敗而結束。兩道斷
+# 言：一、子行程環境真的帶著啟動時的 team home；二、指標檔改指別處再刪
+# 掉、跨過數輪輪詢（poll=1 秒）之後，它仍存活，且仍持有原 registry 的鎖。
+if tr '\0' '\n' < "/proc/$ptr_wd_pid/environ" 2>/dev/null | grep -qxF "AGENT_TEAM_HOME=$PTR_PROJ"; then
+  pass "指標檔：長駐子行程的環境帶著啟動時的 AGENT_TEAM_HOME（釘死 registry）"
+else
+  bad "指標檔：長駐子行程環境沒有 AGENT_TEAM_HOME=$PTR_PROJ"
+fi
+printf '%s\n' "$PTR_PROJ2" > "$PTR_POINTER"
+sleep 2.5
+rm -f "$PTR_POINTER"
+sleep 2.5
+if hat_ptr_run "$PTR_REG/inbox" "$PTR_HOME" env AGENT_TEAM_HOME="$PTR_PROJ" bash "$SCRIPTS/team-status.sh" 2>/dev/null | head -n 1 | grep -qxF "watchdog=alive pid=$ptr_wd_pid"; then
+  pass "指標檔：指標檔被改指別處再刪除、跨過數輪輪詢後，長駐實例仍存活並持有原 registry 的鎖"
+else
+  bad "指標檔：指標檔被改動後長駐實例不見了或不再持有原 registry 的鎖"
+fi
+printf '%s\n' "$PTR_PROJ" > "$PTR_POINTER"
+rc=0; out="$(hat_ptr_run "$PTR_REG/inbox" "$PTR_HOME" bash "$SCRIPTS/shutdown-watchdog.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "watchdog=stopped pid=$ptr_wd_pid" ]; then
+  pass "指標檔：cwd 在 inbox/ 時 shutdown-watchdog.sh 停得掉長駐實例"
+else
+  bad "指標檔：shutdown-watchdog.sh rc=$rc out='$out'"
+fi
+if [ ! -e "$PTR_REG/inbox/.tmp" ] && [ ! -e "$PTR_EMPTY_CWD/.tmp" ]; then
+  pass "指標檔：看門狗全程沒有在 cwd 底下建立 .tmp"
+else
+  bad "指標檔：看門狗在 cwd 底下建立了 .tmp"
+fi
+
+# ---- 相對路徑的 AGENT_TEAM_HOME：非 init 腳本以 5 拒絕，team-init.sh 照收 ----
+# 使用者在 shell 匯出相對值（例如 `.`）後 cd 進 inbox/ 跑腳本，若直接採用
+# 它，registry 會從 inbox/ 推算，cwd 又影響結果了。非 init 腳本因此以 5
+# 結束、不退回讀指標檔；team-init.sh 是唯一把相對值補成絕對路徑的地方。
+# 此刻 $PTR_POINTER 仍是有效的指標檔（指向 $PTR_PROJ），用來證明不會退回
+# 讀它。
+PTR_REL_SNAP_BEFORE="$(find "$PTR_HOME/.tmp" -maxdepth 2 | sort)"
+for s in team-status.sh shutdown-watchdog.sh watchdog.sh; do
+  rc=0; out="$(hat_ptr_run "$PTR_REG/inbox" "$PTR_HOME" env AGENT_TEAM_HOME=. bash "$SCRIPTS/$s" 2>&1)" || rc=$?
+  if [ "$rc" -eq 5 ] \
+    && [[ "$out" == *"AGENT_TEAM_HOME"*"'.'"* ]] \
+    && [[ "$out" == *"cwd=$PTR_REG/inbox"* ]] \
+    && [[ "$out" == *"絕對路徑"* ]]; then
+    pass "指標檔：$s 收到相對的 AGENT_TEAM_HOME 時以 5 結束，訊息含收到的值、cwd 與絕對路徑提示（不退回讀指標檔）"
+  else
+    bad "指標檔：$s 收到 AGENT_TEAM_HOME=. 時 rc=$rc out='$out'"
+  fi
+done
+if [ ! -e "$PTR_REG/inbox/.tmp" ] && [ ! -L "$PTR_REG/inbox/.tmp" ] \
+  && [ "$PTR_REL_SNAP_BEFORE" = "$(find "$PTR_HOME/.tmp" -maxdepth 2 | sort)" ]; then
+  pass "指標檔：相對的 AGENT_TEAM_HOME 報錯時，cwd 與 \$HOME/.tmp 都沒有建立任何東西"
+else
+  bad "指標檔：相對的 AGENT_TEAM_HOME 報錯路徑留下了東西"
+fi
+
+PTR_REL_CWD="$T/ptr-rel-cwd"
+PTR_REL_HOME="$T/ptr-rel-home"
+mkdir -p "$PTR_REL_CWD/rel-team" "$PTR_REL_HOME"
+rc=0; hat_ptr_run "$PTR_REL_CWD" "$PTR_REL_HOME" env AGENT_TEAM_HOME=rel-team bash "$SCRIPTS/team-init.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] \
+  && [ "$(cat "$PTR_REL_HOME/.tmp/herdr-agent-team/workspaces/w3N" 2>/dev/null || true)" = "$PTR_REL_CWD/rel-team" ] \
+  && [ -f "$PTR_REL_CWD/rel-team/.tmp/herdr-agent-team/w3N/team.json" ]; then
+  pass "team-init：相對的 AGENT_TEAM_HOME 仍成功，指標檔寫入補成絕對路徑後的 team home"
+else
+  bad "team-init：相對的 AGENT_TEAM_HOME rc=$rc 指標檔='$(cat "$PTR_REL_HOME/.tmp/herdr-agent-team/workspaces/w3N" 2>/dev/null || true)'"
+fi
+
+# ---- 指標檔位置已是目錄：寫入失敗要以 5 結束，不能誤報成功 ----
+# `mv -f 檔案 目錄` 會把暫存檔搬進目錄並回傳 0；mv -fT 則拒絕覆寫目錄。
+PTR_DIR_CWD="$T/ptr-dir-cwd"
+PTR_DIR_HOME="$T/ptr-dir-home"
+PTR_DIR_POINTER="$PTR_DIR_HOME/.tmp/herdr-agent-team/workspaces/w3N"
+mkdir -p "$PTR_DIR_CWD" "$PTR_DIR_POINTER"
+rc=0; out="$(hat_ptr_run "$PTR_DIR_CWD" "$PTR_DIR_HOME" bash "$SCRIPTS/team-init.sh" 2>&1)" || rc=$?
+if [ "$rc" -eq 5 ] && [[ "$out" == *"寫入指標檔 '$PTR_DIR_POINTER' 失敗"* ]]; then
+  pass "指標檔：指標檔位置已是目錄時 team-init.sh 以 5 結束並指出寫入失敗"
+else
+  bad "指標檔：指標檔位置是目錄時 rc=$rc out='$out'"
+fi
+if [ -d "$PTR_DIR_POINTER" ] && [ -z "$(find "$PTR_DIR_POINTER" -mindepth 1)" ] \
+  && [ -z "$(find "$PTR_DIR_HOME/.tmp/herdr-agent-team/workspaces" -mindepth 1 -maxdepth 1 -name '.pointer.*')" ]; then
+  pass "指標檔：寫入失敗後該目錄內與 workspaces/ 底下都沒有殘留暫存檔"
+else
+  bad "指標檔：寫入失敗後留下了東西：$(find "$PTR_DIR_HOME/.tmp/herdr-agent-team/workspaces" -mindepth 1)"
+fi
+
 # ===== 斷言數下限：走到結尾但少跑了，也要看得出來 =====
 # EXIT trap 抓的是「沒走到結尾」，這一條抓的是另一半：走到了結尾，但
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=718
+HAT_EXPECTED_ASSERTIONS=751
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else
