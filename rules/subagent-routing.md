@@ -15,7 +15,7 @@
 
 - 跨範圍任務（例如同時涉及 GitHub PR 與 Linux 系統設定）時，main agent 應拆解後分別委派。
 - 需求為對既有 shell 腳本做唯讀稽核、只要 advisory findings 時，委派 `shell-script-reviewer`；需要實際產生或修改腳本（含 safety hardening）時，委派 `shell-script-developer`。
-- 當任務涉及建立或修改 issue 或 PR 的標題或內文時，應先依對象觸發 `github-issue-authoring`（issue）或 `github-pr-authoring`（PR）skill 進行內容組裝，再委派 `github-manager` 執行。
+- 當任務涉及建立或修改 issue 或 PR 的標題或內文時，應先依對象觸發 `github-issue-authoring`（issue）或 `github-pr-authoring`（PR）skill 進行內容組裝，再委派 `github-manager` 執行。例外：呼叫方明示 issue body 須為某份檔案的原文時，不觸發 `github-issue-authoring`，直接委派 `github-manager` 以該檔原文發佈。
 - 當任務涉及回覆或收合 reviewer 的 PR 審查留言時，應先觸發 `github-review-comment-reply` skill 進行分類與回覆組裝，再委派 `github-manager` 執行張貼與 resolve。
 
 ## Delegation Contract

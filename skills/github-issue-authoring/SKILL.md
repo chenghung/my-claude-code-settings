@@ -1,7 +1,7 @@
 ---
 name: github-issue-authoring
 description: >
-  把 spec 或對話中提供的內容寫成 GitHub issue 的標題與 description 並交付發佈。建立或修改 GitHub issue 的標題或 description 時觸發，包含沒有 spec 的 issue，以及發佈一組已拆好的 parent 與 sub-issue。唯讀查詢、只改 label、assignee 或狀態等中繼資料、產生 spec、拆分任務，都不觸發本 skill。
+  把 spec 或對話中提供的內容寫成 GitHub issue 的標題與 description 並交付發佈。建立或修改 GitHub issue 的標題或 description 時觸發，包含沒有 spec 的 issue，以及發佈一組已拆好的 parent 與 sub-issue。唯讀查詢、只改 label、assignee 或狀態等中繼資料、產生 spec、拆分任務、呼叫方明示 issue body 須為某份檔案的原文，都不觸發本 skill。
 ---
 
 # GitHub Issue Authoring
