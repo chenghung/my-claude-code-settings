@@ -60,8 +60,10 @@ subcommand_deny_reason=""
 # double) from $1, so a quoted token is recognized the same as its unquoted
 # form by the checks below. Does not reconstruct full shell quote/escape
 # parsing — out of scope for this allowlist-style matcher, which targets
-# shapes a model would plausibly produce, not deliberate obfuscation (same
-# scope note as hooks/trello-manager-cli-guard.sh's copy of this helper).
+# shapes a model would plausibly produce, not deliberate obfuscation.
+# (hooks/trello-manager-cli-guard.sh's copy of this helper no longer carries
+# this scope note: that hook rejects spliced or escaped subcommand tokens
+# with a character allowlist instead.)
 strip_wrapping_quotes() {
   local tok="$1"
   if [[ ${#tok} -ge 2 ]]; then
