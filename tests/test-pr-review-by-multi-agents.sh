@@ -1267,7 +1267,11 @@ fi
 if [ -z "$out" ]; then pass setup-worktree-rejects-boundary-bypass-no-output; else bad setup-worktree-rejects-boundary-bypass-no-output; fi
 
 # ==============================================================
-# setup_worktree -- stale local-ref cleanup
+# setup_worktree -- never touches other runs' local refs
+#
+# A run's branch is deleted only by that run's own `cleanup` subcommand
+# (_cleanup_delete_branch); setup_worktree neither enumerates nor deletes
+# any other pr-review-* branch.
 #
 # Isolated fixture (rather than reusing GIT_FIXTURE) so this doesn't
 # collide with the pr-review-* refs the tests above already left checked
@@ -1293,13 +1297,11 @@ git init -q -b main "$CLEANUP_FIXTURE/work"
   git commit -aq -m change
   git push -q origin feature:refs/pull/5/head
   git checkout -q main
-  # A stale, non-checked-out leftover from a fictitious earlier run --
-  # this function's own exact ref shape, so it must be deleted.
+  # A non-checked-out branch of another run, in this function's own exact
+  # ref shape -- it belongs to that run's own `cleanup`, so it must survive.
   git branch pr-review-999-12345 HEAD
   # A user's own, differently-purposed branches that merely start with
-  # the same "pr-review-" prefix -- these must survive. Both are
-  # non-checked-out (deletable if the cleanup's own shape check didn't
-  # exist at all), so only the stricter shape match is what protects them.
+  # the same "pr-review-" prefix -- these must survive too.
   git branch pr-review-notes HEAD
   git branch pr-review-42 HEAD
 )
@@ -1307,46 +1309,68 @@ git init -q -b main "$CLEANUP_FIXTURE/work"
 (cd "$CLEANUP_FIXTURE/work" && setup_worktree acme widgets 5 "$T/setup-worktree-cleanup-check") >/dev/null 2>&1 || true
 
 if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-999-12345; then
-  bad setup-worktree-cleans-stale-refs
+  pass setup-worktree-keeps-other-runs-branch
 else
-  pass setup-worktree-cleans-stale-refs
+  bad setup-worktree-keeps-other-runs-branch
 fi
+
+# --- 別次執行「等待收尾」的狀態：reviewer 全部完成、監督行程已移除 worktree，
+# 但還沒呼叫 `cleanup` 子命令。此時別次執行的分支名 trailing PID 已死
+# （cmd_prepare 早就返回）、worktree 已不在、run dir 還在。這次的
+# setup_worktree 不得刪那個分支：它只能由那次執行自己的 cleanup 刪。---
+( exit 0 ) & waiting_dead_pid=$!
+wait "$waiting_dead_pid" 2>/dev/null || true
+
+WAITING_ROOT="$T/setup-worktree-other-run-waiting"
+WAITING_BASE="$WAITING_ROOT/1-waiting-$waiting_dead_pid"
+mkdir -p "$WAITING_BASE"
+git -C "$CLEANUP_FIXTURE/work" branch "pr-review-5-$waiting_dead_pid" HEAD
+
+(cd "$CLEANUP_FIXTURE/work" && setup_worktree acme widgets 5 "$WAITING_ROOT/2-current-$$") >/dev/null 2>&1 || true
+
+if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet "refs/heads/pr-review-5-$waiting_dead_pid"; then pass setup-worktree-keeps-branch-of-run-awaiting-cleanup
+else bad "setup-worktree-keeps-branch-of-run-awaiting-cleanup: 別次執行等待收尾的分支被刪了"
+fi
+if [ -d "$WAITING_BASE" ]; then pass setup-worktree-keeps-run-dir-of-run-awaiting-cleanup
+else bad "setup-worktree-keeps-run-dir-of-run-awaiting-cleanup: 別次執行等待收尾的 run dir 被刪了"
+fi
+
+git -C "$CLEANUP_FIXTURE/work" branch -D "pr-review-5-$waiting_dead_pid" >/dev/null 2>&1 || true
+
+# --- fetch 成功、但 `git worktree add` 失敗：本次自己剛建的分支要在
+# return 1 之前刪掉，別次執行的同形狀分支不能動。讓 worktree add 失敗的
+# 辦法：目標路徑已經是個非空目錄（git 會拒絕）。用 PR 6，避免與上面已經
+# 留著 pr-review-5-$$ 的案例撞名。---
+git -C "$CLEANUP_FIXTURE/work" push -q origin feature:refs/pull/6/head
+git -C "$CLEANUP_FIXTURE/work" branch "pr-review-6-$waiting_dead_pid" HEAD
+
+ADDFAIL_BASE="$T/setup-worktree-add-fails/1-current-$$"
+mkdir -p "$ADDFAIL_BASE/worktree"
+printf 'x' > "$ADDFAIL_BASE/worktree/occupied"
+
+if (cd "$CLEANUP_FIXTURE/work" && setup_worktree acme widgets 6 "$ADDFAIL_BASE") >/dev/null 2>&1; then
+  bad "setup-worktree-add-failure-returns-nonzero: worktree add 失敗時卻回傳成功"
+else pass setup-worktree-add-failure-returns-nonzero
+fi
+if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet "refs/heads/pr-review-6-$$"; then
+  bad "setup-worktree-add-failure-deletes-own-branch: 本次自己建的分支 pr-review-6-$$ 還在"
+else pass setup-worktree-add-failure-deletes-own-branch
+fi
+if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet "refs/heads/pr-review-6-$waiting_dead_pid"; then pass setup-worktree-add-failure-keeps-other-runs-branch
+else bad "setup-worktree-add-failure-keeps-other-runs-branch: 別次執行的分支被刪了"
+fi
+git -C "$CLEANUP_FIXTURE/work" branch -D "pr-review-6-$waiting_dead_pid" >/dev/null 2>&1 || true
 
 if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-notes; then pass setup-worktree-preserves-unrelated-user-branch; else bad setup-worktree-preserves-unrelated-user-branch; fi
 if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-42; then pass setup-worktree-preserves-single-number-user-branch; else bad setup-worktree-preserves-single-number-user-branch; fi
 
-# A branch matching this function's own exact stale-ref shape, but NOT
-# checked out anywhere -- exactly the window this function's own docstring
-# risk covers: it creates its ref before checking it out, so a concurrent
-# prepare running this same loop during that window would otherwise see a
-# branch that fits the shape yet isn't checked out yet, and delete it out
-# from under the run that just created it. Git's "still checked out" guard
-# does not cover this window at all, so the only thing that can is a
-# liveness check on the ref's own trailing PID segment -- the same check
-# _reap_stale_run_dirs already does for stale run directories. $$ (this
-# test script's own PID) stands in for that still-running owner, since it
-# is genuinely alive for the whole duration of this test run.
-git -C "$CLEANUP_FIXTURE/work" branch "pr-review-77-$$" main
-
-# PR 888 has no matching pull ref on this fixture's remote, so this call
-# fails at the fetch step -- but the branch-cleanup loop under test runs
-# before that fetch, so the failure doesn't prevent it from exercising the
-# liveness check.
-(cd "$CLEANUP_FIXTURE/work" && setup_worktree acme widgets 888 "$T/setup-worktree-cleanup-check2") >/dev/null 2>&1 || true
-
-if git -C "$CLEANUP_FIXTURE/work" show-ref --verify --quiet "refs/heads/pr-review-77-$$"; then pass setup-worktree-preserves-branch-with-live-pid; else bad setup-worktree-preserves-branch-with-live-pid; fi
-
-# --- 缺陷 6：上面那組用 $$（這支測試腳本自己的 PID）當活體分支的 trailing
-# PID，整場測試期間恆為存活，遮蔽了兩階段拆分後的真實情況 -- 那裡的
-# cmd_prepare() 早就已經返回、trailing PID 早就已經死了，真正還活著的
-# 只有 .supervisor.pid 指向的監督行程。這裡重現那個真實形狀：目錄名與
-# 分支名的 trailing PID 都已死，但 base_dir 底下的 .supervisor.pid 指向
-# 一個貨真價實存活的行程。透過 setup_worktree 本身（而不是
-# _reap_stale_run_dirs 單獨）驗證：分支能不能保住，實際上是靠 worktree
-# 沒被回收、git 自己擋下 `git branch -D` 這個既有機制（見這個檔案上面
-# 分支清理迴圈自己的文件），不是分支清理迴圈另外去讀
-# .supervisor.pid -- setup_worktree 是唯一能同時證明兩者的入口。既有的
-# setup-worktree-preserves-branch-with-live-pid 案例原樣保留。---
+# --- 缺陷 6：兩階段拆分後，分支名與目錄名尾端的 PID 是 cmd_prepare() 自己
+# 的行程編號，prepare 一返回就死了，但 reviewer 還在 herdr pane 裡跑，真正
+# 還活著的只有 .supervisor.pid 指向的監督行程。這裡重現那個真實形狀：目錄
+# 名與分支名的 trailing PID 都已死，但 base_dir 底下的 .supervisor.pid 指向
+# 一個貨真價實存活的行程。透過 setup_worktree 本身驗證：worktree 不能被回收
+# （_reap_stale_run_dirs 讀 .supervisor.pid），而它的分支也不能被刪（
+# setup_worktree 不碰別次執行的分支）。---
 ( exit 0 ) & cleanup_dead_pid=$!
 wait "$cleanup_dead_pid" 2>/dev/null || true
 
@@ -3083,6 +3107,119 @@ fi
 chmod -R u+w "$REAP_GAP_BASE/worktree" 2>/dev/null || true
 (cd "$REAP_ROOT/work" && git worktree remove --force "$REAP_GAP_BASE/worktree") >/dev/null 2>&1 || true
 
+# --- 回收陳舊 sibling 的 worktree 之後，要連同它自己的分支一起刪；已經
+# 移除 worktree、正在等自己 `cleanup` 的 sibling 則整個不碰（它的分支歸
+# 它自己的 cleanup 刪）。分支名由 sibling 目錄路徑推導
+# （<repo>-pr-<N>/<ts>-<suffix> -> pr-review-<N>-<suffix>），所以這裡的
+# 父目錄要用 `<repo>-pr-<N>` 的形狀。---
+( exit 0 ) & reap_dead_pid2=$!
+wait "$reap_dead_pid2" 2>/dev/null || true
+
+REAP_BR_PARENT="$REAP_ROOT/widgets-pr-7"
+mkdir -p "$REAP_BR_PARENT"
+REAP_BR_CURRENT="$REAP_BR_PARENT/9-current-$$"
+mkdir -p "$REAP_BR_CURRENT"
+
+# 陳舊 sibling：worktree 在、trailing PID 已死、沒有 .supervisor.pid。
+REAP_BR_STALE="$REAP_BR_PARENT/1-stale-$dead_pid"
+mkdir -p "$REAP_BR_STALE"
+printf '%s\n' "$REAP_ROOT/work" > "$REAP_BR_STALE/.repo-path"
+git -C "$REAP_ROOT/work" branch "pr-review-7-$dead_pid" main
+(cd "$REAP_ROOT/work" && git worktree add -q "$REAP_BR_STALE/worktree" "pr-review-7-$dead_pid")
+chmod -R a-w "$REAP_BR_STALE/worktree"
+
+# 等待收尾的 sibling：worktree 已移除，run dir 與 .repo-path 還在。
+REAP_BR_WAITING="$REAP_BR_PARENT/2-waiting-$reap_dead_pid2"
+mkdir -p "$REAP_BR_WAITING"
+printf '%s\n' "$REAP_ROOT/work" > "$REAP_BR_WAITING/.repo-path"
+git -C "$REAP_ROOT/work" branch "pr-review-7-$reap_dead_pid2" main
+
+# 另一個 PR 的同形狀分支，沒有任何 run dir 對應它。
+git -C "$REAP_ROOT/work" branch "pr-review-8-$dead_pid" main
+
+(cd "$REAP_ROOT/work" && _reap_stale_run_dirs "$REAP_BR_CURRENT")
+
+if [ ! -e "$REAP_BR_STALE/worktree" ]; then pass reap-stale-run-dirs-branch-test-reclaims-stale-worktree
+else bad reap-stale-run-dirs-branch-test-reclaims-stale-worktree
+fi
+if git -C "$REAP_ROOT/work" show-ref --verify --quiet "refs/heads/pr-review-7-$dead_pid"; then
+  bad "reap-stale-run-dirs-deletes-reclaimed-siblings-own-branch: 被回收的 sibling 的分支還在"
+else pass reap-stale-run-dirs-deletes-reclaimed-siblings-own-branch
+fi
+if git -C "$REAP_ROOT/work" show-ref --verify --quiet "refs/heads/pr-review-7-$reap_dead_pid2"; then pass reap-stale-run-dirs-keeps-branch-of-sibling-awaiting-cleanup
+else bad "reap-stale-run-dirs-keeps-branch-of-sibling-awaiting-cleanup: 等待收尾的 sibling 的分支被刪了"
+fi
+if git -C "$REAP_ROOT/work" show-ref --verify --quiet "refs/heads/pr-review-8-$dead_pid"; then pass reap-stale-run-dirs-keeps-unrelated-same-shape-branch
+else bad "reap-stale-run-dirs-keeps-unrelated-same-shape-branch: 與任何被回收 sibling 無關的分支被刪了"
+fi
+git -C "$REAP_ROOT/work" branch -D "pr-review-7-$reap_dead_pid2" "pr-review-8-$dead_pid" >/dev/null 2>&1 || true
+
+# --- 退回 rm -rf 時分支仍要被刪：讓 `git worktree remove --force` 失敗的辦
+# 法是先把 worktree 裡的 .git 檔案刪掉（git 會以「.git 不存在」拒絕移除），
+# reap 就退回 rm -rf，此時登記還留在 repo 裡；沒有 `git worktree prune`
+# 的話，git 會因為分支仍「被工作區使用」而拒絕刪它。---
+( exit 0 ) & reap_dead_pid3=$!
+wait "$reap_dead_pid3" 2>/dev/null || true
+
+REAP_FB_PARENT="$REAP_ROOT/widgets-pr-9"
+mkdir -p "$REAP_FB_PARENT"
+REAP_FB_CURRENT="$REAP_FB_PARENT/9-current-$$"
+mkdir -p "$REAP_FB_CURRENT"
+REAP_FB_STALE="$REAP_FB_PARENT/1-stale-$reap_dead_pid3"
+mkdir -p "$REAP_FB_STALE"
+printf '%s\n' "$REAP_ROOT/work" > "$REAP_FB_STALE/.repo-path"
+git -C "$REAP_ROOT/work" branch "pr-review-9-$reap_dead_pid3" main
+(cd "$REAP_ROOT/work" && git worktree add -q "$REAP_FB_STALE/worktree" "pr-review-9-$reap_dead_pid3")
+rm -f "$REAP_FB_STALE/worktree/.git"
+chmod -R a-w "$REAP_FB_STALE/worktree"
+
+(cd "$REAP_ROOT/work" && _reap_stale_run_dirs "$REAP_FB_CURRENT")
+
+if [ ! -e "$REAP_FB_STALE/worktree" ]; then pass reap-stale-run-dirs-rm-rf-fallback-removes-worktree
+else bad reap-stale-run-dirs-rm-rf-fallback-removes-worktree
+fi
+if git -C "$REAP_ROOT/work" show-ref --verify --quiet "refs/heads/pr-review-9-$reap_dead_pid3"; then
+  bad "reap-stale-run-dirs-rm-rf-fallback-still-deletes-branch: worktree 移除退回 rm -rf 後分支還在"
+else pass reap-stale-run-dirs-rm-rf-fallback-still-deletes-branch
+fi
+
+# --- 同名 repo 的兩個 clone 共用同一個 ~/.tmp/<repo>-pr-<N>/ 父層：sibling
+# 的 worktree 屬於另一個 clone（.repo-path 指向它），從目前這個 clone 的 cwd
+# 呼叫，仍要從 sibling 自己的 repo 移除登記並刪掉分支。---
+REAP_OTHER_CLONE="$REAP_ROOT/other-clone"
+git init -q -b main "$REAP_OTHER_CLONE"
+git -C "$REAP_OTHER_CLONE" config user.email t@t.com
+git -C "$REAP_OTHER_CLONE" config user.name t
+git -C "$REAP_OTHER_CLONE" commit -q --allow-empty -m base
+
+REAP_OC_PARENT="$REAP_ROOT/widgets-pr-10"
+mkdir -p "$REAP_OC_PARENT"
+REAP_OC_CURRENT="$REAP_OC_PARENT/9-current-$$"
+mkdir -p "$REAP_OC_CURRENT"
+REAP_OC_STALE="$REAP_OC_PARENT/1-stale-$reap_dead_pid3"
+mkdir -p "$REAP_OC_STALE"
+printf '%s\n' "$REAP_OTHER_CLONE" > "$REAP_OC_STALE/.repo-path"
+git -C "$REAP_OTHER_CLONE" branch "pr-review-10-$reap_dead_pid3" main
+git -C "$REAP_OTHER_CLONE" worktree add -q "$REAP_OC_STALE/worktree" "pr-review-10-$reap_dead_pid3"
+chmod -R a-w "$REAP_OC_STALE/worktree"
+
+# cwd 是「另一個」clone（REAP_ROOT/work），不是 sibling 所屬的 REAP_OTHER_CLONE。
+(cd "$REAP_ROOT/work" && _reap_stale_run_dirs "$REAP_OC_CURRENT")
+
+if [ ! -e "$REAP_OC_STALE/worktree" ]; then pass reap-stale-run-dirs-other-clone-removes-worktree
+else bad reap-stale-run-dirs-other-clone-removes-worktree
+fi
+# 先收進變數再比對，避免 pipefail 下 grep -q 提早結束造成的 SIGPIPE 誤判。
+reap_oc_worktrees="$(git -C "$REAP_OTHER_CLONE" worktree list --porcelain)"
+if [[ "$reap_oc_worktrees" == *"$REAP_OC_STALE/worktree"* ]]; then
+  bad "reap-stale-run-dirs-other-clone-removes-registration: sibling 所屬 clone 裡的 worktree 登記還在"
+else pass reap-stale-run-dirs-other-clone-removes-registration
+fi
+if git -C "$REAP_OTHER_CLONE" show-ref --verify --quiet "refs/heads/pr-review-10-$reap_dead_pid3"; then
+  bad "reap-stale-run-dirs-other-clone-deletes-branch: sibling 所屬 clone 裡的分支還在"
+else pass reap-stale-run-dirs-other-clone-deletes-branch
+fi
+
 # ==============================================================
 # _extract_review_content
 # ==============================================================
@@ -4217,6 +4354,161 @@ dfcrepopath_err="$(cd "$DFCREPOPATH_ELSEWHERE" && _dispatch_failed_cleanup "$DFC
 
 if [ ! -e "$DFCREPOPATH_WT" ]; then pass "dispatch-failed-cleanup 從非目標 repo 的工作目錄呼叫仍能清除 worktree"
 else bad "dispatch-failed-cleanup 從非目標 repo 的工作目錄呼叫時未能清除 worktree（worktree 仍在: $DFCREPOPATH_WT, stderr: $dfcrepopath_err）"
+fi
+
+# ==============================================================
+# _dispatch_failed_cleanup -- 移除 worktree 之後也要刪本次自己的分支
+#
+# 失敗的執行永遠到不了自己的 `cleanup` 子命令，而別次執行也不會替它刪分
+# 支，所以這個函式要自己刪。分支名由 base_dir 路徑推導
+# （<repo>-pr-<N>/<ts>-<suffix> -> pr-review-<N>-<suffix>），repo 來自
+# .repo-path；同 repo 裡別次執行的同形狀分支不能動。
+# ==============================================================
+
+DFCBR_ROOT="$T/dispatch-failed-cleanup-branch-fixture"
+DFCBR_WT_SEED="$(_make_worktree_fixture "$DFCBR_ROOT")"
+# _make_worktree_fixture 順手建了一個放在 $DFCBR_ROOT/worktree 的 worktree，
+# 這裡不用，先移除，改成依 cmd_prepare 的真實目錄形狀重建。
+(cd "$DFCBR_ROOT/work" && git worktree remove --force "$DFCBR_WT_SEED")
+DFCBR_BASE="$DFCBR_ROOT/runs/widgets-pr-6/20260101000000-424242"
+mkdir -p "$DFCBR_BASE"
+printf '%s\n' "$DFCBR_ROOT/work" > "$DFCBR_BASE/.repo-path"
+git -C "$DFCBR_ROOT/work" branch pr-review-6-424242 main
+git -C "$DFCBR_ROOT/work" branch pr-review-6-313131 main
+(cd "$DFCBR_ROOT/work" && git worktree add -q "$DFCBR_BASE/worktree" pr-review-6-424242)
+chmod -R a-w "$DFCBR_BASE/worktree"
+
+(cd "$DFCBR_ROOT/work" && _dispatch_failed_cleanup "$DFCBR_BASE/worktree" claude) >/dev/null 2>&1
+
+if [ ! -e "$DFCBR_BASE/worktree" ]; then pass dispatch-failed-cleanup-branch-test-removes-worktree
+else bad dispatch-failed-cleanup-branch-test-removes-worktree
+fi
+if git -C "$DFCBR_ROOT/work" show-ref --verify --quiet refs/heads/pr-review-6-424242; then
+  bad "dispatch-failed-cleanup-deletes-own-branch: 本次自己的分支 pr-review-6-424242 還在"
+else pass dispatch-failed-cleanup-deletes-own-branch
+fi
+if git -C "$DFCBR_ROOT/work" show-ref --verify --quiet refs/heads/pr-review-6-313131; then pass dispatch-failed-cleanup-keeps-other-runs-branch
+else bad "dispatch-failed-cleanup-keeps-other-runs-branch: 別次執行的分支被刪了"
+fi
+
+# ==============================================================
+# cmd_prepare -- `chmod -R a-w` 失敗那條路徑：移除 worktree 之後也要刪本
+# 次自己的分支
+#
+# 真的讓那個 chmod 失敗很難（擁有者對自己的檔案 chmod 不會失敗），所以在
+# 子 shell 裡用同名 shell function 蓋掉 chmod：只有 `chmod -R a-w
+# <...>/worktree` 這一個呼叫會失敗，其餘一律轉給真正的 chmod。gh、claude
+# 也用 function 蓋掉（不動 PATH，所以這一段沒有 PATH 前綴樁，也就沒有
+# 遮蔽漏洞要防；真正的 gh/claude 不會被呼叫到，因為 function 優先於外部
+# 指令）。---
+CMDPFAIL_FIXTURE="$T/cmd-prepare-chmod-fail-fixture"
+mkdir -p "$CMDPFAIL_FIXTURE/remotes/acme" "$CMDPFAIL_FIXTURE/work"
+git init -q -b main --bare "$CMDPFAIL_FIXTURE/remotes/acme/widgets.git"
+git init -q -b main "$CMDPFAIL_FIXTURE/work"
+(
+  cd "$CMDPFAIL_FIXTURE/work"
+  git config user.email t@t.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add f.txt
+  git commit -q -m base
+  git remote add origin "https://github.com/acme/widgets.git"
+  git config "url.$CMDPFAIL_FIXTURE/remotes/acme/widgets.git.insteadOf" "https://github.com/acme/widgets.git"
+  git push -q origin HEAD:refs/heads/main
+  git checkout -q -b feature
+  printf 'feature\n' >> f.txt
+  git commit -aq -m feature
+  git push -q origin feature:refs/pull/52/head
+  git checkout -q main
+  # 別次執行的同形狀分支（同一個 PR 52），不能被這次失敗的執行動到。
+  git branch pr-review-52-313131 main
+)
+
+CMDPFAIL_HOME="$T/cmd-prepare-chmod-fail-home"
+mkdir -p "$CMDPFAIL_HOME"
+cmdpfail_rc=0
+(
+  cd "$CMDPFAIL_FIXTURE/work"
+  # shellcheck disable=SC2329  # invoked indirectly by cmd_prepare under test
+  gh() { "$STUB_BIN/gh" "$@"; }
+  # shellcheck disable=SC2329  # invoked indirectly by cmd_prepare under test
+  claude() { :; }
+  # shellcheck disable=SC2329  # invoked indirectly by cmd_prepare under test
+  chmod() {
+    if [ "$#" -eq 3 ] && [ "$1" = "-R" ] && [ "$2" = "a-w" ] && [ "${3##*/}" = "worktree" ]; then
+      return 1
+    fi
+    command chmod "$@"
+  }
+  HOME="$CMDPFAIL_HOME" CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME=main HERDR_ENV=1 \
+    cmd_prepare --pr "https://github.com/acme/widgets/pull/52" --claude
+) >/dev/null 2>"$T/cmd-prepare-chmod-fail.err" || cmdpfail_rc=$?
+
+if [ "$cmdpfail_rc" -eq 1 ]; then pass cmd-prepare-chmod-failure-exits-1
+else bad "cmd-prepare-chmod-failure-exits-1: 結束碼是 $cmdpfail_rc（若不是 1，代表測試替身沒有走到 chmod 失敗那條路徑）"
+fi
+# 確認走到的確實是 chmod 失敗那條路徑，而不是別的 exit 1。
+case "$(cat "$T/cmd-prepare-chmod-fail.err")" in
+  *'failed to make the review worktree read-only'*) pass cmd-prepare-chmod-failure-reports-readonly-message ;;
+  *) bad "cmd-prepare-chmod-failure-reports-readonly-message: stderr 是: $(cat "$T/cmd-prepare-chmod-fail.err")" ;;
+esac
+CMDPFAIL_RUN_DIR="$(find "$CMDPFAIL_HOME/.tmp/widgets-pr-52" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+if [ -n "$CMDPFAIL_RUN_DIR" ] && [ ! -e "$CMDPFAIL_RUN_DIR/worktree" ]; then pass cmd-prepare-chmod-failure-removes-worktree
+else bad "cmd-prepare-chmod-failure-removes-worktree: run dir=$CMDPFAIL_RUN_DIR"
+fi
+CMDPFAIL_OWN_BRANCH="pr-review-52-${CMDPFAIL_RUN_DIR##*-}"
+if [ -n "$CMDPFAIL_RUN_DIR" ] && ! git -C "$CMDPFAIL_FIXTURE/work" show-ref --verify --quiet "refs/heads/$CMDPFAIL_OWN_BRANCH"; then pass cmd-prepare-chmod-failure-deletes-own-branch
+else bad "cmd-prepare-chmod-failure-deletes-own-branch: 本次自己的分支 $CMDPFAIL_OWN_BRANCH 還在（或沒有找到 run dir）"
+fi
+if git -C "$CMDPFAIL_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-52-313131; then pass cmd-prepare-chmod-failure-keeps-other-runs-branch
+else bad "cmd-prepare-chmod-failure-keeps-other-runs-branch: 別次執行的分支被刪了"
+fi
+
+# ==============================================================
+# cmd_prepare -- `.pr-url` 寫入失敗那條路徑：同樣要移除 worktree 並刪本次
+# 自己的分支
+#
+# 讓寫入失敗的辦法：base_dir 名稱是 <HOME>/.tmp/<repo>-pr-<N>/<時間戳>-$$，
+# 這裡在子 shell 裡用 date function 把時間戳固定下來，先在那個固定路徑下
+# 建一個叫 .pr-url 的目錄，`> .pr-url` 就會失敗。date 只在取時間戳那個呼叫
+# 上被改寫，其餘轉給真正的 date。與上面一樣不動 PATH，沒有前綴樁。---
+git -C "$CMDPFAIL_FIXTURE/work" push -q origin feature:refs/pull/53/head
+git -C "$CMDPFAIL_FIXTURE/work" branch pr-review-53-313131 main
+PRURLFAIL_FIXED_BASE="$CMDPFAIL_HOME/.tmp/widgets-pr-53/20260101000000-$$"
+mkdir -p "$PRURLFAIL_FIXED_BASE/.pr-url"
+
+prurlfail_rc=0
+(
+  cd "$CMDPFAIL_FIXTURE/work"
+  # shellcheck disable=SC2329  # invoked indirectly by cmd_prepare under test
+  gh() { "$STUB_BIN/gh" "$@"; }
+  # shellcheck disable=SC2329  # invoked indirectly by cmd_prepare under test
+  claude() { :; }
+  # shellcheck disable=SC2329  # invoked indirectly by cmd_prepare under test
+  date() {
+    if [ "$*" = "-u +%Y%m%d%H%M%S" ]; then printf '20260101000000\n'; return 0; fi
+    command date "$@"
+  }
+  HOME="$CMDPFAIL_HOME" CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME=main HERDR_ENV=1 \
+    cmd_prepare --pr "https://github.com/acme/widgets/pull/53" --claude
+) >/dev/null 2>"$T/cmd-prepare-prurl-fail.err" || prurlfail_rc=$?
+
+if [ "$prurlfail_rc" -eq 1 ]; then pass cmd-prepare-pr-url-failure-exits-1
+else bad "cmd-prepare-pr-url-failure-exits-1: 結束碼是 $prurlfail_rc"
+fi
+case "$(cat "$T/cmd-prepare-prurl-fail.err")" in
+  *'failed to write'*'.pr-url'*) pass cmd-prepare-pr-url-failure-reports-write-message ;;
+  *) bad "cmd-prepare-pr-url-failure-reports-write-message: stderr 是: $(cat "$T/cmd-prepare-prurl-fail.err")" ;;
+esac
+if [ ! -e "$PRURLFAIL_FIXED_BASE/worktree" ]; then pass cmd-prepare-pr-url-failure-removes-worktree
+else bad "cmd-prepare-pr-url-failure-removes-worktree: $PRURLFAIL_FIXED_BASE/worktree 還在"
+fi
+if git -C "$CMDPFAIL_FIXTURE/work" show-ref --verify --quiet "refs/heads/pr-review-53-$$"; then
+  bad "cmd-prepare-pr-url-failure-deletes-own-branch: 本次自己的分支 pr-review-53-$$ 還在"
+else pass cmd-prepare-pr-url-failure-deletes-own-branch
+fi
+if git -C "$CMDPFAIL_FIXTURE/work" show-ref --verify --quiet refs/heads/pr-review-53-313131; then pass cmd-prepare-pr-url-failure-keeps-other-runs-branch
+else bad "cmd-prepare-pr-url-failure-keeps-other-runs-branch: 別次執行的分支被刪了"
 fi
 
 # ==============================================================

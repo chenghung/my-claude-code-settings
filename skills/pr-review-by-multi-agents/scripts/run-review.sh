@@ -1188,11 +1188,9 @@ _run_dir_within_stale_grace() {
 # Best-effort recovery for run directories left behind by a previous
 # invocation whose spawn_supervisor_interactive died non-gracefully (SIGKILL, machine
 # reboot) before it could restore write access to the worktree and remove
-# it. Neither `git worktree prune` (only clears registrations whose
-# directory is already gone -- this one's directory is very much still
-# there) nor the stale-ref branch cleanup below (git refuses to delete a
-# branch still checked out in a still-registered worktree) ever reaches
-# this on their own; left alone, every crashed run permanently
+# it. `git worktree prune` (only clears registrations whose directory is
+# already gone -- this one's directory is very much still there) never
+# reaches this on its own; left alone, every crashed run permanently
 # accumulates one abandoned read-only worktree, one abandoned branch, and
 # one abandoned git worktree registration, and a human trying to clean it
 # up by hand has to restore write access themselves before anything else
@@ -1201,13 +1199,24 @@ _run_dir_within_stale_grace() {
 # Scans <base_dir>'s own siblings (other run directories under the same
 # repo/PR parent directory) for ones that are genuinely stale, and whose
 # worktree subdirectory still exists. For each one found, restores write
-# access and removes it the same way spawn_supervisor_interactive's own
-# successful-path cleanup does. Runs before `git worktree prune` and the
-# stale-ref branch cleanup below, in the same invocation, specifically so
-# that by the time those run, this reap has already made both of them
-# effective for whatever it just cleaned up (registration gone, branch no
-# longer checked out) instead of leaving that branch for a follow-up run
-# to notice.
+# access, removes the worktree the same way spawn_supervisor_interactive's
+# own successful-path cleanup does (against the sibling's own repo, read
+# from its .repo-path, falling back to the cwd's repo only when that file
+# is unreadable), prunes that repo's worktree registrations so a removal
+# that fell back to rm -rf doesn't leave git thinking the branch is still
+# checked out, and then deletes that sibling's own branch via
+# _cleanup_delete_branch (the name is derived from the sibling's own path
+# and its .repo-path; when either can't be derived nothing is deleted).
+# Runs before setup_worktree's own `git worktree prune`, in the same
+# invocation.
+#
+# A sibling whose worktree subdirectory no longer exists is skipped
+# entirely and its branch is NOT touched: that is a run whose reviewers
+# finished and whose supervisor already removed the worktree, and which is
+# now only waiting for its own `cleanup` call -- that call owns the branch.
+# Nothing else in this script deletes another run's branch; this reap is
+# the only recovery for a crashed run's branch, and it is limited to
+# siblings whose worktree it actually reclaimed.
 #
 # "Genuinely stale" is decided in this order, not by the trailing-PID
 # check alone any more -- a two-phase run has no single PID that spans its
@@ -1242,7 +1251,7 @@ _run_dir_within_stale_grace() {
 # run's mess, not a precondition of this one.
 _reap_stale_run_dirs() {
   local base_dir="$1"
-  local pr_review_root sibling sibling_pid sibling_worktree
+  local pr_review_root sibling sibling_pid sibling_worktree sibling_repo
 
   pr_review_root="$(dirname "$base_dir")"
   [ -d "$pr_review_root" ] || return 0
@@ -1267,7 +1276,27 @@ _reap_stale_run_dirs() {
     [ -d "$sibling_worktree" ] || continue
 
     chmod -R u+w "$sibling_worktree" 2>/dev/null || true
-    git worktree remove --force "$sibling_worktree" >/dev/null 2>&1 || rm -rf "$sibling_worktree" 2>/dev/null || true
+    # The sibling's own repo (its .repo-path), not the cwd's: two clones
+    # of the same-named repo share one ~/.tmp/<repo>-pr-<N>/ parent, so a
+    # sibling found here may belong to a different clone than the cwd's,
+    # and a bare `git worktree remove` would look in the wrong repo.
+    # Without a readable .repo-path, fall back to the bare cwd-relative
+    # form.
+    if sibling_repo="$(cat "$sibling/.repo-path" 2>/dev/null)" && [ -n "$sibling_repo" ]; then
+      git -C "$sibling_repo" worktree remove --force "$sibling_worktree" >/dev/null 2>&1 || rm -rf "$sibling_worktree" 2>/dev/null || true
+      # When the removal above fell back to rm -rf, the worktree's
+      # registration is still there and git refuses to delete a branch
+      # checked out in a registered worktree; prune the now-missing
+      # directory's registration so the branch delete below can succeed.
+      git -C "$sibling_repo" worktree prune >/dev/null 2>&1 || true
+    else
+      git worktree remove --force "$sibling_worktree" >/dev/null 2>&1 || rm -rf "$sibling_worktree" 2>/dev/null || true
+    fi
+
+    # Only reached for a sibling whose worktree was just reclaimed above
+    # (the missing-worktree case `continue`d earlier). Its own branch is
+    # now unreferenced and nothing else will ever delete it.
+    _cleanup_delete_branch "$sibling" >/dev/null
   done
 
   return 0
@@ -1283,9 +1312,20 @@ _reap_stale_run_dirs() {
 # printing nothing, on any failure -- spec section 6 treats a worktree
 # that didn't actually get created as a hard-stop precondition, same tier
 # as gh being missing.
+#
+# Each run deletes only the branch it created itself: this function never
+# enumerates or deletes any other `pr-review-*` branch. On the success
+# path that branch is deleted by the run's own `cleanup` subcommand
+# (_cleanup_delete_branch); when this function itself fails after creating
+# the branch, it deletes that branch before returning (see the
+# `git worktree add` failure below). A sweep over every same-shaped branch
+# whose trailing PID is dead used to live here, and it force-deleted
+# another run's branch while that run was still waiting for its `cleanup`
+# call -- the trailing PID is cmd_prepare's `$$`, which is dead as soon as
+# prepare returns.
 setup_worktree() {
   local owner="$1" repo="$2" number="$3" base_dir="$4"
-  local worktree_path pr_ref stale_ref stale_pid
+  local worktree_path pr_ref
 
   # Fail fast if the cwd's origin doesn't actually point at this PR's own
   # repo, rather than silently fetching/reviewing the wrong codebase. See
@@ -1296,43 +1336,6 @@ setup_worktree() {
   _reap_stale_run_dirs "$base_dir" || true
 
   git worktree prune >/dev/null 2>&1 || true
-
-  # Best-effort cleanup of this function's own local refs left behind by
-  # earlier runs whose worktree has since been removed -- otherwise every
-  # run adds one more branch that never goes away. git refuses to delete a
-  # branch that is still checked out in a live worktree, so this only ever
-  # removes ones that are genuinely stale.
-  #
-  # The `pr-review-*` glob below is only a cheap pre-filter for
-  # enumeration; the actual delete decision is gated by the `[[ =~ ]]`
-  # match right below it, which requires the FULL ref name to fit this
-  # function's own exact ref shape -- `pr-review-<PR-number>-<PID>`, both
-  # segments purely numeric, anchored at both ends. This match used to be
-  # just the glob-based prefix check above, which would also match (and
-  # force-delete) a user's own differently-purposed branch that merely
-  # happened to start with the same prefix, e.g. "pr-review-notes" -- with
-  # no confirmation prompt, since the model-facing consent gate in
-  # SKILL.md is natural language a human reads, not something this script
-  # invoked directly (skipping SKILL.md entirely) ever goes through.
-  #
-  # git's "still checked out" guard is not the only race this loop needs
-  # to survive: this function creates its own branch (a few lines below)
-  # before checking it out, so a concurrent prepare running this same
-  # loop during that window would otherwise see a branch matching the
-  # exact ref shape above that is not yet checked out anywhere, and
-  # delete it out from under the run that just created it. The PID
-  # liveness check below closes that window the same way
-  # _reap_stale_run_dirs already does for sibling run directories: skip
-  # any ref whose trailing PID segment still names a live process, since
-  # a branch created by a still-running invocation is never stale
-  # regardless of whether it has been checked out yet.
-  while IFS= read -r stale_ref; do
-    if [[ "$stale_ref" =~ ^pr-review-[0-9]+-[0-9]+$ ]]; then
-      stale_pid="${stale_ref##*-}"
-      kill -0 "$stale_pid" 2>/dev/null && continue
-      git branch -D "$stale_ref" >/dev/null 2>&1 || true
-    fi
-  done < <(git for-each-ref --format='%(refname:short)' 'refs/heads/pr-review-*' 2>/dev/null)
 
   worktree_path="$base_dir/worktree"
   # $$ keeps this local ref name unique across concurrent runs that happen
@@ -1347,7 +1350,13 @@ setup_worktree() {
   # GitHub always exposes this pull-ref on the base repo, regardless of
   # whether the PR's source branch lives there or in a fork.
   git fetch origin "+pull/$number/head:$pr_ref" >/dev/null 2>&1 || return 1
-  git worktree add "$worktree_path" "$pr_ref" >/dev/null 2>&1 || return 1
+  # The fetch above already created $pr_ref; if the worktree can't be
+  # added, no later step will ever hold or delete it, so delete it here
+  # (best-effort, errors swallowed -- the return 1 is the real failure).
+  git worktree add "$worktree_path" "$pr_ref" >/dev/null 2>&1 || {
+    git branch -D "$pr_ref" >/dev/null 2>&1 || true
+    return 1
+  }
 
   printf '%s\n' "$worktree_path"
 }
@@ -4222,7 +4231,10 @@ resolve_base_ref() {
 # cli names; this function does not otherwise care what the trailing
 # values are, it only ever interpolates them into the message below) and
 # makes a best-effort attempt to remove the worktree before the caller
-# exits non-zero.
+# exits non-zero. Also deletes this run's own branch afterwards (via
+# _cleanup_delete_branch, derived from base_dir), since nothing else would:
+# the run never reaches its `cleanup` subcommand, and no other run deletes
+# a branch it did not create.
 _dispatch_failed_cleanup() {
   local worktree_dir="$1"
   shift
@@ -4259,6 +4271,11 @@ _dispatch_failed_cleanup() {
   else
     git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
   fi
+
+  # Worktree is gone (or, best-effort, was never removable); delete this
+  # run's own branch too. Derived from base_dir's path and .repo-path,
+  # which cmd_prepare wrote before setup_worktree created the branch.
+  _cleanup_delete_branch "$base_dir" >/dev/null
 }
 
 # cmd_prepare --pr <link> [--issue <ref>] [--design <path>] --claude|--codex|--opencode|--agy...
@@ -4431,6 +4448,8 @@ cmd_prepare() {
     # can't also make this removal fail.
     chmod -R u+w "$worktree_dir" 2>/dev/null || true
     git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+    # This run never reaches `cleanup`, so delete its own branch too.
+    _cleanup_delete_branch "$base_dir" >/dev/null
     exit 1
   fi
 
@@ -4459,6 +4478,7 @@ cmd_prepare() {
   # cmd_run's `prepare_out="$(cmd_prepare "$@")"` command substitution.
   printf '%s\n' "$pr_url" > "$base_dir/.pr-url" || {
     printf 'run-review.sh: failed to write %s\n' "$base_dir/.pr-url" >&2
+    _dispatch_failed_cleanup "$worktree_dir"
     exit 1
   }
 
@@ -5544,10 +5564,10 @@ cmd_cleanup() {
 # `branch_deleted=` line. Force rather than plain delete is a deliberate
 # line, not a shortcut: the branch's content equals the PR head on GitHub,
 # there is no local-only commit on it, and a plain delete would almost
-# always fail on an unmerged branch -- leaving residue for the script's own
-# stale-branch sweeper to force-delete on the next run against this same
-# PR, which only defers the same deletion while adding noise to the consent
-# gate that sweeper feeds.
+# always fail on an unmerged branch -- and nothing else deletes it: a run's
+# branch is only ever deleted by this function, called from the run's own
+# `cleanup`, from _reap_stale_run_dirs for a crashed sibling whose worktree
+# it reclaimed, and from the failure paths of the run that created it.
 #
 # Both inputs come from disk, not from the caller: the branch name is
 # rebuilt from base_dir's own path (the PR number from the parent
