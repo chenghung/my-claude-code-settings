@@ -5725,7 +5725,7 @@ _cleanup_delete_branch() {
 #     Consequence: if herdr fails intermittently (say, one failed round
 #     every few rounds), a reviewer that is truly stuck can keep having its
 #     clock zeroed and never reach the threshold, so event=stalled does not
-#     fire; the strict check from minute 45 in SKILL.md has to take over
+#     fire; the strict check from minute 45 in references/waiting.md has to take over
 #     in that case.
 # Every other cell is handled as usual. `unknown` (array confirmed, pane
 # absent; or no .pane-<cli> file) is NOT a query failure: it may still be
@@ -5745,7 +5745,7 @@ _cleanup_delete_branch() {
 # replayed. On each heartbeat the orchestrator runs the
 # same projection per cell itself, and an empty result is reported as
 # "status query unavailable" per SKILL.md's query-failure handling. (2)
-# would add an event kind and a SKILL.md handling branch, which pulls
+# would add an event kind and a handling branch in references/waiting.md, which pulls
 # against not adding signal kinds, so it was not chosen. Cost: while herdr
 # stays broken, a script-side stalled can never fire; noticing relies only
 # on that heartbeat path. An empty-string agent_status counts as a failure
