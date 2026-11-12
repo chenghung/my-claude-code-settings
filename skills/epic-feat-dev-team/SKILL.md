@@ -1,6 +1,11 @@
 ---
-description: 當AI Agent需要開始實做一個已經規劃好spec的大型任務, 已經明確被拆分成多個phases/sub-issues
+name: epic-feat-dev-team
+description: 啟動 technical-pm 帶 developer 的 herdr agent team，把已定稿 spec 的各 phase 逐一做到合併進主線並關閉 epic。
 argument-hint: <主倉庫絕對路徑> <feature spec locator>
+disable-model-invocation: true
+metadata:
+  opencode/autoinvoke: "false"
+  opencode/slash: "true"
 ---
 
 用 herdr-agent-team skill 啟動本編制。
@@ -48,7 +53,7 @@ role: developer-<issue 編號>[-<phase 代號>]   # 名稱由 role 決定，同�
 
 ## 執行流程
 
-你由 orchestrator 指派。只有遇到 spec 的 scope 或 goal、或重大設計方向與架構變更的問題時，才向 orchestrator 取得答案，並等定案後再繼續；其餘問題（含下游 skill 要求詢問人類或等其確認的關卡）自行決定，進行中的任務進度不要打擾 orchestrator；回報契約要求的回報照常進行。merge 前須先回報 technical-pm 取得判定；合併後收尾自己的工作區（限自己的 worktree、branch、從該 worktree 啟動的 docker containers 與 tmp files）是你的職責，不需事前回報，此點優先於回報契約對不可逆動作的事前回報要求。例外：權限繞過與安全敏感的核准關卡不在自決範圍，本檔明文授權者除外；其他情況視為 blocker 回報 orchestrator。
+你由 orchestrator 指派。只有遇到 spec 的 scope 或 goal、或重大設計方向與架構變更的問題時，才向 orchestrator 取得答案，並等定案後再繼續；其餘問題（含下游 skill 要求詢問人類或等其確認的關卡）自行決定，進行中的任務進度不要打擾 orchestrator；回報契約要求的回報照常進行。merge 前須先回報 technical-pm 取得判定；合併後收尾自己的工作區（限自己的 worktree、branch、從該 worktree 啟動的 docker containers 與 tmp files，以及把主倉庫的 local main fast-forward 到 origin/main）是你的職責，不需事前回報，此點優先於回報契約對不可逆動作的事前回報要求。例外：權限繞過與安全敏感的核准關卡不在自決範圍，本檔明文授權者除外；其他情況視為 blocker 回報 orchestrator。
 
 1. 使用 writing-plans 技能根據任務產生計畫。
 1. 計畫產生後，立即使用 subagent-driven-development 技能將該 phase 拆解為獨立的 per-commit tasks，依 commit 難度選用啟動包載明的 implementer：高難度（核心架構或複雜邏輯）用高難度 implementer，中低難度（局部 CRUD、純樣式排版或補測試）用中低難度 implementer。
@@ -60,7 +65,7 @@ role: developer-<issue 編號>[-<phase 代號>]   # 名稱由 role 決定，同�
 1. 分支開發完成且測試通過後，使用 finishing-a-development-branch 技能推送並建立 PR。
 1. 執行 /pr-review-by-multi-agents 交叉審查，觸發時帶上 PR 網址，並明確指名啟動包載明的 review agents 組合。
 1. 使用 receiving-code-review 技能處理 reviewer comments，並把後續處置方式以新留言張貼到 PR。
-1. 全域人類介入邊界規則的 ready 三條件全部成立，且 PR 為 Open、無衝突、所有 CI checks 皆為 success 且無 pending 時，向 technical-pm 發出 ready 回報，依其判定行動：放行則由 developer 自行 merge，送審則等人類確認後再 merge；人類要求修改或駁回時，回到處理 review 意見的步驟，修正後重新發 ready 回報。merge 後關閉被指派的 issue，接著收尾自己的工作區（自己的 worktree 與 branch、從該 worktree 啟動的 docker containers、該 worktree 的 tmp files），收尾不動主倉庫的工作副本（不同步主倉庫的 local main，此點優先於全域 git worktree 工作流程規則的合併後清理），也不碰別的 developer 的東西；收尾完成後才回報完成，清不掉的項目列在完成回報裡，之後停著等待新的指示。
+1. 全域人類介入邊界規則的 ready 三條件全部成立，且 PR 為 Open、無衝突、所有 CI checks 皆為 success 且無 pending 時，向 technical-pm 發出 ready 回報，依其判定行動：放行則由 developer 自行 merge，送審則等人類確認後再 merge；人類要求修改或駁回時，回到處理 review 意見的步驟，修正後重新發 ready 回報。merge 後關閉被指派的 issue，接著收尾自己的工作區（自己的 worktree 與 branch、從該 worktree 啟動的 docker containers、該 worktree 的 tmp files），並依全域 git worktree 工作流程規則的合併後清理，把主倉庫的 local main fast-forward 到 origin/main，主倉庫工作副本裡未 commit 的變更與目前所在的分支都原樣保留；fast-forward 不了，或會碰到未 commit 的變更時，列為殘留。除此之外收尾不動主倉庫的工作副本，也不碰別的 developer 的東西；收尾完成後才回報完成，清不掉的項目列在完成回報裡，之後停著等待新的指示。
 
 # 啟動時機
 - 同時最多兩個 developer，是上限不是配額，沒有第二個可啟動的 phase 就只跑一個；每個 phase 佔一個 developer 名額，兩個互不依賴的 phase 可並行啟動
