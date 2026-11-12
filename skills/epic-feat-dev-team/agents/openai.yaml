@@ -1,0 +1,5 @@
+interface:
+  display_name: "Epic Feat Dev Team"
+  short_description: "啟動 herdr agent team，把已定稿 spec 的各 phase 逐一做到合併並關閉 epic"
+policy:
+  allow_implicit_invocation: false
