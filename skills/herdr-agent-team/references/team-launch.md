@@ -12,7 +12,7 @@
 
    `finished` 是推斷：goal 已確認、曾派過 worker（`briefings/` 有啟動包副本）、目前沒有 worker 記錄、看門狗也沒在跑。所有啟動都失敗、或關掉一批準備改派時中斷，也會落在這個狀態；把這一點連同那一行交給人類。
 2. **收斂 goal 四項**：跟人類（或讀取的 thin command，見 `thin-command-format.md`）把「要達成什麼」「怎樣算成功（外部查得到）」「不做什麼」「依賴哪些還沒驗證的前提」四項都問清楚。三個來源（thin command 預設、觸發時的引數、對話）晚給的贏。
-3. **`set-goal.sh --achieve ... --success ... --not-doing ... --assumption ...`**（不帶 `--confirmed`）：把四項寫進 `team.json`。
+3. **`set-goal.sh --achieve "$(cat <草稿檔>)" --success "$(cat <草稿檔>)" --not-doing "$(cat <草稿檔>)" --assumption "$(cat <草稿檔>)"`**（不帶 `--confirmed`）：把四項寫進 `team.json`。四項各寫一個草稿檔，見 `SKILL.md`「自由文字經草稿檔傳給腳本」。
 4. **停下來，把這四項原文呈給人類，請他確認**。這一關無條件，不論素材看起來多明確，見 `SKILL.md`「開工閘門的射程」。
 5. **`set-goal.sh` 再呼叫一次、同樣四項內容、加上 `--confirmed`**：把 `goal_confirmed` 設成 `true`。
 6. **啟動 `watchdog.sh`**（不帶參數）：goal 確認之後就啟動，不必等第一個 worker。用一般的前景呼叫：腳本自己以 `setsid` 脫離目前的 session，長駐子行程撐得過 orchestrator 的 session 結束，呼叫本身立即返回。依結束碼判讀：

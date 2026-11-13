@@ -6,7 +6,7 @@ thin command 是其他開發者用來定義一個 team 編制的檔案：有哪�
 
 ## 兩條入口
 
-- **有 thin command 時**：orchestrator 直接讀取檔案內容，依下面「欄位」一節逐項取出編制。讀完之後，把這份檔案的路徑寫進 `team.json` 的 `.thin_command_source` 欄位——這個欄位沒有專屬包裝腳本，直接 `source lib/common.sh` 後呼叫 `hat_json_set "$registry_root/team.json" '.thin_command_source' '"<絕對路徑>"'`（`hat_json_set` 的欄位白名單已經納入這個路徑，見 `lib/common.sh`）。
+- **有 thin command 時**：orchestrator 直接讀取檔案內容，依下面「欄位」一節逐項取出編制。讀完之後，把這份檔案的路徑寫進 `team.json` 的 `.thin_command_source` 欄位——用 `set-team-field.sh --field thin_command_source --value <絕對路徑>` 寫入（`--value` 必須是既有檔案的絕對路徑，腳本固定以 bash 執行，不受你的 shell 是 zsh 影響）。
 - **沒有 thin command 時**：由 orchestrator 在對話中把同一組欄位跟人類問出來。goal 四項（要達成、怎樣算成功、不做什麼、前提）一律經 `set-goal.sh` 寫進 `team.json`，見 `team-launch.md`；其餘欄位（role、候選 provider、工作起點、grant、啟動與關閉時機、交付點、完成判準等）不是團隊層級的持久設定，不寫進 `team.json`；各自的去向與有 thin command 時相同，見下面「欄位」一節——例如 provider 與工作起點化成 `launch-worker.sh` 的參數，交付點、終點、完成判準經 `set-worker-field.sh` 寫進 `workers/<name>.json`（交付點與完成判準另寫進啟動包「02 任務」），grant 化成 `grant-peer.sh` 呼叫，啟動與關閉時機只在 orchestrator 當下的判斷裡使用。**這一版沒有附範例 command 檔可讀，所以第二條入口是預設路徑**，不是退路。
 
 兩條入口取得的是同一組欄位，差別只在來源是檔案還是對話；後續怎麼用這些欄位（哪個進 `launch-worker.sh` 的參數、哪個進啟動包、哪個進契約實例）不因入口不同而不同。
@@ -21,7 +21,7 @@ thin command 是其他開發者用來定義一個 team 編制的檔案：有哪�
   - `工作起點`：對應 `launch-worker.sh` 的 `--cwd`。要不要另開工作隔離區（worktree 或其他），由 worker 自己決定，thin command 只給起點目錄。
   - `權威來源`：一個 locator（規格 §7：中性字串，skill 從不打開它），有牴觸時以它為準。寫進啟動包「02 任務」一節，見 `briefing-template.md`。
   - `參考材料`：選填、不具約束力的 locator，同樣寫進啟動包「02 任務」。
-  - `交付點`、`終點`、`完成判準`：worker 啟動成功之後，由 orchestrator 呼叫 `set-worker-field.sh --to <worker> --field <delivery_point|end_point|completion_criteria> --value <內容>`，把這三項分別寫進 `workers/<name>.json` 對應的 `.delivery_point`、`.end_point`、`.completion_criteria`。其中交付點與完成判準也會寫進啟動包「02 任務」，見 `briefing-template.md`。這支腳本帶完整入口守衛（workspace 邊界、名稱格式驗證），且自己再帶一層只放行這三個欄位加 `.stage` 的白名單，不透過任何繞過守衛的路徑寫入。**完成判準必須是外部查得到的形式**，理由見下方 callout。
+  - `交付點`、`終點`、`完成判準`：worker 啟動成功之後，由 orchestrator 呼叫 `set-worker-field.sh --to <worker> --field <delivery_point|end_point|completion_criteria> --value "$(cat <草稿檔>)"`（草稿檔見 `SKILL.md`「自由文字經草稿檔傳給腳本」），把這三項分別寫進 `workers/<name>.json` 對應的 `.delivery_point`、`.end_point`、`.completion_criteria`。其中交付點與完成判準也會寫進啟動包「02 任務」，見 `briefing-template.md`。這支腳本帶完整入口守衛（workspace 邊界、名稱格式驗證），且自己再帶一層只放行這三個欄位加 `.stage` 的白名單，不透過任何繞過守衛的路徑寫入。**完成判準必須是外部查得到的形式**，理由見下方 callout。
   - 交付點寫不寫：產物交出後還要經過 orchestrator 或人類 review 才關閉 ticket 的任務，寫交付點；不需要 review 的任務（交出產物或 merge PR 就能關閉 ticket）不寫，這種 worker 只會回報 `done`。不寫的前提是關閉 ticket 這一步不必等別人：它是這個 worker 職責內的動作，或 ticket 會隨這個 worker 自己有權執行的 merge 自動關閉。兩者都不成立時要寫交付點：產物交出之後 ticket 仍要等別人關，沒寫交付點的 worker 交出產物後完成判準還沒成立、又沒有交付點可回報，只會閒置到被看門狗推到上限才升級。
   - `啟動時機`、`關閉時機`：orchestrator 自己的排程判斷，不持久化。
 - **grant**：哪個 role 可以聯繫哪個 role，格式是一組雙向或單向的配對（範例用 `↔` 表示雙向）。落地時對每一邊各呼叫一次 `grant-peer.sh --from <A> --to <B>`。

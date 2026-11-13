@@ -44,11 +44,20 @@ orchestrator 對話，orchestrator 透過本 skill 的腳本作用於一群跨�
 | `references/drift-handling.md` | `fyi` 可能是漂移、使用者要求變更 goal，或要叫停、改派、結束 worker（`done` 除外）時 |
 | `references/session-recovery.md` | session 重啟要接回既有 team，或名稱遺失：使用者告知 tab label 出現 `🚨 ORCHESTRATOR NAME LOST:` 前綴，或 `watchdog.log` 出現 `alert reason=orchestrator_name_missing` 時 |
 | `references/script-reference.md` | 任何腳本非 0 結束，或輸出出現核心未說明的格式，或要覆寫門檻時 |
-| `scripts/` 底下的十五支腳本 | 依本檔與上列 reference 流程中寫明的時機呼叫，總表見 `references/script-reference.md`。確切的旗標名稱、預設逾時與門檻值一律以各腳本檔頭註解為準，不照記憶湊 |
+| `scripts/` 底下的十六支腳本 | 依本檔與上列 reference 流程中寫明的時機呼叫，總表見 `references/script-reference.md`。確切的旗標名稱、預設逾時與門檻值一律以各腳本檔頭註解為準，不照記憶湊 |
 
 本檔是 compact 後會重附的核心，上列 reference 只在觸發時讀；compact 後先前讀過的不保證還在，碰到觸發情境或流程中途遇上 compact，一律重讀所屬 reference（`references/worker-contract.md` 依上表該列不載入，不在重讀之列）。
 
 腳本以結束碼 `0` 結束、輸出仍要處置的情況：`set-goal.sh` 印出 `GOAL-SUCCESS-CHANGED version=<N>` 代表動到「怎樣算成功」，要轉述給使用者；`team-init.sh --recover` 的 `pending-resend` 行或 `team-status.sh` 的 `pending_resend=` 欄位顯示積壓時，都不要自己用 `instruct.sh` 補送（理由見 `references/session-recovery.md` 第 3 步）。
+
+## 自由文字經草稿檔傳給腳本
+
+傳給腳本的自由文字，先用你的寫檔工具寫成草稿檔 `<registry>/draft-<你的名稱>-<用途>.txt`（`<registry>` 是 `team-init.sh` 印出的 `registry=` 路徑），再這樣傳：
+
+- `instruct.sh`：`--text-file <草稿檔>`。
+- 其餘自由文字旗標：`--<旗標> "$(cat <草稿檔>)"`，一個旗標一個草稿檔。涵蓋 `set-goal.sh` 的 `--achieve`／`--success`／`--not-doing`／`--assumption`／`--rationale`、`set-worker-field.sh --value`、`shutdown-worker.sh --evidence`、`press-approval.sh --allows`。
+
+草稿檔可以覆寫重用：腳本在呼叫當下就讀走內容。理由：直接寫在雙引號裡的反引號與 `$(...)` 會先被 shell 當成指令執行，文字少掉幾個字照樣送出，唯一的跡象是一行 `command not found`。腳本收到時文字已經受損，只有寫的這一端擋得住。
 
 ## 開工閘門的射程
 
@@ -66,7 +75,7 @@ worker 只有一個回報動作（`report.sh`），六個 token 固定不開放�
 | `ack` | 會 | 不需處理，`launch-worker.sh` 啟動時已等到它並完成對帳。要確認 `worker_id_match`／`cwd_match` 是否為 `true`，直接讀 `workers/<name>.json` 的 `.ack_reconciliation`，不必派調查者 |
 | `working` | 不會 | 只落檔、永不投遞，orchestrator 永遠收不到，不必等它 |
 | `fyi` | 會；worker 發的不需回覆，看門狗發的要處置 | **先分岔**：是 `watchdog.sh` 的升級嗎（識別訊號見「認出一則升級」）？是的話不套漂移判準，讀 `references/watchdog-escalations.md` 依升級表處置。不是才讀前綴之後的摘要，判斷是不是漂移（判準一）：照 goal 原本的敘述做會失敗，或做出與所述不同的結果；「有更好的做法」不算。是則讀 `references/drift-handling.md` 走漂移處置；不是就不必回覆，worker 會繼續做 |
-| `need-you` | 會，需要回覆 | 從前綴取出 inbox 序號（見「上行前綴」），呼叫 `instruct.sh --to <worker> --text <定案文字> --reply-to <序號>`。這一步同時把那筆 inbox 記錄標成已處理 |
+| `need-you` | 會，需要回覆 | 從前綴取出 inbox 序號（見「上行前綴」），呼叫 `instruct.sh --to <worker> --text-file <定案草稿檔> --reply-to <序號>`（草稿檔見「自由文字經草稿檔傳給腳本」）。這一步同時把那筆 inbox 記錄標成已處理 |
 | `delivered` | 會 | 呼叫 `set-worker-field.sh --to <worker> --field stage --value delivered`。需要 locator 的精確值時，讀 `inbox/<序號>-<worker>.json` 的 `.locator`。**不呼叫 `shutdown-worker.sh`**：交付點不等於終點，review 回來要改就回到執行中 |
 | `done` | 會 | 對照該 worker 的完成判準（若先前經 `set-worker-field.sh --field completion_criteria` 寫入過，可直接讀 `workers/<name>.json` 確認內容），確認外部可查證的證據確實存在（通常是對應的 ticket 已關閉；產物本身存在只代表到了交付點，不算），才呼叫 `shutdown-worker.sh --to <worker> --reason done --evidence <外部可查證的事實>`；證據不足就當成需要進一步核對的 `fyi` 處理，不關閉。關閉前 `.stage` 不能是 `delivered`，否則以結束碼 `4` 拒絕。成功發出（結束碼 `0` 或 `7`）的非 halt 下行都會把 `delivered` 撥回 `running`，撞得到的只有兩條路徑：交付之後再也沒收過任何下行，或收到的最後一則是叫停——那時先 `set-worker-field.sh --to <worker> --field stage --value running` 撥回再關 |
 

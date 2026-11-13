@@ -8,8 +8,10 @@
 # 職責：workers/<name>.json 欄位白名單裡有四個欄位——`.stage`（生命週
 # 期關卡）、`.completion_criteria`（完成判準）、`.delivery_point`（交
 # 付點）、`.end_point`（終點）——一直沒有專屬包裝腳本；SKILL.md 與
-# references/thin-command-format.md 目前教的做法是「`source lib/
-# common.sh` 之後直接呼叫 `hat_json_set`」。那條路徑繞過整支腳本層的
+# references/thin-command-format.md 原本教的做法是「`source lib/
+# common.sh` 之後直接呼叫 `hat_json_set`」（`team.json` 的
+# `.thin_command_source` 後來也補上了自己的包裝腳本 set-team-field.sh）。
+# 那條路徑繞過整支腳本層的
 # 守衛：workspace 入口守衛不會執行、`hat_assert_agent_name` 的名稱格
 # 式驗證也不會執行。其中 `.stage` 是核心之一——`shutdown-worker.sh` 正
 # 是讀它擋下「`delivered` 關卡不得走關閉」那條規則（見該檔檔頭「交付

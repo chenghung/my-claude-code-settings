@@ -58,7 +58,8 @@ mkdir -p "$STUB_BIN"
 # hat_whitelist_agents 的 TSV 輸出篩出目標 agent 那一行，同樣以受限
 # PATH（`env -i PATH=/usr/bin:/bin`）查證過解析到 /usr/bin/awk；鎖 fd
 # 不變量測試新增 realpath／seq／readlink 三項，同法查證過皆解析到
-# /usr/bin）。整份
+# /usr/bin；set-team-field.sh 的 zsh 呼叫回歸新增 zsh 一項，同法以
+# `env -i PATH=/usr/bin:/bin` 查證過解析到 /usr/bin/zsh）。整份
 # 套件的 PATH 一律是「樁目錄＋
 # /usr/bin:/bin」，真實 herdr 所在的 ~/.local/bin 從頭到尾不在 PATH
 # 上，忘了建樁的段落只會得到 command-not-found 而失敗，不會靜默地改打
@@ -4191,6 +4192,135 @@ if [ "$recorded_ep" = "整個 epic 收尾" ]; then
   pass "set-worker-field：.end_point 正確寫入"
 else
   bad "set-worker-field：.end_point='$recorded_ep'"
+fi
+
+# ===== set-team-field.sh：team.json 欄位的帶守衛包裝（zsh 下 source common.sh 會失敗）=====
+# 起始準備：herdr 樁記錄全部參數並對 `agent get` 回 orchestrator 名稱
+# （同上一節的續租位置測試），讓本地守衛「完全不呼叫 herdr」與成功路徑
+# 「會觸發自我續租」兩個性質都能從記錄看出來。PATH 全程只有樁目錄
+# ＋/usr/bin:/bin，herdr 沒建樁時只會得到 command-not-found。
+HERDR_FULL_ARGS="$T/herdr-full-args-set-team-field"
+: > "$HERDR_FULL_ARGS"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+printf '{"result":{"agent":{"name":"w3n-orchestrator"}}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" set-team-field
+
+thin_src="$T/thin-command-source.md"
+printf 'thin command\n' > "$thin_src"
+jq 'del(.thin_command_source)' "$REG/team.json" > "$T/team-set-team-field.json" && mv "$T/team-set-team-field.json" "$REG/team.json"
+
+rc=0; ( unset HERDR_ENV; bash "$SCRIPTS/set-team-field.sh" --field thin_command_source --value "$thin_src" ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 3 ]; then pass "set-team-field：HERDR_ENV 不是 1 時以 3 結束"; else bad "set-team-field：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/set-team-field.sh" --value "$thin_src" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-team-field：--field 必填"; else bad "set-team-field：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/set-team-field.sh" --field thin_command_source >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-team-field：--value 必填"; else bad "set-team-field：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/set-team-field.sh" --field thin_command_source --value "$thin_src" --bogus x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-team-field：未知參數以 2 拒絕"; else bad "set-team-field：得到 rc=$rc"; fi
+
+before="$(cat "$REG/team.json")"
+# --value 給既有的絕對路徑，讓欄位白名單成為唯一能擋下這次呼叫的守衛
+rc=0; bash "$SCRIPTS/set-team-field.sh" --field goal_confirmed --value "$thin_src" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ] && [ "$(cat "$REG/team.json")" = "$before" ]; then
+  pass "set-team-field：白名單外的欄位（.goal_confirmed，由 set-goal.sh 專責）以 2 拒絕且 team.json 未變"
+else
+  bad "set-team-field：得到 rc=$rc 或 team.json 被改動"
+fi
+
+rc=0; bash "$SCRIPTS/set-team-field.sh" --field thin_command_source --value relative/path.md >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-team-field：相對路徑以 2 拒絕"; else bad "set-team-field：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/set-team-field.sh" --field thin_command_source --value "$T/no-such-file.md" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-team-field：檔案不存在以 2 拒絕"; else bad "set-team-field：得到 rc=$rc"; fi
+
+# ---- 所有本地守衛擋下時完全不呼叫 herdr，team.json 也沒有被寫入 ----
+if [ ! -s "$HERDR_FULL_ARGS" ]; then
+  pass "set-team-field：所有本地守衛擋下時，完全不呼叫任何 herdr（自我續租排在守衛之後）"
+else
+  bad "set-team-field：本地守衛擋下時仍呼叫了 herdr：$(cat "$HERDR_FULL_ARGS")"
+fi
+if [ "$(jq -r '.thin_command_source // empty' "$REG/team.json")" = "" ]; then
+  pass "set-team-field：守衛擋下之後，.thin_command_source 真的沒有被寫入"
+else
+  bad "set-team-field：守衛擋下卻寫入了 .thin_command_source"
+fi
+
+# ---- registry 缺漏：registry 目錄不存在、或目錄在但 team.json 不在，都要以
+#      5 結束（不是 bash 的裸錯誤碼 1），不留下空的 team.json.lock，也不
+#      呼叫 herdr（這是最後一道本地守衛，早於自我續租）----
+: > "$HERDR_FULL_ARGS"
+no_registry_home="$T/team-home-no-registry"
+rc=0; AGENT_TEAM_HOME="$no_registry_home" bash "$SCRIPTS/set-team-field.sh" --field thin_command_source --value "$thin_src" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "set-team-field：registry 目錄不存在時以 5 結束"
+else
+  bad "set-team-field：registry 目錄不存在時得到 rc=$rc（預期 5）"
+fi
+if [ ! -e "$no_registry_home" ]; then
+  pass "set-team-field：registry 目錄不存在時沒有建出任何檔案或目錄"
+else
+  bad "set-team-field：registry 目錄不存在時卻建出了：$(find "$no_registry_home")"
+fi
+
+no_team_home="$T/team-home-no-team-json"
+no_team_reg="$no_team_home/.tmp/herdr-agent-team/w3N"
+mkdir -p "$no_team_reg"
+rc=0; AGENT_TEAM_HOME="$no_team_home" bash "$SCRIPTS/set-team-field.sh" --field thin_command_source --value "$thin_src" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 5 ]; then
+  pass "set-team-field：registry 在但 team.json 不存在時以 5 結束"
+else
+  bad "set-team-field：team.json 不存在時得到 rc=$rc（預期 5）"
+fi
+if [ -z "$(find "$no_team_reg" -mindepth 1)" ]; then
+  pass "set-team-field：team.json 不存在時不留下 team.json.lock 等任何檔案"
+else
+  bad "set-team-field：team.json 不存在時留下了：$(find "$no_team_reg" -mindepth 1)"
+fi
+if [ ! -s "$HERDR_FULL_ARGS" ]; then
+  pass "set-team-field：registry 缺漏擋下時完全不呼叫任何 herdr"
+else
+  bad "set-team-field：registry 缺漏擋下時仍呼叫了 herdr：$(cat "$HERDR_FULL_ARGS")"
+fi
+
+# ---- 成功路徑（bash）----
+: > "$HERDR_FULL_ARGS"
+rc=0; out="$(bash "$SCRIPTS/set-team-field.sh" --field thin_command_source --value "$thin_src" 2>&1)" || rc=$?
+recorded="$(jq -r '.thin_command_source // empty' "$REG/team.json")"
+if [ "$rc" -eq 0 ] && [ "$out" = "field=thin_command_source set" ] && [ "$recorded" = "$thin_src" ]; then
+  pass "set-team-field：bash 下成功寫入 .thin_command_source，stdout 為固定格式"
+else
+  bad "set-team-field：rc=$rc，out='$out'，.thin_command_source='$recorded'"
+fi
+if grep -q 'agent get' "$HERDR_FULL_ARGS"; then
+  pass "set-team-field：守衛全數放行後會觸發自我續租（agent get）"
+else
+  bad "set-team-field：成功呼叫沒有觸發自我續租：$(cat "$HERDR_FULL_ARGS")"
+fi
+
+# ---- 成功路徑（從 zsh 呼叫）：本腳本存在的理由。zsh 把小寫 path 陣列
+#      和 PATH 綁在一起，source common.sh 再呼叫 hat_json_set 會在 zsh
+#      下弄壞 PATH 而失敗；直接執行腳本由 shebang 交給 bash，不受影響 ----
+if command -v zsh >/dev/null 2>&1; then
+  other_src="$T/thin-command-source-zsh.md"
+  printf 'thin command zsh\n' > "$other_src"
+  rc=0; zsh -c '"$1" --field thin_command_source --value "$2"' _ "$SCRIPTS/set-team-field.sh" "$other_src" >/dev/null 2>&1 || rc=$?
+  recorded="$(jq -r '.thin_command_source // empty' "$REG/team.json")"
+  if [ "$rc" -eq 0 ] && [ "$recorded" = "$other_src" ]; then
+    pass "set-team-field：從 zsh 呼叫同樣以 0 結束並寫入欄位（zsh 下 source common.sh 會失敗的回歸）"
+  else
+    bad "set-team-field：從 zsh 呼叫 rc=$rc，.thin_command_source='$recorded'"
+  fi
+else
+  # AGENTS.md 把 zsh 列為測試需求：缺了不能靜默略過，這個回歸就是為它而寫
+  bad "set-team-field：找不到 zsh，從 zsh 呼叫的回歸測試無法執行（AGENTS.md 要求測試環境裝有 zsh）"
 fi
 
 # ===== 橫向：grant-peer.sh／send-peer.sh／wait-peer.sh =====
@@ -8717,7 +8847,7 @@ fi
 # 某個段落被跳過、斷言數比預期少。新增斷言時要把這個數字一起改大——
 # 這是刻意的成本：一個會隨新增斷言自動放寬的下限抓不到任何東西。數字
 # 不含本條斷言自己。
-HAT_EXPECTED_ASSERTIONS=751
+HAT_EXPECTED_ASSERTIONS=768
 if [ "$assert_count" -ge "$HAT_EXPECTED_ASSERTIONS" ]; then
   pass "斷言數達到下限（跑了 $assert_count 條，下限 $HAT_EXPECTED_ASSERTIONS）"
 else

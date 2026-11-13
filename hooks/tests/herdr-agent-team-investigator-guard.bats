@@ -306,6 +306,14 @@ assert_silent() {
   [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")" == *"set-worker-field.sh"* ]]
 }
 
+@test "23b: set-team-field.sh is denied" {
+  run run_hook_raw "$(build_investigator_payload "bash /abs/path/set-team-field.sh --field thin_command_source --value /x")"
+  assert_deny
+  # SHAPE_MISMATCH_REASON also names set-team-field.sh, so assert the
+  # script-specific reason that only the write-capable case entry emits.
+  [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$output")" == *"不得執行 set-team-field.sh"* ]]
+}
+
 @test "24: report.sh is denied" {
   run run_hook_raw "$(build_investigator_payload "/abs/path/report.sh --token fyi --summary hi")"
   assert_deny

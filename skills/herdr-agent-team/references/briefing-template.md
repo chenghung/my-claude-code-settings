@@ -55,7 +55,9 @@ worker_id=<你的 worker-id> cwd=<你目前實際所在的絕對路徑> model=<�
 
 三個值之間用單一空白分隔，每個值本身都不能含空白字元（尤其是 cwd——如果你的工作目錄路徑含空白，先確認能不能換一個不含空白的等價寫法，再填進這裡）。回報動作是執行：
 
-{{AGENT_TEAM_SCRIPTS}}/report.sh --token ack --summary "worker_id=... cwd=... model=..."
+{{AGENT_TEAM_SCRIPTS}}/report.sh --token ack --summary 'worker_id=... cwd=... model=...'
+
+之後的回報摘要與送給同儕的訊息都是自由文字，先用你的寫檔工具寫成草稿檔 <目錄>/draft-<你的 worker-id>-<用途>.txt（<目錄> 是環境變數 AGENT_TEAM_STATE_DIR 的值，第一次寫之前先在 shell 印出它的絕對路徑），再用 --summary "$(cat <草稿檔>)" 或 --text "$(cat <草稿檔>)" 傳。直接寫在雙引號裡的反引號與 $(...) 會先被 shell 當成指令執行，字會少掉而且不會報錯。
 ```
 
 `worker_id=<id> cwd=<絕對路徑> model=<名稱>` 是全專案唯一釘死的格式（Global Constraints、`launch-worker.sh` 第 8 步）：`launch-worker.sh` 靠解析這一行做 ACK 對帳，權威是它啟動時指定的參數，不是 worker 自己說的——cwd 出錯是靜默的，CLI 也可能因額度或設定覆寫而 fallback 到別的 model，兩者都沒有其他訊號可以察覺。範本若寫成別的格式，對帳會永遠比不出結果，而啟動仍然成功、沒有任何錯誤訊息。三個變數的具體值：
@@ -63,5 +65,7 @@ worker_id=<你的 worker-id> cwd=<你目前實際所在的絕對路徑> model=<�
 - `worker_id`：就是本段開頭「你的 worker-id」那個值，也就是環境變數 `AGENT_TEAM_SELF` 的內容。
 - `cwd`：worker 自己此刻實際的工作目錄（例如執行 `pwd` 的結果），不是「01 身分」裡寫的那個工作起點字面值——兩者理應相同，但要填的是實測值，讓對帳真的能抓到不一致。
 - `model`：worker 自己實際掛載的 model 名稱，由它自己回答，不是照抄啟動時傳的原生引數。
+
+草稿檔那段違反開頭「腳本檢查得了的一律不寫進來」嗎？不違反：文字在腳本收到之前就已經受損，沒有任何腳本擋得住，只有 worker 自己寫的時候做得到。ack 範例改用單引號，是因為那一行格式固定、不含自由文字；若沿用雙引號，worker 之後寫自由文字摘要時容易照抄。
 
 `{{AGENT_TEAM_SCRIPTS}}` 是啟動時由 `herdr tab create --env` 注入的環境變數，指向本 skill 的 `scripts/` 目錄絕對路徑；worker 不需要另外被告知這個路徑怎麼來，它啟動時就已經在環境裡。
