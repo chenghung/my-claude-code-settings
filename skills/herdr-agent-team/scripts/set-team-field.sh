@@ -24,11 +24,16 @@
 # thin-command-format.md 要求寫入絕對路徑。相對路徑換了工作目錄就指向
 # 別的檔案，而寫入當下不會有任何錯誤，所以在這裡擋下。
 #
-# ---- 守衛順序：環境前提 → 參數形狀 → 自我續租 → 寫入 ----
+# ---- 守衛順序：環境前提 → 參數形狀 → team.json 存在 → 自我續租 → 寫入 ----
 # 同 set-goal.sh：本腳本只寫 team.json，沒有 worker 座標可驗，所以沒
-# 有名稱格式或 workspace 邊界這兩關。自我續租排在所有本地守衛之後，
-# 讓「呼叫端用錯時完全不呼叫任何 herdr」這個保證成立，理由見
-# lib/common.sh hat_renew_orchestrator_name 的檔頭。
+# 有名稱格式或 workspace 邊界這兩關。team.json 存在檢查是最後一道本地
+# 守衛：registry 目錄不存在時，hat_json_set 開鎖檔的 `exec` 會以 bash
+# 的裸錯誤碼 1 結束；目錄在但 team.json 不在時，它會留下一個空的
+# team.json.lock 才以 5 結束。兩者都違反「registry 缺漏以 5 結束、不留
+# 殘檔」的約定，所以在這裡先擋下（hat_registry_root 不呼叫 herdr，不
+# 影響下一條保證）。自我續租排在所有本地守衛之後，讓「呼叫端用錯時完
+# 全不呼叫任何 herdr」這個保證成立，理由見 lib/common.sh
+# hat_renew_orchestrator_name 的檔頭。
 #
 # 結束碼：0 成功；2 用法錯誤（缺旗標、未知旗標、欄位不在白名單、值不是
 # 既有檔案的絕對路徑）；3 HERDR_ENV 不是 1；5 registry 缺漏或寫入失敗。
@@ -80,9 +85,11 @@ case "$value" in
 esac
 [ -f "$value" ] || hat_die 2 "set-team-field.sh: --value 指向的檔案不存在：$value"
 
+team_json="$(hat_registry_root)/team.json"
+[ -f "$team_json" ] || hat_die 5 "set-team-field.sh: team.json 不存在：$team_json"
+
 hat_renew_orchestrator_name
 
-team_json="$(hat_registry_root)/team.json"
 hat_json_set "$team_json" ".$field" "$(hat_json_string "$value")"
 
 printf 'field=%s set\n' "$field"
