@@ -888,6 +888,7 @@ orchestrator 端腳本：
 | `press-approval.sh` | 對卡在核准框的 worker 代按指定的鍵 |
 | `shutdown-worker.sh` | 關閉一個 worker，不可逆 |
 | `set-worker-field.sh` | 寫 `stage`、`completion_criteria`、`delivery_point`、`end_point` 四個欄位 |
+| `set-team-field.sh` | 寫 `team.json` 的 `thin_command_source` 欄位 |
 | `grant-peer.sh` | 授權（或 `--revoke` 撤銷）worker 之間的橫向聯繫 |
 | `team-status.sh` | 唯讀，第一行是看門狗存活狀態，之後逐行列出每個 worker 的狀態概況 |
 | `fetch-detail.sh` | 印出某則回報細節檔的路徑，不印內容 |

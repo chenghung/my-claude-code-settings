@@ -4193,6 +4193,96 @@ else
   bad "set-worker-field：.end_point='$recorded_ep'"
 fi
 
+# ===== set-team-field.sh：team.json 欄位的帶守衛包裝（zsh 下 source common.sh 會失敗）=====
+# 起始準備：herdr 樁記錄全部參數並對 `agent get` 回 orchestrator 名稱
+# （同上一節的續租位置測試），讓本地守衛「完全不呼叫 herdr」與成功路徑
+# 「會觸發自我續租」兩個性質都能從記錄看出來。PATH 全程只有樁目錄
+# ＋/usr/bin:/bin，herdr 沒建樁時只會得到 command-not-found。
+HERDR_FULL_ARGS="$T/herdr-full-args-set-team-field"
+: > "$HERDR_FULL_ARGS"
+cat > "$STUB_BIN/herdr" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HERDR_FULL_ARGS"
+printf '{"result":{"agent":{"name":"w3n-orchestrator"}}}'
+exit 0
+STUB
+chmod +x "$STUB_BIN/herdr"
+hat_assert_herdr_stubbed "$STUB_BIN" set-team-field
+
+thin_src="$T/thin-command-source.md"
+printf 'thin command\n' > "$thin_src"
+jq 'del(.thin_command_source)' "$REG/team.json" > "$T/team-set-team-field.json" && mv "$T/team-set-team-field.json" "$REG/team.json"
+
+rc=0; ( unset HERDR_ENV; bash "$SCRIPTS/set-team-field.sh" --field thin_command_source --value "$thin_src" ) >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 3 ]; then pass "set-team-field：HERDR_ENV 不是 1 時以 3 結束"; else bad "set-team-field：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/set-team-field.sh" --value "$thin_src" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-team-field：--field 必填"; else bad "set-team-field：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/set-team-field.sh" --field thin_command_source >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-team-field：--value 必填"; else bad "set-team-field：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/set-team-field.sh" --field thin_command_source --value "$thin_src" --bogus x >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-team-field：未知參數以 2 拒絕"; else bad "set-team-field：得到 rc=$rc"; fi
+
+before="$(cat "$REG/team.json")"
+rc=0; bash "$SCRIPTS/set-team-field.sh" --field goal_confirmed --value true >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ] && [ "$(cat "$REG/team.json")" = "$before" ]; then
+  pass "set-team-field：白名單外的欄位（.goal_confirmed，由 set-goal.sh 專責）以 2 拒絕且 team.json 未變"
+else
+  bad "set-team-field：得到 rc=$rc 或 team.json 被改動"
+fi
+
+rc=0; bash "$SCRIPTS/set-team-field.sh" --field thin_command_source --value relative/path.md >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-team-field：相對路徑以 2 拒絕"; else bad "set-team-field：得到 rc=$rc"; fi
+
+rc=0; bash "$SCRIPTS/set-team-field.sh" --field thin_command_source --value "$T/no-such-file.md" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then pass "set-team-field：檔案不存在以 2 拒絕"; else bad "set-team-field：得到 rc=$rc"; fi
+
+# ---- 所有本地守衛擋下時完全不呼叫 herdr，team.json 也沒有被寫入 ----
+if grep -Eq 'agent (get|rename)' "$HERDR_FULL_ARGS"; then
+  bad "set-team-field：本地守衛擋下時仍呼叫了 herdr：$(cat "$HERDR_FULL_ARGS")"
+else
+  pass "set-team-field：所有本地守衛擋下時，完全不呼叫任何 herdr（自我續租排在守衛之後）"
+fi
+if [ "$(jq -r '.thin_command_source // empty' "$REG/team.json")" = "" ]; then
+  pass "set-team-field：守衛擋下之後，.thin_command_source 真的沒有被寫入"
+else
+  bad "set-team-field：守衛擋下卻寫入了 .thin_command_source"
+fi
+
+# ---- 成功路徑（bash）----
+: > "$HERDR_FULL_ARGS"
+rc=0; out="$(bash "$SCRIPTS/set-team-field.sh" --field thin_command_source --value "$thin_src" 2>&1)" || rc=$?
+recorded="$(jq -r '.thin_command_source // empty' "$REG/team.json")"
+if [ "$rc" -eq 0 ] && [ "$out" = "field=thin_command_source set" ] && [ "$recorded" = "$thin_src" ]; then
+  pass "set-team-field：bash 下成功寫入 .thin_command_source，stdout 為固定格式"
+else
+  bad "set-team-field：rc=$rc，out='$out'，.thin_command_source='$recorded'"
+fi
+if grep -q 'agent get' "$HERDR_FULL_ARGS"; then
+  pass "set-team-field：守衛全數放行後會觸發自我續租（agent get）"
+else
+  bad "set-team-field：成功呼叫沒有觸發自我續租：$(cat "$HERDR_FULL_ARGS")"
+fi
+
+# ---- 成功路徑（從 zsh 呼叫）：本腳本存在的理由。zsh 把小寫 path 陣列
+#      和 PATH 綁在一起，source common.sh 再呼叫 hat_json_set 會在 zsh
+#      下弄壞 PATH 而失敗；直接執行腳本由 shebang 交給 bash，不受影響 ----
+if command -v zsh >/dev/null 2>&1; then
+  other_src="$T/thin-command-source-zsh.md"
+  printf 'thin command zsh\n' > "$other_src"
+  rc=0; zsh -c '"$1" --field thin_command_source --value "$2"' _ "$SCRIPTS/set-team-field.sh" "$other_src" >/dev/null 2>&1 || rc=$?
+  recorded="$(jq -r '.thin_command_source // empty' "$REG/team.json")"
+  if [ "$rc" -eq 0 ] && [ "$recorded" = "$other_src" ]; then
+    pass "set-team-field：從 zsh 呼叫同樣以 0 結束並寫入欄位（zsh 下 source common.sh 會失敗的回歸）"
+  else
+    bad "set-team-field：從 zsh 呼叫 rc=$rc，.thin_command_source='$recorded'"
+  fi
+else
+  pass "set-team-field：從 zsh 呼叫的回歸測試（zsh 不在，略過）"
+fi
+
 # ===== 橫向：grant-peer.sh／send-peer.sh／wait-peer.sh =====
 # 起始準備：重置本節要用到的 worker 記錄，不依賴前面小節留下的狀態（同
 # instruct.sh／shutdown-worker.sh 節開頭「起始準備」的既有作法）。

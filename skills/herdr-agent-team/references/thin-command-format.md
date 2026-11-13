@@ -6,7 +6,7 @@ thin command 是其他開發者用來定義一個 team 編制的檔案：有哪�
 
 ## 兩條入口
 
-- **有 thin command 時**：orchestrator 直接讀取檔案內容，依下面「欄位」一節逐項取出編制。讀完之後，把這份檔案的路徑寫進 `team.json` 的 `.thin_command_source` 欄位——這個欄位沒有專屬包裝腳本，直接 `source lib/common.sh` 後呼叫 `hat_json_set "$registry_root/team.json" '.thin_command_source' '"<絕對路徑>"'`（`hat_json_set` 的欄位白名單已經納入這個路徑，見 `lib/common.sh`）。
+- **有 thin command 時**：orchestrator 直接讀取檔案內容，依下面「欄位」一節逐項取出編制。讀完之後，把這份檔案的路徑寫進 `team.json` 的 `.thin_command_source` 欄位——用 `set-team-field.sh --field thin_command_source --value <絕對路徑>` 寫入（`--value` 必須是既有檔案的絕對路徑，腳本固定以 bash 執行，不受你的 shell 是 zsh 影響）。
 - **沒有 thin command 時**：由 orchestrator 在對話中把同一組欄位跟人類問出來。goal 四項（要達成、怎樣算成功、不做什麼、前提）一律經 `set-goal.sh` 寫進 `team.json`，見 `team-launch.md`；其餘欄位（role、候選 provider、工作起點、grant、啟動與關閉時機、交付點、完成判準等）不是團隊層級的持久設定，不寫進 `team.json`；各自的去向與有 thin command 時相同，見下面「欄位」一節——例如 provider 與工作起點化成 `launch-worker.sh` 的參數，交付點、終點、完成判準經 `set-worker-field.sh` 寫進 `workers/<name>.json`（交付點與完成判準另寫進啟動包「02 任務」），grant 化成 `grant-peer.sh` 呼叫，啟動與關閉時機只在 orchestrator 當下的判斷裡使用。**這一版沒有附範例 command 檔可讀，所以第二條入口是預設路徑**，不是退路。
 
 兩條入口取得的是同一組欄位，差別只在來源是檔案還是對話；後續怎麼用這些欄位（哪個進 `launch-worker.sh` 的參數、哪個進啟動包、哪個進契約實例）不因入口不同而不同。

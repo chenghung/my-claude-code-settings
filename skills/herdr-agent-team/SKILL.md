@@ -44,7 +44,7 @@ orchestrator 對話，orchestrator 透過本 skill 的腳本作用於一群跨�
 | `references/drift-handling.md` | `fyi` 可能是漂移、使用者要求變更 goal，或要叫停、改派、結束 worker（`done` 除外）時 |
 | `references/session-recovery.md` | session 重啟要接回既有 team，或名稱遺失：使用者告知 tab label 出現 `🚨 ORCHESTRATOR NAME LOST:` 前綴，或 `watchdog.log` 出現 `alert reason=orchestrator_name_missing` 時 |
 | `references/script-reference.md` | 任何腳本非 0 結束，或輸出出現核心未說明的格式，或要覆寫門檻時 |
-| `scripts/` 底下的十五支腳本 | 依本檔與上列 reference 流程中寫明的時機呼叫，總表見 `references/script-reference.md`。確切的旗標名稱、預設逾時與門檻值一律以各腳本檔頭註解為準，不照記憶湊 |
+| `scripts/` 底下的十六支腳本 | 依本檔與上列 reference 流程中寫明的時機呼叫，總表見 `references/script-reference.md`。確切的旗標名稱、預設逾時與門檻值一律以各腳本檔頭註解為準，不照記憶湊 |
 
 本檔是 compact 後會重附的核心，上列 reference 只在觸發時讀；compact 後先前讀過的不保證還在，碰到觸發情境或流程中途遇上 compact，一律重讀所屬 reference（`references/worker-contract.md` 依上表該列不載入，不在重讀之列）。
 
