@@ -21,7 +21,7 @@ thin command 是其他開發者用來定義一個 team 編制的檔案：有哪�
   - `工作起點`：對應 `launch-worker.sh` 的 `--cwd`。要不要另開工作隔離區（worktree 或其他），由 worker 自己決定，thin command 只給起點目錄。
   - `權威來源`：一個 locator（規格 §7：中性字串，skill 從不打開它），有牴觸時以它為準。寫進啟動包「02 任務」一節，見 `briefing-template.md`。
   - `參考材料`：選填、不具約束力的 locator，同樣寫進啟動包「02 任務」。
-  - `交付點`、`終點`、`完成判準`：worker 啟動成功之後，由 orchestrator 呼叫 `set-worker-field.sh --to <worker> --field <delivery_point|end_point|completion_criteria> --value <內容>`，把這三項分別寫進 `workers/<name>.json` 對應的 `.delivery_point`、`.end_point`、`.completion_criteria`。其中交付點與完成判準也會寫進啟動包「02 任務」，見 `briefing-template.md`。這支腳本帶完整入口守衛（workspace 邊界、名稱格式驗證），且自己再帶一層只放行這三個欄位加 `.stage` 的白名單，不透過任何繞過守衛的路徑寫入。**完成判準必須是外部查得到的形式**，理由見下方 callout。
+  - `交付點`、`終點`、`完成判準`：worker 啟動成功之後，由 orchestrator 呼叫 `set-worker-field.sh --to <worker> --field <delivery_point|end_point|completion_criteria> --value "$(cat <草稿檔>)"`（草稿檔見 `SKILL.md`「自由文字經草稿檔傳給腳本」），把這三項分別寫進 `workers/<name>.json` 對應的 `.delivery_point`、`.end_point`、`.completion_criteria`。其中交付點與完成判準也會寫進啟動包「02 任務」，見 `briefing-template.md`。這支腳本帶完整入口守衛（workspace 邊界、名稱格式驗證），且自己再帶一層只放行這三個欄位加 `.stage` 的白名單，不透過任何繞過守衛的路徑寫入。**完成判準必須是外部查得到的形式**，理由見下方 callout。
   - 交付點寫不寫：產物交出後還要經過 orchestrator 或人類 review 才關閉 ticket 的任務，寫交付點；不需要 review 的任務（交出產物或 merge PR 就能關閉 ticket）不寫，這種 worker 只會回報 `done`。不寫的前提是關閉 ticket 這一步不必等別人：它是這個 worker 職責內的動作，或 ticket 會隨這個 worker 自己有權執行的 merge 自動關閉。兩者都不成立時要寫交付點：產物交出之後 ticket 仍要等別人關，沒寫交付點的 worker 交出產物後完成判準還沒成立、又沒有交付點可回報，只會閒置到被看門狗推到上限才升級。
   - `啟動時機`、`關閉時機`：orchestrator 自己的排程判斷，不持久化。
 - **grant**：哪個 role 可以聯繫哪個 role，格式是一組雙向或單向的配對（範例用 `↔` 表示雙向）。落地時對每一邊各呼叫一次 `grant-peer.sh --from <A> --to <B>`。
