@@ -8984,7 +8984,7 @@ if [ ! -e "$RUNE2E_WORKTREE_DIR" ]; then pass "cmd_run 完成後 worktree 已移
 rm -f "$STUB_BIN/herdr"
 
 # ------------------------------------------------------------
-# reviewer-contract: direct comment, negative boundaries, multi-aspect subagents, unfolded output
+# reviewer-contract: direct comment, negative boundaries, multi-aspect subagents, folding only for the coverage section
 # ------------------------------------------------------------
 test_reviewer_contract_direct_comment_and_boundaries() {
   local contract="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
@@ -9013,13 +9013,13 @@ test_reviewer_contract_direct_comment_and_boundaries() {
     return
   fi
 
-  # 驗證平鋪呈現且無折疊區要求（確保無 details summary）
-  if grep -q '<details>' "$contract"; then
-    bad "reviewer-contract still contains <details> folding section"
+  # 折疊區只允許出現在覆蓋範圍段：恰好一處 <details>，且與覆蓋範圍同一行
+  if [ "$(grep -c '<details>' "$contract")" -ne 1 ] || ! grep -q '^<details><summary>覆蓋範圍' "$contract"; then
+    bad "reviewer-contract <details> must appear exactly once, only as the 覆蓋範圍 section"
     return
   fi
 
-  pass "reviewer-contract updated with direct comment, negative boundaries, and unfolded format"
+  pass "reviewer-contract updated with direct comment, negative boundaries, and folding only for the coverage section"
 }
 test_reviewer_contract_direct_comment_and_boundaries
 
@@ -9030,9 +9030,10 @@ test_reviewer_contract_slim_structure() {
   local contract="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
   local ok=1
 
-  # 契約整體大小上限：刻意壓緊的護欄，防止契約再度膨脹；目前契約 15356
-  # bytes，要加內容就得先刪等量的字，或經設計討論後調高
-  local max_bytes=15360
+  # 契約整體大小上限：刻意壓緊的護欄，防止契約再度膨脹；目前上限 16384
+  # bytes（2026-11-16 為覆蓋範圍段調高），要加內容就得先刪等量的字，或經設計
+  # 討論後調高
+  local max_bytes=16384
   local size
   size=$(wc -c < "$contract")
   if [ "$size" -gt "$max_bytes" ]; then
@@ -9063,6 +9064,11 @@ test_reviewer_contract_slim_structure() {
     '輸出檔絕對路徑'
     '--name-only'
     '...HEAD'
+    '覆蓋範圍'
+    '..HEAD'
+    'core.quotePath=false'
+    '已審'
+    '缺口'
   )
   local req
   for req in "${required[@]}"; do
@@ -9073,10 +9079,12 @@ test_reviewer_contract_slim_structure() {
   done
 
   # 應被移除的舊字串：命中即代表契約尚未瘦身完成
+  # shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the contract, not command substitution
   local forbidden=(
     '三道是非題'
     '與材料的符合度'
     '偽造座標'
+    '不改用 `git log`、`git show`'
   )
   local fb
   for fb in "${forbidden[@]}"; do
