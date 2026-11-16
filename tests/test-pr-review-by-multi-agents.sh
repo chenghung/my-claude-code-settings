@@ -9065,10 +9065,10 @@ test_reviewer_contract_slim_structure() {
     '--name-only'
     '...HEAD'
     '覆蓋範圍'
-    '..HEAD'
+    'log <base ref>..HEAD'
     'core.quotePath=false'
-    '已審'
-    '缺口'
+    '「已審」或「缺口」'
+    '| 檔案 | 狀態 | 說明 |'
   )
   local req
   for req in "${required[@]}"; do
