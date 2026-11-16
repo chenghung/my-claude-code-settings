@@ -235,7 +235,7 @@ agent 名稱是腳本自己從 pane 識別碼雜湊出來的，摘要上印的�
 
 舊契約只准一道 `git diff <base ref>...HEAD`，截斷時最多退到逐檔，並禁止寫「讀了哪些材料」。OnrampLab/voice-fusion-frontend 的 PR #743、#744、#745、#753 實際只有 claude 審出東西：`ExperimentDetailPage.test.tsx` 單檔 diff 約 80KB，agy 逐檔也讀不完，只能列缺口而結論仍寫「沒有發現」；codex 在 #744、#745、#753 回「沒有發現」且沒有缺口段，#753 有 223 檔、980KB，它從派出到寫完約 4.5 分鐘，無從判斷是否讀完。同一個大檔在各 commit 只有 100 至 300 行，所以改成讓 reviewer 用唯讀 git 自行逐 commit 或逐檔看，而不是由腳本預先切片段。
 
-自由度提高後，敷衍更不容易從格式上看出來，因此同時要求覆蓋範圍段：reviewer 發布前把它當必過項自核；腳本以派出前寫進 `logs/.changed-files` 的清單獨立核對，結果寫入 `.coverage-status`。這道核對只證明沒漏列，「已審」仍是自報。核對結果另存一檔而不寫進 `summary.txt`，是為了不動七欄格式，也不讓覆蓋率牽動關 pane、補貼與收尾。`.coverage-status` 與 `.pane-close-status` 同樣在沒上鎖的執行目錄根層，reviewer 寫得到，不作為防竄改的證據。
+自由度提高後，敷衍更不容易從格式上看出來，因此同時要求覆蓋範圍段：reviewer 發布前把它當必過項自核；腳本以派出前寫進 `logs/.changed-files` 的清單獨立核對，結果寫入 `.coverage-status`。這道核對只證明沒漏列也沒多列，「已審」仍是自報。核對結果另存一檔而不寫進 `summary.txt`，是為了不動七欄格式，也不讓覆蓋率牽動關 pane、補貼與收尾。`.coverage-status` 與 `.pane-close-status` 同樣在沒上鎖的執行目錄根層，reviewer 寫得到，不作為防竄改的證據。
 
 不列 git 指令清單是使用者的選擇：「唯讀」由模型判斷。`git gc`、`git worktree prune` 這類會寫入主 repo `.git` 的指令，只靠契約「不寫 `.git` 內部檔」那一條擋。若實測發現 reviewer 仍一次讀整包而讀不完，再另案評估由腳本預先切片段。
 

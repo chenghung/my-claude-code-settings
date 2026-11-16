@@ -209,9 +209,9 @@ pane 識別碼取自派出摘要「已派出的 reviewer」那幾行括號裡的
 
 | `.coverage-status` | 轉達內容 |
 | --- | --- |
-| `complete` 且 `gaps=0` | 覆蓋範圍段列齊、每檔標已審；這是 reviewer 自報，腳本只證明沒漏列 |
+| `complete` 且 `gaps=0` | 覆蓋範圍段列齊、每檔標已審；這是 reviewer 自報，腳本只證明沒漏列也沒多列 |
 | `complete` 且 `gaps` 大於 0 | 列齊，但有 `gaps` 檔沒審到；這則的「沒有發現」不涵蓋那幾檔 |
-| `incomplete` | 漏列或多列，講出 `missing` 與 `extra`；這則不能當成審完整個 PR |
+| `incomplete` | 漏列、多列、重複列或狀態格不合；講出 `missing` 與 `extra`，兩者皆 0 時就是重複列或狀態格不合；這則不能當成審完整個 PR |
 | `absent` | 找不到覆蓋範圍段，比照 `incomplete` |
 | `unchecked`，或該 cli 沒有這一行 | 照 `reason` 講原因（沒有這一行就講沒有核對結果），不讀成任何肯定訊號 |
 

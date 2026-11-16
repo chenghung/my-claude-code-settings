@@ -3443,6 +3443,10 @@ cov_review "$COV_DIR/desc-pipe.md" '| `a.txt` | 已審 | 太大 \| 另案 |' '| 
 out="$(_coverage_compare "$COV_DIR/desc-pipe.md" "$COV_DIR/expected")"
 if [ "$out" = "coverage=complete expected=3 listed=3 missing=0 extra=0 gaps=0" ]; then pass coverage-compare-pipe-in-description; else bad "coverage-compare-pipe-in-description: $out"; fi
 
+sed 's/$/\r/' "$COV_DIR/complete.md" > "$COV_DIR/crlf.md"
+out="$(_coverage_compare "$COV_DIR/crlf.md" "$COV_DIR/expected")"
+if [ "$out" = "coverage=complete expected=3 listed=3 missing=0 extra=0 gaps=1" ]; then pass coverage-compare-crlf-line-endings; else bad "coverage-compare-crlf-line-endings: $out"; fi
+
 printf '<!-- pr-review-by-multi-agents -->\n\n本次審查沒有發現\n\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$COV_DIR/absent.md"
 out="$(_coverage_compare "$COV_DIR/absent.md" "$COV_DIR/expected")"
 if [ "$out" = "coverage=absent expected=3 listed=0 missing=3 extra=0 gaps=0" ]; then pass coverage-compare-absent; else bad "coverage-compare-absent: $out"; fi

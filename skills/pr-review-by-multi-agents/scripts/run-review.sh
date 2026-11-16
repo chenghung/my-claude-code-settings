@@ -2232,6 +2232,9 @@ JSON
 # renames, narrows, or drops that flag, at which point this file's own
 # allow list -- not a flag argument someone would first have to notice is
 # gone -- would go back to being what actually lets `git diff` through.
+# That fallback covers only those two commands: the contract also runs
+# `git -C <wt> -c core.quotePath=false diff --name-only`, `git -C <wt> log`
+# and `git -C <wt> show`, which neither prefix matches.
 # Left in place rather than deleted for that reason, not because deleting
 # them today would change this reviewer's current behavior at all.
 _write_agy_home_interactive() {
@@ -3114,6 +3117,7 @@ _coverage_compare() {
       while ((getline line < expf) > 0) if (line != "") { want[line] = 1; expected++ }
       close(expf)
     }
+    { sub(/\r$/, "") }
     !found && /^<details><summary>覆蓋範圍/ { found = 1; inblk = 1; next }
     inblk && /^<\/details>/ { inblk = 0; next }
     inblk && /^\|/ {
@@ -5282,13 +5286,14 @@ cmd_launch() {
 
   # logs_dir gets the same read-only treatment as the worktree, applied
   # only now that every reviewer has actually been dispatched. logs_dir
-  # still holds each cli's own <cli>.prompt file (the only thing left in
-  # it once launch_reviewer_interactive stopped writing <cli>.log/<cli>.pid
-  # here -- its own output goes to reviewer_workdir/review.md instead, a
-  # different directory entirely, not covered by this chmod); protecting
-  # those prompt files from being overwritten for the rest of this run is
-  # still worth doing even though the specific log-impersonation risk the
-  # original comment here described no longer applies the same way.
+  # still holds each cli's own <cli>.prompt file plus the .dispatched-at and
+  # .changed-files markers (launch_reviewer_interactive stopped writing
+  # <cli>.log/<cli>.pid here -- its own output goes to
+  # reviewer_workdir/review.md instead, a different directory entirely, not
+  # covered by this chmod); protecting those files from being overwritten
+  # for the rest of this run is still worth doing even though the specific
+  # log-impersonation risk the original comment here described no longer
+  # applies the same way.
   #
   # Unlike the worktree chmod cmd_prepare() applies, a failure here is not
   # treated as a hard-abort precondition: every reviewer is already
