@@ -3385,6 +3385,82 @@ else
 fi
 
 # ==============================================================
+# _coverage_compare / _record_coverage_status
+#
+# 覆蓋範圍段的解析與比對（spec：2026-11-16-pr-review-git-coverage）。
+# 期望清單一行一個路徑；覆蓋範圍段是 <details><summary>覆蓋範圍 起頭的
+# 區塊，表頭之後每列「| `路徑` | 已審或缺口 | 說明 |」。
+# ==============================================================
+
+COV_DIR="$T/coverage-fixture"
+mkdir -p "$COV_DIR"
+printf 'a.txt\nsrc/b.sh\n中文/c.md\n' > "$COV_DIR/expected"
+
+cov_review() {
+  # $1: 輸出檔；其餘參數：表格資料列（不含表頭）
+  local out="$1"; shift
+  {
+    printf '<!-- pr-review-by-multi-agents -->\n\n## 揭露聲明\n\n本次審查沒有發現\n\n'
+    printf '<details><summary>覆蓋範圍（3 檔）</summary>\n\n| 檔案 | 狀態 | 說明 |\n| --- | --- | --- |\n'
+    local row
+    for row in "$@"; do printf '%s\n' "$row"; done
+    printf '\n</details>\n\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n'
+  } > "$out"
+}
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/complete.md" '| `a.txt` | 已審 | |' '| `src/b.sh` | 已審 | |' '| `中文/c.md` | 缺口 | 太大 |'
+out="$(_coverage_compare "$COV_DIR/complete.md" "$COV_DIR/expected")"
+if [ "$out" = "coverage=complete expected=3 listed=3 missing=0 extra=0 gaps=1" ]; then pass coverage-compare-complete-with-gap; else bad "coverage-compare-complete-with-gap: $out"; fi
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/missing.md" '| `a.txt` | 已審 | |' '| `src/b.sh` | 已審 | |'
+out="$(_coverage_compare "$COV_DIR/missing.md" "$COV_DIR/expected")"
+if [ "$out" = "coverage=incomplete expected=3 listed=2 missing=1 extra=0 gaps=0" ]; then pass coverage-compare-missing-row; else bad "coverage-compare-missing-row: $out"; fi
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/extra.md" '| `a.txt` | 已審 | |' '| `src/b.sh` | 已審 | |' '| `中文/c.md` | 已審 | |' '| `z.txt` | 已審 | |'
+out="$(_coverage_compare "$COV_DIR/extra.md" "$COV_DIR/expected")"
+if [ "$out" = "coverage=incomplete expected=3 listed=4 missing=0 extra=1 gaps=0" ]; then pass coverage-compare-extra-row; else bad "coverage-compare-extra-row: $out"; fi
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/dup.md" '| `a.txt` | 已審 | |' '| `a.txt` | 已審 | |' '| `src/b.sh` | 已審 | |' '| `中文/c.md` | 已審 | |'
+out="$(_coverage_compare "$COV_DIR/dup.md" "$COV_DIR/expected")"
+case "$out" in coverage=incomplete\ *) pass coverage-compare-duplicate-row ;; *) bad "coverage-compare-duplicate-row: $out" ;; esac
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/badstatus.md" '| `a.txt` | 已審 | |' '| `src/b.sh` | 略過 | |' '| `中文/c.md` | 已審 | |'
+out="$(_coverage_compare "$COV_DIR/badstatus.md" "$COV_DIR/expected")"
+case "$out" in coverage=incomplete\ *) pass coverage-compare-invalid-status ;; *) bad "coverage-compare-invalid-status: $out" ;; esac
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/pipe.md" '| `a.txt` | 已審 | |' '| `src/b\|x.sh` | 已審 | |' '| `中文/c.md` | 已審 | |'
+out="$(_coverage_compare "$COV_DIR/pipe.md" "$COV_DIR/expected")"
+case "$out" in coverage=incomplete\ *) pass coverage-compare-unparsable-pipe-path ;; *) bad "coverage-compare-unparsable-pipe-path: $out" ;; esac
+
+printf '<!-- pr-review-by-multi-agents -->\n\n本次審查沒有發現\n\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$COV_DIR/absent.md"
+out="$(_coverage_compare "$COV_DIR/absent.md" "$COV_DIR/expected")"
+if [ "$out" = "coverage=absent expected=3 listed=0 missing=3 extra=0 gaps=0" ]; then pass coverage-compare-absent; else bad "coverage-compare-absent: $out"; fi
+
+: > "$COV_DIR/expected-empty"
+out="$(_coverage_compare "$COV_DIR/absent.md" "$COV_DIR/expected-empty")"
+if [ "$out" = "coverage=complete expected=0 listed=0 missing=0 extra=0 gaps=0" ]; then pass coverage-compare-empty-change-set; else bad "coverage-compare-empty-change-set: $out"; fi
+
+COV_BASE="$COV_DIR/base"
+mkdir -p "$COV_BASE/logs"
+cp "$COV_DIR/expected" "$COV_BASE/logs/.changed-files"
+_record_coverage_status claude "$COV_BASE" "$COV_DIR/complete.md"
+_record_coverage_status codex "$COV_BASE" ""
+_record_coverage_status agy "$COV_BASE" "$COV_DIR/does-not-exist.md"
+expected_lines=$'cli=claude coverage=complete expected=3 listed=3 missing=0 extra=0 gaps=1\ncli=codex coverage=unchecked reason=no-content\ncli=agy coverage=unchecked reason=no-content'
+if [ "$(cat "$COV_BASE/.coverage-status")" = "$expected_lines" ]; then pass record-coverage-status-lines; else bad "record-coverage-status-lines: $(cat "$COV_BASE/.coverage-status")"; fi
+
+COV_BASE2="$COV_DIR/base-no-list"
+mkdir -p "$COV_BASE2"
+_record_coverage_status claude "$COV_BASE2" "$COV_DIR/complete.md"
+if [ "$(cat "$COV_BASE2/.coverage-status")" = "cli=claude coverage=unchecked reason=no-expected-list" ]; then pass record-coverage-status-no-expected-list; else bad "record-coverage-status-no-expected-list: $(cat "$COV_BASE2/.coverage-status")"; fi
+
+# ==============================================================
 # _confirm_reviewers_working
 #
 # herdr is genuinely installed on this machine (see the

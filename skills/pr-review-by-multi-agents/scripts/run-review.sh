@@ -3088,6 +3088,76 @@ _extract_reviewer_output() {
   printf '%s' "$content"
 }
 
+# _coverage_compare <review_file> <expected_file>
+#
+# 解析 <review_file> 的覆蓋範圍段（第一個以 `<details><summary>覆蓋範圍`
+# 起頭的行到 `</details>`），與 <expected_file>（一行一個路徑，
+# cmd_prepare 寫的 logs/.changed-files）比對，stdout 印一行
+# `coverage=<值> expected=<n> listed=<n> missing=<n> extra=<n> gaps=<n>`。
+# 區塊內第一個以 `|` 起頭的行是表頭，`| --- |` 形式的分隔列略過；其餘每列
+# 切成三格，第一格剝掉反引號與前後空白當路徑，第二格必須是「已審」或
+# 「缺口」。格數不對（含路徑裡的 `\|`）、狀態不合法、重複路徑都計入 bad。
+# complete：找得到區塊且 bad、missing、extra 皆為 0；或清單為空且區塊不在
+# （空集合形狀不寫這一段）。absent：清單非空而區塊不在。其餘 incomplete。
+# 只用 POSIX awk 語法：CI 的 awk 可能是 mawk。LC_ALL=C 讓多位元組路徑逐
+# 位元組比對，兩邊用同一套比對規則。
+_coverage_compare() {
+  local review_file="$1" expected_file="$2"
+  LC_ALL=C awk -v expf="$expected_file" '
+    BEGIN {
+      while ((getline line < expf) > 0) if (line != "") { want[line] = 1; expected++ }
+      close(expf)
+    }
+    !found && /^<details><summary>覆蓋範圍/ { found = 1; inblk = 1; next }
+    inblk && /^<\/details>/ { inblk = 0; next }
+    inblk && /^\|/ {
+      if (!header) { header = 1; next }
+      if ($0 ~ /^\|[ :-]*\|[ :-]*\|[ :-]*\|[ ]*$/) next
+      listed++
+      n = split($0, f, "|")
+      if (n != 5) { bad++; next }
+      path = f[2]; st = f[3]
+      gsub(/`/, "", path); gsub(/^[ \t]+/, "", path); gsub(/[ \t]+$/, "", path)
+      gsub(/^[ \t]+/, "", st); gsub(/[ \t]+$/, "", st)
+      if (st == "缺口") gaps++
+      else if (st != "已審") bad++
+      if (path in seen) { bad++; next }
+      seen[path] = 1
+      if (!(path in want)) extra++
+      next
+    }
+    END {
+      for (p in want) if (!(p in seen)) missing++
+      if (!found) cov = (expected == 0) ? "complete" : "absent"
+      else cov = (bad + missing + extra == 0) ? "complete" : "incomplete"
+      printf "coverage=%s expected=%d listed=%d missing=%d extra=%d gaps=%d\n", cov, expected, listed, missing, extra, gaps
+    }
+  ' "$review_file"
+}
+
+# _record_coverage_status <cli_name> <base_dir> <review_file>
+#
+# 把 <cli_name> 的覆蓋核對結果附加一行到 <base_dir>/.coverage-status。
+# <review_file> 給空字串或讀不到 → unchecked reason=no-content；
+# logs/.changed-files 讀不到 → unchecked reason=no-expected-list；比對本身
+# 失敗或沒輸出 → unchecked reason=compare-failed。呼叫端在寫 summary.txt
+# 那一行之前呼叫它，讓 main agent 收到 summary_line 事件時這一行已在。
+# 寫入以 `|| true` 保護，理由同 _record_reviewer_result_interactive 對
+# summary.txt 的寫法：它在監督行程的子 shell 內，一次寫入失敗不得拖垮
+# 其他 reviewer 的監督。結果不參與關 pane、補貼、收尾任何判斷。
+_record_coverage_status() {
+  local cli_name="$1" base_dir="$2" review_file="$3"
+  local expected_file="$base_dir/logs/.changed-files" fields
+  if [ -z "$review_file" ] || [ ! -r "$review_file" ]; then
+    fields="coverage=unchecked reason=no-content"
+  elif [ ! -r "$expected_file" ]; then
+    fields="coverage=unchecked reason=no-expected-list"
+  elif ! fields="$(_coverage_compare "$review_file" "$expected_file")" || [ -z "$fields" ]; then
+    fields="coverage=unchecked reason=compare-failed"
+  fi
+  printf 'cli=%s %s\n' "$cli_name" "$fields" >> "$base_dir/.coverage-status" || true
+}
+
 # _record_reviewer_result_interactive <cli_name> <base_dir> <worktree_dir> \
 #                                      <output_file> <summary_file>
 #
