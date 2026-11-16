@@ -7,6 +7,15 @@ fail=0
 pass() { printf 'PASS %s\n' "$1"; }
 bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 
+# SKILL.md 叫 main agent 直接執行 `<run-review.sh 路徑> run ...`，install.sh 以
+# 符號連結部署，所以 git 裡的執行權限就是使用者拿到的權限。下面其餘測試都以
+# bash 呼叫腳本，看不出權限被拿掉，這一條單獨守住它。
+if [ "$(git -C "$REPO" ls-files -s skills/pr-review-by-multi-agents/scripts/run-review.sh | cut -c1-6)" = "100755" ]; then
+  pass run-review-sh-is-executable-in-git
+else
+  bad run-review-sh-is-executable-in-git
+fi
+
 # Source the script under test so parse_pr_url / check_prerequisites /
 # check_clis are directly callable as shell functions.
 # shellcheck source=/dev/null
