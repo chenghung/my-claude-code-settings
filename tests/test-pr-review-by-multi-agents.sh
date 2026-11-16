@@ -3488,9 +3488,9 @@ fi
 cov_order_ok=1
 for fn in _record_reviewer_result_interactive _record_orphan_reviewer_result_interactive; do
   body="$(declare -f "$fn")"
-  cov_line="$(printf '%s\n' "$body" | grep -n '_record_coverage_status' | head -1 | cut -d: -f1)"
+  cov_line="$(printf '%s\n' "$body" | grep -n '_record_coverage_status' | head -1 | cut -d: -f1)" || true
   # shellcheck disable=SC2016  # single quotes intentional: the grep pattern matches the literal text `>> "$summary_file"` in the function body, not a shell expansion
-  sum_line="$(printf '%s\n' "$body" | grep -n '>> "\$summary_file"' | head -1 | cut -d: -f1)"
+  sum_line="$(printf '%s\n' "$body" | grep -n '>> "\$summary_file"' | head -1 | cut -d: -f1)" || true
   if [ -z "$cov_line" ] || [ -z "$sum_line" ] || [ "$cov_line" -ge "$sum_line" ]; then cov_order_ok=0; fi
 done
 if [ "$cov_order_ok" -eq 1 ]; then pass coverage-status-written-before-summary-line; else bad coverage-status-written-before-summary-line; fi
