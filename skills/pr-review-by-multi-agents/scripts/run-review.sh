@@ -3197,6 +3197,10 @@ _record_coverage_status() {
 # content_file) keep their existing order and names regardless, so every
 # downstream reader that parses this format stays compatible unchanged --
 # none of them parse pid as anything other than an opaque display field.
+#
+# Calls _record_coverage_status before writing the summary line, so the
+# coverage line is already there by the time a summary_line event reaches
+# the main agent; see that function's docstring for why.
 _record_reviewer_result_interactive() {
   local cli_name="$1" base_dir="$2" worktree_dir="$3" output_file="$4" summary_file="$5"
   local before after status content content_file content_status
@@ -3242,6 +3246,12 @@ _record_reviewer_result_interactive() {
     content_file=""
   fi
 
+  if [ "$content_status" = "no-content" ]; then
+    _record_coverage_status "$cli_name" "$base_dir" ""
+  else
+    _record_coverage_status "$cli_name" "$base_dir" "$output_file"
+  fi
+
   printf 'cli=%s pid=%s exit=%s ended_at=%s worktree_status=%s content_status=%s content_file=%s\n' \
     "$cli_name" "n/a" "n/a" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$status" "$content_status" "$content_file" \
     >> "$summary_file" || true
@@ -3283,6 +3293,10 @@ _record_reviewer_result_interactive() {
 # reassembled the other function's own way: <comment_body> already starts
 # with that marker (this function's only caller confirmed exactly that
 # before calling it), so re-adding it here would duplicate it.
+#
+# Calls _record_coverage_status before writing the summary line, so the
+# coverage line is already there by the time a summary_line event reaches
+# the main agent; see that function's docstring for why.
 _record_orphan_reviewer_result_interactive() {
   local cli_name="$1" base_dir="$2" worktree_dir="$3" comment_body="$4" summary_file="$5"
   local before after status content_file
@@ -3293,6 +3307,8 @@ _record_orphan_reviewer_result_interactive() {
 
   content_file="$base_dir/.comment-body-$cli_name.md"
   printf '%s' "$comment_body" > "$content_file" || true
+
+  _record_coverage_status "$cli_name" "$base_dir" "$content_file"
 
   printf 'cli=%s pid=%s exit=%s ended_at=%s worktree_status=%s content_status=%s content_file=%s\n' \
     "$cli_name" "n/a" "n/a" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$status" "posted-no-output" "$content_file" \
@@ -4523,6 +4539,18 @@ cmd_prepare() {
     git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
     # This run never reaches `cleanup`, so delete its own branch too.
     _cleanup_delete_branch "$base_dir" >/dev/null
+    exit 1
+  fi
+
+  # logs/.changed-files：本次變更檔清單，監督行程核對每格覆蓋範圍段的
+  # 正確答案（見 _coverage_compare）。在這裡寫而不是核對時才算：監督行程
+  # 在全部 reviewer 寫完後會移除 worktree，base ref 也沒有落檔。放在 logs/
+  # 是因為它與 prompt 檔一起在 cmd_launch 上鎖。core.quotePath=false 讓非
+  # ASCII 路徑照原樣印出，與契約交給 reviewer 的同一道指令一致。
+  if ! git -C "$worktree_dir" -c core.quotePath=false diff --name-only "$base_ref...HEAD" \
+    > "$logs_dir/.changed-files"; then
+    printf 'run-review.sh: failed to list the changed files of %s...HEAD\n' "$base_ref" >&2
+    _dispatch_failed_cleanup "$worktree_dir"
     exit 1
   fi
 

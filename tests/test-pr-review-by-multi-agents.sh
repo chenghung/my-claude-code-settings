@@ -3465,6 +3465,57 @@ mkdir -p "$COV_BASE2"
 _record_coverage_status claude "$COV_BASE2" "$COV_DIR/complete.md"
 if [ "$(cat "$COV_BASE2/.coverage-status")" = "cli=claude coverage=unchecked reason=no-expected-list" ]; then pass record-coverage-status-no-expected-list; else bad "record-coverage-status-no-expected-list: $(cat "$COV_BASE2/.coverage-status")"; fi
 
+# 監督行程先寫 .coverage-status 再寫 summary.txt：summary 行一出現，同一格
+# 的覆蓋行必須已經在。
+SVCOV_ROOT="$T/supervisor-coverage-fixture"
+SVCOV_WT="$(_make_worktree_fixture "$SVCOV_ROOT")"
+mkdir -p "$SVCOV_ROOT/reviewers/claude/workdir" "$SVCOV_ROOT/logs"
+cp "$COV_DIR/expected" "$SVCOV_ROOT/logs/.changed-files"
+cp "$COV_DIR/complete.md" "$SVCOV_ROOT/reviewers/claude/workdir/review.md"
+printf '%s\n' "$(_git_status_snapshot "$SVCOV_WT")" > "$SVCOV_ROOT/.git-status-before-claude"
+printf 'claude claude-e2e-model dispatched\n' > "$SVCOV_ROOT/.roster"
+printf '%s\n' "$SVCOV_ROOT/work" > "$SVCOV_ROOT/.repo-path"
+_record_reviewer_result_interactive claude "$SVCOV_ROOT" "$SVCOV_WT" \
+  "$SVCOV_ROOT/reviewers/claude/workdir/review.md" "$SVCOV_ROOT/summary.txt"
+if [ -s "$SVCOV_ROOT/summary.txt" ] && [ "$(cat "$SVCOV_ROOT/.coverage-status" 2>/dev/null)" = "cli=claude coverage=complete expected=3 listed=3 missing=0 extra=0 gaps=1" ]; then
+  pass record-reviewer-result-writes-coverage-status
+else
+  bad "record-reviewer-result-writes-coverage-status: $(cat "$SVCOV_ROOT/.coverage-status" 2>&1)"
+fi
+# 時序：兩個 recorder 的函式本體裡，第一次呼叫 _record_coverage_status
+# 的位置都要在附加 summary_file 那一行之前（以 declare -f 取函式本體，
+# 不受註解影響；檔案 mtime 只有秒級，分不出先後，不拿來判斷）。
+cov_order_ok=1
+for fn in _record_reviewer_result_interactive _record_orphan_reviewer_result_interactive; do
+  body="$(declare -f "$fn")"
+  cov_line="$(printf '%s\n' "$body" | grep -n '_record_coverage_status' | head -1 | cut -d: -f1)"
+  # shellcheck disable=SC2016  # single quotes intentional: the grep pattern matches the literal text `>> "$summary_file"` in the function body, not a shell expansion
+  sum_line="$(printf '%s\n' "$body" | grep -n '>> "\$summary_file"' | head -1 | cut -d: -f1)"
+  if [ -z "$cov_line" ] || [ -z "$sum_line" ] || [ "$cov_line" -ge "$sum_line" ]; then cov_order_ok=0; fi
+done
+if [ "$cov_order_ok" -eq 1 ]; then pass coverage-status-written-before-summary-line; else bad coverage-status-written-before-summary-line; fi
+
+# no-content 那一路：沒有完整輸出檔 → unchecked reason=no-content。
+SVCOVNC_ROOT="$T/supervisor-coverage-nocontent-fixture"
+SVCOVNC_WT="$(_make_worktree_fixture "$SVCOVNC_ROOT")"
+mkdir -p "$SVCOVNC_ROOT/reviewers/codex/workdir" "$SVCOVNC_ROOT/logs"
+cp "$COV_DIR/expected" "$SVCOVNC_ROOT/logs/.changed-files"
+printf 'half written\n' > "$SVCOVNC_ROOT/reviewers/codex/workdir/review.md"
+printf '%s\n' "$(_git_status_snapshot "$SVCOVNC_WT")" > "$SVCOVNC_ROOT/.git-status-before-codex"
+_record_reviewer_result_interactive codex "$SVCOVNC_ROOT" "$SVCOVNC_WT" \
+  "$SVCOVNC_ROOT/reviewers/codex/workdir/review.md" "$SVCOVNC_ROOT/summary.txt"
+if [ "$(cat "$SVCOVNC_ROOT/.coverage-status" 2>/dev/null)" = "cli=codex coverage=unchecked reason=no-content" ]; then pass record-reviewer-result-no-content-coverage-unchecked; else bad "record-reviewer-result-no-content-coverage-unchecked: $(cat "$SVCOVNC_ROOT/.coverage-status" 2>&1)"; fi
+
+# posted-no-output 那一路：解析從 PR 抓回的本文。
+SVCOVOR_ROOT="$T/supervisor-coverage-orphan-fixture"
+SVCOVOR_WT="$(_make_worktree_fixture "$SVCOVOR_ROOT")"
+mkdir -p "$SVCOVOR_ROOT/logs"
+cp "$COV_DIR/expected" "$SVCOVOR_ROOT/logs/.changed-files"
+printf '%s\n' "$(_git_status_snapshot "$SVCOVOR_WT")" > "$SVCOVOR_ROOT/.git-status-before-agy"
+_record_orphan_reviewer_result_interactive agy "$SVCOVOR_ROOT" "$SVCOVOR_WT" \
+  "$(sed '$d' "$COV_DIR/missing.md")" "$SVCOVOR_ROOT/summary.txt"
+if [ "$(cat "$SVCOVOR_ROOT/.coverage-status" 2>/dev/null)" = "cli=agy coverage=incomplete expected=3 listed=2 missing=1 extra=0 gaps=0" ]; then pass record-orphan-result-writes-coverage-status; else bad "record-orphan-result-writes-coverage-status: $(cat "$SVCOVOR_ROOT/.coverage-status" 2>&1)"; fi
+
 # ==============================================================
 # _confirm_reviewers_working
 #
@@ -4733,6 +4784,8 @@ fi
 E2E_LOGS_DIR="$(find "$E2E_HOME/.tmp" -type d -name logs 2>/dev/null | head -1)"
 E2E_BASE_DIR="$(dirname "${E2E_LOGS_DIR:-/nonexistent}")"
 E2E_PROMPT_FILE="$E2E_LOGS_DIR/codex.prompt"
+if [ "$(cat "$E2E_LOGS_DIR/.changed-files" 2>/dev/null)" = "f.txt" ]; then pass main-e2e-prepare-writes-changed-files; else bad "main-e2e-prepare-writes-changed-files: $(cat "$E2E_LOGS_DIR/.changed-files" 2>&1)"; fi
+if grep -qF -- '-c core.quotePath=false diff --name-only' "$RUN_SH"; then pass prepare-changed-files-uses-quotepath-false; else bad prepare-changed-files-uses-quotepath-false; fi
 
 if [ -n "$E2E_LOGS_DIR" ] && [ -s "$E2E_PROMPT_FILE" ]; then pass main-e2e-prompt-file-written; else bad main-e2e-prompt-file-written; fi
 
