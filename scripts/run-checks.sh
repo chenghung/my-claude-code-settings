@@ -7,6 +7,7 @@
 #   (no argument)  run shellcheck and tests; both always run to completion
 #   "shellcheck"   lint every git-tracked *.sh and *.bats file
 #   "test"         run tests/*.sh and hooks/tests/*.sh with bash, then bats hooks/tests/ tests/
+#                  (HOME points at a fresh empty dir; anything written there fails the run)
 #
 # Must be executed (./run-checks.sh, or `bash run-checks.sh`); do not source it
 # or hand it to zsh to interpret -- it relies on bash semantics (BASH_SOURCE,
@@ -69,21 +70,30 @@ run_shellcheck() {
 }
 
 # run_tests: run every test file, never stopping on a failure, then list all failures.
-# Returns 0 if everything passed, 1 otherwise.
+# Tests run with HOME pointed at a fresh empty directory, so a test that writes
+# under $HOME cannot touch the caller's real home; anything left in that
+# directory afterwards fails the run. Returns 0 if everything passed, 1 otherwise.
 run_tests() {
-  local failed=() t
+  local failed=() t fake_home leftovers
+  fake_home="$(mktemp -d)"
   for t in tests/*.sh hooks/tests/*.sh; do
     if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
       echo "::group::$t"
     else
       echo "==> $t"
     fi
-    if ! bash "$t"; then failed+=("$t"); fi
+    if ! HOME="$fake_home" bash "$t"; then failed+=("$t"); fi
     if [ "${GITHUB_ACTIONS:-}" = "true" ]; then echo "::endgroup::"; fi
   done
   # One bats call covers the .bats files in both directories.
   echo "==> bats hooks/tests/ tests/"
-  if ! bats hooks/tests/ tests/; then failed+=("bats hooks/tests/ tests/"); fi
+  if ! HOME="$fake_home" bats hooks/tests/ tests/; then failed+=("bats hooks/tests/ tests/"); fi
+  leftovers="$(find "$fake_home" -mindepth 1 -print)"
+  rm -rf "$fake_home"
+  if [ -n "$leftovers" ]; then
+    printf 'tests wrote under HOME (pointed at %s during the run):\n%s\n' "$fake_home" "$leftovers" >&2
+    failed+=("HOME isolation")
+  fi
   # Guard the expansion: "${failed[@]}" on an empty array is an error under set -u in bash < 4.4.
   if [ "${#failed[@]}" -gt 0 ]; then
     printf 'FAILED: %s\n' "${failed[@]}" >&2

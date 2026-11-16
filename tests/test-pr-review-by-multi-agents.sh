@@ -9230,6 +9230,50 @@ test_reviewer_home_gh_config_symlink() {
 test_reviewer_home_gh_config_symlink
 
 # ------------------------------------------------------------
+# reviewer_home: writing the same home twice must not touch the real dirs
+# it links in. `ln -sf` without -n follows an existing link to a directory
+# and plants the new link inside the real one (e.g. ~/.config/gh/gh).
+# ------------------------------------------------------------
+test_reviewer_home_rewrite_keeps_linked_dirs_clean() {
+  local test_dir="$T/home-rewrite-test"
+  local fake_home="$test_dir/fake-home" rel cli h before after
+  local url="https://github.com/home-rewrite-owner/home-rewrite-repo/pull/1"
+  mkdir -p "$test_dir/workdir" "$test_dir/worktree"
+  for rel in .config/gh .config/opencode .cache/opencode .local/share/opencode .local/state/opencode; do
+    mkdir -p "$fake_home/$rel"
+  done
+  before="$(cd "$fake_home" && find . | sort)"
+
+  for cli in claude codex opencode agy; do
+    h="$test_dir/$cli-home"
+    if (
+      HOME="$fake_home"
+      unset GH_CONFIG_DIR CLAUDE_CONFIG_DIR
+      for _ in 1 2; do
+        case "$cli" in
+          claude) _write_claude_home_interactive "$h" "$test_dir/workdir" "$url" ;;
+          codex) _write_codex_home_interactive "$h" "$test_dir/workdir" "$url" ;;
+          opencode) _write_opencode_home_interactive "$h" ;;
+          agy) _write_agy_home_interactive "$h" "$test_dir/workdir" "$test_dir/worktree" ;;
+        esac || exit 1
+      done
+    ) && [ "$(readlink "$h/.config/gh")" = "$fake_home/.config/gh" ]; then
+      pass "test_reviewer_home_rewrite_keeps_linked_dirs_clean: $cli 重寫兩次後 .config/gh 仍指向來源"
+    else
+      bad "test_reviewer_home_rewrite_keeps_linked_dirs_clean: $cli 重寫兩次失敗或 .config/gh 指向錯誤"
+    fi
+  done
+
+  after="$(cd "$fake_home" && find . | sort)"
+  if [ "$before" = "$after" ]; then
+    pass "test_reviewer_home_rewrite_keeps_linked_dirs_clean: 被連入的來源目錄沒有新增任何項目"
+  else
+    bad "test_reviewer_home_rewrite_keeps_linked_dirs_clean: 來源目錄被寫入: $(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed -n 's/^> //p' | tr '\n' ' ')"
+  fi
+}
+test_reviewer_home_rewrite_keeps_linked_dirs_clean
+
+# ------------------------------------------------------------
 # SKILL.md: direct comment posting, multi-aspect review, no synthesis or github-manager delegation
 # ------------------------------------------------------------
 test_skill_md_direct_comment_workflow() {
