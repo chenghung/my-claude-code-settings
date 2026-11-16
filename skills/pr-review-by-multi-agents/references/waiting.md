@@ -32,7 +32,7 @@
 
 **轉告時附上兩個值的原文**讓他逐字比對：
 
-- **本次 PR 網址**，一律用正規形式 `https://github.com/<owner>/<repo>/pull/<N>`——規則第四個 token 與座標用的就是這個字串，而派出摘要只有 repo 名與編號、分不出同名 fork。取自使用者給的 PR 連結時，去掉 `/files`、`?…`、`#…` 這類尾段，`owner/repo#N` 簡寫要展開；取自當前 repo 的 `origin` 時，剝掉 `https://github.com/`、`git@github.com:`、`ssh://git@github.com/` 前綴與結尾的 `.git`，再接上 `/pull/<本次 PR 編號>`。**不要從執行目錄根層的 `.pr-url` 取**，那一層 reviewer 寫得到（見 `references/rationale.md`）。
+- **本次 PR 網址**，一律用正規形式 `https://github.com/<owner>/<repo>/pull/<N>`——規則第四個 token 與座標用的就是這個字串，而派出摘要只有 repo 名與編號、分不出同名 fork。取自使用者給的 PR 連結時，去掉 `/files`、`?…`、`#…` 這類尾段，`owner/repo#N` 簡寫要展開；取自當前 repo 的 `origin` 時，剝掉 `https://github.com/`、`git@github.com:`、`ssh://git@github.com/` 前綴與結尾的 `.git`，再接上 `/pull/<本次 PR 編號>`。**不要從執行目錄根層的 `.pr-url` 取**，那一層 reviewer 寫得到（見 `references/limits-exposure.md`「執行目錄根層沒有上鎖」那一條）。
 - **那一格 codex 輸出檔的絕對路徑**，照派出摘要那一行印的值轉告——`blocked` 可能在派出幾十分鐘後才發生，那時摘要早已捲走，使用者手上沒有它。
 
 **六題是非**：核對是白名單式的，不是逐項找可疑旗標。請他對照畫面逐項答是或否（這幾題是他自己下決定用的，不必回報給編排端）：

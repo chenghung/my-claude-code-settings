@@ -7894,7 +7894,7 @@ if [ "$(cat "$WAIT_LWF_OUT" 2>/dev/null)" = 'event=deadline' ]; then pass "cmd_w
 # cmd_wait -- .last-working-<cli> 內容被算術語境求值的指令注入（Critical，
 # 追加需求）。
 #
-# base_dir 根層自始至終是 reviewer 寫得到的（見 references/rationale.md
+# base_dir 根層自始至終是 reviewer 寫得到的（見 references/limits-exposure.md
 # 「執行目錄根層沒有上鎖」一節，.last-working-<cli> 本身就在其列），而
 # `(( now - last_working >= ... ))` 會把 last_working 的值遞迴當成算術
 # 式求值：值裡若含 `name[...]` 這種陣列下標形狀，`[...]` 裡的
