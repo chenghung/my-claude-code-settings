@@ -75,7 +75,9 @@ run_shellcheck() {
 # directory afterwards fails the run. Returns 0 if everything passed, 1 otherwise.
 run_tests() {
   local failed=() t fake_home leftovers
-  fake_home="$(mktemp -d)"
+  # Explicit: set -e is inactive here, and an empty fake_home would run every
+  # test with HOME="" and no isolation check at all.
+  fake_home="$(mktemp -d)" || return 1
   for t in tests/*.sh hooks/tests/*.sh; do
     if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
       echo "::group::$t"
@@ -88,7 +90,7 @@ run_tests() {
   # One bats call covers the .bats files in both directories.
   echo "==> bats hooks/tests/ tests/"
   if ! HOME="$fake_home" bats hooks/tests/ tests/; then failed+=("bats hooks/tests/ tests/"); fi
-  leftovers="$(find "$fake_home" -mindepth 1 -print)"
+  leftovers="$(find "$fake_home" -mindepth 1 -print 2>&1)" || leftovers="find failed: $leftovers"
   rm -rf "$fake_home"
   if [ -n "$leftovers" ]; then
     printf 'tests wrote under HOME (pointed at %s during the run):\n%s\n' "$fake_home" "$leftovers" >&2
