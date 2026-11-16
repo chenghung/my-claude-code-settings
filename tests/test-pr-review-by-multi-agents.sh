@@ -7,6 +7,15 @@ fail=0
 pass() { printf 'PASS %s\n' "$1"; }
 bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 
+# SKILL.md 叫 main agent 直接執行 `<run-review.sh 路徑> run ...`，install.sh 以
+# 符號連結部署，所以 git 裡的執行權限就是使用者拿到的權限。下面其餘測試都以
+# bash 呼叫腳本，看不出權限被拿掉，這一條單獨守住它。
+if [ "$(git -C "$REPO" ls-files -s skills/pr-review-by-multi-agents/scripts/run-review.sh | cut -c1-6)" = "100755" ]; then
+  pass run-review-sh-is-executable-in-git
+else
+  bad run-review-sh-is-executable-in-git
+fi
+
 # Source the script under test so parse_pr_url / check_prerequisites /
 # check_clis are directly callable as shell functions.
 # shellcheck source=/dev/null
@@ -3385,6 +3394,142 @@ else
 fi
 
 # ==============================================================
+# _coverage_compare / _record_coverage_status
+#
+# 覆蓋範圍段的解析與比對（spec：2026-11-16-pr-review-git-coverage）。
+# 期望清單一行一個路徑；覆蓋範圍段是 <details><summary>覆蓋範圍 起頭的
+# 區塊，表頭之後每列「| `路徑` | 已審或缺口 | 說明 |」。
+# ==============================================================
+
+COV_DIR="$T/coverage-fixture"
+mkdir -p "$COV_DIR"
+printf 'a.txt\nsrc/b.sh\n中文/c.md\n' > "$COV_DIR/expected"
+
+cov_review() {
+  # $1: 輸出檔；其餘參數：表格資料列（不含表頭）
+  local out="$1"; shift
+  {
+    printf '<!-- pr-review-by-multi-agents -->\n\n## 揭露聲明\n\n本次審查沒有發現\n\n'
+    printf '<details><summary>覆蓋範圍（3 檔）</summary>\n\n| 檔案 | 狀態 | 說明 |\n| --- | --- | --- |\n'
+    local row
+    for row in "$@"; do printf '%s\n' "$row"; done
+    printf '\n</details>\n\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n'
+  } > "$out"
+}
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/complete.md" '| `a.txt` | 已審 | |' '| `src/b.sh` | 已審 | |' '| `中文/c.md` | 缺口 | 太大 |'
+out="$(_coverage_compare "$COV_DIR/complete.md" "$COV_DIR/expected")"
+if [ "$out" = "coverage=complete expected=3 listed=3 missing=0 extra=0 gaps=1" ]; then pass coverage-compare-complete-with-gap; else bad "coverage-compare-complete-with-gap: $out"; fi
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/missing.md" '| `a.txt` | 已審 | |' '| `src/b.sh` | 已審 | |'
+out="$(_coverage_compare "$COV_DIR/missing.md" "$COV_DIR/expected")"
+if [ "$out" = "coverage=incomplete expected=3 listed=2 missing=1 extra=0 gaps=0" ]; then pass coverage-compare-missing-row; else bad "coverage-compare-missing-row: $out"; fi
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/extra.md" '| `a.txt` | 已審 | |' '| `src/b.sh` | 已審 | |' '| `中文/c.md` | 已審 | |' '| `z.txt` | 已審 | |'
+out="$(_coverage_compare "$COV_DIR/extra.md" "$COV_DIR/expected")"
+if [ "$out" = "coverage=incomplete expected=3 listed=4 missing=0 extra=1 gaps=0" ]; then pass coverage-compare-extra-row; else bad "coverage-compare-extra-row: $out"; fi
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/dup.md" '| `a.txt` | 已審 | |' '| `a.txt` | 已審 | |' '| `src/b.sh` | 已審 | |' '| `中文/c.md` | 已審 | |'
+out="$(_coverage_compare "$COV_DIR/dup.md" "$COV_DIR/expected")"
+case "$out" in coverage=incomplete\ *) pass coverage-compare-duplicate-row ;; *) bad "coverage-compare-duplicate-row: $out" ;; esac
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/badstatus.md" '| `a.txt` | 已審 | |' '| `src/b.sh` | 略過 | |' '| `中文/c.md` | 已審 | |'
+out="$(_coverage_compare "$COV_DIR/badstatus.md" "$COV_DIR/expected")"
+case "$out" in coverage=incomplete\ *) pass coverage-compare-invalid-status ;; *) bad "coverage-compare-invalid-status: $out" ;; esac
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/pipe.md" '| `a.txt` | 已審 | |' '| `src/b\|x.sh` | 已審 | |' '| `中文/c.md` | 已審 | |'
+out="$(_coverage_compare "$COV_DIR/pipe.md" "$COV_DIR/expected")"
+if [ "$out" = "coverage=incomplete expected=3 listed=3 missing=1 extra=1 gaps=0" ]; then pass coverage-compare-unparsable-pipe-path; else bad "coverage-compare-unparsable-pipe-path: $out"; fi
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/desc-pipe.md" '| `a.txt` | 已審 | 太大 \| 另案 |' '| `src/b.sh` | 已審 | |' '| `中文/c.md` | 已審 | |'
+out="$(_coverage_compare "$COV_DIR/desc-pipe.md" "$COV_DIR/expected")"
+if [ "$out" = "coverage=complete expected=3 listed=3 missing=0 extra=0 gaps=0" ]; then pass coverage-compare-pipe-in-description; else bad "coverage-compare-pipe-in-description: $out"; fi
+
+sed 's/$/\r/' "$COV_DIR/complete.md" > "$COV_DIR/crlf.md"
+out="$(_coverage_compare "$COV_DIR/crlf.md" "$COV_DIR/expected")"
+if [ "$out" = "coverage=complete expected=3 listed=3 missing=0 extra=0 gaps=1" ]; then pass coverage-compare-crlf-line-endings; else bad "coverage-compare-crlf-line-endings: $out"; fi
+
+printf '<!-- pr-review-by-multi-agents -->\n\n本次審查沒有發現\n\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$COV_DIR/absent.md"
+out="$(_coverage_compare "$COV_DIR/absent.md" "$COV_DIR/expected")"
+if [ "$out" = "coverage=absent expected=3 listed=0 missing=3 extra=0 gaps=0" ]; then pass coverage-compare-absent; else bad "coverage-compare-absent: $out"; fi
+
+: > "$COV_DIR/expected-empty"
+out="$(_coverage_compare "$COV_DIR/absent.md" "$COV_DIR/expected-empty")"
+if [ "$out" = "coverage=complete expected=0 listed=0 missing=0 extra=0 gaps=0" ]; then pass coverage-compare-empty-change-set; else bad "coverage-compare-empty-change-set: $out"; fi
+
+COV_BASE="$COV_DIR/base"
+mkdir -p "$COV_BASE/logs"
+cp "$COV_DIR/expected" "$COV_BASE/logs/.changed-files"
+_record_coverage_status claude "$COV_BASE" "$COV_DIR/complete.md"
+_record_coverage_status codex "$COV_BASE" ""
+_record_coverage_status agy "$COV_BASE" "$COV_DIR/does-not-exist.md"
+expected_lines=$'cli=claude coverage=complete expected=3 listed=3 missing=0 extra=0 gaps=1\ncli=codex coverage=unchecked reason=no-content\ncli=agy coverage=unchecked reason=no-content'
+if [ "$(cat "$COV_BASE/.coverage-status")" = "$expected_lines" ]; then pass record-coverage-status-lines; else bad "record-coverage-status-lines: $(cat "$COV_BASE/.coverage-status")"; fi
+
+COV_BASE2="$COV_DIR/base-no-list"
+mkdir -p "$COV_BASE2"
+_record_coverage_status claude "$COV_BASE2" "$COV_DIR/complete.md"
+if [ "$(cat "$COV_BASE2/.coverage-status")" = "cli=claude coverage=unchecked reason=no-expected-list" ]; then pass record-coverage-status-no-expected-list; else bad "record-coverage-status-no-expected-list: $(cat "$COV_BASE2/.coverage-status")"; fi
+
+# 監督行程先寫 .coverage-status 再寫 summary.txt：summary 行一出現，同一格
+# 的覆蓋行必須已經在。
+SVCOV_ROOT="$T/supervisor-coverage-fixture"
+SVCOV_WT="$(_make_worktree_fixture "$SVCOV_ROOT")"
+mkdir -p "$SVCOV_ROOT/reviewers/claude/workdir" "$SVCOV_ROOT/logs"
+cp "$COV_DIR/expected" "$SVCOV_ROOT/logs/.changed-files"
+cp "$COV_DIR/complete.md" "$SVCOV_ROOT/reviewers/claude/workdir/review.md"
+printf '%s\n' "$(_git_status_snapshot "$SVCOV_WT")" > "$SVCOV_ROOT/.git-status-before-claude"
+printf 'claude claude-e2e-model dispatched\n' > "$SVCOV_ROOT/.roster"
+printf '%s\n' "$SVCOV_ROOT/work" > "$SVCOV_ROOT/.repo-path"
+_record_reviewer_result_interactive claude "$SVCOV_ROOT" "$SVCOV_WT" \
+  "$SVCOV_ROOT/reviewers/claude/workdir/review.md" "$SVCOV_ROOT/summary.txt"
+if [ -s "$SVCOV_ROOT/summary.txt" ] && [ "$(cat "$SVCOV_ROOT/.coverage-status" 2>/dev/null)" = "cli=claude coverage=complete expected=3 listed=3 missing=0 extra=0 gaps=1" ]; then
+  pass record-reviewer-result-writes-coverage-status
+else
+  bad "record-reviewer-result-writes-coverage-status: $(cat "$SVCOV_ROOT/.coverage-status" 2>&1)"
+fi
+# 時序：兩個 recorder 的函式本體裡，第一次呼叫 _record_coverage_status
+# 的位置都要在附加 summary_file 那一行之前（以 declare -f 取函式本體，
+# 不受註解影響；檔案 mtime 只有秒級，分不出先後，不拿來判斷）。
+cov_order_ok=1
+for fn in _record_reviewer_result_interactive _record_orphan_reviewer_result_interactive; do
+  body="$(declare -f "$fn")"
+  cov_line="$(printf '%s\n' "$body" | grep -n '_record_coverage_status' | head -1 | cut -d: -f1)" || true
+  # shellcheck disable=SC2016  # single quotes intentional: the grep pattern matches the literal text `>> "$summary_file"` in the function body, not a shell expansion
+  sum_line="$(printf '%s\n' "$body" | grep -n '>> "\$summary_file"' | head -1 | cut -d: -f1)" || true
+  if [ -z "$cov_line" ] || [ -z "$sum_line" ] || [ "$cov_line" -ge "$sum_line" ]; then cov_order_ok=0; fi
+done
+if [ "$cov_order_ok" -eq 1 ]; then pass coverage-status-written-before-summary-line; else bad coverage-status-written-before-summary-line; fi
+
+# no-content 那一路：沒有完整輸出檔 → unchecked reason=no-content。
+SVCOVNC_ROOT="$T/supervisor-coverage-nocontent-fixture"
+SVCOVNC_WT="$(_make_worktree_fixture "$SVCOVNC_ROOT")"
+mkdir -p "$SVCOVNC_ROOT/reviewers/codex/workdir" "$SVCOVNC_ROOT/logs"
+cp "$COV_DIR/expected" "$SVCOVNC_ROOT/logs/.changed-files"
+printf 'half written\n' > "$SVCOVNC_ROOT/reviewers/codex/workdir/review.md"
+printf '%s\n' "$(_git_status_snapshot "$SVCOVNC_WT")" > "$SVCOVNC_ROOT/.git-status-before-codex"
+_record_reviewer_result_interactive codex "$SVCOVNC_ROOT" "$SVCOVNC_WT" \
+  "$SVCOVNC_ROOT/reviewers/codex/workdir/review.md" "$SVCOVNC_ROOT/summary.txt"
+if [ "$(cat "$SVCOVNC_ROOT/.coverage-status" 2>/dev/null)" = "cli=codex coverage=unchecked reason=no-content" ]; then pass record-reviewer-result-no-content-coverage-unchecked; else bad "record-reviewer-result-no-content-coverage-unchecked: $(cat "$SVCOVNC_ROOT/.coverage-status" 2>&1)"; fi
+
+# posted-no-output 那一路：解析從 PR 抓回的本文。
+SVCOVOR_ROOT="$T/supervisor-coverage-orphan-fixture"
+SVCOVOR_WT="$(_make_worktree_fixture "$SVCOVOR_ROOT")"
+mkdir -p "$SVCOVOR_ROOT/logs"
+cp "$COV_DIR/expected" "$SVCOVOR_ROOT/logs/.changed-files"
+printf '%s\n' "$(_git_status_snapshot "$SVCOVOR_WT")" > "$SVCOVOR_ROOT/.git-status-before-agy"
+_record_orphan_reviewer_result_interactive agy "$SVCOVOR_ROOT" "$SVCOVOR_WT" \
+  "$(sed '$d' "$COV_DIR/missing.md")" "$SVCOVOR_ROOT/summary.txt"
+if [ "$(cat "$SVCOVOR_ROOT/.coverage-status" 2>/dev/null)" = "cli=agy coverage=incomplete expected=3 listed=2 missing=1 extra=0 gaps=0" ]; then pass record-orphan-result-writes-coverage-status; else bad "record-orphan-result-writes-coverage-status: $(cat "$SVCOVOR_ROOT/.coverage-status" 2>&1)"; fi
+
+# ==============================================================
 # _confirm_reviewers_working
 #
 # herdr is genuinely installed on this machine (see the
@@ -4652,6 +4797,8 @@ fi
 E2E_LOGS_DIR="$(find "$E2E_HOME/.tmp" -type d -name logs 2>/dev/null | head -1)"
 E2E_BASE_DIR="$(dirname "${E2E_LOGS_DIR:-/nonexistent}")"
 E2E_PROMPT_FILE="$E2E_LOGS_DIR/codex.prompt"
+if [ "$(cat "$E2E_LOGS_DIR/.changed-files" 2>/dev/null)" = "f.txt" ]; then pass main-e2e-prepare-writes-changed-files; else bad "main-e2e-prepare-writes-changed-files: $(cat "$E2E_LOGS_DIR/.changed-files" 2>&1)"; fi
+if grep -qF -- '-c core.quotePath=false diff --name-only' "$RUN_SH"; then pass prepare-changed-files-uses-quotepath-false; else bad prepare-changed-files-uses-quotepath-false; fi
 
 if [ -n "$E2E_LOGS_DIR" ] && [ -s "$E2E_PROMPT_FILE" ]; then pass main-e2e-prompt-file-written; else bad main-e2e-prompt-file-written; fi
 
@@ -8850,7 +8997,7 @@ if [ ! -e "$RUNE2E_WORKTREE_DIR" ]; then pass "cmd_run 完成後 worktree 已移
 rm -f "$STUB_BIN/herdr"
 
 # ------------------------------------------------------------
-# reviewer-contract: direct comment, negative boundaries, multi-aspect subagents, unfolded output
+# reviewer-contract: direct comment, negative boundaries, multi-aspect subagents, folding only for the coverage section
 # ------------------------------------------------------------
 test_reviewer_contract_direct_comment_and_boundaries() {
   local contract="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
@@ -8879,13 +9026,13 @@ test_reviewer_contract_direct_comment_and_boundaries() {
     return
   fi
 
-  # 驗證平鋪呈現且無折疊區要求（確保無 details summary）
-  if grep -q '<details>' "$contract"; then
-    bad "reviewer-contract still contains <details> folding section"
+  # 折疊區只允許出現在覆蓋範圍段：恰好一處 <details>，且與覆蓋範圍同一行
+  if [ "$(grep -c '<details>' "$contract")" -ne 1 ] || ! grep -q '^<details><summary>覆蓋範圍' "$contract"; then
+    bad "reviewer-contract <details> must appear exactly once, only as the 覆蓋範圍 section"
     return
   fi
 
-  pass "reviewer-contract updated with direct comment, negative boundaries, and unfolded format"
+  pass "reviewer-contract updated with direct comment, negative boundaries, and folding only for the coverage section"
 }
 test_reviewer_contract_direct_comment_and_boundaries
 
@@ -8896,9 +9043,10 @@ test_reviewer_contract_slim_structure() {
   local contract="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
   local ok=1
 
-  # 契約整體大小上限：刻意壓緊的護欄，防止契約再度膨脹；目前契約 15356
-  # bytes，要加內容就得先刪等量的字，或經設計討論後調高
-  local max_bytes=15360
+  # 契約整體大小上限：刻意壓緊的護欄，防止契約再度膨脹；目前上限 16384
+  # bytes（2026-11-16 為覆蓋範圍段調高），要加內容就得先刪等量的字，或經設計
+  # 討論後調高
+  local max_bytes=16384
   local size
   size=$(wc -c < "$contract")
   if [ "$size" -gt "$max_bytes" ]; then
@@ -8929,6 +9077,11 @@ test_reviewer_contract_slim_structure() {
     '輸出檔絕對路徑'
     '--name-only'
     '...HEAD'
+    '覆蓋範圍'
+    'log <base ref>..HEAD'
+    'core.quotePath=false'
+    '「已審」或「缺口」'
+    '| 檔案 | 狀態 | 說明 |'
   )
   local req
   for req in "${required[@]}"; do
@@ -8939,10 +9092,12 @@ test_reviewer_contract_slim_structure() {
   done
 
   # 應被移除的舊字串：命中即代表契約尚未瘦身完成
+  # shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the contract, not command substitution
   local forbidden=(
     '三道是非題'
     '與材料的符合度'
     '偽造座標'
+    '不改用 `git log`、`git show`'
   )
   local fb
   for fb in "${forbidden[@]}"; do

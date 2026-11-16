@@ -126,9 +126,11 @@ readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 # against large PRs and become a guard against the contract itself growing
 # further.
 #
-# Measured 2026-09-23 by calling build_prompt against the current contract:
-# contract 15356 bytes, coordinates block 445, prompt 15801 -- 15.8% of this
-# limit, 84199 bytes of headroom. Three earlier readings, all real, show why
+# Measured 2026-11-16 by calling build_prompt against the current contract:
+# contract 16380 bytes, coordinates block 596, prompt 16976 -- 17.0% of this
+# limit, 83024 bytes of headroom (15801, 15.8%, right after the 2026-09-23
+# slimming, before the coverage-table rules). Three earlier readings, all
+# real, show why
 # this comment cannot be trusted on its own: an undated ~96018 from a shorter
 # contract; 97939 (97.9%, only 2061 bytes of headroom) measured against the
 # contract as it stood immediately before the 2026-09-04 slimming; and 51814
@@ -2230,6 +2232,9 @@ JSON
 # renames, narrows, or drops that flag, at which point this file's own
 # allow list -- not a flag argument someone would first have to notice is
 # gone -- would go back to being what actually lets `git diff` through.
+# That fallback covers only those two commands: the contract also runs
+# `git -C <wt> -c core.quotePath=false diff --name-only`, `git -C <wt> log`
+# and `git -C <wt> show`, which neither prefix matches.
 # Left in place rather than deleted for that reason, not because deleting
 # them today would change this reviewer's current behavior at all.
 _write_agy_home_interactive() {
@@ -2767,9 +2772,10 @@ _herdr_agent_present_in_pane() {
 # of any single CLI's own permission engine: `chmod -R a-w` on the worktree
 # right after setup_worktree creates it (before any reviewer is launched),
 # restored with `chmod -R u+w` immediately before removal. `git
-# status`/`git diff` -- everything the contract's read-only
-# true-source-of-truth section asks a reviewer to do -- were confirmed to
-# still work against a worktree chmod'd this way, since a linked worktree's
+# status`/`git diff`/`git log`/`git show` -- the read-only git the
+# contract's true-source-of-truth section lets a reviewer use -- were
+# confirmed to still work against a worktree chmod'd this way (log/show
+# re-confirmed 2026-11-16, git 2.56.0), since a linked worktree's
 # own index/HEAD housekeeping lives under the main repo's
 # .git/worktrees/<name>/, not inside the worktree's own directory tree.
 launch_reviewer_interactive() {
@@ -3088,6 +3094,80 @@ _extract_reviewer_output() {
   printf '%s' "$content"
 }
 
+# _coverage_compare <review_file> <expected_file>
+#
+# 解析 <review_file> 的覆蓋範圍段（第一個以 `<details><summary>覆蓋範圍`
+# 起頭的行到 `</details>`），與 <expected_file>（一行一個路徑，
+# cmd_prepare 寫的 logs/.changed-files）比對，stdout 印一行
+# `coverage=<值> expected=<n> listed=<n> missing=<n> extra=<n> gaps=<n>`。
+# 區塊內第一個以 `|` 起頭的行是表頭，`| --- |` 形式的分隔列略過；其餘每列
+# 以 `|` 切格，第一格剝掉反引號與前後空白當路徑，第二格必須是「已審」或
+# 「缺口」，第三格之後（說明欄，可含 `|`）不看。不足三格、狀態不合法（路徑
+# 裡含 `|` 時狀態格會錯位而落在這裡）、重複路徑都計入 bad。期望清單路徑經
+# ENVIRON 傳入而非 -v，避免 awk 改寫路徑裡的反斜線。
+# complete：找得到區塊且 bad、missing、extra 皆為 0；或清單為空且區塊不在
+# （空集合形狀不寫這一段）。absent：清單非空而區塊不在。其餘 incomplete。
+# 只用 POSIX awk 語法：CI 的 awk 可能是 mawk。LC_ALL=C 讓多位元組路徑逐
+# 位元組比對，兩邊用同一套比對規則。
+_coverage_compare() {
+  local review_file="$1" expected_file="$2"
+  COV_EXPECTED_FILE="$expected_file" LC_ALL=C awk '
+    BEGIN {
+      expf = ENVIRON["COV_EXPECTED_FILE"]
+      while ((getline line < expf) > 0) if (line != "") { want[line] = 1; expected++ }
+      close(expf)
+    }
+    { sub(/\r$/, "") }
+    !found && /^<details><summary>覆蓋範圍/ { found = 1; inblk = 1; next }
+    inblk && /^<\/details>/ { inblk = 0; next }
+    inblk && /^\|/ {
+      if (!header) { header = 1; next }
+      if ($0 ~ /^\|[ :-]*\|[ :-]*\|[ :-]*\|[ ]*$/) next
+      listed++
+      n = split($0, f, "|")
+      if (n < 5) { bad++; next }
+      path = f[2]; st = f[3]
+      gsub(/`/, "", path); gsub(/^[ \t]+/, "", path); gsub(/[ \t]+$/, "", path)
+      gsub(/^[ \t]+/, "", st); gsub(/[ \t]+$/, "", st)
+      if (st == "缺口") gaps++
+      else if (st != "已審") bad++
+      if (path in seen) { bad++; next }
+      seen[path] = 1
+      if (!(path in want)) extra++
+      next
+    }
+    END {
+      for (p in want) if (!(p in seen)) missing++
+      if (!found) cov = (expected == 0) ? "complete" : "absent"
+      else cov = (bad + missing + extra == 0) ? "complete" : "incomplete"
+      printf "coverage=%s expected=%d listed=%d missing=%d extra=%d gaps=%d\n", cov, expected, listed, missing, extra, gaps
+    }
+  ' "$review_file"
+}
+
+# _record_coverage_status <cli_name> <base_dir> <review_file>
+#
+# 把 <cli_name> 的覆蓋核對結果附加一行到 <base_dir>/.coverage-status。
+# <review_file> 給空字串或讀不到 → unchecked reason=no-content；
+# logs/.changed-files 讀不到 → unchecked reason=no-expected-list；比對本身
+# 失敗或沒輸出 → unchecked reason=compare-failed。呼叫端在寫 summary.txt
+# 那一行之前呼叫它，讓 main agent 收到 summary_line 事件時這一行已在。
+# 寫入以 `|| true` 保護，理由同 _record_reviewer_result_interactive 對
+# summary.txt 的寫法：它在監督行程的子 shell 內，一次寫入失敗不得拖垮
+# 其他 reviewer 的監督。結果不參與關 pane、補貼、收尾任何判斷。
+_record_coverage_status() {
+  local cli_name="$1" base_dir="$2" review_file="$3"
+  local expected_file="$base_dir/logs/.changed-files" fields
+  if [ -z "$review_file" ] || [ ! -r "$review_file" ]; then
+    fields="coverage=unchecked reason=no-content"
+  elif [ ! -r "$expected_file" ]; then
+    fields="coverage=unchecked reason=no-expected-list"
+  elif ! fields="$(_coverage_compare "$review_file" "$expected_file")" || [ -z "$fields" ]; then
+    fields="coverage=unchecked reason=compare-failed"
+  fi
+  printf 'cli=%s %s\n' "$cli_name" "$fields" >> "$base_dir/.coverage-status" || true
+}
+
 # _record_reviewer_result_interactive <cli_name> <base_dir> <worktree_dir> \
 #                                      <output_file> <summary_file>
 #
@@ -3124,6 +3204,10 @@ _extract_reviewer_output() {
 # content_file) keep their existing order and names regardless, so every
 # downstream reader that parses this format stays compatible unchanged --
 # none of them parse pid as anything other than an opaque display field.
+#
+# Calls _record_coverage_status before writing the summary line, so the
+# coverage line is already there by the time a summary_line event reaches
+# the main agent; see that function's docstring for why.
 _record_reviewer_result_interactive() {
   local cli_name="$1" base_dir="$2" worktree_dir="$3" output_file="$4" summary_file="$5"
   local before after status content content_file content_status
@@ -3169,6 +3253,12 @@ _record_reviewer_result_interactive() {
     content_file=""
   fi
 
+  if [ "$content_status" = "no-content" ]; then
+    _record_coverage_status "$cli_name" "$base_dir" ""
+  else
+    _record_coverage_status "$cli_name" "$base_dir" "$output_file"
+  fi
+
   printf 'cli=%s pid=%s exit=%s ended_at=%s worktree_status=%s content_status=%s content_file=%s\n' \
     "$cli_name" "n/a" "n/a" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$status" "$content_status" "$content_file" \
     >> "$summary_file" || true
@@ -3210,6 +3300,10 @@ _record_reviewer_result_interactive() {
 # reassembled the other function's own way: <comment_body> already starts
 # with that marker (this function's only caller confirmed exactly that
 # before calling it), so re-adding it here would duplicate it.
+#
+# Calls _record_coverage_status before writing the summary line, so the
+# coverage line is already there by the time a summary_line event reaches
+# the main agent; see that function's docstring for why.
 _record_orphan_reviewer_result_interactive() {
   local cli_name="$1" base_dir="$2" worktree_dir="$3" comment_body="$4" summary_file="$5"
   local before after status content_file
@@ -3220,6 +3314,8 @@ _record_orphan_reviewer_result_interactive() {
 
   content_file="$base_dir/.comment-body-$cli_name.md"
   printf '%s' "$comment_body" > "$content_file" || true
+
+  _record_coverage_status "$cli_name" "$base_dir" "$content_file"
 
   printf 'cli=%s pid=%s exit=%s ended_at=%s worktree_status=%s content_status=%s content_file=%s\n' \
     "$cli_name" "n/a" "n/a" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$status" "posted-no-output" "$content_file" \
@@ -4135,9 +4231,9 @@ print_summary() {
 # resolve_base_ref <owner> <repo> <number>
 #
 # Looks up this PR's base branch name via gh, then fetches it from origin
-# into a local remote-tracking ref (refs/remotes/origin/<name>) so the diff
-# command every reviewer's contract is pinned to
-# (`git diff <base-ref>...HEAD`) can actually resolve <base-ref> inside the
+# into a local remote-tracking ref (refs/remotes/origin/<name>) so the PR
+# range every reviewer's contract is pinned to (`<base-ref>...HEAD`,
+# `<base-ref>..HEAD`) can actually resolve <base-ref> inside the
 # shared worktree -- a linked worktree shares refs/objects with the repo
 # it's attached to, so fetching here (in the caller's cwd, the same repo
 # setup_worktree operates against) makes the ref resolve there too. This is
@@ -4450,6 +4546,18 @@ cmd_prepare() {
     git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
     # This run never reaches `cleanup`, so delete its own branch too.
     _cleanup_delete_branch "$base_dir" >/dev/null
+    exit 1
+  fi
+
+  # logs/.changed-files：本次變更檔清單，監督行程核對每格覆蓋範圍段的
+  # 正確答案（見 _coverage_compare）。在這裡寫而不是核對時才算：監督行程
+  # 在全部 reviewer 寫完後會移除 worktree，base ref 也沒有落檔。放在 logs/
+  # 是因為它與 prompt 檔一起在 cmd_launch 上鎖。core.quotePath=false 讓非
+  # ASCII 路徑照原樣印出，與契約交給 reviewer 的同一道指令一致。
+  if ! git -C "$worktree_dir" -c core.quotePath=false diff --name-only "$base_ref...HEAD" \
+    > "$logs_dir/.changed-files"; then
+    printf 'run-review.sh: failed to list the changed files of %s...HEAD\n' "$base_ref" >&2
+    _dispatch_failed_cleanup "$worktree_dir"
     exit 1
   fi
 
@@ -5178,13 +5286,14 @@ cmd_launch() {
 
   # logs_dir gets the same read-only treatment as the worktree, applied
   # only now that every reviewer has actually been dispatched. logs_dir
-  # still holds each cli's own <cli>.prompt file (the only thing left in
-  # it once launch_reviewer_interactive stopped writing <cli>.log/<cli>.pid
-  # here -- its own output goes to reviewer_workdir/review.md instead, a
-  # different directory entirely, not covered by this chmod); protecting
-  # those prompt files from being overwritten for the rest of this run is
-  # still worth doing even though the specific log-impersonation risk the
-  # original comment here described no longer applies the same way.
+  # still holds each cli's own <cli>.prompt file plus the .dispatched-at and
+  # .changed-files markers (launch_reviewer_interactive stopped writing
+  # <cli>.log/<cli>.pid here -- its own output goes to
+  # reviewer_workdir/review.md instead, a different directory entirely, not
+  # covered by this chmod); protecting those files from being overwritten
+  # for the rest of this run is still worth doing even though the specific
+  # log-impersonation risk the original comment here described no longer
+  # applies the same way.
   #
   # Unlike the worktree chmod cmd_prepare() applies, a failure here is not
   # treated as a hard-abort precondition: every reviewer is already
