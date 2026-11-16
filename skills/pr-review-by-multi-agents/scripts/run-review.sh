@@ -394,6 +394,15 @@ readonly PANE_CLOSE_RETRY_INTERVAL_SECONDS=5
 # convention for that status file).
 readonly PANE_CLOSE_CONFIRM_DEADLINE_SECONDS=120
 
+# REVIEWER_PR_URL_PATTERN: the one check a PR URL must pass before
+# _write_claude_home_interactive or _write_codex_home_interactive embeds it
+# into a permission rule scoped to this run's own PR (see each function's
+# own docstring). Deliberately narrower than parse_pr_url's own owner/repo
+# character class ([^/[:space:]]+): the value lands inside a quoted string
+# in each rule file, so it must not be able to carry a quote or anything
+# else that could end that string early.
+readonly REVIEWER_PR_URL_PATTERN='^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[0-9]+$'
+
 # _fetch_pr_material <owner> <repo> <number> <out_file> <raw_body_file>
 #
 # Writes the PR's title, body, conversation comments and review summary
@@ -1677,13 +1686,14 @@ unset _rr_v _rr_keep
 ZRC
 }
 
-# _write_claude_home_interactive <dir> <reviewer_workdir>
+# _write_claude_home_interactive <dir> <reviewer_workdir> <pr_url>
 #
 # Builds an isolated HOME directory for one claude reviewer process
 # running in *interactive* (herdr-driven) mode -- a separate function from
 # _write_agy_home-style headless setup, not a variant of any existing
 # claude helper (this skill had none before this function). Only the
-# credentials file is symlinked in, and from
+# credentials file is symlinked in (settings.json, the one other file
+# under .claude/, is written by hand -- see the last paragraph below), and from
 # ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json -- not a bare
 # $HOME/.claude/.credentials.json -- the same CLAUDE_CONFIG_DIR-first,
 # $HOME/.claude-fallback rule resolve_model's own claude branch already
@@ -1767,9 +1777,70 @@ ZRC
 # caller that invokes it without going through cmd_prepare's loop first,
 # still rely on. Every sibling *_interactive function below calls
 # _write_env_scrubbing_zshrc for this same backup reason.
+#
+# Also writes .claude/settings.json carrying a single permissions.allow
+# rule, `Bash(gh pr comment "<pr_url>" *)`, and nothing else -- the
+# claude counterpart of _write_codex_home_interactive's default.rules,
+# scoped to this run's own PR the same way and validated by the same
+# REVIEWER_PR_URL_PATTERN check before anything at all is written (an
+# empty or malformed value returns 1 and writes nothing into <dir>). The
+# value is embedded into a permission-rule string, so the strict pattern
+# is what keeps a crafted value from closing the rule early and opening a
+# second one.
+#
+# WHY THE RULE EXISTS. Without it, claude's --permission-mode auto runs the
+# contract's own posting command past its auto-mode classifier, which
+# denied it: the 2026-11-16 probe run's claude transcript records the
+# `gh pr comment` call failing with "Permission for this action was denied
+# by the Claude Code auto mode classifier. Reason: [Destructive or Unwanted
+# Actions]" -- gh itself never ran, review.md stayed unposted, and the
+# pane ended confirm-timed-out. The system prompt's own authorization did
+# not count: the classifier still judged it unsanctioned with the user's
+# turn carrying only the launch phrase.
+#
+# MEASURED (claude 2.1.325, `claude -p --permission-mode auto` with this
+# script's own --disallowedTools/--append-system-prompt-file flags, an
+# isolated HOME, and a stub `gh` first on PATH that only logged its argv,
+# so nothing was ever posted; PR URL a nonexistent repo):
+#   - No rule: denied by the classifier ("Unsanctioned Communication"),
+#     reproducing the incident.
+#   - The rule with the URL in double quotes, the command run alone:
+#     3 of 3 runs executed the stub with no denial. An allow rule that
+#     matches the whole command does bypass the classifier.
+#   - Same rule, the command chained as `...; echo "rc=$?"`: 3 of 3
+#     denied. Inferred mechanism: the unmatched `echo` part sends the whole
+#     line back to the classifier, which judges it as a whole. This is why
+#     the reviewer contract's own posting step says to run that command
+#     alone. Not tested: `&&`, pipes, `$(...)`, backticks, newlines --
+#     notably `--body "$(...)"` fits the rule's trailing wildcard, so do
+#     not assume it is blocked.
+#   - Quoting matters: the rule matches the raw command text and does not
+#     strip quotes (checked in --permission-mode default, where matching
+#     is deterministic): an unquoted-URL rule did not match the contract's
+#     quoted-URL command; the quoted-URL rule did.
+#   - End to end, same conditions: the prompt built by build_prompt from
+#     the real reviewer contract (with its "run alone" line), the home
+#     built by this function, a small fixture repo: 3 of 3 runs finished a
+#     full review and posted it with the contract's command alone,
+#     unchained, with no denial.
+#   - Interactive, the path real reviewers take: two herdr panes built the
+#     way _build_reviewer_panes builds them (HOME/ZDOTDIR/cwd), claude
+#     started via `herdr agent start` with launch_reviewer_interactive's
+#     own flags, everything else as in the end-to-end bullet above: 2 of 2
+#     finished and posted with no denial. (An older finding in
+#     references/rationale.md -- a permissions allow list in this same
+#     settings file having no effect -- measured the Write tool without
+#     any permission-mode flag on claude 2.1.259; it does not contradict
+#     this one.)
 _write_claude_home_interactive() {
-  local dir="$1" reviewer_workdir="$2"
+  local dir="$1" reviewer_workdir="$2" pr_url="$3"
+  if [[ ! "$pr_url" =~ $REVIEWER_PR_URL_PATTERN ]]; then
+    printf '_write_claude_home_interactive: refusing to write .claude/settings.json -- pr_url is empty or not a github.com PR URL: %s\n' "$pr_url" >&2
+    return 1
+  fi
   mkdir -p "$dir/.claude" || return 1
+  jq -n --arg rule "Bash(gh pr comment \"$pr_url\" *)" '{permissions: {allow: [$rule]}}' \
+    > "$dir/.claude/settings.json" || return 1
   ln -sf "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json" "$dir/.claude/.credentials.json" || return 1
   jq -n --arg cwd "$reviewer_workdir" \
     '{hasCompletedOnboarding: true, projects: {($cwd): {hasTrustDialogAccepted: true,
@@ -1828,7 +1899,7 @@ _write_claude_home_interactive() {
 # (written by cmd_prepare, see that write's own docstring), but this
 # function's only caller, launch_reviewer_interactive, no longer reads
 # that file itself -- it just forwards whatever its own caller,
-# cmd_launch, handed it as codex_pr_url (see launch_reviewer_interactive's
+# cmd_launch, handed it as pr_url (see launch_reviewer_interactive's
 # own docstring on why cmd_launch reads base_dir/.pr-url exactly once,
 # before dispatching any reviewer, rather than this function or its
 # caller reading it lazily on codex's own turn). This function itself
@@ -1963,8 +2034,7 @@ _write_codex_home_interactive() {
   # rule that silently falls back to matching every `gh pr comment`
   # invocation regardless of PR (see this function's own docstring on
   # why the pattern must carry this run's own PR URL as its 4th token).
-  local pr_url_pattern='^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[0-9]+$'
-  if [[ ! "$pr_url" =~ $pr_url_pattern ]]; then
+  if [[ ! "$pr_url" =~ $REVIEWER_PR_URL_PATTERN ]]; then
     printf '_write_codex_home_interactive: refusing to write .codex/rules/default.rules -- pr_url is empty or not a github.com PR URL: %s\n' "$pr_url" >&2
     return 1
   fi
@@ -2367,7 +2437,7 @@ _herdr_agent_present_in_pane() {
   [ "$count" -gt 0 ]
 }
 
-# launch_reviewer_interactive <cli> <pane_id> <worktree_dir> <reviewer_workdir> <reviewer_home> <prompt_file> <codex_pr_url>
+# launch_reviewer_interactive <cli> <pane_id> <worktree_dir> <reviewer_workdir> <reviewer_home> <prompt_file> <pr_url>
 #
 # Starts one reviewer CLI, under the least-privilege rationale documented
 # below, inside an existing, already-created herdr pane via `herdr agent
@@ -2377,8 +2447,9 @@ _herdr_agent_present_in_pane() {
 # opencode and agy each get it via a second, separate `herdr agent prompt`
 # call right after (see "WHY CODEX/OPENCODE/AGY STAY TWO-STEP" below).
 #
-# <codex_pr_url> is forwarded verbatim to _write_codex_home_interactive
-# for the codex branch only (every other branch ignores it) -- this
+# <pr_url> is forwarded verbatim to _write_claude_home_interactive and
+# _write_codex_home_interactive, for the claude and codex branches only
+# (opencode's and agy's branches ignore it) -- this
 # function never reads base_dir/.pr-url itself, and never did the reading
 # on its own behalf even before this parameter existed; the caller
 # (cmd_launch) is the one responsible for reading that file, exactly
@@ -2780,14 +2851,14 @@ _herdr_agent_present_in_pane() {
 # .git/worktrees/<name>/, not inside the worktree's own directory tree.
 launch_reviewer_interactive() {
   local cli_name="$1" pane_id="$2" worktree_dir="$3"
-  local reviewer_workdir="$4" reviewer_home="$5" prompt_file="$6" codex_pr_url="$7"
+  local reviewer_workdir="$4" reviewer_home="$5" prompt_file="$6" pr_url="$7"
   local output_file="$reviewer_workdir/review.md"
   local base_dir before_snapshot prompt_bytes agent_name
   local -a cmd=()
 
   case "$cli_name" in
-    claude) _write_claude_home_interactive "$reviewer_home" "$reviewer_workdir" || return 1 ;;
-    codex)  _write_codex_home_interactive "$reviewer_home" "$reviewer_workdir" "$codex_pr_url" || return 1 ;;
+    claude) _write_claude_home_interactive "$reviewer_home" "$reviewer_workdir" "$pr_url" || return 1 ;;
+    codex)  _write_codex_home_interactive "$reviewer_home" "$reviewer_workdir" "$pr_url" || return 1 ;;
     opencode)
       _write_opencode_home_interactive "$reviewer_home" || return 1
       _write_opencode_permission_config_interactive "$reviewer_home/opencode-permission.json" || return 1
@@ -5097,7 +5168,7 @@ _confirm_reviewers_working() {
 # uses -- see the comment on that second call below for why cmd_prepare's
 # own check is not enough to rely on here.
 cmd_launch() {
-  local base_dir="" logs_dir summary_file worktree_dir codex_pr_url
+  local base_dir="" logs_dir summary_file worktree_dir pr_url
   local cli parsed parsed_line agent_pair
   local reviewer_workdir reviewer_home prompt_file
   local -a all_reviewers=() skipped=() dispatched=() dispatched_agents=()
@@ -5121,7 +5192,7 @@ cmd_launch() {
   summary_file="$base_dir/summary.txt"
 
   # Read once, here, before any reviewer in this run's dispatch loop below
-  # has even started -- not lazily, on codex's own turn, inside
+  # has even started -- not lazily, on claude's or codex's own turn, inside
   # launch_reviewer_interactive (see that function's own docstring on the
   # tampering window this closes). claude, whichever position it is
   # dispatched in, is a one-shot launch that starts acting on real PR text
@@ -5136,10 +5207,11 @@ cmd_launch() {
   # included, regardless of where codex falls in dispatch order -- gets
   # the exact same value, immune to anything a reviewer already running
   # does to the file on disk afterward. Validated again by
-  # _write_codex_home_interactive itself (see that function's own
-  # docstring) -- this read does not duplicate that check, it only fixes
+  # _write_claude_home_interactive and _write_codex_home_interactive
+  # themselves (see REVIEWER_PR_URL_PATTERN's own docstring) -- this read
+  # does not duplicate that check, it only fixes
   # *which* string reaches it.
-  codex_pr_url="$(cat "$base_dir/.pr-url" 2>/dev/null)" || codex_pr_url=""
+  pr_url="$(cat "$base_dir/.pr-url" 2>/dev/null)" || pr_url=""
 
   # Must run before verify_selection below: a cli named on --agent that
   # prepare never selected has no prompt file, no reviewer_workdir, no
@@ -5225,7 +5297,7 @@ cmd_launch() {
     # with an already-dispatched reviewer or the worktree left behind with
     # nothing to clean it up.
     if ! launch_reviewer_interactive "$cli" "${pane_id_by_cli[$cli]}" "$worktree_dir" \
-         "$reviewer_workdir" "$reviewer_home" "$prompt_file" "$codex_pr_url" >/dev/null; then
+         "$reviewer_workdir" "$reviewer_home" "$prompt_file" "$pr_url" >/dev/null; then
       _dispatch_failed_cleanup "$worktree_dir" "${dispatched[@]+"${dispatched[@]}"}"
       exit 1
     fi

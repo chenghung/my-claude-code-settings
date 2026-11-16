@@ -1524,6 +1524,7 @@ if [ -f "$agy_home2/.gemini/antigravity-cli/settings.json" ] && [ "$agy_home2" !
 
 claude_home_i="$T/claude-home-interactive"
 reviewer_workdir_i="$T/claude-workdir-interactive"
+claude_pr_url_i="https://github.com/claude-home-owner/claude-home-repo/pull/818"
 mkdir -p "$reviewer_workdir_i"
 # CLAUDE_CONFIG_DIR= (set-but-empty), not a bare call: this test process
 # itself may have CLAUDE_CONFIG_DIR set in its own ambient environment
@@ -1537,7 +1538,7 @@ mkdir -p "$reviewer_workdir_i"
 # empty value applies only to this one command, same idiom as the existing
 # `GH_CONFIG_DIR="$custom_cfg" _write_claude_home_interactive` call further
 # down this file).
-if CLAUDE_CONFIG_DIR='' _write_claude_home_interactive "$claude_home_i" "$reviewer_workdir_i"; then
+if CLAUDE_CONFIG_DIR='' _write_claude_home_interactive "$claude_home_i" "$reviewer_workdir_i" "$claude_pr_url_i"; then
   pass "_write_claude_home_interactive 回傳成功"
 else
   bad "_write_claude_home_interactive 回傳非零"
@@ -1561,7 +1562,7 @@ fi
 claude_home_cfgdir="$T/claude-home-interactive-cfgdir"
 claude_custom_cfg="$T/claude-custom-config-dir"
 mkdir -p "$claude_custom_cfg"
-if CLAUDE_CONFIG_DIR="$claude_custom_cfg" _write_claude_home_interactive "$claude_home_cfgdir" "$reviewer_workdir_i" \
+if CLAUDE_CONFIG_DIR="$claude_custom_cfg" _write_claude_home_interactive "$claude_home_cfgdir" "$reviewer_workdir_i" "$claude_pr_url_i" \
   && [ -L "$claude_home_cfgdir/.claude/.credentials.json" ] \
   && [ "$(readlink "$claude_home_cfgdir/.claude/.credentials.json")" = "$claude_custom_cfg/.credentials.json" ]; then
   pass "_write_claude_home_interactive 設定 CLAUDE_CONFIG_DIR 時 credentials 符號連結改指向它"
@@ -1593,6 +1594,35 @@ else
 fi
 
 if [ -s "$claude_home_i/.zshrc" ]; then pass "_write_claude_home_interactive 建立非空 .zshrc"; else bad "_write_claude_home_interactive 未建立非空 .zshrc"; fi
+
+# 迴歸測試：隔離家目錄沒有任何 allow 規則時，claude 在 --permission-mode
+# auto 下執行契約那道 `gh pr comment`，會被 auto 模式分類器以未經授權的對外
+# 通訊拒絕，review 寫完卻貼不上 PR。規則只放行本次 PR 網址，且網址帶著
+# 雙引號 -- claude 的 Bash 規則比對原始指令字串、不剝引號，契約那道寫法
+# 的網址是帶引號的。整份逐字比對，確保沒有更寬的規則混進來。
+ccs="$claude_home_i/.claude/settings.json"
+if [ -f "$ccs" ] && [ ! -L "$ccs" ] \
+  && jq -e --arg r "Bash(gh pr comment \"$claude_pr_url_i\" *)" '. == {permissions: {allow: [$r]}}' "$ccs" >/dev/null; then
+  pass "_write_claude_home_interactive 寫出只放行本次 PR 網址的 settings.json"
+else
+  bad "_write_claude_home_interactive 的 settings.json 內容不正確: $(cat "$ccs" 2>/dev/null)"
+fi
+
+# 失敗即關閉，與 _write_codex_home_interactive 同一道驗證：pr_url 為空或
+# 格式不符時回傳非零，整個家目錄不寫任何東西，絕不退回不限 PR 的規則。
+for claude_bad_url_i in "" "not-a-github-pr-url" 'https://github.com/o/r/pull/1" *) Bash(curl *' \
+  $'https://github.com/o/r/pull/1\n' 'https://github.com/o/r/pull/1?x=1' 'https://github.com/o/r/pull/1/files' \
+  'http://github.com/o/r/pull/1' 'https://github.com/o/r/pull/abc'; do
+  claude_home_bad_i="$T/claude-home-interactive-bad-url-$RANDOM"
+  if _write_claude_home_interactive "$claude_home_bad_i" "$reviewer_workdir_i" "$claude_bad_url_i" 2>/dev/null; then
+    bad "_write_claude_home_interactive pr_url 為「$claude_bad_url_i」時仍回傳成功"
+  else
+    pass "_write_claude_home_interactive pr_url 為「$claude_bad_url_i」時回傳非零"
+  fi
+  if [ ! -e "$claude_home_bad_i" ]; then pass "_write_claude_home_interactive pr_url 為「$claude_bad_url_i」時沒有建立家目錄"
+  else bad "_write_claude_home_interactive pr_url 為「$claude_bad_url_i」時仍寫出了: $(find "$claude_home_bad_i" 2>/dev/null)"
+  fi
+done
 
 # ==============================================================
 # _write_env_scrubbing_zshrc
@@ -1956,12 +1986,13 @@ LRI_ROOT="$T/launch-reviewer-interactive-fixture"
 LRI_WT="$(_make_worktree_fixture "$LRI_ROOT")"
 LRI_RECORD_DIR="$LRI_ROOT/records"
 mkdir -p "$LRI_RECORD_DIR"
-# codex_pr_url is a caller-supplied argument to launch_reviewer_interactive
+# pr_url is a caller-supplied argument to launch_reviewer_interactive
 # (see that function's own docstring on why cmd_launch captures it once,
 # up front, rather than this function reading base_dir/.pr-url itself),
-# used below to scope the codex branch's own .codex/rules/default.rules
-# allow rule to this run's PR (see F1's own docstring on
-# _write_codex_home_interactive). This direct-call fixture supplies it as
+# used below to scope the claude branch's own .claude/settings.json and
+# the codex branch's own .codex/rules/default.rules allow rule to this
+# run's PR (see each _write_*_home_interactive function's own docstring).
+# This direct-call fixture supplies it as
 # a plain shell value at each call site, the same value cmd_launch would
 # have read from base_dir/.pr-url exactly once before dispatching anything.
 LRI_PR_URL="https://github.com/lri-owner/lri-repo/pull/4242"
@@ -2080,13 +2111,32 @@ lri_claude_home="$LRI_ROOT/reviewers/claude/home"
 mkdir -p "$lri_claude_workdir" "$lri_claude_home"
 printf 'claude review prompt' > "$LRI_ROOT/claude.prompt"
 
-# Trailing "" is codex_pr_url -- unused by every branch except codex's own
-# (see launch_reviewer_interactive's own docstring on why this is now a
-# caller-supplied parameter rather than something this function reads back
-# itself), so any non-codex direct call is free to pass empty here.
+# An empty pr_url must stop claude before herdr starts anything: without
+# the settings.json allow rule the reviewer would run, finish its review,
+# and have its posting command denied by claude's auto-mode classifier.
+# Runs before the successful call below so agent-start.claude.argv cannot
+# already exist from that call.
+if launch_reviewer_interactive claude w14:pZ "$LRI_WT" \
+  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt" "" >/dev/null 2>&1; then
+  bad "launch-reviewer-interactive-claude-empty-pr-url-fails: returned success"
+else
+  pass launch-reviewer-interactive-claude-empty-pr-url-fails
+fi
+if [ ! -e "$LRI_RECORD_DIR/agent-start.claude.argv" ]; then pass launch-reviewer-interactive-claude-empty-pr-url-never-starts-agent
+else bad "launch-reviewer-interactive-claude-empty-pr-url-never-starts-agent: $(cat "$LRI_RECORD_DIR/agent-start.claude.argv")"
+fi
+
+# Trailing "$LRI_PR_URL" is pr_url -- claude's branch scopes its
+# .claude/settings.json allow rule to it, the same way codex's branch
+# scopes .codex/rules/default.rules (see launch_reviewer_interactive's own
+# docstring on why this is a caller-supplied parameter rather than
+# something this function reads back itself).
 lri_claude_out="$(launch_reviewer_interactive claude w14:pZ "$LRI_WT" \
-  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt" "")"
+  "$lri_claude_workdir" "$lri_claude_home" "$LRI_ROOT/claude.prompt" "$LRI_PR_URL")"
 if [ "$lri_claude_out" = "$lri_claude_workdir/review.md" ]; then pass launch-reviewer-interactive-claude-prints-output-file; else bad "launch-reviewer-interactive-claude-prints-output-file: $lri_claude_out"; fi
+if jq -e --arg r "Bash(gh pr comment \"$LRI_PR_URL\" *)" '. == {permissions: {allow: [$r]}}' "$lri_claude_home/.claude/settings.json" >/dev/null 2>&1; then pass launch-reviewer-interactive-claude-settings-scoped-to-this-run-pr-url
+else bad "launch-reviewer-interactive-claude-settings-scoped-to-this-run-pr-url: $(cat "$lri_claude_home/.claude/settings.json" 2>/dev/null)"
+fi
 
 claude_start_argv="$LRI_RECORD_DIR/agent-start.claude.argv"
 mapfile -t lri_claude_argv < "$claude_start_argv"
@@ -2252,7 +2302,7 @@ esac
 if [ "$(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pA.text" 2>/dev/null)" = "codex review prompt" ]; then pass launch-reviewer-interactive-codex-agent-prompt-carries-full-contract; else bad "launch-reviewer-interactive-codex-agent-prompt-carries-full-contract: $(cat "$LRI_RECORD_DIR/agent-prompt.w1X:pA.text" 2>/dev/null)"; fi
 
 # F1: the .codex/rules/default.rules this call wrote must be scoped to
-# *this run's* PR ($LRI_PR_URL, passed as the codex_pr_url argument
+# *this run's* PR ($LRI_PR_URL, passed as the pr_url argument
 # above), not a bare `gh pr comment` allow-anything rule -- proves
 # launch_reviewer_interactive actually threads the real value through to
 # _write_codex_home_interactive, not just a hardcoded literal.
@@ -2568,12 +2618,13 @@ rm -f "$STUB_BIN/herdr"
 LRIRECOVER_ROOT="$T/launch-reviewer-interactive-recovery-fixture"
 LRIRECOVER_WT="$(_make_worktree_fixture "$LRIRECOVER_ROOT")"
 LRIRECOVER_RECORD_DIR="$LRIRECOVER_ROOT/records"
-# codex_pr_url is now a caller-supplied argument to launch_reviewer_
+# pr_url is now a caller-supplied argument to launch_reviewer_
 # interactive (see that function's own docstring on why it no longer
-# reads base_dir/.pr-url itself), so the codex calls further down this
-# section pass this value directly instead of relying on a .pr-url file
-# on disk -- without it, _write_codex_home_interactive would refuse to
-# run at all (see that function's own docstring).
+# reads base_dir/.pr-url itself), so the claude and codex calls further
+# down this section pass this value directly instead of relying on a
+# .pr-url file on disk -- without it, _write_claude_home_interactive and
+# _write_codex_home_interactive would each refuse to run at all (see each
+# function's own docstring).
 LRIRECOVER_PR_URL="https://github.com/lrirecover-owner/lrirecover-repo/pull/9009"
 mkdir -p "$LRIRECOVER_RECORD_DIR"
 
@@ -2748,7 +2799,7 @@ LRIRECOVER_WORKDIR3="$LRIRECOVER_ROOT/workdir-claude3"
 mkdir -p "$LRIRECOVER_WORKDIR3"
 export LRIRECOVER_AGENT_LIST_JSON='{"result":{"agents":[]}}'
 HERDR_STUB_START_OK=1 launch_reviewer_interactive claude "w9:pTimeout" "$LRIRECOVER_WT" \
-  "$LRIRECOVER_WORKDIR3" "$LRIRECOVER_HOME3" "$LRIRECOVER_PROMPT" "" >/dev/null 2>&1 || true
+  "$LRIRECOVER_WORKDIR3" "$LRIRECOVER_HOME3" "$LRIRECOVER_PROMPT" "$LRIRECOVER_PR_URL" >/dev/null 2>&1 || true
 if ! grep -qxF -- '--timeout' "$LRIRECOVER_RECORD_DIR/agent-start.claude.argv"; then pass "launch_reviewer_interactive claude 的 agent start 不再帶 --timeout"
 else bad "launch_reviewer_interactive claude 的 agent start 仍帶了 --timeout: $(cat "$LRIRECOVER_RECORD_DIR/agent-start.claude.argv" 2>/dev/null)"
 fi
@@ -9043,10 +9094,10 @@ test_reviewer_contract_slim_structure() {
   local contract="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
   local ok=1
 
-  # 契約整體大小上限：刻意壓緊的護欄，防止契約再度膨脹；目前上限 16384
-  # bytes（2026-11-16 為覆蓋範圍段調高），要加內容就得先刪等量的字，或經設計
-  # 討論後調高
-  local max_bytes=16384
+  # 契約整體大小上限：刻意壓緊的護欄，防止契約再度膨脹；目前上限 16512
+  # bytes（2026-11-16 為覆蓋範圍段調高，同日再為「發布」那道指令要單獨執行
+  # 調高），要加內容就得先刪等量的字，或經設計討論後調高
+  local max_bytes=16512
   local size
   size=$(wc -c < "$contract")
   if [ "$size" -gt "$max_bytes" ]; then
@@ -9126,7 +9177,7 @@ test_reviewer_home_gh_config_symlink() {
   local h_claude="$test_dir/claude-home"
   local w_claude="$test_dir/claude-workdir"
   mkdir -p "$w_claude"
-  _write_claude_home_interactive "$h_claude" "$w_claude"
+  _write_claude_home_interactive "$h_claude" "$w_claude" "https://github.com/gh-config-symlink-owner/gh-config-symlink-repo/pull/1"
   if [ -L "$h_claude/.config/gh" ] && [ "$(readlink "$h_claude/.config/gh")" = "$expected_gh" ]; then
     pass "test_reviewer_home_gh_config_symlink: claude 掛載 .config/gh 正確"
   else
@@ -9169,7 +9220,7 @@ test_reviewer_home_gh_config_symlink() {
   local custom_cfg="$test_dir/custom-gh-config"
   mkdir -p "$custom_cfg"
   local h_custom="$test_dir/custom-home"
-  GH_CONFIG_DIR="$custom_cfg" _write_claude_home_interactive "$h_custom" "$w_claude"
+  GH_CONFIG_DIR="$custom_cfg" _write_claude_home_interactive "$h_custom" "$w_claude" "https://github.com/gh-config-symlink-owner/gh-config-symlink-repo/pull/1"
   if [ -L "$h_custom/.config/gh" ] && [ "$(readlink "$h_custom/.config/gh")" = "$custom_cfg" ]; then
     pass "test_reviewer_home_gh_config_symlink: 自訂 GH_CONFIG_DIR 掛載正確"
   else
