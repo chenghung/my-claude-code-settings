@@ -3436,7 +3436,12 @@ case "$out" in coverage=incomplete\ *) pass coverage-compare-invalid-status ;; *
 # shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
 cov_review "$COV_DIR/pipe.md" '| `a.txt` | 已審 | |' '| `src/b\|x.sh` | 已審 | |' '| `中文/c.md` | 已審 | |'
 out="$(_coverage_compare "$COV_DIR/pipe.md" "$COV_DIR/expected")"
-case "$out" in coverage=incomplete\ *) pass coverage-compare-unparsable-pipe-path ;; *) bad "coverage-compare-unparsable-pipe-path: $out" ;; esac
+if [ "$out" = "coverage=incomplete expected=3 listed=3 missing=1 extra=1 gaps=0" ]; then pass coverage-compare-unparsable-pipe-path; else bad "coverage-compare-unparsable-pipe-path: $out"; fi
+
+# shellcheck disable=SC2016  # single quotes intentional: the backticks are literal markdown code-span syntax in the table rows, not command substitution
+cov_review "$COV_DIR/desc-pipe.md" '| `a.txt` | 已審 | 太大 \| 另案 |' '| `src/b.sh` | 已審 | |' '| `中文/c.md` | 已審 | |'
+out="$(_coverage_compare "$COV_DIR/desc-pipe.md" "$COV_DIR/expected")"
+if [ "$out" = "coverage=complete expected=3 listed=3 missing=0 extra=0 gaps=0" ]; then pass coverage-compare-pipe-in-description; else bad "coverage-compare-pipe-in-description: $out"; fi
 
 printf '<!-- pr-review-by-multi-agents -->\n\n本次審查沒有發現\n\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$COV_DIR/absent.md"
 out="$(_coverage_compare "$COV_DIR/absent.md" "$COV_DIR/expected")"

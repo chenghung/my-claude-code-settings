@@ -3095,16 +3095,19 @@ _extract_reviewer_output() {
 # cmd_prepare 寫的 logs/.changed-files）比對，stdout 印一行
 # `coverage=<值> expected=<n> listed=<n> missing=<n> extra=<n> gaps=<n>`。
 # 區塊內第一個以 `|` 起頭的行是表頭，`| --- |` 形式的分隔列略過；其餘每列
-# 切成三格，第一格剝掉反引號與前後空白當路徑，第二格必須是「已審」或
-# 「缺口」。格數不對（含路徑裡的 `\|`）、狀態不合法、重複路徑都計入 bad。
+# 以 `|` 切格，第一格剝掉反引號與前後空白當路徑，第二格必須是「已審」或
+# 「缺口」，第三格之後（說明欄，可含 `|`）不看。不足三格、狀態不合法（路徑
+# 裡含 `|` 時狀態格會錯位而落在這裡）、重複路徑都計入 bad。期望清單路徑經
+# ENVIRON 傳入而非 -v，避免 awk 改寫路徑裡的反斜線。
 # complete：找得到區塊且 bad、missing、extra 皆為 0；或清單為空且區塊不在
 # （空集合形狀不寫這一段）。absent：清單非空而區塊不在。其餘 incomplete。
 # 只用 POSIX awk 語法：CI 的 awk 可能是 mawk。LC_ALL=C 讓多位元組路徑逐
 # 位元組比對，兩邊用同一套比對規則。
 _coverage_compare() {
   local review_file="$1" expected_file="$2"
-  LC_ALL=C awk -v expf="$expected_file" '
+  COV_EXPECTED_FILE="$expected_file" LC_ALL=C awk '
     BEGIN {
+      expf = ENVIRON["COV_EXPECTED_FILE"]
       while ((getline line < expf) > 0) if (line != "") { want[line] = 1; expected++ }
       close(expf)
     }
@@ -3115,7 +3118,7 @@ _coverage_compare() {
       if ($0 ~ /^\|[ :-]*\|[ :-]*\|[ :-]*\|[ ]*$/) next
       listed++
       n = split($0, f, "|")
-      if (n != 5) { bad++; next }
+      if (n < 5) { bad++; next }
       path = f[2]; st = f[3]
       gsub(/`/, "", path); gsub(/^[ \t]+/, "", path); gsub(/[ \t]+$/, "", path)
       gsub(/^[ \t]+/, "", st); gsub(/[ \t]+$/, "", st)
