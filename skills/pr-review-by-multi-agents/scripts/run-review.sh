@@ -127,8 +127,8 @@ readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 # further.
 #
 # Measured 2026-11-16 by calling build_prompt against the current contract:
-# contract 16380 bytes, coordinates block 591, prompt 16971 -- 17.0% of this
-# limit, 83029 bytes of headroom (15801, 15.8%, right after the 2026-09-23
+# contract 16380 bytes, coordinates block 596, prompt 16976 -- 17.0% of this
+# limit, 83024 bytes of headroom (15801, 15.8%, right after the 2026-09-23
 # slimming, before the coverage-table rules). Three earlier readings, all
 # real, show why
 # this comment cannot be trusted on its own: an undated ~96018 from a shorter
