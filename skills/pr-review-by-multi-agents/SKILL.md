@@ -205,6 +205,18 @@ pane 識別碼取自派出摘要「已派出的 reviewer」那幾行括號裡的
 
 **張貼由 Reviewer 自行直連發布。** 每個 Reviewer 於自己的 herdr pane 內自主診斷審查面向與調度方式，完成審查、讀回核對沒有停下之後，依契約授權直接呼叫 `gh pr comment "<PR 網址>" --body-file "<review.md>"` 發表獨立的 PR Comment。Main Agent 收到 `wait` 返回之 `summary_line` 事件時，向使用者轉達該行的 `content_status` 與 `worktree_status`、以及本地 `review.md` 絕對路徑，**不進行次級張貼，也不代為呼叫 gh 或委派其他 agent 重複發布**。**轉達的是摘要狀態，不是張貼結果**——那一行說不出那則 comment 上去了沒（見下面 `ready` 那一條），不要把它講成「已發布」。
 
+**覆蓋核對一併轉達**：處理同一個 `summary_line` 時，讀執行目錄根層 `.coverage-status` 裡該 cli 那一行（腳本寫的狀態行，整行讀取），照下表轉達。腳本先寫這一行再寫摘要行，所以事件返回時它已經在。這個結果不參與關 pane、補貼與收尾的任何判斷。
+
+| `.coverage-status` | 轉達內容 |
+| --- | --- |
+| `complete` 且 `gaps=0` | 覆蓋範圍段列齊、每檔標已審；這是 reviewer 自報，腳本只證明沒漏列 |
+| `complete` 且 `gaps` 大於 0 | 列齊，但有 `gaps` 檔沒審到；這則的「沒有發現」不涵蓋那幾檔 |
+| `incomplete` | 漏列或多列，講出 `missing` 與 `extra`；這則不能當成審完整個 PR |
+| `absent` | 找不到覆蓋範圍段，比照 `incomplete` |
+| `unchecked`，或該 cli 沒有這一行 | 照 `reason` 講原因（沒有這一行就講沒有核對結果），不讀成任何肯定訊號 |
+
+覆蓋不完整時只回報，由使用者決定是否處置。
+
 **已完成清單一律以摘要檔當下的實際內容核對，不以收到幾個事件推斷**：`wait` 一次呼叫最多報一行——進入時取一次基準行數，命中時只取基準之後的第一行就返回，同一個輪詢窗內落地兩行時第二行不會有自己的事件，而下一次呼叫的基準已經把它算進去、也不會補報。兩個 reviewer 幾乎同時完成就是這種情形，只數事件會漏掉回報。
 
 `summary.txt` 每行對應一個已完成的 reviewer 行程，七個欄位順序固定：`cli`、`pid`、`exit`、`ended_at`、`worktree_status`、`content_status`、`content_file`。

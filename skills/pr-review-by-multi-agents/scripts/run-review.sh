@@ -126,9 +126,11 @@ readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 # against large PRs and become a guard against the contract itself growing
 # further.
 #
-# Measured 2026-09-23 by calling build_prompt against the current contract:
-# contract 15356 bytes, coordinates block 445, prompt 15801 -- 15.8% of this
-# limit, 84199 bytes of headroom. Three earlier readings, all real, show why
+# Measured 2026-11-16 by calling build_prompt against the current contract:
+# contract 16380 bytes, coordinates block 591, prompt 16971 -- 17.0% of this
+# limit, 83029 bytes of headroom (15801, 15.8%, right after the 2026-09-23
+# slimming, before the coverage-table rules). Three earlier readings, all
+# real, show why
 # this comment cannot be trusted on its own: an undated ~96018 from a shorter
 # contract; 97939 (97.9%, only 2061 bytes of headroom) measured against the
 # contract as it stood immediately before the 2026-09-04 slimming; and 51814
@@ -2767,9 +2769,10 @@ _herdr_agent_present_in_pane() {
 # of any single CLI's own permission engine: `chmod -R a-w` on the worktree
 # right after setup_worktree creates it (before any reviewer is launched),
 # restored with `chmod -R u+w` immediately before removal. `git
-# status`/`git diff` -- everything the contract's read-only
-# true-source-of-truth section asks a reviewer to do -- were confirmed to
-# still work against a worktree chmod'd this way, since a linked worktree's
+# status`/`git diff`/`git log`/`git show` -- the read-only git the
+# contract's true-source-of-truth section lets a reviewer use -- were
+# confirmed to still work against a worktree chmod'd this way (log/show
+# re-confirmed 2026-11-16, git 2.56.0), since a linked worktree's
 # own index/HEAD housekeeping lives under the main repo's
 # .git/worktrees/<name>/, not inside the worktree's own directory tree.
 launch_reviewer_interactive() {
@@ -4224,9 +4227,9 @@ print_summary() {
 # resolve_base_ref <owner> <repo> <number>
 #
 # Looks up this PR's base branch name via gh, then fetches it from origin
-# into a local remote-tracking ref (refs/remotes/origin/<name>) so the diff
-# command every reviewer's contract is pinned to
-# (`git diff <base-ref>...HEAD`) can actually resolve <base-ref> inside the
+# into a local remote-tracking ref (refs/remotes/origin/<name>) so the PR
+# range every reviewer's contract is pinned to (`<base-ref>...HEAD`,
+# `<base-ref>..HEAD`) can actually resolve <base-ref> inside the
 # shared worktree -- a linked worktree shares refs/objects with the repo
 # it's attached to, so fetching here (in the caller's cwd, the same repo
 # setup_worktree operates against) makes the ref resolve there too. This is
