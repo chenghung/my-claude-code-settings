@@ -20,9 +20,9 @@ description: >
 | `references/reviewer-contract.md` | 本 skill 自己不載入。各 reviewer 共吃的審查契約全文，由 `scripts/run-review.sh` 定位後原文嵌入每個 reviewer 的 prompt；只有要修改審查標準本身時才打開 |
 | `references/exit-codes.md` | 拿到非零結束碼時才載入：五個結束碼各自的成因、留下了什麼副作用、怎麼補救 |
 | `references/backfill-posting.md` | 使用者事後要求把某次沒貼完的 review 貼上去時、收尾時沒有全數確認、而有格子留有本地 `review.md`（見 `references/closing.md`）時，或異常處置時要補貼某一則、且該 Reviewer 已經有摘要行時，以及使用者要貼某一則 `withheld`（包括請他自己貼）時才載入；除此之外主線流程用不到它 |
-| `references/limits-exposure.md` | 本 skill 自己不載入。遇到這幾種症狀時才打開它對照，不要當成待修的 bug 追：PR 上的內容與輸出檔對不上、PR 狀態或既有留言出現非預期異動、某一格停在核准對話框上；要改任一平台的啟動旗標、隔離家目錄或環境白名單之前也先讀它。裡面是四個平台在互動 reviewer 那一路的能力量測，以及讀寫、憑證、環境變數與 GitHub 寫入各軸實際擋得住多少 |
-| `references/limits-operations.md` | 本 skill 自己不載入。遇到這幾種症狀時才打開它對照，不要當成待修的 bug 追：某個 reviewer 一直卡著或從沒開始、worktree 沒被清掉、prompt 尺寸逼近門檻；裡面是派送、等待、收尾與寫入使用者 repo 各環節的已知限制 |
-| `references/rationale.md` | 本 skill 自己不載入。想知道某條規則為什麼這樣定時，或遇到分支被誤刪、產出物找不到時才打開它對照，不要當成待修的 bug 追；裡面是各條規則的成因、審查契約條文的成因與完整的產出物目錄結構 |
+| `references/limits-exposure.md` | 本 skill 自己不載入。遇到這幾種症狀時才打開它對照，不要當成待修的 bug 追：PR 上的內容與輸出檔對不上、PR 狀態或既有留言出現非預期異動、某一格畫面上看得到核准對話框、某一格被判成 `withheld`、揭露段落的 model 與實際跑的對不上；要改任一平台的啟動旗標、隔離家目錄或環境白名單之前也先讀它。裡面是四個平台在互動 reviewer 那一路的能力量測，以及讀寫、憑證、環境變數與 GitHub 寫入各軸實際擋得住多少 |
+| `references/limits-operations.md` | 本 skill 自己不載入。遇到這幾種症狀時才打開它對照，不要當成待修的 bug 追：某個 reviewer 沒有對話框卻一直卡著或從沒開始、worktree 沒被清掉；改完審查契約要重量 prompt 尺寸時，或要改派送、重送、等待參數之前也先讀它。裡面是派送、等待、收尾與寫入使用者 repo 各環節的已知限制 |
+| `references/rationale.md` | 本 skill 自己不載入。想知道某條規則為什麼這樣定時，或遇到分支被誤刪、每一格都 `ready` 但 worktree 仍在、產出物找不到時才打開它對照，不要當成待修的 bug 追；裡面是各條規則的成因、審查契約條文的成因與完整的產出物目錄結構 |
 | `references/waiting.md` | 第一次收到 `blocked`、`stalled`、`heartbeat` 或 `deadline` 事件時，或依「等待與判斷」那節判定某一格已經不在、要講後果時載入；等待期間各事件的處置都在這裡 |
 | `references/closing.md` | 等待結束、要走收尾時載入；收尾每一步的條件、守衛與回報方式都在這裡 |
 | `references/missing-status.md` | 派出摘要有任何一行不帶狀態欄位、或標準錯誤出現確認結果檔建不出來那則警告時載入；狀態欄位缺漏的兩種成因怎麼分辨、各自要多講什麼都在這裡 |
@@ -94,7 +94,7 @@ description: >
 
 `prepare` 與 `launch` 仍在，旗標與分工不變，只在要分階段除錯時用，主線不走那條路。**分階段那條路要自己在兩步之間建 tab 與 pane，而建 pane 那幾條一違反就靜默失效的規則（工作區怎麼指定、`--env` 只有哪個時點設得了、隔離家目錄要釘住哪幾個變數、識別碼從哪裡取）現在整組只由腳本保證，規則層一條都沒有留**：漏掉其中任一條不會有任何錯誤訊息，那一格的隔離與環境清理會一起消失。因此除錯也以 `run` 取得座標為準；真要分階段時，照 `scripts/run-review.sh` 裡建 pane 那個函式的說明做，不要憑印象組。
 
-**一律在目標 PR 所屬 repo 的工作副本內呼叫**：腳本前半以 cwd 的 `origin` 驗證是不是目標 PR 所屬的 repo，不符即拒絕。呼叫端是本檔範圍內唯一能釘住那個落點的地方。**釘住不等於釘進安全的地方**：釘進去的是使用者的 repo 工作副本，那裡沒有任何一層鎖（見 `references/rationale.md`）。
+**一律在目標 PR 所屬 repo 的工作副本內呼叫**：腳本前半以 cwd 的 `origin` 驗證是不是目標 PR 所屬的 repo，不符即拒絕。呼叫端是本檔範圍內唯一能釘住那個落點的地方。**釘住不等於釘進安全的地方**：釘進去的是使用者的 repo 工作副本，那裡沒有任何一層鎖（見 `references/rationale.md`「呼叫時的工作目錄為什麼仍要釘在目標 repo 的工作副本裡」那一節；上鎖的範圍見 `references/limits-exposure.md`「CLI 自身的權限機制都保證不了唯讀」那一條，對那個 repo 的寫入見 `references/limits-operations.md`「腳本會寫入使用者當前的 repo」那一條）。
 
 **派出前告知**：下表每一列的觸發條件成立時，派出前把那一列的事實全部告知使用者。每一列都要整列講完，不要只挑結論講；括號裡的查證標記（實測、推斷、未查證）也要照原樣講。判準一律看這次實際會帶的平台旗標，不看使用者按了哪一個選項。成因與量測過程不必講，都記在第三欄指到的條目裡。
 

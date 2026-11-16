@@ -2784,7 +2784,7 @@ _herdr_agent_present_in_pane() {
 #     credentials stops depending on HOME at all, so the override above
 #     stops being relevant to that path too. A pane inherits its
 #     environment from the herdr daemon rather than from this script's own
-#     process (measured; see limits-exposure.md's own isolation bullet), so
+#     process (measured; see limits-exposure.md's environment-whitelist bullet), so
 #     nothing here can clear any of them. None of those variables was
 #     present on the machine this was measured on -- that is a property of
 #     that machine, not a guarantee this script provides.
