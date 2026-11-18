@@ -40,7 +40,7 @@ setup() {
 
   # Real tools the script legitimately needs. ln fails loudly if one is absent.
   local t
-  for t in git xargs env bash; do
+  for t in git xargs env bash mktemp find rm; do
     ln -s "$(command -v "$t")" "$BIN/$t"
   done
   ZSH_BIN="$(command -v zsh || true)"
@@ -158,6 +158,47 @@ run_checks() {
   STUB_BATS_EXIT=1 run_checks "$REPO" test
   [ "$status" -eq 1 ]
   [[ "$output" == *"FAILED: bats hooks/tests/ tests/"* ]]
+}
+
+@test "test only: tests see a fresh empty HOME, not the caller's, removed afterwards" {
+  install_stubs
+  # Logs HOME and how many entries it holds (bash builtins only: PATH is isolated).
+  cat >"$REPO/tests/test-a.sh" <<'FAKE'
+#!/usr/bin/env bash
+shopt -s nullglob dotglob
+e=("$HOME"/*)
+echo "$HOME ${#e[@]}" >>"$LOG_DIR/home.log"
+FAKE
+  run_checks "$REPO" test
+  [ "$status" -eq 0 ]
+  read -r seen_home entries <"$LOG_DIR/home.log"
+  [ -n "$seen_home" ]
+  [ "$seen_home" != "$HOME" ]
+  [ "$entries" -eq 0 ]
+  [ ! -e "$seen_home" ]
+}
+
+@test "test only: a test writing under HOME fails the run as HOME isolation" {
+  install_stubs
+  cat >"$REPO/tests/test-b.sh" <<'FAKE'
+#!/usr/bin/env bash
+: >"$HOME/stray"
+FAKE
+  run_checks "$REPO" test
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"tests wrote under HOME"* ]]
+  [[ "$output" == */stray* ]]
+  [[ "$output" == *"FAILED: HOME isolation"* ]]
+  [ -e "$LOG_DIR/bats.log" ]
+}
+
+@test "test only: no mktemp means a loud failure, not tests run without HOME isolation" {
+  install_stubs
+  rm "$BIN/mktemp"
+  run_checks "$REPO" test
+  [ "$status" -eq 1 ]
+  [ ! -e "$LOG_DIR/ran.log" ]
+  [ ! -e "$LOG_DIR/bats.log" ]
 }
 
 @test "no args: shellcheck failure does not skip tests; exit 1 names shellcheck" {

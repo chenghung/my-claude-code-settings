@@ -1842,7 +1842,7 @@ ZRC
 #     started via `herdr agent start` with launch_reviewer_interactive's
 #     own flags, everything else as in the end-to-end bullet above: 2 of 2
 #     finished and posted with no denial. (An older finding in
-#     references/rationale.md -- a permissions allow list in this same
+#     references/limits-exposure.md -- a permissions allow list in this same
 #     settings file having no effect -- measured the Write tool without
 #     any permission-mode flag on claude 2.1.259; it does not contradict
 #     this one.)
@@ -1862,7 +1862,7 @@ _write_claude_home_interactive() {
       hasClaudeMdExternalIncludesWarningShown: true}}}' \
     > "$dir/.claude.json" || return 1
   mkdir -p "$dir/.config" || return 1
-  ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
+  ln -sfn "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
 
@@ -2069,7 +2069,7 @@ _write_codex_home_interactive() {
   printf 'prefix_rule(pattern=["gh","pr","comment","%s"], decision="allow")\n' "$pr_url" \
     > "$dir/.codex/rules/default.rules" || return 1
   mkdir -p "$dir/.config" || return 1
-  ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
+  ln -sfn "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
 
@@ -2127,13 +2127,13 @@ _write_opencode_home_interactive() {
 
   mkdir -p "$dir" || return 1
   mkdir -p "$dir/.config" || return 1
-  ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
+  ln -sfn "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
 
   for rel in .config/opencode .cache/opencode .local/share/opencode \
              .local/state/opencode; do
     mkdir -p "$dir/$(dirname "$rel")" || return 1
     if [ -e "$HOME/$rel" ]; then
-      ln -sf "$HOME/$rel" "$dir/$rel" || return 1
+      ln -sfn "$HOME/$rel" "$dir/$rel" || return 1
     fi
   done
 
@@ -2345,7 +2345,7 @@ _write_agy_home_interactive() {
     > "$dir/.gemini/antigravity-cli/cache/onboarding.json" || return 1
 
   mkdir -p "$dir/.config" || return 1
-  ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
+  ln -sfn "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
 
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
@@ -2474,7 +2474,7 @@ _herdr_agent_present_in_pane() {
 # reading real PR text and could in principle rewrite base_dir/.pr-url
 # before codex's own turn in the same loop comes up, since nothing in this
 # file's own execution-directory posture locks that file down (see
-# references/rationale.md's own "執行目錄根層沒有上鎖" note) -- reading it
+# references/limits-exposure.md's own "執行目錄根層沒有上鎖" note) -- reading it
 # once, up front, before any reviewer exists to tamper with it, closes
 # that window regardless of dispatch order).
 #
@@ -2798,7 +2798,7 @@ _herdr_agent_present_in_pane() {
 #     credentials stops depending on HOME at all, so the override above
 #     stops being relevant to that path too. A pane inherits its
 #     environment from the herdr daemon rather than from this script's own
-#     process (measured; see rationale.md's own isolation bullet), so
+#     process (measured; see limits-exposure.md's environment-whitelist bullet), so
 #     nothing here can clear any of them. None of those variables was
 #     present on the machine this was measured on -- that is a property of
 #     that machine, not a guarantee this script provides.
@@ -5363,7 +5363,7 @@ cmd_launch() {
   # the instant its pane exists (see launch_reviewer_interactive's own
   # "ONE-SHOT LAUNCH: CLAUDE ONLY" docstring section), and this run's
   # execution-directory root is not locked down the way the worktree,
-  # materials, and logs directories are (see references/rationale.md's own
+  # materials, and logs directories are (see references/limits-exposure.md's own
   # "執行目錄根層沒有上鎖" note) -- so a reviewer dispatched earlier in this
   # same loop could in principle overwrite base_dir/.pr-url before a later
   # cli's own turn comes up. Capturing the value here, once, before the
@@ -5412,7 +5412,7 @@ cmd_launch() {
   #
   # It lives in logs/, not at the run directory's root: the root is
   # writable by every reviewer for the whole run (see references/
-  # rationale.md's "執行目錄根層沒有上鎖" note), so a reviewer could rewrite
+  # limits-exposure.md's "執行目錄根層沒有上鎖" note), so a reviewer could rewrite
   # a root-level file and push the deadline back. logs_dir is made read-only
   # right after the dispatch loop below (chmod -R a-w), which is a second
   # line of defence, not an absolute guarantee: it only takes effect once
@@ -6296,7 +6296,7 @@ cmd_wait() {
       # in this file.
       [ -n "$last_working" ] || continue
       # $last_working is file content from .last-working-$cli, and this
-      # skill's own rationale.md ("執行目錄根層沒有上鎖" section) already
+      # skill's own limits-exposure.md ("執行目錄根層沒有上鎖" section) already
       # documents every file at base_dir's own root -- this one by name --
       # as writable throughout the run by the very reviewer whose prompt
       # contains attacker-influenced PR text. It must be a plain decimal
