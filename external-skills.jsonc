@@ -133,6 +133,11 @@
     "repo": "https://github.com/jwynia/agent-skills/tree/main/skills/tech/development/architecture/requirements-analysis",
     "description": "Analyses and clarifies software requirements"
   },
+  {
+    "name": "tech-stack-evaluator",
+    "repo": "alirezarezvani/claude-skills",
+    "description": "Compares frameworks or tech stacks with weighted scoring, TCO, ecosystem health and migration risk"
+  },
 
   // Codebase design and engineering-workflow skills.
   //   codebase-design                shared vocabulary and principles for
