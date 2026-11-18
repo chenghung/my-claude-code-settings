@@ -394,6 +394,20 @@ readonly PANE_CLOSE_RETRY_INTERVAL_SECONDS=5
 # convention for that status file).
 readonly PANE_CLOSE_CONFIRM_DEADLINE_SECONDS=120
 
+# CLAUDE_TRANSCRIPT_MAX_BYTES: the largest claude reviewer transcript
+# _diagnose_claude_post_interactive will hand to jq. The transcript sits in
+# a directory the reviewer itself can write to (see that function's own
+# docstring), so its size is attacker-influenced; a file above this cap is
+# not parsed at all and reads as post=unknown. A reasoned bound, not a
+# measured one: the one real transcript this was developed against was
+# 2.6 MiB, so 64 MiB leaves about 25x headroom for a long review. The cap
+# bounds memory and parse volume only; it is not a wall-clock bound (jq's
+# time here is linear in the file's line count, not measured against this
+# cap, and a file swapped for a FIFO after the size check is a known,
+# accepted way to block jq -- see _diagnose_claude_post_interactive's own
+# docstring).
+readonly CLAUDE_TRANSCRIPT_MAX_BYTES=67108864
+
 # REVIEWER_PR_URL_PATTERN: the one check a PR URL must pass before
 # _write_claude_home_interactive or _write_codex_home_interactive embeds it
 # into a permission rule scoped to this run's own PR (see each function's
@@ -3837,6 +3851,146 @@ _close_reviewer_pane_interactive() {
   return 0
 }
 
+# _diagnose_claude_post_interactive <base_dir>
+#
+# Prints exactly one fixed token on stdout, always returns 0: what happened
+# to the claude reviewer's last `gh pr comment` call, according to that
+# reviewer's own transcript. One of:
+#   denied         the matching tool_result's text contains "denied by the
+#                  Claude Code auto mode classifier"
+#   error          the matching tool_result has is_error=true, without that
+#                  text
+#   ok             the matching tool_result exists and is_error is not true
+#   not-attempted  the transcript parsed, but holds no `gh pr comment`
+#                  Bash tool_use at all
+#   unknown        no transcript, jq failed or the file was over
+#                  CLAUDE_TRANSCRIPT_MAX_BYTES, or a tool_use with no
+#                  matching tool_result
+#
+# WHY IT EXISTS. spawn_supervisor_interactive's give-up line for a cli,
+# `reason=confirm-timed-out`, only says the comment was never seen on the
+# PR. The cause (most often claude's auto-mode classifier refusing the
+# post, see _write_claude_home_interactive's own WHY THE RULE EXISTS) lived
+# only in the claude transcript, so a human had to open the pane to learn
+# it. That line gets this token appended as ` post=<token>`. It is a
+# diagnostic only: nothing in this file branches on it.
+#
+# WHY ONLY claude. The location and record shape read here are claude's
+# own (<base_dir>/reviewers/claude/home/.claude/projects/<slug>/
+# <session>.jsonl, written under the isolated HOME _write_claude_home_
+# interactive builds), measured on one real claude 2.1.x transcript; no
+# other cli's transcript has been inspected, so the caller does not ask
+# this function about any of them.
+#
+# WHY ONLY A FIXED TOKEN. That directory is writable by the reviewer, and
+# the reviewer reads untrusted PR content, so the transcript is untrusted
+# input. Nothing parsed out of it (the classifier's own Reason text
+# included) is ever printed: jq's output is accepted only if it is exactly
+# one of the five tokens above, and anything else collapses to unknown. A
+# corrupt, oversized or odd-character file can therefore only ever yield
+# unknown, never abort the supervisor. Symlinked projects/, slug
+# directories and transcript files are all refused for the same reason, and
+# the size probe's own stderr is discarded so a reviewer-chosen path in a
+# shell error message cannot reach .supervisor.log.
+#
+# Which file: only the top-level *.jsonl directly under one slug directory
+# of projects/ (a deeper directory holds a subagent's own records, not this
+# reviewer's); when several exist, the most recently modified one. Which
+# call: the last Bash tool_use whose command starts with `gh pr comment`
+# (leading whitespace allowed), matched to its tool_result by tool_use_id.
+# A tool_result's content is either a string or an array of {type:"text"}
+# blocks; both are read. Only a command that itself starts with `gh pr
+# comment` is recognised: `cd /x && gh pr comment ...` or `gh -R a/b pr
+# comment ...` read as not-attempted. That boundary is deliberate (the
+# reviewer contract's own posting command is the bare form), pinned by
+# tests, and widening it would mean guessing at shell syntax inside
+# untrusted text.
+#
+# KNOWN LIMIT. Between the checks here and jq opening the file, the reviewer
+# could replace it with a FIFO, which would block jq (and with it this
+# supervisor's retry loop) indefinitely. No `timeout` wrapper is used:
+# nothing else in this file depends on it and macOS does not ship it. Accepted
+# because a reviewer able to write this directory can already write the
+# run directory's top level (.pane-close-status and the like), so this
+# diagnostic does not widen what it can do.
+_diagnose_claude_post_interactive() {
+  local base_dir="$1" projects_dir f best="" size token
+  projects_dir="$base_dir/reviewers/claude/home/.claude/projects"
+
+  if [ -L "$projects_dir" ]; then
+    printf 'unknown\n'
+    return 0
+  fi
+  for f in "$projects_dir"/*/*.jsonl; do
+    { [ -f "$f" ] && [ ! -L "$f" ] && [ ! -L "$(dirname "$f")" ]; } || continue
+    # `! -nt` rather than `-nt`: on an mtime tie the later glob entry wins,
+    # which keeps the pick deterministic.
+    if [ -z "$best" ] || ! [ "$best" -nt "$f" ]; then
+      best="$f"
+    fi
+  done
+  if [ -z "$best" ]; then
+    printf 'unknown\n'
+    return 0
+  fi
+
+  # Braces around the redirect: when `< "$best"` itself fails (unreadable
+  # file), the error text comes from the shell, not from wc, so a plain
+  # `wc ... 2>/dev/null` would still let it (path included) through.
+  size="$({ wc -c < "$best"; } 2>/dev/null)" || size=""
+  size="${size//[[:space:]]/}"
+  case "$size" in
+    '' | *[!0-9]*) printf 'unknown\n'; return 0 ;;
+  esac
+  if [ "$size" -gt "$CLAUDE_TRANSCRIPT_MAX_BYTES" ]; then
+    printf 'unknown\n'
+    return 0
+  fi
+
+  # `reduce inputs` keeps one small state object ({use, code}) in memory
+  # instead of slurping the whole file, and stays linear in line count: only
+  # the last `gh pr comment` tool_use's id is tracked, and a tool_result is
+  # recorded only when its tool_use_id equals that id (code 0 ok / 1 error /
+  # 2 denied; never the result text). A new matching tool_use resets code to
+  # null, so a result seen for an earlier call is dropped. A non-zero jq
+  # exit (unparsable line included) falls through to unknown below.
+  token="$(jq -n -r '
+    def text_of:
+      if type == "string" then .
+      elif type == "array" then
+        [.[] | select(type == "object" and .type == "text") | .text | select(type == "string")] | join("\n")
+      else "" end;
+    reduce (inputs | select(type == "object")) as $l ({use: null, code: null};
+      reduce (
+        ($l.message.content? // empty)
+        | if type == "array" then .[] else empty end
+        | select(type == "object")
+      ) as $b (.;
+        if $l.type == "assistant" and $b.type == "tool_use" and $b.name == "Bash"
+           and ($b.id | type) == "string"
+           and (($b.input.command? // null) | type) == "string"
+           and ($b.input.command | test("^\\s*gh pr comment(\\s|$)"))
+        then .use = $b.id | .code = null
+        elif $l.type == "user" and $b.type == "tool_result"
+             and $b.tool_use_id == .use
+        then .code =
+          (if ($b.content | text_of | contains("denied by the Claude Code auto mode classifier")) then 2
+           elif $b.is_error == true then 1
+           else 0 end)
+        else . end))
+    | . as $s
+    | if $s.use == null then "not-attempted"
+      elif $s.code != null then ["ok", "error", "denied"][$s.code]
+      else "unknown" end
+  ' "$best" 2>/dev/null)" || token=""
+
+  case "$token" in
+    ok | error | denied | not-attempted) printf '%s\n' "$token" ;;
+    *) printf 'unknown\n' ;;
+  esac
+  return 0
+}
+
 # spawn_supervisor_interactive <worktree_dir> <summary_file> <cli>...
 #
 # Same backgrounding shape, same .supervisor.pid heartbeat file, same
@@ -3997,7 +4151,7 @@ spawn_supervisor_interactive() {
     : > "$summary_file" || true
 
     local -a pending=("${clis[@]}") still=()
-    local cli output_file
+    local cli output_file post
     # Orphan-check throttle state (see ORPHAN_COMMENT_CHECK_INTERVAL_
     # SECONDS's own docstring): next_orphan_check_at starts at 0, i.e.
     # already due, so the very first pass still gets one chance to catch a
@@ -4118,7 +4272,17 @@ spawn_supervisor_interactive() {
           # (see its own docstring), leaving this loop to decide between
           # "retry later" and "give up" for this cli.
           if (( now_epoch - ${close_ready_at[$cli]:-$now_epoch} >= PANE_CLOSE_CONFIRM_DEADLINE_SECONDS )); then
-            printf 'cli=%s pane_closed=no reason=confirm-timed-out\n' "$cli" >> "$base_dir/.pane-close-status" || true
+            # Diagnostic suffix for claude only (see
+            # _diagnose_claude_post_interactive's own docstring); every
+            # other cli keeps the bare line. `|| post=unknown`: the
+            # function never fails, but this subshell inherits `set -e`
+            # and a diagnostic must not be able to end the loop.
+            post=""
+            if [ "$cli" = claude ]; then
+              post="$(_diagnose_claude_post_interactive "$base_dir")" || post=unknown
+              post=" post=$post"
+            fi
+            printf 'cli=%s pane_closed=no reason=confirm-timed-out%s\n' "$cli" "$post" >> "$base_dir/.pane-close-status" || true
             continue
           fi
           close_next_retry_at["$cli"]=$((now_epoch + PANE_CLOSE_RETRY_INTERVAL_SECONDS))

@@ -6521,6 +6521,376 @@ unset HERDR_RECORD_DIR GH_STUB_COMMENTS_JSON
 export PATH="$saved_path"
 
 # ==============================================================
+# _diagnose_claude_post_interactive -- 逾時那一行的 post= 診斷欄位
+#
+# fixture 一律自造最小樣本，不引用任何真實 transcript。每個案例各自一個
+# base_dir，transcript 放在 reviewers/claude/home/.claude/projects/<slug>/
+# 底下，與 _write_claude_home_interactive 建出來的隔離家目錄同一個位置。
+# ==============================================================
+
+DCP_ROOT="$T/diagnose-claude-post"
+DCP_URL='https://github.com/acme/widgets/pull/7'
+DCP_DENIED_TEXT='Permission for this action was denied by the Claude Code auto mode classifier. Reason: SECRET-REASON-TEXT'
+
+# _dcp_use <id> <command>: 一行 assistant，內含一個 Bash tool_use。
+_dcp_use() {
+  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","id":"%s","input":{"command":%s}}]}}\n' \
+    "$1" "$(jq -Rn --arg c "$2" '$c')"
+}
+# _dcp_res_str <id> <true|false> <text>: tool_result，content 為字串。
+_dcp_res_str() {
+  printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"%s","is_error":%s,"content":%s}]}}\n' \
+    "$1" "$2" "$(jq -Rn --arg c "$3" '$c')"
+}
+# _dcp_res_arr <id> <true|false> <text>: tool_result，content 為 text 區塊陣列。
+_dcp_res_arr() {
+  printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"%s","is_error":%s,"content":[{"type":"text","text":%s}]}]}}\n' \
+    "$1" "$2" "$(jq -Rn --arg c "$3" '$c')"
+}
+# _dcp_dir <name> [<slug>]: 建出 base_dir 與 slug 目錄，印出 slug 目錄路徑。
+_dcp_dir() {
+  local d="$DCP_ROOT/$1/reviewers/claude/home/.claude/projects/${2:--slug-a}"
+  mkdir -p "$d"
+  printf '%s\n' "$d"
+}
+# _dcp_expect <name> <expected>: 對 $DCP_ROOT/<name> 呼叫函式，輸出必須逐字等於 <expected>。
+_dcp_expect() {
+  local got
+  got="$(_diagnose_claude_post_interactive "$DCP_ROOT/$1")"
+  if [ "$got" = "$2" ]; then pass "_diagnose_claude_post_interactive $1 -> $2"
+  else bad "_diagnose_claude_post_interactive $1 預期 $2，實得: $got"
+  fi
+}
+
+POST_CMD="gh pr comment \"$DCP_URL\" --body-file \"/x/review.md\""
+
+d="$(_dcp_dir denied-str)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$d/s.jsonl"
+_dcp_expect denied-str denied
+# _dcp_expect 比的是整段輸出逐字相等，所以 Reason 後面那段文字（SECRET-REASON-TEXT）
+# 只要漏進輸出，這個案例就會失敗。
+
+d="$(_dcp_dir denied-arr)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_arr toolu_1 true "$DCP_DENIED_TEXT"; } > "$d/s.jsonl"
+_dcp_expect denied-arr denied
+
+d="$(_dcp_dir error-str)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true 'gh: HTTP 502 SECRET-REASON-TEXT'; } > "$d/s.jsonl"
+_dcp_expect error-str error
+
+d="$(_dcp_dir error-arr)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_arr toolu_1 true 'gh: HTTP 502'; } > "$d/s.jsonl"
+_dcp_expect error-arr error
+
+d="$(_dcp_dir ok-str)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 false "$DCP_URL#issuecomment-1"; } > "$d/s.jsonl"
+_dcp_expect ok-str ok
+
+d="$(_dcp_dir ok-arr)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_arr toolu_1 false "$DCP_URL#issuecomment-1"; } > "$d/s.jsonl"
+_dcp_expect ok-arr ok
+
+# is_error 欄位完全不存在也算 ok（條件是「不為 true」）。
+d="$(_dcp_dir ok-no-is-error)"
+{ _dcp_use toolu_1 "$POST_CMD"
+  printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"done"}]}}\n'; } > "$d/s.jsonl"
+_dcp_expect ok-no-is-error ok
+
+# 前導空白仍算 gh pr comment 開頭。
+d="$(_dcp_dir leading-space)"
+{ _dcp_use toolu_1 "   $POST_CMD"; _dcp_res_str toolu_1 false fine; } > "$d/s.jsonl"
+_dcp_expect leading-space ok
+
+# 沒有任何 gh pr comment：其他 Bash 指令、只是字串裡提到、message.content
+# 是純字串的 user 行，都不算張貼；transcript 本身解析得了 -> not-attempted。
+d="$(_dcp_dir not-attempted)"
+{
+  _dcp_use toolu_1 'ls -la'
+  _dcp_res_str toolu_1 false 'total 0'
+  _dcp_use toolu_2 'echo gh pr comment'
+  _dcp_res_str toolu_2 false 'gh pr comment'
+  _dcp_use toolu_3 'gh pr commentary'
+  printf '{"type":"user","message":{"content":"plain string prompt"}}\n'
+} > "$d/s.jsonl"
+_dcp_expect not-attempted not-attempted
+
+# 取「最後一次」張貼：兩個方向都驗，避免剛好靠順序巧合。
+d="$(_dcp_dir last-wins-ok)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"
+  _dcp_use toolu_2 "$POST_CMD"; _dcp_res_str toolu_2 false posted; } > "$d/s.jsonl"
+_dcp_expect last-wins-ok ok
+d="$(_dcp_dir last-wins-denied)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 false posted
+  _dcp_use toolu_2 "$POST_CMD"; _dcp_res_arr toolu_2 true "$DCP_DENIED_TEXT"; } > "$d/s.jsonl"
+_dcp_expect last-wins-denied denied
+
+# unknown：沒有 transcript 目錄 / 空的 projects 目錄 / 檔案損毀 / 二進位
+# 垃圾 / 有 tool_use 卻沒有對應 tool_result（含 id 對不上）。
+mkdir -p "$DCP_ROOT/no-transcript"
+_dcp_expect no-transcript unknown
+_dcp_dir empty-slug >/dev/null
+_dcp_expect empty-slug unknown
+d="$(_dcp_dir corrupt)"
+{ _dcp_use toolu_1 "$POST_CMD"; printf '{this is not json\n'; } > "$d/s.jsonl"
+_dcp_expect corrupt unknown
+d="$(_dcp_dir binary-garbage)"
+printf '\377\376\000{{\n\000\001' > "$d/s.jsonl"
+_dcp_expect binary-garbage unknown
+d="$(_dcp_dir no-result)"
+_dcp_use toolu_1 "$POST_CMD" > "$d/s.jsonl"
+_dcp_expect no-result unknown
+d="$(_dcp_dir mismatched-id)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_other false posted; } > "$d/s.jsonl"
+_dcp_expect mismatched-id unknown
+
+# 超大檔：內容本身合法、解析得出 denied，只是尾端用換行補到超過上限；
+# 唯有大小上限擋下它才會是 unknown（沒擋的話會是 denied）。
+d="$(_dcp_dir oversize)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$d/s.jsonl"
+head -c "$CLAUDE_TRANSCRIPT_MAX_BYTES" /dev/zero | tr '\0' '\n' >> "$d/s.jsonl"
+_dcp_expect oversize unknown
+
+# 多個 jsonl：取 mtime 最後者，與檔名排序無關（兩個方向都驗），也跨 slug 目錄比。
+d="$(_dcp_dir mtime-a)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$d/a.jsonl"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 false posted; } > "$d/z.jsonl"
+touch -d '2026-01-01 00:00:00' "$d/a.jsonl"
+touch -d '2026-01-02 00:00:00' "$d/z.jsonl"
+_dcp_expect mtime-a ok
+d="$(_dcp_dir mtime-b)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 false posted; } > "$d/a.jsonl"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$d/z.jsonl"
+touch -d '2026-01-02 00:00:00' "$d/a.jsonl"
+touch -d '2026-01-01 00:00:00' "$d/z.jsonl"
+_dcp_expect mtime-b ok
+d="$(_dcp_dir mtime-slugs -slug-old)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$d/s.jsonl"
+touch -d '2026-01-01 00:00:00' "$d/s.jsonl"
+d="$(_dcp_dir mtime-slugs -slug-new)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 false posted; } > "$d/s.jsonl"
+touch -d '2026-01-02 00:00:00' "$d/s.jsonl"
+_dcp_expect mtime-slugs ok
+
+# slug 目錄底下更深的子目錄是 subagent 的紀錄：不管多新、內容為何都不看。
+d="$(_dcp_dir subdir-only)"
+mkdir -p "$d/sub/agents"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$d/sub/agents/agent.jsonl"
+_dcp_expect subdir-only unknown
+d="$(_dcp_dir subdir-ignored)"
+mkdir -p "$d/sub"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 false posted; } > "$d/top.jsonl"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$d/sub/newer.jsonl"
+touch -d '2026-01-01 00:00:00' "$d/top.jsonl"
+touch -d '2026-01-02 00:00:00' "$d/sub/newer.jsonl"
+_dcp_expect subdir-ignored ok
+
+# 符號連結的 transcript 不跟隨（reviewer 寫得到這個目錄，可能指向任何檔案）。
+d="$(_dcp_dir symlinked)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$DCP_ROOT/symlink-target.jsonl"
+ln -s "$DCP_ROOT/symlink-target.jsonl" "$d/s.jsonl"
+_dcp_expect symlinked unknown
+
+# ---- 補強案例：邊界、效能、不可讀檔、符號連結、怪檔名 ----
+
+# 命令只認「以 gh pr comment 開頭」：前面接 cd ... && 或在 gh 與 pr 之間插
+# -R 旗標的寫法都不辨識（刻意的邊界，見函式 docstring），固定它。
+d="$(_dcp_dir not-prefix-cd)"
+{ _dcp_use toolu_1 "cd /x && $POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$d/s.jsonl"
+_dcp_expect not-prefix-cd not-attempted
+d="$(_dcp_dir not-prefix-flag)"
+{ _dcp_use toolu_1 'gh -R a/b pr comment 7 --body-file /x/review.md'; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$d/s.jsonl"
+_dcp_expect not-prefix-flag not-attempted
+
+# 只認最後一次張貼自己的 tool_result：前一次的結果不能頂替，tool_result
+# 出現在 tool_use 之前也不算。
+d="$(_dcp_dir stale-result)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 false posted
+  _dcp_use toolu_2 "$POST_CMD"; } > "$d/s.jsonl"
+_dcp_expect stale-result unknown
+d="$(_dcp_dir result-before-use)"
+{ _dcp_res_str toolu_1 false posted; _dcp_use toolu_1 "$POST_CMD"; } > "$d/s.jsonl"
+_dcp_expect result-before-use unknown
+
+# 不可讀檔：輸出 unknown，而且 stderr 必須是空的 -- 無法開檔時的錯誤訊息
+# 是 shell 自己印的（含 reviewer 可控的路徑），不加處理會漏進 .supervisor.log。
+d="$(_dcp_dir unreadable)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$d/s.jsonl"
+chmod 000 "$d/s.jsonl"
+if [ -r "$d/s.jsonl" ]; then
+  pass "_diagnose_claude_post_interactive unreadable：以 root（或能無視權限）執行，無法驗證，略過"
+else
+  DCP_ERR="$DCP_ROOT/unreadable.stderr"
+  DCP_OUT="$(_diagnose_claude_post_interactive "$DCP_ROOT/unreadable" 2> "$DCP_ERR")"
+  if [ "$DCP_OUT" = unknown ] && [ ! -s "$DCP_ERR" ]; then pass "_diagnose_claude_post_interactive unreadable -> unknown 且 stderr 為空"
+  else bad "_diagnose_claude_post_interactive unreadable：輸出 '$DCP_OUT'，stderr '$(cat "$DCP_ERR")'"
+  fi
+fi
+
+# 符號連結：slug 目錄、projects 目錄本身都不跟隨。
+mkdir -p "$DCP_ROOT/real-slug-target"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$DCP_ROOT/real-slug-target/s.jsonl"
+d="$(_dcp_dir symlinked-slug-dir)"
+rmdir "$d"
+ln -s "$DCP_ROOT/real-slug-target" "$d"
+_dcp_expect symlinked-slug-dir unknown
+mkdir -p "$DCP_ROOT/symlinked-projects/reviewers/claude/home/.claude" "$DCP_ROOT/real-projects-target/-slug-a"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$DCP_ROOT/real-projects-target/-slug-a/s.jsonl"
+ln -s "$DCP_ROOT/real-projects-target" "$DCP_ROOT/symlinked-projects/reviewers/claude/home/.claude/projects"
+_dcp_expect symlinked-projects unknown
+
+# 怪檔名：空白與開頭 `-`（目錄與檔名各一）照常讀得出來。
+d="$(_dcp_dir odd-names '-odd slug')"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$d/-odd name.jsonl"
+_dcp_expect odd-names denied
+
+# 大小上限的邊界：複本把上限換成這個檔案的實際大小 -- 剛好等於上限要讀，
+# 多一個位元組就不讀。
+d="$(_dcp_dir size-boundary)"
+{ _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$d/s.jsonl"
+DCP_SIZE="$(wc -c < "$d/s.jsonl")"
+DCP_SIZE="${DCP_SIZE//[[:space:]]/}"
+for DCP_LIMIT_DELTA in 0 -1; do
+  DCP_LIMIT=$((DCP_SIZE + DCP_LIMIT_DELTA))
+  DCP_COPY="$DCP_ROOT/run-review-limit-$DCP_LIMIT_DELTA.sh"
+  sed "s/^readonly CLAUDE_TRANSCRIPT_MAX_BYTES=67108864\$/readonly CLAUDE_TRANSCRIPT_MAX_BYTES=$DCP_LIMIT/" "$RUN_SH" > "$DCP_COPY"
+  if ! grep -qxF "readonly CLAUDE_TRANSCRIPT_MAX_BYTES=$DCP_LIMIT" "$DCP_COPY"; then
+    bad "_diagnose_claude_post_interactive 大小邊界：複本沒有換到上限常數"
+    continue
+  fi
+  DCP_OUT="$(bash -c 'source "$1"; _diagnose_claude_post_interactive "$2"' _ "$DCP_COPY" "$DCP_ROOT/size-boundary")"
+  if [ "$DCP_LIMIT_DELTA" = 0 ]; then DCP_WANT=denied; else DCP_WANT=unknown; fi
+  if [ "$DCP_OUT" = "$DCP_WANT" ]; then pass "_diagnose_claude_post_interactive 大小邊界：上限=檔案大小${DCP_LIMIT_DELTA/#0/+0} -> $DCP_WANT"
+  else bad "_diagnose_claude_post_interactive 大小邊界：上限=$DCP_LIMIT 預期 $DCP_WANT，實得 $DCP_OUT"
+  fi
+done
+
+# 效能：8 萬筆互不相干的 tool_result（約 10 MiB，仍在大小上限內）夾著一次
+# 張貼。reduce 若每筆 tool_result 都累積進狀態（舊版），耗時隨筆數平方成
+# 長：實測 8 萬筆約 69 秒；線性版約 0.6 秒。上限放 10 秒，對慢機器仍有
+# 約 15 倍餘裕，又遠低於平方版。
+d="$(_dcp_dir perf)"
+awk 'BEGIN {
+  print "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"id\":\"toolu_post\",\"input\":{\"command\":\"gh pr comment x\"}}]}}"
+  for (i = 1; i <= 80000; i++)
+    printf "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_%d\",\"is_error\":false,\"content\":\"x\"}]}}\n", i
+  print "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_post\",\"is_error\":false,\"content\":\"ok\"}]}}"
+}' > "$d/s.jsonl"
+DCP_T0="$(date +%s)"
+DCP_OUT="$(_diagnose_claude_post_interactive "$DCP_ROOT/perf")"
+DCP_ELAPSED=$(( $(date +%s) - DCP_T0 ))
+if [ "$DCP_OUT" = ok ] && [ "$DCP_ELAPSED" -le 10 ]; then pass "_diagnose_claude_post_interactive 8 萬筆 tool_result 在 ${DCP_ELAPSED} 秒內（上限 10 秒）完成且結果為 ok"
+else bad "_diagnose_claude_post_interactive 8 萬筆 tool_result：結果 '$DCP_OUT'，耗時 ${DCP_ELAPSED} 秒（上限 10 秒）"
+fi
+rm -f "$d/s.jsonl"
+
+# ==============================================================
+# spawn_supervisor_interactive -- 逾時那一行：只有 claude 帶 post= 欄位
+#
+# PANE_CLOSE_CONFIRM_DEADLINE_SECONDS 是 readonly 常數，這個測試行程裡
+# 改不動，真等兩分鐘也不實際。改把腳本複製一份、只把那一行常數換成 0，
+# 在獨立的 bash 行程裡 source 那份複本跑監督行程：第一次確認落空就
+# 立刻逾時，走的仍是被測腳本其餘的全部程式碼。gh 的替身永遠回「沒有
+# 任何 comment」，所以 claude 與 codex 都會落到 confirm-timed-out。
+# ==============================================================
+
+DIAGE2E_STUB_BIN="$T/diagnose-timeout-stub-bin"
+mkdir -p "$DIAGE2E_STUB_BIN"
+cat > "$DIAGE2E_STUB_BIN/gh" <<'STUB'
+#!/usr/bin/env bash
+# 任何 comments 查詢都回「沒有 comment」；其餘一律失敗。
+if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
+  case " $* " in
+    *' --json comments '*) printf '{"comments":[]}'; exit 0 ;;
+  esac
+fi
+exit 1
+STUB
+chmod +x "$DIAGE2E_STUB_BIN/gh"
+cat > "$DIAGE2E_STUB_BIN/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HERDR_RECORD_DIR/diag-e2e.calls"
+printf '{"result":{}}\n'
+STUB
+chmod +x "$DIAGE2E_STUB_BIN/herdr"
+export PATH="$DIAGE2E_STUB_BIN:$saved_path"
+assert_cli_stub_only "$PATH" "$DIAGE2E_STUB_BIN" gh herdr
+
+DIAGE2E_SCRIPT="$T/run-review-deadline-0.sh"
+sed 's/^readonly PANE_CLOSE_CONFIRM_DEADLINE_SECONDS=120$/readonly PANE_CLOSE_CONFIRM_DEADLINE_SECONDS=0/' "$RUN_SH" > "$DIAGE2E_SCRIPT"
+if grep -qxF 'readonly PANE_CLOSE_CONFIRM_DEADLINE_SECONDS=0' "$DIAGE2E_SCRIPT"; then pass "逾時診斷 e2e：腳本複本的逾時常數已換成 0"
+else bad "逾時診斷 e2e：複本沒有換到逾時常數（原始那一行改了寫法？）"
+fi
+
+# _diage2e_run <root> <with_transcript:0|1>: 在 <root> 建一份 claude+codex
+# 的 fixture（with_transcript=1 時 claude 帶一份 denied 的 transcript，0 時
+# 完全沒有 transcript 目錄），啟動監督行程，等它把兩行逾時狀態寫完、
+# worktree 移除。
+_diage2e_run() {
+  local root="$1" with_transcript="$2" wt i dir
+  wt="$(_make_worktree_fixture "$root")"
+  mkdir -p "$root/reviewers/claude/workdir" "$root/reviewers/codex/workdir"
+  printf 'claude claude-e2e-model dispatched\ncodex codex-e2e-model dispatched\n' > "$root/.roster"
+  printf 'https://github.com/acme/widgets/pull/7\n' > "$root/.pr-url"
+  printf 'w9:pA\n' > "$root/.pane-claude"
+  printf 'w9:pB\n' > "$root/.pane-codex"
+  printf '<!-- pr-review-by-multi-agents -->\nclaude diag review\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$root/reviewers/claude/workdir/review.md"
+  printf '<!-- pr-review-by-multi-agents -->\ncodex diag review\n===PR-REVIEW-BY-MULTI-AGENTS-END===\n' > "$root/reviewers/codex/workdir/review.md"
+  printf '%s\n' "$(_git_status_snapshot "$wt")" > "$root/.git-status-before-claude"
+  printf '%s\n' "$(_git_status_snapshot "$wt")" > "$root/.git-status-before-codex"
+  if [ "$with_transcript" = 1 ]; then
+    dir="$root/reviewers/claude/home/.claude/projects/-slug-a"
+    mkdir -p "$dir"
+    { _dcp_use toolu_1 "$POST_CMD"; _dcp_res_str toolu_1 true "$DCP_DENIED_TEXT"; } > "$dir/s.jsonl"
+  fi
+  export HERDR_RECORD_DIR="$root"
+  : > "$root/diag-e2e.calls"
+  bash -c 'source "$1"; cd "$2" && spawn_supervisor_interactive "$3" "$4" claude codex' _ \
+    "$DIAGE2E_SCRIPT" "$root/work" "$wt" "$root/summary.txt"
+  i=0
+  until { [ -f "$root/.pane-close-status" ] && [ "$(wc -l < "$root/.pane-close-status")" -ge 2 ]; } || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+  # 等監督行程把 worktree 移除、收尾完，才不會和測試結尾的清理互踩。
+  i=0
+  until [ ! -e "$wt" ] || [ "$i" -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+}
+
+# 兩種情況共通的斷言：codex 照常寫出原樣那一行、狀態檔恰好兩行、
+# transcript 文字沒漏、沒關任何 pane。<label> 只用於訊息。
+_diage2e_check_common() {
+  local root="$1" label="$2"
+  if grep -qxF 'cli=codex pane_closed=no reason=confirm-timed-out' "$root/.pane-close-status" 2>/dev/null; then pass "逾時診斷 e2e($label)：codex 逾時那一行維持原樣、不帶 post 欄位"
+  else bad "逾時診斷 e2e($label)：codex 逾時那一行不對: $(cat "$root/.pane-close-status" 2>/dev/null)"
+  fi
+  if [ "$(wc -l < "$root/.pane-close-status")" -eq 2 ]; then pass "逾時診斷 e2e($label)：狀態檔恰好兩行"
+  else bad "逾時診斷 e2e($label)：狀態檔行數不對: $(cat "$root/.pane-close-status" 2>/dev/null)"
+  fi
+  if ! grep -rqF 'SECRET-REASON-TEXT' "$root/.pane-close-status" "$root/.supervisor.log" "$root/summary.txt" 2>/dev/null; then pass "逾時診斷 e2e($label)：transcript 裡的 Reason 文字沒有漏進狀態檔、log、摘要"
+  else bad "逾時診斷 e2e($label)：transcript 文字漏進了輸出"
+  fi
+  if ! grep -q 'pane close' "$root/diag-e2e.calls" 2>/dev/null; then pass "逾時診斷 e2e($label)：逾時後沒有關任何 pane"
+  else bad "逾時診斷 e2e($label)：逾時後仍呼叫了 herdr pane close: $(cat "$root/diag-e2e.calls")"
+  fi
+}
+
+DIAGE2E_ROOT="$T/diagnose-timeout-supervisor-fixture"
+_diage2e_run "$DIAGE2E_ROOT" 1
+if grep -qxF 'cli=claude pane_closed=no reason=confirm-timed-out post=denied' "$DIAGE2E_ROOT/.pane-close-status" 2>/dev/null; then pass "逾時診斷 e2e：claude 逾時那一行帶 post=denied"
+else bad "逾時診斷 e2e：claude 逾時那一行不對: $(cat "$DIAGE2E_ROOT/.pane-close-status" 2>/dev/null)"
+fi
+_diage2e_check_common "$DIAGE2E_ROOT" denied
+
+# transcript 完全缺失：claude 那一行寫 post=unknown（診斷拿不到東西不是
+# 錯誤，也不能讓監督行程中止），codex 那一行照常寫出。
+DIAGE2E_MISSING_ROOT="$T/diagnose-timeout-supervisor-missing-fixture"
+_diage2e_run "$DIAGE2E_MISSING_ROOT" 0
+if grep -qxF 'cli=claude pane_closed=no reason=confirm-timed-out post=unknown' "$DIAGE2E_MISSING_ROOT/.pane-close-status" 2>/dev/null; then pass "逾時診斷 e2e：claude 缺 transcript 時那一行帶 post=unknown"
+else bad "逾時診斷 e2e：claude 缺 transcript 時那一行不對: $(cat "$DIAGE2E_MISSING_ROOT/.pane-close-status" 2>/dev/null)"
+fi
+_diage2e_check_common "$DIAGE2E_MISSING_ROOT" missing
+
+unset HERDR_RECORD_DIR
+export PATH="$saved_path"
+
+# ==============================================================
 # _confirm_pr_comment_posted_by_marker_interactive /
 # _record_orphan_reviewer_result_interactive -- 缺陷 D：reviewer 貼了 PR，
 # 卻沒有寫出輸出檔
