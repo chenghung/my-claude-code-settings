@@ -1848,7 +1848,7 @@ _write_claude_home_interactive() {
       hasClaudeMdExternalIncludesWarningShown: true}}}' \
     > "$dir/.claude.json" || return 1
   mkdir -p "$dir/.config" || return 1
-  ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
+  ln -sfn "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
 
@@ -2055,7 +2055,7 @@ _write_codex_home_interactive() {
   printf 'prefix_rule(pattern=["gh","pr","comment","%s"], decision="allow")\n' "$pr_url" \
     > "$dir/.codex/rules/default.rules" || return 1
   mkdir -p "$dir/.config" || return 1
-  ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
+  ln -sfn "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
 
@@ -2113,13 +2113,13 @@ _write_opencode_home_interactive() {
 
   mkdir -p "$dir" || return 1
   mkdir -p "$dir/.config" || return 1
-  ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
+  ln -sfn "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
 
   for rel in .config/opencode .cache/opencode .local/share/opencode \
              .local/state/opencode; do
     mkdir -p "$dir/$(dirname "$rel")" || return 1
     if [ -e "$HOME/$rel" ]; then
-      ln -sf "$HOME/$rel" "$dir/$rel" || return 1
+      ln -sfn "$HOME/$rel" "$dir/$rel" || return 1
     fi
   done
 
@@ -2331,7 +2331,7 @@ _write_agy_home_interactive() {
     > "$dir/.gemini/antigravity-cli/cache/onboarding.json" || return 1
 
   mkdir -p "$dir/.config" || return 1
-  ln -sf "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
+  ln -sfn "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
 
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
 }
