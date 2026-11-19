@@ -874,6 +874,69 @@ if run_sync plain group-fail "$FX" --claude --antigravity --no-confirm; then
   check group-fail-verify-bridge has 'verify: bridge ~/.gemini/config/skills/beta missing or unresolvable'
 fi
 
+# ---- openspec-managed lock entries: left to `openspec init`, never touched -----
+# Layout copied from the real `openspec init --scope global` result: real dirs
+# in ~/.agents/skills, relative symlinks in ~/.claude/skills, absolute ones in
+# the Antigravity bridge. Lock source Fission-AI/OpenSpec marks them as managed.
+OS_LOCK='{"version": 3, "skills": {"openspec-explore": {"source": "Fission-AI/OpenSpec", "ref": "v2.1.0"}, "openspec-propose": {"source": "Fission-AI/OpenSpec", "ref": "v2.1.0"}, "stale": {"source": "o/old"}}}'
+OS_LOCK_ONLY='{"version": 3, "skills": {"openspec-explore": {"source": "Fission-AI/OpenSpec", "ref": "v2.1.0"}, "openspec-propose": {"source": "Fission-AI/OpenSpec", "ref": "v2.1.0"}}}'
+# setup_openspec_layout: openspec-explore and openspec-propose as openspec
+# leaves them, plus the unrelated stale skill (real dirs in claude + agents).
+setup_openspec_layout() {
+  local n
+  mkdir -p "$CLAUDE_SKILLS" "$BRIDGE"
+  for n in openspec-explore openspec-propose; do
+    mkskill "$AGENTS_SKILLS/$n"
+    ln -s "../../.agents/skills/$n" "$CLAUDE_SKILLS/$n"
+    ln -s "$AGENTS_SKILLS/$n" "$BRIDGE/$n"
+  done
+  mkskill "$CLAUDE_SKILLS/stale"
+  mkskill "$AGENTS_SKILLS/stale"
+  printf '%s' "$OS_LOCK" > "$LOCK"
+}
+
+new_case openspec-managed
+setup_openspec_layout
+if run_sync plain openspec-managed "$FX" --all --no-confirm; then
+  check openspec-managed-exit0 test "$RC" -eq 0
+  # Only the unrelated stale entry is removed; the openspec ones are not named.
+  check openspec-managed-remove-preview has '將移除（所有平台）: stale'
+  check openspec-managed-remove-one-call test "$(log_count 'skills remove')" -eq 1
+  check openspec-managed-remove-argv-exact grep -qx -- '--yes skills remove stale -g -y' "$NPX_STUB_LOG"
+  check openspec-managed-stale-removed absent "$AGENTS_SKILLS/stale"
+  for n in openspec-explore openspec-propose; do
+    check "openspec-managed-$n-real-dir" real_dir "$AGENTS_SKILLS/$n"
+    check "openspec-managed-$n-claude-link" link_is "$CLAUDE_SKILLS/$n" "../../.agents/skills/$n"
+    check "openspec-managed-$n-bridge-link" link_is "$BRIDGE/$n" "$AGENTS_SKILLS/$n"
+    check "openspec-managed-$n-still-locked" grep -q "\"$n\"" "$LOCK"
+  done
+  check openspec-managed-no-cleanup-preview lacks '將清除的 symlink'
+fi
+
+# Only managed entries recorded: no remove call, nothing in the preview.
+new_case openspec-managed-only
+setup_openspec_layout
+rm -rf "${CLAUDE_SKILLS:?}/stale" "${AGENTS_SKILLS:?}/stale"
+printf '%s' "$OS_LOCK_ONLY" > "$LOCK"
+if run_sync plain openspec-managed-only "$FX" --all --no-confirm; then
+  check openspec-managed-only-exit0 test "$RC" -eq 0
+  check openspec-managed-only-no-remove test "$(log_count 'skills remove')" -eq 0
+  check openspec-managed-only-no-remove-preview lacks '將移除'
+  check openspec-managed-only-claude-link link_is "$CLAUDE_SKILLS/openspec-explore" "../../.agents/skills/openspec-explore"
+  check openspec-managed-only-bridge-link link_is "$BRIDGE/openspec-propose" "$AGENTS_SKILLS/openspec-propose"
+fi
+
+# Control: the exemption is by lock source only. The same names recorded with
+# another source are removed like any other unlisted lock entry.
+new_case openspec-other-source
+setup_openspec_layout
+printf '%s' "${OS_LOCK//Fission-AI\/OpenSpec/o/other}" > "$LOCK"
+if run_sync plain openspec-other-source "$FX" --all --no-confirm; then
+  check openspec-other-source-exit0 test "$RC" -eq 0
+  check openspec-other-source-removed has '將移除（所有平台）: openspec-explore openspec-propose stale'
+  check openspec-other-source-gone absent "$AGENTS_SKILLS/openspec-explore"
+fi
+
 # ---- path helpers (sourced, task 3 builds on them) -----------------------------
 new_case helpers
 mkdir -p "$HOME/a/b" "$HOME/target"
