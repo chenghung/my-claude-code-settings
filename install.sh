@@ -5,7 +5,7 @@
 # Target shell: bash — requires arrays, process substitution, and bash-specific
 #               string ops that are not available in POSIX sh.
 #
-# DESTRUCTIVE OPERATIONS: five exceptions. The script never deletes or
+# DESTRUCTIVE OPERATIONS: six exceptions. The script never deletes or
 # overwrites any existing file, directory, or symlink outright — conflicts
 # are reported and skipped. The exceptions are:
 #   - backup_migrate_link: renames a pre-existing real file to a
@@ -35,7 +35,18 @@
 #     `npx skills remove`, which deletes the skill from every agent skills
 #     directory the skills CLI knows about, not only the platforms selected
 #     here. That script previews and asks [y/N]
-#     before changing anything unless --no-confirm is passed through.
+#     before changing anything unless --no-confirm is passed through. Skills
+#     recorded in the lock with source Fission-AI/OpenSpec are the exception:
+#     sync never removes them.
+#   - the openspec step (install_openspec, not run with --no-external): its
+#     `openspec init --scope global` writes the openspec-* skills into the
+#     global skills directories (real files in ~/.agents/skills, symlinks in
+#     ~/.claude/skills and ~/.gemini/config/skills) and rewrites any whose
+#     content differs from the installed CLI version. Because the lock
+#     records them, a later openspec init with a smaller profile makes
+#     openspec itself remove the openspec skills it no longer needs. It runs
+#     in a throwaway directory that is deleted afterwards, and has no
+#     confirmation prompt or dry-run: --no-external skips it entirely.
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -545,9 +556,10 @@ generate_opencode_subagents() {
 #
 # This directory holds three kinds of entry: symlinks to the repo's own
 # skills/, the generated command-skills written here, and symlinks bridged in
-# by sync-external-skills.sh. Pruning is therefore doubly fenced: it only
-# considers real directories (find -type d never matches a symlink), and only
-# removes one whose SKILL.md carries this converter's own banner text.
+# by sync-external-skills.sh or `openspec init`. Pruning is therefore doubly
+# fenced: it only considers real directories (find -type d never matches a
+# symlink), and only removes one whose SKILL.md carries this converter's own
+# banner text.
 generate_command_skills() {
   if ! command -v python3 > /dev/null 2>&1; then
     printf '  WARNING  python3 not found - skipping Antigravity command-skill generation.\n'
@@ -722,11 +734,72 @@ deploy_antigravity() {
   fi
 }
 
+# install_openspec_skills <openspec binary>: (re)generate the global openspec
+# skills for the selected platforms. `openspec init` refuses to run in $HOME
+# and creates openspec/ in its working directory, so it runs in a throwaway
+# directory removed afterwards; --scope global puts the skills in the user
+# level directories (~/.agents/skills for codex and opencode, symlinks from
+# ~/.claude/skills and ~/.gemini/config/skills). Every run also re-syncs the
+# skills with the CLI version just installed and adds links for platforms
+# selected this time. Needs network and git (openspec fetches its release tag
+# from GitHub). Every failure, including not getting a temporary directory,
+# only warns and counts as skipped: the guards below keep set -e from
+# aborting install.sh.
+OPENSPEC_TMP=""
+install_openspec_skills() {
+  local bin="$1" tools=() tools_csv rc=0 ready=1
+
+  # tool ids as openspec names them
+  if [ -n "$want_claude" ]; then tools+=(claude); fi
+  if [ -n "$want_codex" ]; then tools+=(codex); fi
+  if [ -n "$want_opencode" ]; then tools+=(opencode); fi
+  if [ -n "$want_antigravity" ]; then tools+=(antigravity-cli); fi
+  # ${tools[*]} joins with the first character of IFS, so set it to a comma.
+  tools_csv="$(IFS=,; printf '%s' "${tools[*]}")"
+
+  # Trap only once the directory exists; `|| ready=` keeps a mkdir failure
+  # from tripping set -e.
+  if OPENSPEC_TMP="$(mktemp -d)"; then
+    trap 'rm -rf "$OPENSPEC_TMP"' EXIT
+    trap 'rm -rf "$OPENSPEC_TMP"; exit 130' INT TERM
+    mkdir "$OPENSPEC_TMP/project" || ready=""
+  else
+    OPENSPEC_TMP=""
+    ready=""
+  fi
+  if [ -z "$ready" ]; then
+    printf '  WARNING  could not create a temporary directory - skipping openspec skills.\n'
+    count_skipped=$(( count_skipped + 1 ))
+    rm -rf "$OPENSPEC_TMP"
+    trap - EXIT INT TERM
+    return
+  fi
+
+  (cd "$OPENSPEC_TMP/project" \
+    && "$bin" init --tools "$tools_csv" --scope global --no-animation < /dev/null) \
+    > "$OPENSPEC_TMP/init.log" 2>&1 || rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    printf '  INSTALLED openspec global skills (tools: %s)\n' "$tools_csv"
+    count_created=$(( count_created + 1 ))
+  else
+    printf '  WARNING  openspec init failed (exit %s) - skipping openspec skills. Last output:\n' "$rc"
+    tail -n 10 "$OPENSPEC_TMP/init.log" | sed 's/^/    /'
+    count_skipped=$(( count_skipped + 1 ))
+  fi
+
+  rm -rf "$OPENSPEC_TMP"
+  trap - EXIT INT TERM
+}
+
 # ---------------------------------------------------------------------------
-# OpenSpec CLI (Fission-AI) — a plain npm tool, not part of the skills
-# ecosystem, so it is installed with npm rather than `skills`.
-# Platform-independent: all three platforms share the same install, so this
-# runs once regardless of which platforms were selected.
+# OpenSpec (Fission-AI) — the CLI is a plain npm package, installed with npm
+# rather than `skills`; its global skills (openspec-explore, -propose, ...)
+# are then written by the CLI itself (`openspec init --scope global`, see
+# install_openspec_skills above), not by sync-external-skills.sh, which leaves
+# lock entries with source Fission-AI/OpenSpec alone.
+# The CLI install is platform-independent and runs once; the skills step is
+# told which platforms were selected.
 # Re-run every time to install or update to latest: installing <pkg>@latest is
 # idempotent and refreshes an existing install in place.
 #
@@ -775,6 +848,15 @@ install_openspec() {
     printf '  WARNING  openspec installed but not resolvable in this shell - add %s/bin to PATH.\n' "$prefix" >&2
   elif [ "$resolved" != "$prefix/bin/openspec" ]; then
     printf '  WARNING  openspec resolves to %s, which shadows the copy just installed at %s/bin/openspec.\n' "$resolved" "$prefix" >&2
+  fi
+
+  # Run the copy just installed, not whatever PATH resolves to (the shadowing
+  # caveat in this function's header comment).
+  if [ -x "$prefix/bin/openspec" ]; then
+    install_openspec_skills "$prefix/bin/openspec"
+  else
+    printf '  WARNING  %s/bin/openspec not found - skipping openspec skills.\n' "$prefix"
+    count_skipped=$(( count_skipped + 1 ))
   fi
 }
 
@@ -972,8 +1054,8 @@ fi
 # because interactive mode has none in "$@". Its results are not counted in
 # the Summary. Exit 0 also covers the user answering No at its prompt, so
 # install.sh carries on; any other exit stops install.sh right here (no
-# openspec, no Summary). Called inside `if !` so set -e cannot abort before
-# the hint is printed.
+# openspec install or skills, no Summary). Called inside `if !` so set -e
+# cannot abort before the hint is printed.
 # ---------------------------------------------------------------------------
 if [ -z "$skip_external" ]; then
   platform_flags=()
@@ -989,18 +1071,19 @@ if [ -z "$skip_external" ]; then
     # with IFS's first character, a newline here.
     flags_text="$(printf ' %s' "${platform_flags[@]}")"
     {
-      printf '\nERROR  external skills sync failed - install.sh stopped here (openspec install and Summary skipped).\n'
+      printf '\nERROR  external skills sync failed - install.sh stopped here (openspec install, openspec skills and Summary skipped).\n'
       printf 'Fix the problem reported above, then either:\n'
       printf '  - re-run only the sync:  ./sync-external-skills.sh%s\n' "$flags_text"
       printf '  - or skip external skills for now:  ./install.sh%s --no-external\n' "$flags_text"
-      printf '    (--no-external also skips the openspec install and the Codex superpowers install)\n'
+      printf '    (--no-external also skips the openspec install, its global skills and the Codex superpowers install)\n'
     } >&2
     exit 1
   fi
 fi
 
-# OpenSpec is a plain dev CLI tool with no per-platform install target, so it
-# runs once regardless of which platform(s) were selected above.
+# The OpenSpec CLI has no per-platform install target, so it is installed once
+# regardless of which platform(s) were selected above; its global skills are
+# generated for the selected platforms.
 install_openspec
 
 printf '\n=== Summary ===\n'

@@ -9,7 +9,10 @@
 # skills that the CLI's lock file records but the manifest no longer lists
 # from every agent skills directory the skills CLI knows about (dozens of
 # agents in skills CLI 1.7.2, not just this repo's four platforms), plus the
-# shared ~/.agents/skills copy and the lock record. The script also deletes
+# shared ~/.agents/skills copy and the lock record. One exception: lock
+# entries whose source is Fission-AI/OpenSpec belong to `openspec init`
+# (run by install.sh), so they are never removed here and their symlinks are
+# never cleaned up as orphans. The script also deletes
 # symlinks (stale aliases, dangling repo symlinks it then replaces, outdated
 # Antigravity bridge links). Real directories and live
 # symlinks into this repo are never deleted by the script itself. Every run
@@ -32,12 +35,18 @@ PLAN_SCRIPT="${REPO_DIR}/scripts/external-skills-plan.py"
 
 PLATFORMS=(claude codex opencode antigravity)
 
+# Lock entries with this source are written and maintained by `openspec init`
+# (see install.sh), not by the manifest; sync must leave them alone.
+OPENSPEC_SOURCE="Fission-AI/OpenSpec"
+
 usage() {
   cat <<'EOF'
 Usage: sync-external-skills.sh [--claude] [--codex] [--opencode] [--antigravity] [--all] [--no-confirm] [-h|--help]
   Installs/updates the skills listed in external-skills.jsonc on the selected
   platforms and removes lock-recorded skills no longer listed, from every agent
   skills directory the skills CLI knows about, not only the selected ones.
+  Lock entries whose source is Fission-AI/OpenSpec are managed by `openspec
+  init` (run by install.sh) and are never removed or cleaned up here.
   At least one platform flag is required; --all selects all four.
   --no-confirm  do not ask before installing or removing.
 EOF
@@ -144,8 +153,9 @@ print_summary() {
   done
 }
 
-# read_lock: print the lock's skill names, one per line. A missing lock file
-# means no records. Fails (message on stderr) when the file cannot be parsed
+# read_lock: print the lock's skills, one per line as "<name>\t<source>"
+# (source is empty when absent or not a string). A missing lock file means no
+# records. Fails (message on stderr) when the file cannot be parsed
 # or a name does not match ^[A-Za-z0-9][A-Za-z0-9._-]*$ - such a name must
 # never reach `skills remove`, where e.g. --all or -a would be read as a flag
 # (the CLI does not honour a -- separator). -I keeps a json.py or similar in
@@ -173,23 +183,32 @@ for n in bad:
           "(must match ^[A-Za-z0-9][A-Za-z0-9._-]*$)", file=sys.stderr)
 if bad:
     sys.exit(1)
-for n in skills:
-    print(n)
+for n, rec in skills.items():
+    src = rec.get("source") if isinstance(rec, dict) else None
+    src = " ".join(src.split()) if isinstance(src, str) else ""
+    print(f"{n}\t{src}")
 PY
 }
 
-# load_lock: read the lock into LOCK_NAMES. On failure record one fixed
-# problem (with read_lock's stderr, if any, as detail lines) and return 1.
+# load_lock: read the lock into LOCK_NAMES (every recorded name) and
+# LOCK_MANAGED (the subset whose source is $OPENSPEC_SOURCE, name -> 1). On
+# failure record one fixed problem (with read_lock's stderr, if any, as detail
+# lines) and return 1.
 LOCK_NAMES=()
+declare -A LOCK_MANAGED=()
 load_lock() {
-  local rc=0
+  local rc=0 name source
   LOCK_NAMES=()
+  LOCK_MANAGED=()
   read_lock > "$WORK_DIR/lock.txt" 2> "$WORK_DIR/lock.err" || rc=$?
   if ((rc != 0)); then
     add_problem "cannot read lock file $LOCK (python3 exited $rc)"$'\n'"$(cat "$WORK_DIR/lock.err")"
     return 1
   fi
-  mapfile -t LOCK_NAMES < "$WORK_DIR/lock.txt"
+  while IFS=$'\t' read -r name source; do
+    LOCK_NAMES+=("$name")
+    if [[ "$source" == "$OPENSPEC_SOURCE" ]]; then LOCK_MANAGED[$name]=1; fi
+  done < "$WORK_DIR/lock.txt"
 }
 
 # location <platform>: the directory a platform's skills live in.
@@ -387,9 +406,12 @@ main() {
   done
 
   # Remove: in the lock, not in the manifest, present on a selected location.
+  # Lock entries sourced from Fission-AI/OpenSpec are skipped: `openspec init`
+  # owns them. They still count as locked (in_lock), so their symlinks are not
+  # orphans either.
   local remove=()
   for name in ${lock_names[@]+"${lock_names[@]}"}; do
-    [[ -z "${known[$name]+x}" ]] || continue
+    [[ -z "${known[$name]+x}" && -z "${LOCK_MANAGED[$name]+x}" ]] || continue
     if { ((use_claude)) && [[ -e "$CLAUDE_SKILLS/$name" || -L "$CLAUDE_SKILLS/$name" ]]; } \
       || { ((use_agents)) && [[ -e "$AGENTS_SKILLS/$name" || -L "$AGENTS_SKILLS/$name" ]]; }; then
       remove+=("$name")
@@ -424,11 +446,12 @@ main() {
     done
   done
   # Bridge: link into ~/.agents/skills or the old bridge source, not repo;
-  # cleaned when dangling, from the old source, or not wanted.
+  # cleaned when dangling, from the old source, or not wanted. Links of
+  # openspec-managed lock entries are skipped: `openspec init` owns them.
   if [[ -n "${on[antigravity]+x}" ]]; then
     for path in "$bridge"/*; do
       name="${path##*/}"
-      [[ -L "$path" ]] || continue
+      [[ -L "$path" && -z "${LOCK_MANAGED[$name]+x}" ]] || continue
       target="$(link_target "$path")"
       { path_under "$target" "$AGENTS_SKILLS" || path_under "$target" "$old_bridge_src"; } || continue
       ! points_to_repo "$target" || continue

@@ -397,6 +397,14 @@ mkdir -p "$EXT_BIN" "$PASS_BIN" "$EXT/home"
 export NPX_GUARD_LOG="$EXT/npx-guard.log"
 export NPM_STUB_LOG="$EXT/npm-stub.log"
 export CODEX_STUB_LOG="$EXT/codex-stub.log"
+# openspec stub: argv in OPENSPEC_STUB_LOG, its cwd and stdin target in
+# OPENSPEC_STUB_ENV_LOG; OPENSPEC_STUB_EXIT sets its exit code (default 0).
+# It lives where install.sh looks for the copy it just installed
+# ($HOME/.local/bin, HOME=$EXT/home), not on PATH.
+export OPENSPEC_STUB_LOG="$EXT/openspec-stub.log"
+export OPENSPEC_STUB_ENV_LOG="$EXT/openspec-stub-env.log"
+export TMPDIR="$EXT/tmp"
+OPENSPEC_STUB="$EXT/home/.local/bin/openspec"
 cat > "$EXT_BIN/npx" <<'STUB'
 #!/usr/bin/env bash
 printf 'UNEXPECTED %s\n' "$*" >> "${NPX_GUARD_LOG:?}"
@@ -405,15 +413,25 @@ STUB
 cat > "$EXT_BIN/npm" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${NPM_STUB_LOG:?}"
-exit 0
+exit "${NPM_STUB_EXIT:-0}"
+STUB
+mkdir -p "$(dirname "$OPENSPEC_STUB")"
+cat > "$OPENSPEC_STUB" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${OPENSPEC_STUB_LOG:?}"
+printf 'cwd=%s stdin=%s\n' "$PWD" "$(readlink /proc/self/fd/0)" >> "${OPENSPEC_STUB_ENV_LOG:?}"
+# imitate init's side effect in the working directory
+mkdir -p openspec/changes
+printf 'stub output line\n'
+exit "${OPENSPEC_STUB_EXIT:-0}"
 STUB
 cat > "$EXT_BIN/codex" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${CODEX_STUB_LOG:?}"
 exit 0
 STUB
-chmod +x "$EXT_BIN/npx" "$EXT_BIN/npm" "$EXT_BIN/codex"
-for tool in bash env dirname basename mkdir ln cp mv rm find sort cat head grep wc readlink date python3; do
+chmod +x "$EXT_BIN/npx" "$EXT_BIN/npm" "$EXT_BIN/codex" "$OPENSPEC_STUB"
+for tool in bash env dirname basename mkdir ln cp mv rm find sort cat head grep wc readlink date python3 mktemp tail sed; do
   ln -s "$(command -v "$tool")" "$PASS_BIN/$tool"
 done
 EXT_PATH="$EXT_BIN:$STUB_BIN:$PASS_BIN"
@@ -426,6 +444,8 @@ export OPENCODE_CONFIG_DIR="$EXT/opencode" GEMINI_HOME="$EXT/gemini"
 # SYNC_EXTERNAL_SKILLS is not the stub.
 ext_prep() {
   : > "$SYNC_STUB_LOG"; : > "$NPX_GUARD_LOG"; : > "$NPM_STUB_LOG"; : > "$CODEX_STUB_LOG"; : > "$2"
+  : > "$OPENSPEC_STUB_LOG"; : > "$OPENSPEC_STUB_ENV_LOG"
+  rm -rf "${TMPDIR:?}"; mkdir -p "$TMPDIR"
   [ "$SYNC_EXTERNAL_SKILLS" = "$T/sync-stub" ] && return 0
   bad "$1-sync-stub-guard"
   return 1
@@ -442,7 +462,7 @@ run_ext() {
   RC=255
   ext_prep "$name" "$log" || return 0
   RC=0
-  HOME="$EXT/home" PATH="$EXT_PATH" CLAUDE_STUB_LOG="$EXT/claude-stub.log" \
+  HOME="$EXT/home" PATH="$EXT_PATH" TMPDIR="${RUN_TMPDIR:-$TMPDIR}" CLAUDE_STUB_LOG="$EXT/claude-stub.log" \
     "$REPO/install.sh" "$@" > "$log" 2>&1 < /dev/null || RC=$?
 }
 run_ext_tty() {
@@ -471,6 +491,7 @@ if [ "$RC" -eq 0 ] && grep -qF '=== Summary ===' "$EXT/log_flags"; then pass syn
 # Positive controls for the --no-external scenario below: without that flag,
 # openspec (npm) and Codex superpowers (codex) do run under these stubs.
 if [ -s "$NPM_STUB_LOG" ]; then pass ext-runs-openspec; else bad ext-runs-openspec; fi
+if [ -s "$OPENSPEC_STUB_LOG" ]; then pass ext-runs-openspec-init; else bad ext-runs-openspec-init; fi
 if grep -qxF 'plugin marketplace upgrade' "$CODEX_STUB_LOG"; then pass ext-runs-codex-superpowers; else bad ext-runs-codex-superpowers; fi
 ext_guard flags "$EXT/log_flags"
 
@@ -489,6 +510,7 @@ ext_guard interactive "$EXT/log_tty"
 run_ext noext "$EXT/log_noext" --claude --codex --no-external
 if [ ! -s "$SYNC_STUB_LOG" ]; then pass no-external-skips-sync; else bad no-external-skips-sync; fi
 if [ ! -s "$NPM_STUB_LOG" ]; then pass no-external-skips-openspec; else bad no-external-skips-openspec; fi
+if [ ! -s "$OPENSPEC_STUB_LOG" ]; then pass no-external-skips-openspec-init; else bad no-external-skips-openspec-init; fi
 if grep -qF 'plugin marketplace upgrade' "$CODEX_STUB_LOG"; then bad no-external-skips-codex-superpowers; else pass no-external-skips-codex-superpowers; fi
 ext_guard noext "$EXT/log_noext"
 
@@ -502,11 +524,13 @@ if grep -qF './sync-external-skills.sh --claude --codex' "$EXT/log_syncfail"; th
 if grep -qF -e '--no-external' "$EXT/log_syncfail"; then pass sync-fail-hint-no-external; else bad sync-fail-hint-no-external; fi
 if grep -qF '=== Summary ===' "$EXT/log_syncfail"; then bad sync-fail-no-summary; else pass sync-fail-no-summary; fi
 if [ ! -s "$NPM_STUB_LOG" ]; then pass sync-fail-skips-openspec; else bad sync-fail-skips-openspec; fi
+if [ ! -s "$OPENSPEC_STUB_LOG" ]; then pass sync-fail-skips-openspec-init; else bad sync-fail-skips-openspec-init; fi
 ext_guard syncfail "$EXT/log_syncfail"
 
 # Sync output is not counted: on two fresh Claude dirs, the run with sync
 # (whose stub prints INSTALLED/CREATED lines) differs from the --no-external
-# run only by install_openspec's one created (npm stub exits 0).
+# run only by install_openspec's two created (npm stub and openspec stub exit 0:
+# one for the CLI install, one for the global skills).
 summary_value() { sed -n "s/^  $1: *//p" "$2"; } # $1 = created|skipped, $2 = log
 export CLAUDE_CONFIG_DIR="$EXT/claude-count-noext"
 run_ext count-noext "$EXT/log_count_noext" --claude --no-external
@@ -519,9 +543,62 @@ created_noext="$(summary_value created "$EXT/log_count_noext")"
 created_ext="$(summary_value created "$EXT/log_count_ext")"
 skipped_noext="$(summary_value skipped "$EXT/log_count_noext")"
 skipped_ext="$(summary_value skipped "$EXT/log_count_ext")"
-if [ -n "$created_noext" ] && [ -n "$created_ext" ] && [ "$created_ext" -eq $(( created_noext + 1 )) ]; then pass sync-not-counted-created; else bad sync-not-counted-created; fi
+if [ -n "$created_noext" ] && [ -n "$created_ext" ] && [ "$created_ext" -eq $(( created_noext + 2 )) ]; then pass sync-not-counted-created; else bad sync-not-counted-created; fi
 if [ -n "$skipped_noext" ] && [ "$skipped_ext" = "$skipped_noext" ]; then pass sync-not-counted-skipped; else bad sync-not-counted-skipped; fi
 export CLAUDE_CONFIG_DIR="$EXT/claude"
+
+# ---- openspec global skills: `openspec init` after the CLI install ----
+# The stub records argv, cwd and stdin; TMPDIR is $EXT/tmp, so a leftover
+# throwaway directory shows up as a non-empty $EXT/tmp.
+# Platform flags map to openspec tool ids (antigravity -> antigravity-cli).
+run_ext osinit-all "$EXT/log_osinit_all" --all --no-confirm
+if [ "$(cat "$OPENSPEC_STUB_LOG")" = 'init --tools claude,codex,opencode,antigravity-cli --scope global --no-animation' ]; then pass openspec-init-argv-all; else bad openspec-init-argv-all; fi
+if [ "$(grep -c . "$OPENSPEC_STUB_LOG")" -eq 1 ]; then pass openspec-init-runs-once; else bad openspec-init-runs-once; fi
+if grep -qF 'INSTALLED openspec global skills (tools: claude,codex,opencode,antigravity-cli)' "$EXT/log_osinit_all"; then pass openspec-init-reports-installed; else bad openspec-init-reports-installed; fi
+# cwd is a throwaway directory under TMPDIR (never HOME), stdin is /dev/null.
+if grep -qE "^cwd=$TMPDIR/[^/]+/project stdin=/dev/null\$" "$OPENSPEC_STUB_ENV_LOG"; then pass openspec-init-cwd-and-stdin; else bad openspec-init-cwd-and-stdin; fi
+if [ -z "$(ls -A "$TMPDIR")" ]; then pass openspec-init-tmpdir-removed; else bad openspec-init-tmpdir-removed; fi
+if [ ! -e "$EXT/home/openspec" ]; then pass openspec-init-not-in-home; else bad openspec-init-not-in-home; fi
+ext_guard osinit-all "$EXT/log_osinit_all"
+
+# Only the selected platforms are passed.
+run_ext osinit-two "$EXT/log_osinit_two" --claude --codex
+if [ "$(cat "$OPENSPEC_STUB_LOG")" = 'init --tools claude,codex --scope global --no-animation' ]; then pass openspec-init-argv-selected; else bad openspec-init-argv-selected; fi
+run_ext osinit-ag "$EXT/log_osinit_ag" --antigravity
+if [ "$(cat "$OPENSPEC_STUB_LOG")" = 'init --tools antigravity-cli --scope global --no-animation' ]; then pass openspec-init-argv-antigravity; else bad openspec-init-argv-antigravity; fi
+
+# CLI install fails (npm exits 1): no init, WARNING, install.sh carries on.
+export NPM_STUB_EXIT=1
+run_ext osinit-npmfail "$EXT/log_osinit_npmfail" --claude
+unset NPM_STUB_EXIT
+if [ ! -s "$OPENSPEC_STUB_LOG" ]; then pass openspec-init-skipped-on-npm-fail; else bad openspec-init-skipped-on-npm-fail; fi
+if [ "$RC" -eq 0 ] && grep -qF '=== Summary ===' "$EXT/log_osinit_npmfail"; then pass openspec-npm-fail-reaches-summary; else bad openspec-npm-fail-reaches-summary; fi
+ext_guard osinit-npmfail "$EXT/log_osinit_npmfail"
+
+# init fails (e.g. no network): WARNING with the tool output, counted as
+# skipped (one more than the passing run, which has the same CLI install),
+# created one lower, exit 0, Summary reached, throwaway directory removed.
+run_ext osinit-ok "$EXT/log_osinit_ok" --claude
+export OPENSPEC_STUB_EXIT=1
+run_ext osinit-fail "$EXT/log_osinit_fail" --claude
+unset OPENSPEC_STUB_EXIT
+if [ "$RC" -eq 0 ] && grep -qF '=== Summary ===' "$EXT/log_osinit_fail"; then pass openspec-init-fail-continues; else bad openspec-init-fail-continues; fi
+if grep -qF 'WARNING  openspec init failed (exit 1)' "$EXT/log_osinit_fail" && grep -qF 'stub output line' "$EXT/log_osinit_fail"; then pass openspec-init-fail-warns; else bad openspec-init-fail-warns; fi
+if grep -qF 'INSTALLED openspec global skills' "$EXT/log_osinit_fail"; then bad openspec-init-fail-no-installed-line; else pass openspec-init-fail-no-installed-line; fi
+if [ "$(summary_value skipped "$EXT/log_osinit_fail")" -eq $(( $(summary_value skipped "$EXT/log_osinit_ok") + 1 )) ]; then pass openspec-init-fail-counts-skipped; else bad openspec-init-fail-counts-skipped; fi
+if [ "$(summary_value created "$EXT/log_osinit_fail")" -eq $(( $(summary_value created "$EXT/log_osinit_ok") - 1 )) ]; then pass openspec-init-fail-not-counted-created; else bad openspec-init-fail-not-counted-created; fi
+if [ -z "$(ls -A "$TMPDIR")" ]; then pass openspec-init-fail-tmpdir-removed; else bad openspec-init-fail-tmpdir-removed; fi
+ext_guard osinit-fail "$EXT/log_osinit_fail"
+
+# No temporary directory (TMPDIR points at a missing path, so mktemp fails):
+# install.sh must not abort; WARNING, skipped one higher than the passing run,
+# init never runs, exit 0, Summary reached.
+RUN_TMPDIR="$EXT/no-such-tmp" run_ext osinit-notmp "$EXT/log_osinit_notmp" --claude
+if [ "$RC" -eq 0 ] && grep -qF '=== Summary ===' "$EXT/log_osinit_notmp"; then pass openspec-notmp-continues; else bad openspec-notmp-continues; fi
+if grep -qF 'WARNING  could not create a temporary directory' "$EXT/log_osinit_notmp"; then pass openspec-notmp-warns; else bad openspec-notmp-warns; fi
+if [ ! -s "$OPENSPEC_STUB_LOG" ]; then pass openspec-notmp-no-init; else bad openspec-notmp-no-init; fi
+if [ "$(summary_value skipped "$EXT/log_osinit_notmp")" -eq $(( $(summary_value skipped "$EXT/log_osinit_ok") + 1 )) ]; then pass openspec-notmp-counts-skipped; else bad openspec-notmp-counts-skipped; fi
+ext_guard osinit-notmp "$EXT/log_osinit_notmp"
 
 # --help documents --no-confirm and keeps the test-only variable hidden.
 run_ext help "$EXT/log_help" --help
