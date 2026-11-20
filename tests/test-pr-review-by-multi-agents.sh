@@ -721,8 +721,8 @@ if [ "$rc" -eq 0 ] && [ "$out" = "env-dir-model" ]; then pass resolve-model-clau
 # $HOME's config must never affect this value ---
 
 out="$(resolve_model agy)"
-if [ "$out" = "gemini-3.8-flash-high" ]; then
-  pass "resolve_model agy 回傳 gemini-3.8-flash-high"
+if [ "$out" = "gemini-4-hydrogen-high" ]; then
+  pass "resolve_model agy 回傳 gemini-4-hydrogen-high"
 else
   bad "resolve_model agy 回傳 $out"
 fi
@@ -2500,6 +2500,17 @@ case "$(cat "$agy_start_argv")" in
   *"$LRI_WT"*) bad "launch-reviewer-interactive-agy-add-dir-excludes-worktree: $(cat "$agy_start_argv")" ;;
   *) pass launch-reviewer-interactive-agy-add-dir-excludes-worktree ;;
 esac
+# The --model value agy is launched with must be exactly the model
+# resolve_model agy discloses: both are hardcoded, so this pins them
+# together and catches either one drifting from the other.
+model_values=()
+for idx in "${!lri_agy_argv[@]}"; do
+  if [ "${lri_agy_argv[$idx]}" = "--model" ]; then
+    model_values+=("${lri_agy_argv[$((idx + 1))]:-}")
+  fi
+done
+lri_agy_disclosed_model="$(resolve_model agy)"
+if [ "${#model_values[@]}" -eq 1 ] && [ "${model_values[0]}" = "$lri_agy_disclosed_model" ] && [ "${model_values[0]}" = "gemini-4-hydrogen-high" ]; then pass launch-reviewer-interactive-agy-model-matches-resolve-model; else bad "launch-reviewer-interactive-agy-model-matches-resolve-model: argv=${model_values[*]:-<none>} disclosed=$lri_agy_disclosed_model"; fi
 # Task's own positive assertion: --dangerously-skip-permissions really is
 # on this branch's own argv (see launch_reviewer_interactive's own agy
 # case for why). launch_synthesis's own agy branch is asserted NOT to

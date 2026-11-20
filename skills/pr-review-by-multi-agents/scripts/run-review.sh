@@ -1447,15 +1447,16 @@ resolve_model() {
       fi
       ;;
     agy)
-      # agy exposes no way to read back its own default model -- `agy
-      # models` lists what is available without marking a default, the
-      # json output carries no model field, and nothing is recorded in
-      # its state files (all verified). The comment table this skill now
-      # posts requires a real platform/model value per finding, so agy is
-      # the one deliberate exception to this script's "never hardcode a
-      # model" rule. The `-high` suffix is agy's own encoding of reasoning
-      # effort, which is why launch_reviewer_interactive passes no --effort flag.
-      value="gemini-3.8-flash-high"
+      # agy is the one deliberate exception to this script's "never
+      # hardcode a model" rule: the user pinned agy reviews to Gemini 4
+      # Hydrogen at high thinking effort, independent of whatever model
+      # their own interactive agy session defaults to. The id comes from
+      # `agy models` (agy 1.5.13). It must match the --model value in
+      # launch_reviewer_interactive's agy branch, since this is what the
+      # disclosure section reports. The `-high` suffix is agy's own encoding
+      # of reasoning effort, which is why launch_reviewer_interactive passes
+      # no --effort flag.
+      value="gemini-4-hydrogen-high"
       ;;
     *)
       ;;
@@ -2992,7 +2993,7 @@ launch_reviewer_interactive() {
       # as a deliberate, user-directed tradeoff, not one independently
       # verified safe the way those two findings were.
       cmd=(herdr agent start "$agent_name" --kind agy --pane "$pane_id" \
-        -- --add-dir "$reviewer_workdir" --model gemini-3.8-flash-high \
+        -- --add-dir "$reviewer_workdir" --model gemini-4-hydrogen-high \
         --dangerously-skip-permissions)
       ;;
   esac
