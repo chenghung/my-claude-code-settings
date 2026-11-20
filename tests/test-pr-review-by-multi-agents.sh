@@ -721,8 +721,8 @@ if [ "$rc" -eq 0 ] && [ "$out" = "env-dir-model" ]; then pass resolve-model-clau
 # $HOME's config must never affect this value ---
 
 out="$(resolve_model agy)"
-if [ "$out" = "gemini-3.8-flash-high" ]; then
-  pass "resolve_model agy 回傳 gemini-3.8-flash-high"
+if [ "$out" = "gemini-4-hydrogen-high" ]; then
+  pass "resolve_model agy 回傳 gemini-4-hydrogen-high"
 else
   bad "resolve_model agy 回傳 $out"
 fi
