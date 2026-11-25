@@ -82,4 +82,16 @@ else
   printf 'SKIP compose-config-parses (docker compose not available)\n'
 fi
 
+# ---- platforms/claude/settings.json: permission + SessionStart hook ----
+CLAUDE_SETTINGS="$REPO/platforms/claude/settings.json"
+if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if 'mcp__graphiti__*' in d.get('permissions',{}).get('allow',[]) else 1)" "$CLAUDE_SETTINGS"; then pass claude-permissions-graphiti; else bad claude-permissions-graphiti; fi
+if python3 - "$CLAUDE_SETTINGS" <<'PY'; then pass claude-hook-sessionstart-graphiti; else bad claude-hook-sessionstart-graphiti; fi
+import json, sys
+
+want = "bash '/home/eddie/.claude/hooks/graphiti-memory-context.sh'"
+d = json.load(open(sys.argv[1]))
+hooks = [h for group in d.get("hooks", {}).get("SessionStart", []) for h in group.get("hooks", [])]
+sys.exit(0 if any(h.get("command") == want and h.get("type") == "command" and h.get("timeout") for h in hooks) else 1)
+PY
+
 exit $fail
