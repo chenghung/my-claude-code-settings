@@ -84,7 +84,15 @@ fi
 
 # ---- platforms/claude/settings.json: permission + SessionStart hook ----
 CLAUDE_SETTINGS="$REPO/platforms/claude/settings.json"
-if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if 'mcp__graphiti__*' in d.get('permissions',{}).get('allow',[]) else 1)" "$CLAUDE_SETTINGS"; then pass claude-permissions-graphiti; else bad claude-permissions-graphiti; fi
+if python3 - "$CLAUDE_SETTINGS" <<'PY'; then pass claude-permissions-graphiti; else bad claude-permissions-graphiti; fi
+import json, sys
+
+allow = json.load(open(sys.argv[1])).get("permissions", {}).get("allow", [])
+want = {"mcp__graphiti__" + t for t in ("add_memory", "search_nodes", "search_memory_facts", "get_episodes", "get_entity_edge", "get_episode_entities", "get_status")}
+graphiti = {a for a in allow if a.startswith("mcp__graphiti__")}
+# Exactly the non-destructive tools: no wildcard, no clear/delete tools.
+sys.exit(0 if graphiti == want else 1)
+PY
 if python3 - "$CLAUDE_SETTINGS" <<'PY'; then pass claude-hook-sessionstart-graphiti; else bad claude-hook-sessionstart-graphiti; fi
 import json, sys
 

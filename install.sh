@@ -391,7 +391,7 @@ register_graphiti_mcp() {
   if claude mcp get graphiti > /dev/null 2>&1; then
     printf '  OK       graphiti MCP server already registered (user scope)\n'
     count_ok=$(( count_ok + 1 ))
-  elif claude mcp add --transport http --scope user graphiti http://localhost:8000/mcp/; then
+  elif claude mcp add --transport http --scope user graphiti http://127.0.0.1:8000/mcp/; then
     printf '  CREATED  graphiti MCP server registered (user scope)\n'
     count_created=$(( count_created + 1 ))
   else
@@ -413,7 +413,7 @@ start_graphiti_server() {
 
   if ! command -v docker > /dev/null 2>&1 || [ ! -f "$env_file" ]; then
     printf '  NOTE     graphiti server not started (needs docker and %s).\n' "$env_file"
-    printf '           To start it: mkdir -p %s && cp %s %s\n' \
+    printf '           To start it: mkdir -p %s && install -m 600 %s %s\n' \
       "${env_file%/*}" "${REPO_DIR}/services/graphiti/.env.example" "$env_file"
     printf '           fill in the keys, then: docker compose -f %s up -d\n' "$compose_file"
     return

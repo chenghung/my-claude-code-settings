@@ -49,7 +49,7 @@ run_hook() {
   run run_hook "$BATS_TEST_TMPDIR"
   [ "$status" -eq 0 ]
   grep -qF -- '--max-time 1' "$CURL_STUB_LOG"
-  grep -qF -- 'http://localhost:8000/health' "$CURL_STUB_LOG"
+  grep -qF -- 'http://127.0.0.1:8000/health' "$CURL_STUB_LOG"
 }
 
 # shellcheck disable=SC2016 # backticks in the single-quoted patterns are literal Markdown

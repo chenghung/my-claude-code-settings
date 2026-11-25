@@ -65,7 +65,13 @@
       "mcp__context7__query-docs",
       "Skill(planning-with-files:*)",
       "mcp__codegraph__*",
-      "mcp__graphiti__*"
+      "mcp__graphiti__add_memory",
+      "mcp__graphiti__search_nodes",
+      "mcp__graphiti__search_memory_facts",
+      "mcp__graphiti__get_episodes",
+      "mcp__graphiti__get_entity_edge",
+      "mcp__graphiti__get_episode_entities",
+      "mcp__graphiti__get_status"
     ],
     "deny": [],
     "additionalDirectories": [

@@ -154,7 +154,7 @@ CLAUDE_STUB_LOG="$T/claude-stub-notreg.log"
 # shellcheck disable=SC2030  # PATH/CLAUDE_MCP_GET_EXIT are deliberately modified only inside this subshell (same idiom as run_settings_deploy below)
 ( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=1; "$REPO/install.sh" --claude --no-external > "$T/log_claude_notreg" 2>&1 )
 if grep -qxF 'mcp add codegraph --scope user -- codegraph serve --mcp' "$CLAUDE_STUB_LOG"; then pass codegraph-mcp-registers-when-absent; else bad codegraph-mcp-registers-when-absent; fi
-if grep -qxF 'mcp add --transport http --scope user graphiti http://localhost:8000/mcp/' "$CLAUDE_STUB_LOG"; then pass graphiti-mcp-registers-when-absent; else bad graphiti-mcp-registers-when-absent; fi
+if grep -qxF 'mcp add --transport http --scope user graphiti http://127.0.0.1:8000/mcp/' "$CLAUDE_STUB_LOG"; then pass graphiti-mcp-registers-when-absent; else bad graphiti-mcp-registers-when-absent; fi
 
 # Scenario B: codegraph already registered (mcp get exits 0) -> install.sh
 # must NOT call `claude mcp add` at all.

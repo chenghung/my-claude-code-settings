@@ -17,7 +17,7 @@ set -uo pipefail
 
 input="$(cat 2>/dev/null || true)"
 
-curl -fsS --max-time 1 http://localhost:8000/health > /dev/null 2>&1 || exit 0
+curl -fsS --max-time 1 http://127.0.0.1:8000/health > /dev/null 2>&1 || exit 0
 
 cwd=""
 if command -v jq > /dev/null 2>&1; then
