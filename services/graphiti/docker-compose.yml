@@ -1,0 +1,28 @@
+# Graphiti MCP server + FalkorDB in one container (official image), used by
+# Claude Code as long-term memory. install.sh runs
+#   docker compose -f services/graphiti/docker-compose.yml up -d
+# when docker is installed and ~/.config/graphiti/.env exists (copy it from
+# .env.example next to this file and fill in the keys).
+# MCP endpoint: http://localhost:8000/mcp/  Health: http://localhost:8000/health
+# The server has no authentication, so only port 8000 is published, and only
+# on 127.0.0.1. FalkorDB (6379) and its browser UI (3000) stay inside.
+name: graphiti
+
+services:
+  graphiti:
+    image: zepai/knowledge-graph-mcp:1.1.5-graphiti-0.32.1
+    restart: unless-stopped
+    env_file:
+      - path: ~/.config/graphiti/.env
+        required: true
+    environment:
+      - SEMAPHORE_LIMIT=5
+      - BROWSER=0
+    volumes:
+      - ./config.yaml:/app/mcp/config/config.yaml:ro
+      - falkordb_data:/var/lib/falkordb/data
+    ports:
+      - "127.0.0.1:8000:8000"
+
+volumes:
+  falkordb_data:
