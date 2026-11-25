@@ -9475,10 +9475,11 @@ test_reviewer_contract_slim_structure() {
   local contract="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
   local ok=1
 
-  # 契約整體大小上限：刻意壓緊的護欄，防止契約再度膨脹；目前上限 16512
+  # 契約整體大小上限：刻意壓緊的護欄，防止契約再度膨脹；目前上限 17057
   # bytes（2026-11-16 為覆蓋範圍段調高，同日再為「發布」那道指令要單獨執行
-  # 調高），要加內容就得先刪等量的字，或經設計討論後調高
-  local max_bytes=16512
+  # 調高，2026-11-25 為可維護性與設計的 deep module 判準調高），要加內容
+  # 就得先刪等量的字，或經設計討論後調高
+  local max_bytes=17057
   local size
   size=$(wc -c < "$contract")
   if [ "$size" -gt "$max_bytes" ]; then
