@@ -126,9 +126,11 @@ readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 # against large PRs and become a guard against the contract itself growing
 # further.
 #
-# Measured 2026-11-16 by calling build_prompt against the current contract:
-# contract 16380 bytes, coordinates block 596, prompt 16976 -- 17.0% of this
-# limit, 83024 bytes of headroom (15801, 15.8%, right after the 2026-09-23
+# Measured 2026-11-25 by calling build_prompt against the current contract:
+# contract 17260 bytes, coordinates block 580, prompt 17840 -- 17.8% of this
+# limit, 82160 bytes of headroom (16976, 17.0%, measured 2026-11-16 against
+# a 16380-byte contract that grew to 16488 the same day without a
+# re-measure; 15801, 15.8%, right after the 2026-09-23
 # slimming, before the coverage-table rules). Three earlier readings, all
 # real, show why
 # this comment cannot be trusted on its own: an undated ~96018 from a shorter
@@ -1103,6 +1105,31 @@ resolve_contract_path() {
   printf '%s\n' "$contract_path"
 }
 
+# resolve_codebase_design_dir
+#
+# Prints the real (symlink-resolved) path of the installed codebase-design
+# skill and returns 0; prints the reason to stderr, prints nothing to
+# stdout and returns 1 when it is not there. The source is fixed at
+# $HOME/.agents/skills/codebase-design -- the same place the other skills
+# of this repo are deployed to -- and "there" means the resolved directory
+# holds a SKILL.md. The reviewer contract has every reviewer load that
+# skill through its own CLI's native skill mechanism before it starts and
+# abort when it cannot, so a run without it has no review standard to hand
+# any reviewer, the same way a missing contract file does (see
+# resolve_contract_path); no fallback of any kind. Read-only: touches
+# nothing, which is what lets cmd_prepare call it before its first write.
+resolve_codebase_design_dir() {
+  local link="$HOME/.agents/skills/codebase-design" real=""
+
+  real="$(readlink -f "$link" 2>/dev/null)" || real=""
+  if [ -z "$real" ] || [ ! -f "$real/SKILL.md" ]; then
+    printf 'resolve_codebase_design_dir: codebase-design skill not found: expected a directory with SKILL.md at %s\n' "$link" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$real"
+}
+
 
 # _origin_matches_owner_repo <origin_url> <owner> <repo>
 #
@@ -1701,6 +1728,75 @@ unset _rr_v _rr_keep
 ZRC
 }
 
+# _install_codebase_design_skill <dir> <skills_rel>
+#
+# Copies the installed codebase-design skill (see resolve_codebase_design_dir
+# for where it comes from) into <dir>/<skills_rel>/codebase-design, the
+# native skill directory of the CLI this <dir> is the isolated HOME of.
+# Returns 1, with the reason on stderr, when the source is missing or any
+# step fails; a half-copied destination is removed rather than left behind.
+#
+# A copy, not a symlink: the isolated HOME exists so nothing a reviewer
+# writes there can reach the user's real files, and a symlinked skill
+# directory would hand it a write path straight into the real one. For the
+# same reason the copy dereferences symlinks inside the skill tree (cp -L),
+# and every directory from <dir> down to the destination is created here
+# as a real directory or, if it already exists as a symlink, refused --
+# _write_opencode_home_interactive symlinks four of the user's real
+# directories into its HOME, and writing through any such link would put
+# the skill into (or delete from) the real tree. Idempotent: the
+# destination is removed and recreated on every call, so a rewrite leaves
+# no stale file of an older skill version behind. That removal is
+# `rm -rf` on a path this function built itself under <dir>; if the
+# destination is a symlink it removes the link only, never its target.
+# The copy is made owner-writable (cp keeps the source's read-only modes,
+# which would stop that removal on the next call); a leftover read-only
+# copy is made writable before it is removed, and so is a half-copied one.
+_install_codebase_design_skill() {
+  local dir="$1" skills_rel="$2"
+  local src part cur dest
+  local -a parts=()
+
+  src="$(resolve_codebase_design_dir)" || return 1
+
+  # Walk <skills_rel> one component at a time: refuse a symlinked
+  # component, create a missing one as a real directory.
+  cur="$dir"
+  IFS=/ read -r -a parts <<< "$skills_rel"
+  for part in "${parts[@]}"; do
+    cur="$cur/$part"
+    if [ -L "$cur" ]; then
+      printf '_install_codebase_design_skill: refusing to write through a symlink: %s\n' "$cur" >&2
+      return 1
+    fi
+    if [ ! -d "$cur" ]; then
+      mkdir "$cur" || return 1
+    fi
+  done
+
+  dest="$cur/codebase-design"
+  # A leftover copy may be read-only (a reviewer or a run interrupted before
+  # the chmod below can leave one): rm -rf cannot remove entries from a
+  # directory it may not write to, so make it writable first.
+  # Skipped for a symlink, where chmod would act on the link's target.
+  if [ -d "$dest" ] && [ ! -L "$dest" ]; then
+    chmod -R u+rwX "$dest" 2>/dev/null || true
+  fi
+  rm -rf "$dest" || return 1
+  # chmod -R u+rwX after the cp: the source tree of an installed skill can
+  # hold 0555 directories and 0444 files, which cp reproduces; left as they
+  # are, the next rewrite's rm -rf (and the failure cleanup below) could not
+  # delete them. The copy is this HOME's own, so owner-writable is right.
+  if ! mkdir "$dest" || ! cp -RL "$src/." "$dest/" || ! chmod -R u+rwX "$dest"; then
+    printf '_install_codebase_design_skill: failed to copy %s to %s\n' "$src" "$dest" >&2
+    # Same reason as above: cp may already have written read-only entries
+    # into the half-copied tree before it failed, so the chmod above never ran.
+    chmod -R u+rwX "$dest" 2>/dev/null || true
+    rm -rf "$dest"
+    return 1
+  fi
+}
+
 # _write_claude_home_interactive <dir> <reviewer_workdir> <pr_url>
 #
 # Builds an isolated HOME directory for one claude reviewer process
@@ -1865,6 +1961,8 @@ _write_claude_home_interactive() {
   mkdir -p "$dir/.config" || return 1
   ln -sfn "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
+  # codebase-design into claude's native skill directory.
+  _install_codebase_design_skill "$dir" .claude/skills || return 1
 }
 
 # _write_codex_home_interactive <dir> <reviewer_workdir> <pr_url>
@@ -2072,6 +2170,8 @@ _write_codex_home_interactive() {
   mkdir -p "$dir/.config" || return 1
   ln -sfn "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
+  # codebase-design into codex's native skill directory.
+  _install_codebase_design_skill "$dir" .agents/skills || return 1
 }
 
 # _write_opencode_home_interactive <dir>
@@ -2139,6 +2239,8 @@ _write_opencode_home_interactive() {
   done
 
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
+  # codebase-design into opencode's skill directory; .agents is not one of the four directories linked in above, so this never writes through a link.
+  _install_codebase_design_skill "$dir" .agents/skills || return 1
 }
 
 # _write_opencode_permission_config_interactive <path>
@@ -2349,6 +2451,8 @@ _write_agy_home_interactive() {
   ln -sfn "${GH_CONFIG_DIR:-$HOME/.config/gh}" "$dir/.config/gh" || return 1
 
   _write_env_scrubbing_zshrc "$dir/.zshrc" || return 1
+  # codebase-design into agy's native skill directory (.gemini itself is a real directory here; only individual files under it are linked).
+  _install_codebase_design_skill "$dir" .gemini/config/skills || return 1
 }
 
 # _derive_agent_name <cli_name> <pane_id>
@@ -4628,8 +4732,9 @@ _dispatch_failed_cleanup() {
 # per-cli loop), then
 # build and write each selected reviewer's own prompt file and write
 # .roster. Every hard precondition (gh missing/not authenticated, PR not
-# found, contract file missing, base ref unresolvable, worktree creation
-# failing, a built prompt exceeding PROMPT_BYTE_LIMIT) exits 1 -- see each
+# found, contract file missing, codebase-design skill missing, base ref
+# unresolvable, worktree creation failing, a built prompt exceeding
+# PROMPT_BYTE_LIMIT) exits 1 -- see each
 # called function's own docstring for what it reports on failure. Two other
 # exit codes are reserved for earlier,
 # cheaper rejections: parse_args itself exits 2 on a usage error (unknown
@@ -4690,6 +4795,15 @@ cmd_prepare() {
   check_prerequisites "$owner" "$repo" "$number" || exit 1
 
   contract_path="$(resolve_contract_path)" || exit 1
+
+  # Same position and same reason as the contract check above: every
+  # reviewer must load codebase-design before it starts (see the reviewer
+  # contract), and a missing install is detectable now with zero side
+  # effects -- before _check_origin_matches, resolve_base_ref's fetch, the
+  # branch and the worktree below -- so a run that cannot succeed fails
+  # with nothing touched. Only checked here; _install_codebase_design_skill
+  # does the copy later, at launch.
+  resolve_codebase_design_dir >/dev/null || exit 1
 
   # Must run before resolve_base_ref: that function's own `git fetch`
   # mutates a remote-tracking ref, and doing that before confirming the
@@ -5331,7 +5445,8 @@ _confirm_reviewers_working() {
 # named cli prepare never selected; verify_selection exits 3 on a platform
 # that isn't on PATH, the same convention cmd_prepare's own call to it
 # uses -- see the comment on that second call below for why cmd_prepare's
-# own check is not enough to rely on here.
+# own check is not enough to rely on here. The codebase-design skill gets
+# the same second look, for the same reason, and exits 1 when it is gone.
 cmd_launch() {
   local base_dir="" logs_dir summary_file worktree_dir pr_url
   local cli parsed parsed_line agent_pair
@@ -5436,6 +5551,18 @@ cmd_launch() {
       "$logs_dir/.dispatched-at" >&2
     exit 2
   fi
+
+  # The copy of codebase-design into each reviewer's HOME happens inside
+  # launch_reviewer_interactive, one reviewer at a time, so a source that
+  # vanished after prepare's own check would otherwise surface on the
+  # second reviewer, after the first is already running. Checked here,
+  # before the dispatch time is written and before the first dispatch, with
+  # nothing cleaned up (same as verify_selection above): the run directory
+  # stays valid for a retry once the skill is back. It sits after the re-run
+  # guard on purpose: a run directory that was already dispatched must keep
+  # getting that guard's exit 2 (a usage error) whether or not the skill is
+  # still installed, not this check's exit 1.
+  resolve_codebase_design_dir >/dev/null || exit 1
 
   # Treated as fatal, and checked before the loop: no reviewer has been
   # dispatched yet, so a failure here is cleaned up the same way a first-

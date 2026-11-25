@@ -38,6 +38,31 @@ mkdir -p "$STUB_BIN" "$EMPTY_BIN"
 saved_path="$PATH"
 
 # ------------------------------------------------------------
+# make_fake_codebase_design_home <home>
+#
+# run-review.sh 要求 $HOME/.agents/skills/codebase-design（含 SKILL.md）存
+# 在，並把它整份複製進各家隔離 HOME。本檔絕不讀也不寫執行者真實 HOME 底下
+# 的那一份（CI 上也根本沒有）：每個會走到該檢查或複製的測試，都在自己的假
+# HOME 底下用這個函式建一份假的。內容刻意含 SKILL.md、同層檔案與子目錄檔
+# 案（agents/openai.yaml，比照真實安裝），讓「整個目錄遞迴複製」可被斷言。
+# ------------------------------------------------------------
+make_fake_codebase_design_home() {
+  local d="$1/.agents/skills/codebase-design"
+  mkdir -p "$d/agents"
+  printf 'fake SKILL.md\n' > "$d/SKILL.md"
+  printf 'fake DEEPENING.md\n' > "$d/DEEPENING.md"
+  printf 'fake openai.yaml\n' > "$d/agents/openai.yaml"
+}
+
+# 整個測試行程改跑在這個帶假 codebase-design 的假 HOME 上：直接在行程內
+# 呼叫 _write_*_home_interactive 與 launch_reviewer_interactive 的區塊都會走到
+# 該檢查，而執行者真實 HOME 裡有沒有那份 skill 不該左右結果（run-checks.sh 與
+# CI 本來就以全空的 HOME 執行）。以子行程跑的 e2e 區塊自己另帶 HOME=。
+CD_FAKE_HOME="$T/codebase-design-fake-home"
+make_fake_codebase_design_home "$CD_FAKE_HOME"
+HOME="$CD_FAKE_HOME"
+
+# ------------------------------------------------------------
 # assert_cli_stub_only: PATH-leak guard.
 #
 # Every end-to-end section below builds PATH by prepending a stub directory
@@ -1476,14 +1501,14 @@ if [ "$snap1" != "$snap4" ]; then pass git-status-snapshot-detects-commit-with-c
 # ==============================================================
 # _write_agy_home
 #
-# Uses the real $HOME (not an isolated fixture, unlike resolve_model's
-# codex/opencode/claude cases above): this function's whole job is to read
-# a slice of the real ~/.gemini and rebuild an isolated copy elsewhere, so
-# it has nothing to build from without it. Only credential files get
-# symlinked (never copied -- see the function's own docstring), and only
-# one field (.security.auth.selectedType) is ever read out of the real
-# settings.json, so nothing sensitive from a real config crosses into the
-# assertions below.
+# Runs under the fake HOME this file switched to near its top
+# (CD_FAKE_HOME), not the runner's real $HOME: that HOME holds only a fake
+# codebase-design skill and no ~/.gemini at all, so the function has no
+# credential file or settings.json to read here. What this block covers is
+# therefore only what it writes when nothing is there to carry over (the
+# permission rule and the absence of mcpServers); linking the credential
+# files and reading .security.auth.selectedType out of a real ~/.gemini
+# are not exercised by it.
 # ==============================================================
 
 agy_home="$T/agy-home"
@@ -1703,9 +1728,10 @@ fi
 # 受控的假 HOME：_write_codex_home_interactive 會經 resolve_model codex 讀
 # $HOME/.codex/config.toml 的頂層 model，並用 $HOME/.codex/auth.json 建
 # 符號連結；整個區塊因此改跑在 fixture HOME 上，不碰執行者真實的 codex 設定。
-codex_real_home_i="$HOME"
+codex_prev_home_i="$HOME"
 codex_fake_home_i="$T/codex-fake-home-with-model"
 mkdir -p "$codex_fake_home_i/.codex"
+make_fake_codebase_design_home "$codex_fake_home_i"
 cat > "$codex_fake_home_i/.codex/config.toml" <<'TOML'
 personality = "friendly"
 model = "fixture-model-x"
@@ -1751,10 +1777,13 @@ mkdir -p "$codex_nomodel_home_i/.codex"
 printf 'personality = "friendly"\n\n[projects."/x"]\nmodel = "not-top-level"\n' > "$codex_nomodel_home_i/.codex/config.toml"
 codex_nocfg_home_i="$T/codex-fake-home-no-config"
 mkdir -p "$codex_nocfg_home_i"
+make_fake_codebase_design_home "$codex_nocfg_home_i"
+make_fake_codebase_design_home "$codex_nomodel_home_i"
 # 真實 config 頂層值就是字面 unknown-model（resolve_model 的未知標記）：不寫 model 行。
 codex_unkmodel_home_i="$T/codex-fake-home-unknown-model"
 mkdir -p "$codex_unkmodel_home_i/.codex"
 printf 'model = "unknown-model"\n' > "$codex_unkmodel_home_i/.codex/config.toml"
+make_fake_codebase_design_home "$codex_unkmodel_home_i"
 expected_cct_plain="$(printf '[projects."%s"]\ntrust_level = "trusted"\n' "$codex_workdir_i")"
 for codex_variant_i in nomodel nocfg unkmodel; do
   case "$codex_variant_i" in
@@ -1822,8 +1851,8 @@ if [ ! -f "$codex_home_bad_i/.codex/rules/default.rules" ]; then pass "_write_co
 else bad "_write_codex_home_interactive pr_url 格式不符時仍寫出了 default.rules: $(cat "$codex_home_bad_i/.codex/rules/default.rules" 2>/dev/null)"
 fi
 
-# 還原真實 HOME，後續區塊照舊。
-HOME="$codex_real_home_i"
+# 還原進入本區塊前的 HOME（檔首設的假 HOME，不是執行者真實的 HOME），後續區塊照舊。
+HOME="$codex_prev_home_i"
 
 # ==============================================================
 # _write_opencode_home_interactive
@@ -2865,6 +2894,7 @@ F4_ROOT="$T/launch-pr-url-snapshot-fixture"
 _make_worktree_fixture "$F4_ROOT" >/dev/null
 F4_HOME="$F4_ROOT/home"
 mkdir -p "$F4_HOME/.claude" "$F4_HOME/.config/gh" "$F4_HOME/.codex"
+make_fake_codebase_design_home "$F4_HOME"
 F4_LOGS="$F4_ROOT/logs"
 mkdir -p "$F4_LOGS"
 printf 'claude review prompt\n' > "$F4_LOGS/claude.prompt"
@@ -2982,6 +3012,7 @@ F5_ROOT="$T/launch-dispatched-at-write-fail-fixture"
 _make_worktree_fixture "$F5_ROOT" >/dev/null
 F5_HOME="$F5_ROOT/home"
 mkdir -p "$F5_HOME/.claude" "$F5_HOME/.config/gh" "$F5_HOME/.codex"
+make_fake_codebase_design_home "$F5_HOME"
 mkdir -p "$F5_ROOT/logs"
 printf 'claude review prompt\n' > "$F5_ROOT/logs/claude.prompt"
 chmod a-w "$F5_ROOT/logs"
@@ -3006,29 +3037,81 @@ fi
 # 次 launch 之後它在唯讀的 logs 裡）。必須以結束碼 2 拒絕，且不得呼叫任何
 # 清理 -- 否則寫入 EACCES 會走致命路徑，把仍有 reviewer 在跑的 worktree
 # 強制移除。worktree 要還在，也不得派出任何 reviewer。
-F6_ROOT="$T/launch-rerun-guard-fixture"
-_make_worktree_fixture "$F6_ROOT" >/dev/null
-F6_HOME="$F6_ROOT/home"
-mkdir -p "$F6_HOME/.claude" "$F6_HOME/.config/gh" "$F6_HOME/.codex"
-mkdir -p "$F6_ROOT/logs"
-printf 'claude review prompt\n' > "$F6_ROOT/logs/claude.prompt"
-printf '1700000000\n' > "$F6_ROOT/logs/.dispatched-at"
-chmod -R a-w "$F6_ROOT/logs"
-mkdir -p "$F6_ROOT/reviewers/claude/workdir" "$F6_ROOT/reviewers/claude/home"
-printf 'claude some-model dispatched\n' > "$F6_ROOT/.roster"
-printf '%s\n' "$F6_ROOT/work" > "$F6_ROOT/.repo-path"
-if F6_OUT="$(HOME="$F6_HOME" PATH="$F4_STUB_BIN:$saved_path" HERDR_ENV=1 \
-  bash "$RUN_SH" launch --base-dir "$F6_ROOT" --agent claude=f6-pane-claude 2>&1)"; then
-  F6_RC=0
+F6_ROOT_BASE="$T/launch-rerun-guard-fixture"
+# 兩種情況都要守住：codebase-design 在、以及 prepare 之後被移除。後者是
+# cmd_launch 的 codebase-design 檢查必須排在這道防護「之後」的原因：防護
+# 先擋才會是 2（用法錯誤：這個執行目錄已派送過），檢查若搶先就變成 1。
+for F6_VARIANT in skill-present skill-absent; do
+  F6_ROOT="$F6_ROOT_BASE-$F6_VARIANT"
+  _make_worktree_fixture "$F6_ROOT" >/dev/null
+  F6_HOME="$F6_ROOT/home"
+  mkdir -p "$F6_HOME/.claude" "$F6_HOME/.config/gh" "$F6_HOME/.codex"
+  if [ "$F6_VARIANT" = skill-present ]; then make_fake_codebase_design_home "$F6_HOME"; fi
+  mkdir -p "$F6_ROOT/logs"
+  printf 'claude review prompt\n' > "$F6_ROOT/logs/claude.prompt"
+  printf '1700000000\n' > "$F6_ROOT/logs/.dispatched-at"
+  chmod -R a-w "$F6_ROOT/logs"
+  mkdir -p "$F6_ROOT/reviewers/claude/workdir" "$F6_ROOT/reviewers/claude/home"
+  printf 'claude some-model dispatched\n' > "$F6_ROOT/.roster"
+  printf '%s\n' "$F6_ROOT/work" > "$F6_ROOT/.repo-path"
+  if F6_OUT="$(HOME="$F6_HOME" PATH="$F4_STUB_BIN:$saved_path" HERDR_ENV=1 \
+    bash "$RUN_SH" launch --base-dir "$F6_ROOT" --agent claude=f6-pane-claude 2>&1)"; then
+    F6_RC=0
+  else
+    F6_RC=$?
+  fi
+  chmod -R u+w "$F6_ROOT/logs" 2>/dev/null || true
+  if [ "$F6_RC" -eq 2 ] && [[ "$F6_OUT" == *'.dispatched-at'* ]] && [[ "$F6_OUT" != *'dispatch failed'* ]] \
+    && [[ "$F6_OUT" != *'codebase-design'* ]]; then pass "cmd_launch 對已派出過的執行目錄（.dispatched-at 已存在，$F6_VARIANT）以結束碼 2 拒絕，不走致命清理，也不先被 codebase-design 檢查擋成 1"
+  else bad "cmd_launch 重跑防護處置不正確（$F6_VARIANT）: rc=$F6_RC out='$F6_OUT'"
+  fi
+  if [ -d "$F6_ROOT/worktree" ] && [ ! -e "$F6_ROOT/.pane-claude" ]; then pass "cmd_launch 重跑防護拒絕後 worktree 仍在，且沒有派出任何 reviewer（$F6_VARIANT）"
+  else bad "cmd_launch 重跑防護拒絕後 worktree 被動到或有 reviewer 被派出（$F6_VARIANT）"
+  fi
+done
+
+# prepare 之後 codebase-design 消失：cmd_launch 必須在派出任何 reviewer 之前
+# 以結束碼 1 失敗。若只靠各 reviewer 建 HOME 時的複製，錯誤會落在第二個
+# reviewer、第一個已經在跑之後。兩個 reviewer 都點名，斷言一個 .pane-* 與
+# .dispatched-at 都沒寫，worktree 仍在（與 verify_selection 失敗同樣不清理，
+# 補回 skill 後同一個執行目錄還能重跑），herdr 一次都沒被呼叫。
+G_ROOT="$T/launch-codebase-design-missing-fixture"
+_make_worktree_fixture "$G_ROOT" >/dev/null
+G_HOME="$G_ROOT/home"
+mkdir -p "$G_HOME/.claude" "$G_HOME/.config/gh" "$G_HOME/.codex"
+mkdir -p "$G_ROOT/logs" "$G_ROOT/reviewers/claude/workdir" "$G_ROOT/reviewers/claude/home" \
+  "$G_ROOT/reviewers/codex/workdir" "$G_ROOT/reviewers/codex/home"
+printf 'claude review prompt\n' > "$G_ROOT/logs/claude.prompt"
+printf 'codex review prompt\n' > "$G_ROOT/logs/codex.prompt"
+printf 'claude some-model dispatched\ncodex some-model dispatched\n' > "$G_ROOT/.roster"
+printf 'https://github.com/g-owner/g-repo/pull/1\n' > "$G_ROOT/.pr-url"
+G_STUB_BIN="$T/g-stub-bin"
+G_HERDR_LEAK_RECORD="$T/g-herdr-leak"
+rm -f "$G_HERDR_LEAK_RECORD"
+mkdir -p "$G_STUB_BIN"
+for g_cli in claude codex; do
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$G_STUB_BIN/$g_cli"
+  chmod +x "$G_STUB_BIN/$g_cli"
+done
+printf '#!/usr/bin/env bash\nexit 1\n' > "$G_STUB_BIN/gh"
+printf '#!/usr/bin/env bash\n: >> "%s"\nexit 0\n' "$G_HERDR_LEAK_RECORD" > "$G_STUB_BIN/herdr"
+chmod +x "$G_STUB_BIN/gh" "$G_STUB_BIN/herdr"
+assert_cli_stub_only "$G_STUB_BIN:$saved_path" "$G_STUB_BIN" claude codex gh herdr
+if G_OUT="$(HOME="$G_HOME" PATH="$G_STUB_BIN:$saved_path" HERDR_ENV=1 \
+  bash "$RUN_SH" launch --base-dir "$G_ROOT" \
+    --agent claude=g-pane-claude --agent codex=g-pane-codex 2>&1)"; then
+  G_RC=0
 else
-  F6_RC=$?
+  G_RC=$?
 fi
-chmod -R u+w "$F6_ROOT/logs" 2>/dev/null || true
-if [ "$F6_RC" -eq 2 ] && [[ "$F6_OUT" == *'.dispatched-at'* ]] && [[ "$F6_OUT" != *'dispatch failed'* ]]; then pass "cmd_launch 對已派出過的執行目錄（.dispatched-at 已存在）以結束碼 2 拒絕，不走致命清理"
-else bad "cmd_launch 重跑防護處置不正確: rc=$F6_RC out='$F6_OUT'"
+if [ "$G_RC" -eq 1 ] && [[ "$G_OUT" == *'codebase-design'* ]] && [[ "$G_OUT" == *"$G_HOME/.agents/skills/codebase-design"* ]]; then
+  pass "cmd_launch 在 codebase-design 消失時以結束碼 1 失敗，訊息點名 codebase-design 與預期路徑"
+else bad "cmd_launch 在 codebase-design 消失時處置不正確: rc=$G_RC out='$G_OUT'"
 fi
-if [ -d "$F6_ROOT/worktree" ] && [ ! -e "$F6_ROOT/.pane-claude" ]; then pass "cmd_launch 重跑防護拒絕後 worktree 仍在，且沒有派出任何 reviewer"
-else bad "cmd_launch 重跑防護拒絕後 worktree 被動到或有 reviewer 被派出"
+if [ ! -e "$G_ROOT/.pane-claude" ] && [ ! -e "$G_ROOT/.pane-codex" ] && [ ! -e "$G_ROOT/logs/.dispatched-at" ] \
+  && [ ! -f "$G_HERDR_LEAK_RECORD" ] && [ -d "$G_ROOT/worktree" ]; then
+  pass "cmd_launch 在 codebase-design 消失時沒有派出任何 reviewer、herdr 沒被呼叫、worktree 仍在"
+else bad "cmd_launch 在 codebase-design 消失時仍有副作用"
 fi
 
 # 佐證：.pr-url 這時已經確實變成改寫後的值，證明竄改真的發生過 -- 不是
@@ -3050,6 +3133,17 @@ if [ -f "$F4_RULES" ] \
 else
   bad "cmd_launch 沒有鎖住改寫前的網址，codex 規則變成: $(cat "$F4_RULES" 2>/dev/null)"
 fi
+
+# 派送成功時，codebase-design 要以實體目錄（含子目錄檔案）複製進各家隔離
+# HOME 的原生 skill 目錄：claude 在 .claude/skills，codex 在 .agents/skills。
+for f4_pair in claude:.claude/skills codex:.agents/skills; do
+  f4_skill="$F4_ROOT/reviewers/${f4_pair%%:*}/home/${f4_pair#*:}/codebase-design"
+  if [ -d "$f4_skill" ] && [ ! -L "$f4_skill" ] && [ -f "$f4_skill/SKILL.md" ] && [ -f "$f4_skill/agents/openai.yaml" ]; then
+    pass "cmd_launch 把 codebase-design 複製進 ${f4_pair%%:*} 的隔離 HOME"
+  else
+    bad "cmd_launch 沒有把 codebase-design 複製進 ${f4_pair%%:*} 的隔離 HOME: $f4_skill"
+  fi
+done
 
 # ==============================================================
 # _reap_stale_run_dirs
@@ -4355,6 +4449,9 @@ git init -q -b main "$ORIGIN_ORDER_FIXTURE/work"
   git update-ref -d refs/remotes/origin/origin-order-base-branch
 )
 
+# 假 HOME 帶假 codebase-design：否則這次執行會先被新檢查擋下，下面兩條斷言
+# 就空洞通過，不再證明 origin 檢查排在 fetch 之前。
+make_fake_codebase_design_home "$T/origin-order-home"
 assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
 if out="$(cd "$ORIGIN_ORDER_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="origin-order-base-branch" \
   HOME="$T/origin-order-home" PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 \
@@ -4633,6 +4730,7 @@ git init -q -b main "$CMDPFAIL_FIXTURE/work"
 
 CMDPFAIL_HOME="$T/cmd-prepare-chmod-fail-home"
 mkdir -p "$CMDPFAIL_HOME"
+make_fake_codebase_design_home "$CMDPFAIL_HOME"
 cmdpfail_rc=0
 (
   cd "$CMDPFAIL_FIXTURE/work"
@@ -4831,6 +4929,7 @@ git init -q -b main "$E2E_FIXTURE/work"
 )
 
 E2E_HOME="$T/main-e2e-home"
+make_fake_codebase_design_home "$E2E_HOME"
 mkdir -p "$E2E_HOME/.codex"
 printf 'model = "e2e-distinctive-model"\n' > "$E2E_HOME/.codex/config.toml"
 
@@ -5156,6 +5255,7 @@ if [ ! -e "$E2E_WORKTREE_DIR" ]; then pass main-e2e-worktree-removed-after-compl
 # were never there to copy, and must not invent empty ones either. ---
 
 E2E_HOME2="$T/main-e2e-home2"
+make_fake_codebase_design_home "$E2E_HOME2"
 assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy herdr
 if out="$(cd "$E2E_FIXTURE/work" \
   && CLAUDE_CONFIG_DIR="" GH_STUB_DERIVE_OK=1 GH_STUB_DERIVED_URL="https://github.com/acme9pr/widgets9pr/pull/321" \
@@ -5338,6 +5438,7 @@ STUB
 chmod +x "$CHMODE2E_STUB_BIN/herdr"
 
 CHMODE2E_HOME="$T/chmod-e2e-home"
+make_fake_codebase_design_home "$CHMODE2E_HOME"
 # agy is deliberately absent from CHMODE2E_STUB_BIN (this run never passes
 # --agy), so only the four names it actually provides are checked.
 assert_cli_stub_only "$CHMODE2E_STUB_BIN:$saved_path" "$CHMODE2E_STUB_BIN" claude codex opencode herdr
@@ -5481,6 +5582,7 @@ git init -q -b main "$VERIFY3_FIXTURE/work"
 )
 
 VERIFY3_HOME="$T/verify3-home"
+make_fake_codebase_design_home "$VERIFY3_HOME"
 assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
 if out="$(cd "$VERIFY3_FIXTURE/work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME=main HOME="$VERIFY3_HOME" PATH="$STUB_BIN:$saved_path" HERDR_ENV=1 \
   bash "$RUN_SH" prepare --pr "https://github.com/acme/widgets/pull/91" --claude --codex 2>&1)"; then
@@ -5607,6 +5709,7 @@ git init -q -b main "$OVERSIZED_ROOT/work"
 )
 
 OVERSIZED_HOME="$T/oversized-prompt-home"
+make_fake_codebase_design_home "$OVERSIZED_HOME"
 mkdir -p "$OVERSIZED_HOME"
 
 assert_cli_stub_only "$STUB_BIN:$saved_path" "$STUB_BIN" claude codex opencode agy
@@ -9020,6 +9123,7 @@ git init -q -b main "$RUNORDER_ROOT/work"
 )
 
 RUNORDER_HOME="$T/run-order-guarantee-home"
+make_fake_codebase_design_home "$RUNORDER_HOME"
 mkdir -p "$RUNORDER_HOME"
 
 RUNORDER_HERDR_LEAK_RECORD="$T/run-order-guarantee-herdr-leak"
@@ -9093,6 +9197,7 @@ git init -q -b main "$WFRUN_ROOT/work"
 )
 
 WFRUN_HOME="$T/write-failure-run-home"
+make_fake_codebase_design_home "$WFRUN_HOME"
 mkdir -p "$WFRUN_HOME"
 # $HOME/.tmp 存在但是個普通檔案而非目錄 -- base_dir/logs_dir 的祖先路徑
 # 因此無法被 mkdir -p 建立，正是 cmd_prepare() 第一個裸寫入會踩到的失敗。
@@ -9203,6 +9308,7 @@ git init -q -b main "$RSTR_ROOT/work"
 )
 
 RSTR_HOME="$T/roster-append-fatal-home"
+make_fake_codebase_design_home "$RSTR_HOME"
 mkdir -p "$RSTR_HOME"
 # cmd_prepare() 自己的公式：base_dir="$HOME/.tmp/$repo-pr-$number/..." --
 # 上層這段從 owner/repo/number 就能算出來，下面的 busy-poll 只需要盯著
@@ -9322,6 +9428,7 @@ git init -q -b main "$RUNE2E_ROOT/work"
 )
 
 RUNE2E_HOME="$T/run-e2e-home"
+make_fake_codebase_design_home "$RUNE2E_HOME"
 mkdir -p "$RUNE2E_HOME"
 
 # herdr 替身同時扮演兩種角色：_build_reviewer_panes 要用的 tab create /
@@ -9475,10 +9582,11 @@ test_reviewer_contract_slim_structure() {
   local contract="$REPO/skills/pr-review-by-multi-agents/references/reviewer-contract.md"
   local ok=1
 
-  # 契約整體大小上限：刻意壓緊的護欄，防止契約再度膨脹；目前上限 16512
+  # 契約整體大小上限：刻意壓緊的護欄，防止契約再度膨脹；目前上限 17260
   # bytes（2026-11-16 為覆蓋範圍段調高，同日再為「發布」那道指令要單獨執行
-  # 調高），要加內容就得先刪等量的字，或經設計討論後調高
-  local max_bytes=16512
+  # 調高，2026-11-25 為可維護性與設計的 deep module 判準調高），要加內容
+  # 就得先刪等量的字，或經設計討論後調高
+  local max_bytes=17260
   local size
   size=$(wc -c < "$contract")
   if [ "$size" -gt "$max_bytes" ]; then
@@ -9514,6 +9622,12 @@ test_reviewer_contract_slim_structure() {
     'core.quotePath=false'
     '「已審」或「缺口」'
     '| 檔案 | 狀態 | 說明 |'
+    '開始審查前以你所用 CLI 的 skill 機制載入 codebase-design；載入不到：中止'
+    'codebase-design skill 目錄內的檔案'
+    '依 codebase-design 的 deep module 判斷'
+    '局部的 shallow 歸 minor'
+    '跨 module 的 interface 或 seam 設計'
+    '架構性問題寫成變更情境'
   )
   local req
   for req in "${required[@]}"; do
@@ -9530,6 +9644,10 @@ test_reviewer_contract_slim_structure() {
     '與材料的符合度'
     '偽造座標'
     '不改用 `git log`、`git show`'
+    'pass-through'
+    '正式實作加測試替身算兩個'
+    'deletion test'
+    'One adapter'
   )
   local fb
   for fb in "${forbidden[@]}"; do
@@ -9617,31 +9735,55 @@ test_reviewer_home_gh_config_symlink
 # ------------------------------------------------------------
 test_reviewer_home_rewrite_keeps_linked_dirs_clean() {
   local test_dir="$T/home-rewrite-test"
-  local fake_home="$test_dir/fake-home" rel cli h before after
+  local fake_home="$test_dir/fake-home" rel cli h before after skills_rel dest
   local url="https://github.com/home-rewrite-owner/home-rewrite-repo/pull/1"
   mkdir -p "$test_dir/workdir" "$test_dir/worktree"
   for rel in .config/gh .config/opencode .cache/opencode .local/share/opencode .local/state/opencode; do
     mkdir -p "$fake_home/$rel"
   done
+  # codebase-design 也在假 HOME 裡：來源目錄納入下面的前後快照，複製若變成
+  # 寫穿（符號連結）就會讓來源多出項目。
+  make_fake_codebase_design_home "$fake_home"
   before="$(cd "$fake_home" && find . | sort)"
 
   for cli in claude codex opencode agy; do
     h="$test_dir/$cli-home"
+    case "$cli" in
+      claude) skills_rel=.claude/skills ;;
+      codex|opencode) skills_rel=.agents/skills ;;
+      agy) skills_rel=.gemini/config/skills ;;
+    esac
+    dest="$h/$skills_rel/codebase-design"
     if (
       HOME="$fake_home"
       unset GH_CONFIG_DIR CLAUDE_CONFIG_DIR
-      for _ in 1 2; do
+      for i in 1 2; do
         case "$cli" in
           claude) _write_claude_home_interactive "$h" "$test_dir/workdir" "$url" ;;
           codex) _write_codex_home_interactive "$h" "$test_dir/workdir" "$url" ;;
           opencode) _write_opencode_home_interactive "$h" ;;
           agy) _write_agy_home_interactive "$h" "$test_dir/workdir" "$test_dir/worktree" ;;
         esac || exit 1
+        # 第一次寫完後在複本裡留下殘檔與殘目錄，第二次重寫必須清掉。
+        if [ "$i" = 1 ]; then
+          mkdir -p "$dest/old-dir" || exit 1
+          printf 'stale\n' > "$dest/stale.md" || exit 1
+          printf 'stale\n' > "$dest/old-dir/f" || exit 1
+        fi
       done
     ) && [ "$(readlink "$h/.config/gh")" = "$fake_home/.config/gh" ]; then
       pass "test_reviewer_home_rewrite_keeps_linked_dirs_clean: $cli 重寫兩次後 .config/gh 仍指向來源"
     else
       bad "test_reviewer_home_rewrite_keeps_linked_dirs_clean: $cli 重寫兩次失敗或 .config/gh 指向錯誤"
+    fi
+    if [ -d "$dest" ] && [ ! -L "$dest" ] \
+      && [ "$(cat "$dest/SKILL.md" 2>/dev/null)" = "fake SKILL.md" ] \
+      && [ "$(cat "$dest/agents/openai.yaml" 2>/dev/null)" = "fake openai.yaml" ] \
+      && [ ! -e "$dest/stale.md" ] && [ ! -e "$dest/old-dir" ] \
+      && [ "$(find "$dest" -type f | wc -l)" -eq 3 ]; then
+      pass "test_reviewer_home_rewrite_keeps_linked_dirs_clean: $cli 重寫兩次後 codebase-design 內容正確且沒有殘檔"
+    else
+      bad "test_reviewer_home_rewrite_keeps_linked_dirs_clean: $cli 重寫兩次後 codebase-design 不正確: $(find "$dest" 2>/dev/null | tr '\n' ' ')"
     fi
   done
 
@@ -9653,6 +9795,319 @@ test_reviewer_home_rewrite_keeps_linked_dirs_clean() {
   fi
 }
 test_reviewer_home_rewrite_keeps_linked_dirs_clean
+
+# ------------------------------------------------------------
+# codebase-design 複製進各家隔離 HOME：四個 _write_*_home_interactive 各自在
+# 對應的原生 skill 目錄產生一份「實體目錄」的複本（不是符號連結），內容含
+# SKILL.md 與子目錄檔案。
+# ------------------------------------------------------------
+test_reviewer_home_installs_codebase_design() {
+  local test_dir="$T/cd-install-test"
+  local url="https://github.com/cd-install-owner/cd-install-repo/pull/1"
+  local cli h fake_home skills_rel dest
+  mkdir -p "$test_dir/workdir" "$test_dir/worktree"
+
+  for cli in claude codex opencode agy; do
+    case "$cli" in
+      claude) skills_rel=.claude/skills ;;
+      codex|opencode) skills_rel=.agents/skills ;;
+      agy) skills_rel=.gemini/config/skills ;;
+    esac
+    fake_home="$test_dir/$cli-fake-home"
+    h="$test_dir/$cli-home"
+    make_fake_codebase_design_home "$fake_home"
+    dest="$h/$skills_rel/codebase-design"
+    if (
+      HOME="$fake_home"
+      unset GH_CONFIG_DIR CLAUDE_CONFIG_DIR
+      case "$cli" in
+        claude) _write_claude_home_interactive "$h" "$test_dir/workdir" "$url" ;;
+        codex) _write_codex_home_interactive "$h" "$test_dir/workdir" "$url" ;;
+        opencode) _write_opencode_home_interactive "$h" ;;
+        agy) _write_agy_home_interactive "$h" "$test_dir/workdir" "$test_dir/worktree" ;;
+      esac
+    ); then
+      pass "test_reviewer_home_installs_codebase_design: $cli 建 HOME 成功"
+    else
+      bad "test_reviewer_home_installs_codebase_design: $cli 建 HOME 失敗"
+    fi
+    if [ -d "$dest" ] && [ ! -L "$dest" ] \
+      && [ "$(cat "$dest/SKILL.md" 2>/dev/null)" = "fake SKILL.md" ] \
+      && [ "$(cat "$dest/DEEPENING.md" 2>/dev/null)" = "fake DEEPENING.md" ] \
+      && [ "$(cat "$dest/agents/openai.yaml" 2>/dev/null)" = "fake openai.yaml" ] \
+      && [ -z "$(find "$dest" -type l)" ]; then
+      pass "test_reviewer_home_installs_codebase_design: $cli 在 $skills_rel 得到實體目錄複本（含子目錄檔案）"
+    else
+      bad "test_reviewer_home_installs_codebase_design: $cli 的 $dest 不是含完整內容的實體目錄: $(find "$dest" 2>/dev/null | tr '\n' ' ')"
+    fi
+    # 隔離 HOME 內的寫入不得穿透到來源。
+    printf 'reviewer wrote this\n' > "$dest/probe.md"
+    if [ ! -e "$fake_home/.agents/skills/codebase-design/probe.md" ]; then
+      pass "test_reviewer_home_installs_codebase_design: $cli 複本內的寫入沒有穿透到來源"
+    else
+      bad "test_reviewer_home_installs_codebase_design: $cli 複本內的寫入穿透到了來源"
+    fi
+  done
+
+  # 來源本身是符號連結（使用者機器上常見的部署方式）、且 skill 樹內含一條指向
+  # 樹外的連結：複本取真實內容，不留任何連結。
+  local real_root="$test_dir/linked-src-root" linked_home="$test_dir/linked-src-home"
+  make_fake_codebase_design_home "$real_root"
+  printf 'outside content\n' > "$test_dir/outside.txt"
+  ln -s "$test_dir/outside.txt" "$real_root/.agents/skills/codebase-design/outside-link.md"
+  mkdir -p "$linked_home/.agents/skills"
+  ln -s "$real_root/.agents/skills/codebase-design" "$linked_home/.agents/skills/codebase-design"
+  h="$test_dir/linked-src-reviewer-home"
+  dest="$h/.claude/skills/codebase-design"
+  if ( HOME="$linked_home"; unset GH_CONFIG_DIR CLAUDE_CONFIG_DIR; _write_claude_home_interactive "$h" "$test_dir/workdir" "$url" ) \
+    && [ -d "$dest" ] && [ ! -L "$dest" ] && [ -f "$dest/SKILL.md" ] \
+    && [ -f "$dest/outside-link.md" ] && [ ! -L "$dest/outside-link.md" ] \
+    && [ "$(cat "$dest/outside-link.md")" = "outside content" ] && [ -z "$(find "$dest" -type l)" ]; then
+    pass "test_reviewer_home_installs_codebase_design: 來源為符號連結時仍複製出無連結的實體複本"
+  else
+    bad "test_reviewer_home_installs_codebase_design: 來源為符號連結時複本不正確: $(find "$dest" 2>/dev/null | tr '\n' ' ')"
+  fi
+}
+test_reviewer_home_installs_codebase_design
+
+# ------------------------------------------------------------
+# _install_codebase_design_skill 不得寫穿任何符號連結：目標路徑上任何一層
+# 父目錄是符號連結就拒絕（opencode 的隔離 HOME 會連入使用者的真實目錄）；
+# 目的地本身若是符號連結則只替換連結，不動它指向的真實目錄。
+# ------------------------------------------------------------
+test_install_codebase_design_never_writes_through_symlinks() {
+  local test_dir="$T/cd-symlink-guard-test" h real err
+  mkdir -p "$test_dir"
+
+  # 第一層（.agents）是符號連結。
+  h="$test_dir/link-parent-home"; real="$test_dir/link-parent-real"
+  mkdir -p "$h" "$real"
+  ln -s "$real" "$h/.agents"
+  if err="$( ( HOME="$CD_FAKE_HOME"; _install_codebase_design_skill "$h" .agents/skills ) 2>&1 )"; then
+    bad "test_install_codebase_design_never_writes_through_symlinks: 第一層是符號連結時仍回傳成功"
+  else
+    pass "test_install_codebase_design_never_writes_through_symlinks: 第一層是符號連結時回傳非零"
+  fi
+  if [ -z "$(find "$real" -mindepth 1)" ] && [[ "$err" == *'symlink'* ]]; then
+    pass "test_install_codebase_design_never_writes_through_symlinks: 第一層是符號連結時沒有寫進它指向的目錄，且訊息點名符號連結"
+  else
+    bad "test_install_codebase_design_never_writes_through_symlinks: 第一層符號連結被寫穿或訊息不明: $(find "$real" | tr '\n' ' ') err='$err'"
+  fi
+
+  # 中間層（.agents/skills）是符號連結。
+  h="$test_dir/link-mid-home"; real="$test_dir/link-mid-real"
+  mkdir -p "$h/.agents" "$real"
+  ln -s "$real" "$h/.agents/skills"
+  if ( HOME="$CD_FAKE_HOME"; _install_codebase_design_skill "$h" .agents/skills ) 2>/dev/null; then
+    bad "test_install_codebase_design_never_writes_through_symlinks: 中間層是符號連結時仍回傳成功"
+  else
+    pass "test_install_codebase_design_never_writes_through_symlinks: 中間層是符號連結時回傳非零"
+  fi
+  if [ -z "$(find "$real" -mindepth 1)" ]; then
+    pass "test_install_codebase_design_never_writes_through_symlinks: 中間層是符號連結時沒有寫進它指向的目錄"
+  else
+    bad "test_install_codebase_design_never_writes_through_symlinks: 中間層符號連結被寫穿: $(find "$real" | tr '\n' ' ')"
+  fi
+
+  # 目的地本身是符號連結：換成實體目錄，原指向的目錄原封不動。
+  h="$test_dir/link-dest-home"; real="$test_dir/link-dest-real"
+  mkdir -p "$h/.agents/skills" "$real"
+  printf 'keep\n' > "$real/keep.txt"
+  ln -s "$real" "$h/.agents/skills/codebase-design"
+  if ( HOME="$CD_FAKE_HOME"; _install_codebase_design_skill "$h" .agents/skills ) \
+    && [ -d "$h/.agents/skills/codebase-design" ] && [ ! -L "$h/.agents/skills/codebase-design" ] \
+    && [ -f "$h/.agents/skills/codebase-design/SKILL.md" ] \
+    && [ "$(find "$real" -type f | tr '\n' ' ')" = "$real/keep.txt " ]; then
+    pass "test_install_codebase_design_never_writes_through_symlinks: 目的地是符號連結時換成實體目錄，原指向的目錄沒被動到"
+  else
+    bad "test_install_codebase_design_never_writes_through_symlinks: 目的地符號連結處置不正確: $(find "$real" | tr '\n' ' ')"
+  fi
+}
+test_install_codebase_design_never_writes_through_symlinks
+
+# ------------------------------------------------------------
+# 來源樹含唯讀目錄與唯讀檔案（0555 / 0444，部署出來的 skill 常見）：cp 會把
+# 唯讀模式一併複製過去，複本若不被改回對擁有者可寫，下一次改寫的
+# `rm -rf` 就刪不掉。連續寫兩次都要成功；再把既有複本整個設成唯讀
+# （模擬上次失敗或被改過後留下的唯讀殘留）寫第三次，也要成功；最後複本
+# 不用任何 chmod 就能被 rm -rf 移除。
+# ------------------------------------------------------------
+test_install_codebase_design_readonly_source_tree() {
+  local test_dir="$T/cd-readonly-src-test" fake_home h dest i
+  fake_home="$test_dir/home"
+  h="$test_dir/reviewer-home"
+  mkdir -p "$h"
+  make_fake_codebase_design_home "$fake_home"
+  chmod 0444 "$fake_home/.agents/skills/codebase-design/SKILL.md" \
+    "$fake_home/.agents/skills/codebase-design/agents/openai.yaml"
+  chmod 0555 "$fake_home/.agents/skills/codebase-design/agents"
+  dest="$h/.agents/skills/codebase-design"
+
+  for i in 1 2; do
+    if ( HOME="$fake_home"; _install_codebase_design_skill "$h" .agents/skills ) 2>/dev/null \
+      && [ "$(cat "$dest/agents/openai.yaml" 2>/dev/null)" = "fake openai.yaml" ]; then
+      pass "test_install_codebase_design_readonly_source_tree: 來源含 0555 目錄與 0444 檔案，第 $i 次寫入成功"
+    else
+      bad "test_install_codebase_design_readonly_source_tree: 來源含唯讀項目時第 $i 次寫入失敗"
+    fi
+  done
+  if [ -w "$dest" ] && [ -w "$dest/SKILL.md" ] && [ -w "$dest/agents" ] && [ -w "$dest/agents/openai.yaml" ]; then
+    pass "test_install_codebase_design_readonly_source_tree: 複本內的目錄與檔案對擁有者可寫"
+  else
+    bad "test_install_codebase_design_readonly_source_tree: 複本仍帶唯讀項目: $(find "$dest" ! -writable 2>&1 | tr '\n' ' ')"
+  fi
+
+  # 既有的唯讀殘留：重寫前的移除也要處理。
+  chmod -R a-w "$dest"
+  if ( HOME="$fake_home"; _install_codebase_design_skill "$h" .agents/skills ) 2>/dev/null \
+    && [ "$(cat "$dest/SKILL.md" 2>/dev/null)" = "fake SKILL.md" ]; then
+    pass "test_install_codebase_design_readonly_source_tree: 目的地原本整個唯讀時，改寫仍成功"
+  else
+    bad "test_install_codebase_design_readonly_source_tree: 目的地原本唯讀時改寫失敗"
+  fi
+
+  if rm -rf "$dest" 2>/dev/null && [ ! -e "$dest" ]; then
+    pass "test_install_codebase_design_readonly_source_tree: 複本不需任何 chmod 就能被 rm -rf 移除"
+  else
+    bad "test_install_codebase_design_readonly_source_tree: 複本無法直接被 rm -rf 移除"
+  fi
+}
+test_install_codebase_design_readonly_source_tree
+
+# ------------------------------------------------------------
+# 複製中途失敗（來源樹含懸空符號連結，cp -L 解不開）：回傳非零、訊息指出
+# 複製失敗、目的地已被移除，不留半成品。第二個案例的來源同時含唯讀項目
+# （cp 會先把它們複製成唯讀的殘留），清理路徑也得移除得掉。
+# ------------------------------------------------------------
+test_install_codebase_design_failed_copy_is_cleaned_up() {
+  local test_dir="$T/cd-failed-copy-test" variant fake_home h dest err
+  mkdir -p "$test_dir"
+
+  for variant in plain readonly-tree; do
+    fake_home="$test_dir/$variant-home"
+    h="$test_dir/$variant-reviewer-home"
+    mkdir -p "$h"
+    make_fake_codebase_design_home "$fake_home"
+    ln -s "$test_dir/no-such-target" "$fake_home/.agents/skills/codebase-design/dangling.md"
+    if [ "$variant" = readonly-tree ]; then
+      chmod 0444 "$fake_home/.agents/skills/codebase-design/SKILL.md" \
+        "$fake_home/.agents/skills/codebase-design/agents/openai.yaml"
+      chmod 0555 "$fake_home/.agents/skills/codebase-design/agents"
+    fi
+    dest="$h/.agents/skills/codebase-design"
+
+    if err="$( ( HOME="$fake_home"; _install_codebase_design_skill "$h" .agents/skills ) 2>&1 )"; then
+      bad "test_install_codebase_design_failed_copy_is_cleaned_up: 來源含懸空連結（$variant）時仍回傳成功"
+    else
+      pass "test_install_codebase_design_failed_copy_is_cleaned_up: 來源含懸空連結（$variant）時回傳非零"
+    fi
+    if [[ "$err" == *'failed to copy'* ]]; then
+      pass "test_install_codebase_design_failed_copy_is_cleaned_up: 訊息指出複製失敗（$variant）"
+    else
+      bad "test_install_codebase_design_failed_copy_is_cleaned_up: 訊息沒有指出複製失敗（$variant）: '$err'"
+    fi
+    if [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
+      pass "test_install_codebase_design_failed_copy_is_cleaned_up: 目的地已被移除，沒有半成品（$variant）"
+    else
+      bad "test_install_codebase_design_failed_copy_is_cleaned_up: 目的地殘留（$variant）: $(find "$dest" 2>/dev/null | tr '\n' ' ')"
+    fi
+  done
+}
+test_install_codebase_design_failed_copy_is_cleaned_up
+
+# _cd_missing_snapshot <work_repo> <home>
+# 一般函式（不是巢狀在測試函式裡，免得洩漏到全域）：印出 repo 的 refs、
+# worktree、分支清單與 <home> 底下的檔案樹，供前後比對零副作用。
+_cd_missing_snapshot() {
+  {
+    git -C "$1" for-each-ref
+    git -C "$1" worktree list
+    git -C "$1" branch -a
+    find "$2" | sort
+  }
+}
+
+# ------------------------------------------------------------
+# 缺 codebase-design（完全沒有、目錄裡沒有 SKILL.md、懸空符號連結）：prepare 與
+# run 都以 1 結束，標準錯誤指名 codebase-design 與預期路徑，且零副作用 --
+# repo 的 refs/分支/worktree 與假 HOME 都與執行前逐項相同（沒有 fetch、
+# 沒建分支與 worktree、沒有 base_dir），herdr 一次都沒被呼叫。
+# 借用 ORIGIN_ORDER_FIXTURE 的 repo：它的 base 分支遠端有、本機沒有
+# remote-tracking ref，真有 fetch 就會留下痕跡。
+# ------------------------------------------------------------
+test_codebase_design_missing_fails_before_any_side_effect() {
+  local work="$ORIGIN_ORDER_FIXTURE/work" variant sub home out rc before after
+  local leak="$T/cd-missing-herdr-leak"
+  # 這個區塊專用的樁目錄：每個名字都由這裡自己的版本控管程式碼建立，拿掉
+  # 任何一個，下面的 PATH 守衛就會失敗（守衛名單與建立名單分開寫，各自獨立
+  # 列舉）。gh 連到共用的 gh 樁。
+  local stub_dir="$T/cd-missing-stub-bin" name
+  mkdir -p "$stub_dir"
+  for name in claude codex opencode agy; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_dir/$name"
+    chmod +x "$stub_dir/$name"
+  done
+  ln -s "$STUB_BIN/gh" "$stub_dir/gh"
+  printf '#!/usr/bin/env bash\n: >> "%s"\nexit 0\n' "$leak" > "$stub_dir/herdr"
+  chmod +x "$stub_dir/herdr"
+  rm -f "$leak"
+  assert_cli_stub_only "$stub_dir:$saved_path" "$stub_dir" claude codex opencode agy gh herdr
+
+  for variant in absent no-skill-md dangling-symlink; do
+    home="$T/cd-missing-home-$variant"
+    mkdir -p "$home"
+    case "$variant" in
+      no-skill-md)
+        mkdir -p "$home/.agents/skills/codebase-design"
+        printf 'not a skill\n' > "$home/.agents/skills/codebase-design/README.md"
+        ;;
+      dangling-symlink)
+        mkdir -p "$home/.agents/skills"
+        ln -s "$T/cd-no-such-dir" "$home/.agents/skills/codebase-design"
+        ;;
+    esac
+    for sub in prepare run; do
+      before="$(_cd_missing_snapshot "$work" "$home")"
+      if out="$(cd "$work" && CLAUDE_CONFIG_DIR="" GH_STUB_BASE_REF_NAME="origin-order-base-branch" \
+        HOME="$home" PATH="$stub_dir:$saved_path" HERDR_ENV=1 HERDR_WORKSPACE_ID=cdMissingWs \
+        bash "$RUN_SH" "$sub" --pr "https://github.com/acme/widgets/pull/1" --claude 2>&1)"; then
+        rc=0
+      else
+        rc=$?
+      fi
+      after="$(_cd_missing_snapshot "$work" "$home")"
+      if [ "$rc" -eq 1 ] && [[ "$out" == *'codebase-design'* ]] && [[ "$out" == *"$home/.agents/skills/codebase-design"* ]]; then
+        pass "test_codebase_design_missing: $sub（$variant）以結束碼 1 失敗，訊息點名 codebase-design 與預期路徑"
+      else
+        bad "test_codebase_design_missing: $sub（$variant）處置不正確: rc=$rc out='$out'"
+      fi
+      if [ "$before" = "$after" ]; then
+        pass "test_codebase_design_missing: $sub（$variant）零副作用（repo 與 HOME 前後相同）"
+      else
+        bad "test_codebase_design_missing: $sub（$variant）留下了副作用: $(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | tr '\n' ' ')"
+      fi
+    done
+  done
+  if [ ! -f "$leak" ]; then
+    pass "test_codebase_design_missing: herdr 一次都沒被呼叫"
+  else
+    bad "test_codebase_design_missing: herdr 被呼叫了"
+  fi
+  rm -f "$leak"
+
+  # 單元層：resolve_codebase_design_dir 解析符號連結後回傳真實路徑。
+  local real_root="$T/cd-resolve-real" link_home="$T/cd-resolve-link-home"
+  make_fake_codebase_design_home "$real_root"
+  mkdir -p "$link_home/.agents/skills"
+  ln -s "$real_root/.agents/skills/codebase-design" "$link_home/.agents/skills/codebase-design"
+  out="$(HOME="$link_home" resolve_codebase_design_dir)" || out=""
+  if [ "$out" = "$(readlink -f "$real_root/.agents/skills/codebase-design")" ]; then
+    pass "test_codebase_design_missing: resolve_codebase_design_dir 印出解析符號連結後的真實路徑"
+  else
+    bad "test_codebase_design_missing: resolve_codebase_design_dir 印出: '$out'"
+  fi
+}
+test_codebase_design_missing_fails_before_any_side_effect
 
 # ------------------------------------------------------------
 # SKILL.md: direct comment posting, multi-aspect review, no synthesis or github-manager delegation
