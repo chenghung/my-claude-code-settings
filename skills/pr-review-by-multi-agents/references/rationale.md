@@ -257,11 +257,11 @@ agent 名稱是腳本自己從 pane 識別碼雜湊出來的，摘要上印的�
 
 ### 可維護性與設計改以 module 深度為主軸
 
-可維護性與設計的「模組邊界」換成 module 深度那一條，用語取自 codebase-design skill：它不用 boundary（與 DDD 的 bounded context 撞名），改說 seam 或 interface。定義直接寫在契約裡、不要求 reviewer 載入該 skill，有兩個理由：讀取白名單本來就排除 `~/.claude`、`~/.agents`，載入 skill 會違反契約自己的讀取限制；四家各跑在隔離家目錄，載不載得到也沒有查證。契約是唯一保證原文送達每個 reviewer 的地方。
+可維護性與設計的「模組邊界」換成 module 深度那一條，用語取自 codebase-design skill：它不用 boundary（與 DDD 的 bounded context 撞名），改說 seam 或 interface。契約不重述 deep module 的定義，改要 reviewer 先以自己 CLI 的 skill 機制載入 codebase-design、載入成功才審：概念只有一個來源，上游改版時不必比對契約裡的副本。內嵌定義原本有兩個理由，現在都不成立：讀取白名單排除 `~/.claude`、`~/.agents`，已改為放行 codebase-design 那個 skill 目錄；隔離家目錄載不載得到，已經實測。
 
-分級表 important 那格原本寫「模組或架構性問題」，與面向表「minor，架構性 important」互相拉扯；明列 module 深度之後，每一則 shallow 都會照字面落進 important，所以收窄成跨 module 的 interface 或 seam 設計。
+腳本派送前確認 codebase-design 已安裝，再把它複製進各家隔離家目錄的原生 skill 目錄：claude 放 `.claude/skills`，codex 與 opencode 放 `.agents/skills`，agy 放 `.gemini/config/skills`。用複製不用 symlink，隔離家目錄的寫入才不會穿透到使用者真實的 skill 目錄。2026-11-25 對 claude 2.1.332、codex 0.172.0、opencode 1.19.6、agy 1.5.17 實測，工作目錄在真實 `$HOME` 之外：複製後四家都以原生機制載入，未複製的對照組都找不到。正式流程的工作目錄在 `$HOME/.tmp` 底下，那時 claude 與 opencode 不靠副本也會讀到真實家目錄那一份，見 `references/limits-exposure.md`。codex 與 agy 沒有專用的 skill 工具，是把 skill 清單列給模型、由模型讀 SKILL.md，所以白名單那條放行少不得。執行中載入失敗走既有的中止路徑，不另設失敗標記：最常見的未安裝已在派送前擋下。
 
-那一條只是 codebase-design 的最小子集，完整概念以該 skill 為準；codebase-design 由 `external-skills.jsonc` 從上游同步，上游改版時要比對契約那一條是否仍一致。
+分級表 important 那格原本寫「模組或架構性問題」，與面向表「minor，架構性 important」互相拉扯；明列 module 深度之後，每一則 shallow 都會照字面落進 important，所以收窄成跨 module 的 interface 或 seam 設計。光是這樣收窄還不夠：module 涵蓋函式在內的任何單位，任何 interface 都被另一個 module 呼叫，「跨 module」照字面幾乎恆成立，所以 module 深度那一條另用可觀察的條件界定架構性（修正會改到其他檔案的呼叫方，或改動對外公開的 interface 或 seam）。設計類問題又常寫不出錯誤的執行結果，會被「寫不出具體失敗情境的降為 minor」拉回 minor，所以分級段讓架構性問題改寫變更情境。
 
 ### 分級改為類別主軸加升降規則
 
