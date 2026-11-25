@@ -253,9 +253,15 @@ agent 名稱是腳本自己從 pane 識別碼雜湊出來的，摘要上印的�
 
 精簡前的清單是六個面向。併發與 race condition 從效能與資源移到正確性與邏輯；新增可維護性與設計；「與材料的符合度」擴大成「需求與文件一致性」，多涵蓋改動之後 repo 內文件、註解與跨檔引用是否仍一致。
 
-可維護性與設計之後加上 deep module 判準（module 深度那一條），詞彙取自 codebase-design skill，但定義直接寫在契約裡、不要求 reviewer 載入該 skill：四家 reviewer 各跑在隔離家目錄裡，載不載得到 skill 沒有查證，而契約是唯一保證原文送達每個 reviewer 的地方。那一條只留判準所需的最小詞彙，完整概念以 codebase-design 為準。
-
 逐檔覆蓋的起因是精簡前的實跑出現覆蓋盲區：PR #9 有 8 個 `.claude/agents/prompt-*` 與 prompt-authoring 判準檔的變更，兩家完全沒提，揭露段卻宣稱審過全部面向。精簡前的契約已經寫過這條的理由：一個可以憑感覺啟動的範圍限制聲明，會反過來變成漏審的免責條款。所以缺口段只收確實取不到或無法審的檔案。
+
+### 可維護性與設計改以 module 深度為主軸
+
+可維護性與設計的「模組邊界」換成 module 深度那一條，用語取自 codebase-design skill：它不用 boundary（與 DDD 的 bounded context 撞名），改說 seam 或 interface。定義直接寫在契約裡、不要求 reviewer 載入該 skill，有兩個理由：讀取白名單本來就排除 `~/.claude`、`~/.agents`，載入 skill 會違反契約自己的讀取限制；四家各跑在隔離家目錄，載不載得到也沒有查證。契約是唯一保證原文送達每個 reviewer 的地方。
+
+分級表 important 那格原本寫「模組或架構性問題」，與面向表「minor，架構性 important」互相拉扯；明列 module 深度之後，每一則 shallow 都會照字面落進 important，所以收窄成跨 module 的 interface 或 seam 設計。
+
+那一條只是 codebase-design 的最小子集，完整概念以該 skill 為準；codebase-design 由 `external-skills.jsonc` 從上游同步，上游改版時要比對契約那一條是否仍一致。
 
 ### 分級改為類別主軸加升降規則
 

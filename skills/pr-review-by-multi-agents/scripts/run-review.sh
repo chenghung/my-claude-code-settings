@@ -127,8 +127,8 @@ readonly ECHO_GUARD_MARKER='<!-- pr-review-by-multi-agents -->'
 # further.
 #
 # Measured 2026-11-25 by calling build_prompt against the current contract:
-# contract 17057 bytes, coordinates block 584, prompt 17641 -- 17.6% of this
-# limit, 82359 bytes of headroom (16976, 17.0%, measured 2026-11-16 against
+# contract 17111 bytes, coordinates block 584, prompt 17695 -- 17.7% of this
+# limit, 82305 bytes of headroom (16976, 17.0%, measured 2026-11-16 against
 # a 16380-byte contract that grew to 16488 the same day without a
 # re-measure; 15801, 15.8%, right after the 2026-09-23
 # slimming, before the coverage-table rules). Three earlier readings, all
