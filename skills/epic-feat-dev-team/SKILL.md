@@ -55,13 +55,13 @@ role: developer-<issue 編號>[-<phase 代號>]   # 名稱由 role 決定，同�
 
 你由 orchestrator 指派。只有遇到 spec 的 scope 或 goal、或重大設計方向與架構變更的問題時，才向 orchestrator 取得答案，並等定案後再繼續；其餘問題（含下游 skill 要求詢問人類或等其確認的關卡）自行決定，進行中的任務進度不要打擾 orchestrator；回報契約要求的回報照常進行。merge 前須先回報 technical-pm 取得判定；合併後收尾自己的工作區（限自己的 worktree、branch、從該 worktree 啟動的 docker containers 與 tmp files，以及把主倉庫的 local main fast-forward 到 origin/main）是你的職責，不需事前回報，此點優先於回報契約對不可逆動作的事前回報要求。例外：權限繞過與安全敏感的核准關卡不在自決範圍，本檔明文授權者除外；其他情況視為 blocker 回報 orchestrator。
 
-1. 先載入 codebase-design 技能，再使用 writing-plans 技能根據任務產生計畫。計畫以 deep module 為設計判準：跨 task 被呼叫或對外公開、且新增或改動 interface 的每個 module，都在所屬 task 的 `Interfaces:` 區塊寫明它的 interface（依 codebase-design 的定義，含不變式與錯誤模式）與 seam 位置；新 module 附一句它通過 deletion test 的理由，新增 seam 時列出它的兩個 adapter。
+1. 先載入 codebase-design 技能，再使用 writing-plans 技能根據任務產生計畫。計畫以 deep module 為設計判準：跨 task 被呼叫或對外公開、且新增或改動 interface 的每個 module，都在所屬 task 的 `Interfaces:` 區塊寫明它的 interface 與 seam 位置，新 module 在該區塊另附一句它通過 deletion test 的理由，新增 seam 在該區塊另列出它的兩個 adapter。
 1. 計畫產生後，立即使用 subagent-driven-development 技能將該 phase 拆解為獨立的 per-commit tasks，依 commit 難度選用啟動包載明的 implementer：高難度（核心架構或複雜邏輯）用高難度 implementer，中低難度（局部 CRUD、純樣式排版或補測試）用中低難度 implementer。
    - 派法：sonnet 派 Sonnet subagent；codex、agy、opencode 分別用 codex-delegate、agy-delegate、opencode-delegate 技能派發。派 agy 時可帶 `--dangerously-skip-permissions`，這是本 command 作者的明確授權。
    - 外部 CLI implementer（codex、agy、opencode）以該 developer 的 worktree 為工作目錄；交給它的 brief 必須明文禁止 commit、push、碰 gh／PR／issue；啟動 docker 與寫入該 worktree 以外的路徑也禁止，但 brief 列出的 gate 指令本身的必要副作用除外。codex 只在全新派發時由 relay 帶 workspace-write sandbox；以 session 續跑送修正 brief 時不保證，且是否擋得住 commit 與 docker 未查證。opencode（預設自動核准）與帶 bypass 旗標的 agy，這條界線只靠 brief 與事後檢查，而下一項的事後檢查只涵蓋 HEAD、worktree 內的改動範圍與本分支的遠端 ref，worktree 外的寫入、docker 與 gh 操作偵測不到。
    - 派發外部 CLI 前記下 HEAD sha；收下其變更前確認 HEAD 沒變、相對該 sha 的改動只落在本 commit 範圍、本分支的遠端 ref 沒變。改動超出範圍時先送修正 brief，仍不符才丟棄重做；HEAD 或遠端已被外部 CLI 異動時，視為 blocker 回報 orchestrator，不自行 force push 或改寫歷史。
-   - task review 依 subagent-driven-development 進行，reviewer 固定用 Sonnet subagent，外部 CLI 做的變更同樣要經過這道 task review。派 reviewer 時指示它先載入 codebase-design 技能，在 task reviewer 模板的 Part 2: Code Quality 以 deep module 為判準審該 commit。
-   - 最後的 whole-branch review 同樣依 subagent-driven-development 進行，派 reviewer 時指示它先載入 codebase-design 技能，在 code-reviewer 模板的 Architecture 部分以 deep module 為判準審整個分支。
+   - task review 依 subagent-driven-development 進行，reviewer 固定用 Sonnet subagent，外部 CLI 做的變更同樣要經過這道 task review。
+   - 派 task reviewer 與最後的 whole-branch reviewer 時，都指示它先載入 codebase-design 技能，載入成功才開始審查，載入失敗就回報失敗、不審查；審查以 deep module 為判準：task reviewer 在模板的 Part 2: Code Quality 審該 commit，whole-branch reviewer 在 code-reviewer 模板的 Architecture 部分審整個分支。你或 reviewer 載入 codebase-design 失敗時，視為 blocker 回報 orchestrator，不跳過它寫計畫，也不改派不載入它的 reviewer。
    - 本步的實作者與 task reviewer 分派，優先於 subagent-driven-development 的 Model Selection。subagent-driven-development 要求改派更強實作者時（fix loop 後段或 BLOCKED），中低難度 commit 改派高難度 implementer；升級後的 implementer 與原本相同時（已是高難度 implementer，或兩個 implementer 選成同一個），必須改變做法（拆小 commit 或補充 context），不原樣重試。
 1. 分支開發完成且測試通過後，使用 finishing-a-development-branch 技能推送並建立 PR。
 1. 執行 /pr-review-by-multi-agents 交叉審查，觸發時帶上 PR 網址，並明確指名啟動包載明的 review agents 組合。
