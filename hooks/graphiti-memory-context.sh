@@ -59,6 +59,12 @@ the current code or files, the files win.
 - you establish a non-obvious fact (environment quirk, root cause, actual behavior of an external tool)
 - a task finishes: record its conclusion and open questions
 
+**Confirm each write**: \`add_memory\` only queues the episode, and a failed write
+(e.g. exhausted API credits) shows up only in the server log. After writing, and
+before finishing the task, call \`get_episodes\` for that group to confirm the new
+episode is listed (processing takes a few seconds). If it is missing,
+tell the user the memory was not saved.
+
 **Do not write**: code content readable from the repo, rules already in CLAUDE.md or
 rules files, transient state, any key, token, password or other people's personal data.
 
