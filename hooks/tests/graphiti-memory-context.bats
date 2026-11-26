@@ -110,3 +110,14 @@ run_hook() {
   [ "$status" -eq 0 ]
   [[ "$output" == *'- project: `proj`'* ]]
 }
+
+# shellcheck disable=SC2016 # backticks in the single-quoted patterns are literal Markdown
+@test "instructs to confirm each write with get_episodes" {
+  run run_hook "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'`add_memory` only queues the episode'* ]]
+  [[ "$output" == *'only in the server log'* ]]
+  [[ "$output" == *'call `get_episodes` for that group'* ]]
+  [[ "$output" == *'before finishing the task'* ]]
+  [[ "$output" == *'tell the user the memory was not saved'* ]]
+}
