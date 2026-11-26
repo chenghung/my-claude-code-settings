@@ -357,9 +357,9 @@ deploy_claude() {
 # `--scope user` must be passed explicitly; `claude mcp add` defaults to
 # `local` scope.
 # Every claude call runs under `env -u CLAUDE_CONFIG_DIR`: with it set (under
-# clauth it points at a throwaway runtime-<pid> copy of ~/.claude.json),
-# `--scope user` writes to that copy and the registration is lost with the
-# session. Unset, the CLI targets $HOME/.claude.json.
+# clauth it points at a per-session runtime-<pid> dir holding its own copy of
+# ~/.claude.json), `--scope user` writes to that copy instead of
+# $HOME/.claude.json. Unset, the CLI targets $HOME/.claude.json.
 # ---------------------------------------------------------------------------
 register_codegraph_mcp() {
   if ! command -v claude > /dev/null 2>&1; then
