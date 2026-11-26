@@ -341,6 +341,8 @@ deploy_claude() {
   # superpowers for Claude Code is declared in settings.json (enabledPlugins),
   # so it installs/updates through Claude Code itself, not via the CLI here.
   register_codegraph_mcp
+  register_graphiti_mcp
+  start_graphiti_server
 }
 
 # ---------------------------------------------------------------------------
@@ -369,6 +371,59 @@ register_codegraph_mcp() {
     count_created=$(( count_created + 1 ))
   else
     printf '  WARNING  failed to register codegraph MCP server - skipping.\n'
+    count_skipped=$(( count_skipped + 1 ))
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# graphiti MCP server (Claude Code, user scope): the long-term memory server
+# from services/graphiti/. Same registration shape as register_codegraph_mcp,
+# but over streamable HTTP, because the server runs in docker
+# (start_graphiti_server) rather than as a child process of Claude Code.
+# The server requires the trailing slash in the URL.
+# ---------------------------------------------------------------------------
+register_graphiti_mcp() {
+  if ! command -v claude > /dev/null 2>&1; then
+    printf '  WARNING  claude CLI not found - skipping graphiti MCP server registration.\n'
+    return
+  fi
+
+  if claude mcp get graphiti > /dev/null 2>&1; then
+    printf '  OK       graphiti MCP server already registered (user scope)\n'
+    count_ok=$(( count_ok + 1 ))
+  elif claude mcp add --transport http --scope user graphiti http://127.0.0.1:8000/mcp/; then
+    printf '  CREATED  graphiti MCP server registered (user scope)\n'
+    count_created=$(( count_created + 1 ))
+  else
+    printf '  WARNING  failed to register graphiti MCP server - skipping.\n'
+    count_skipped=$(( count_skipped + 1 ))
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Start the graphiti server (services/graphiti/docker-compose.yml) once its
+# API keys exist. The keys live outside the repo, in ~/.config/graphiti/.env,
+# which the compose file reads. Without that file or without docker, only
+# print how to finish the setup. `up -d` is idempotent: a running, unchanged
+# container is left as is. A failure only warns, like the MCP registrations.
+# ---------------------------------------------------------------------------
+start_graphiti_server() {
+  local env_file="${HOME}/.config/graphiti/.env"
+  local compose_file="${REPO_DIR}/services/graphiti/docker-compose.yml"
+
+  if ! command -v docker > /dev/null 2>&1 || [ ! -f "$env_file" ]; then
+    printf '  NOTE     graphiti server not started (needs docker and %s).\n' "$env_file"
+    printf '           To start it: mkdir -p %s && install -m 600 %s %s\n' \
+      "${env_file%/*}" "${REPO_DIR}/services/graphiti/.env.example" "$env_file"
+    printf '           fill in the keys, then: docker compose -f %s up -d\n' "$compose_file"
+    return
+  fi
+
+  if docker compose -f "$compose_file" up -d; then
+    printf '  OK       graphiti server started (docker compose up -d)\n'
+    count_ok=$(( count_ok + 1 ))
+  else
+    printf '  WARNING  docker compose up -d failed for the graphiti server - skipping.\n'
     count_skipped=$(( count_skipped + 1 ))
   fi
 }

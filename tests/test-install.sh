@@ -135,6 +135,16 @@ fi
 exit 0
 STUB
 chmod +x "$STUB_BIN/claude"
+# Stub `docker` logs every invocation ($* per call, one line) and exits with
+# DOCKER_STUB_EXIT (default 0), so start_graphiti_server never reaches the
+# real docker daemon.
+cat > "$STUB_BIN/docker" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${DOCKER_STUB_LOG:?}"
+exit "${DOCKER_STUB_EXIT:-0}"
+STUB
+chmod +x "$STUB_BIN/docker"
+export DOCKER_STUB_LOG="$T/docker-stub.log"
 
 # Scenario A: codegraph not yet registered (mcp get exits 1) -> install.sh
 # must call `claude mcp add codegraph --scope user -- codegraph serve --mcp`.
@@ -144,6 +154,7 @@ CLAUDE_STUB_LOG="$T/claude-stub-notreg.log"
 # shellcheck disable=SC2030  # PATH/CLAUDE_MCP_GET_EXIT are deliberately modified only inside this subshell (same idiom as run_settings_deploy below)
 ( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=1; "$REPO/install.sh" --claude --no-external > "$T/log_claude_notreg" 2>&1 )
 if grep -qxF 'mcp add codegraph --scope user -- codegraph serve --mcp' "$CLAUDE_STUB_LOG"; then pass codegraph-mcp-registers-when-absent; else bad codegraph-mcp-registers-when-absent; fi
+if grep -qxF 'mcp add --transport http --scope user graphiti http://127.0.0.1:8000/mcp/' "$CLAUDE_STUB_LOG"; then pass graphiti-mcp-registers-when-absent; else bad graphiti-mcp-registers-when-absent; fi
 
 # Scenario B: codegraph already registered (mcp get exits 0) -> install.sh
 # must NOT call `claude mcp add` at all.
@@ -153,6 +164,51 @@ CLAUDE_STUB_LOG="$T/claude-stub-reg.log"
 # shellcheck disable=SC2030,SC2031  # PATH/CLAUDE_MCP_GET_EXIT are deliberately modified only inside this subshell (same idiom as run_settings_deploy below)
 ( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0; "$REPO/install.sh" --claude --no-external > "$T/log_claude_reg" 2>&1 )
 if grep -q '^mcp add' "$CLAUDE_STUB_LOG"; then bad codegraph-mcp-skips-when-registered; else pass codegraph-mcp-skips-when-registered; fi
+if grep -qF 'graphiti' "$CLAUDE_STUB_LOG" && ! grep -q '^mcp add' "$CLAUDE_STUB_LOG"; then pass graphiti-mcp-skips-when-registered; else bad graphiti-mcp-skips-when-registered; fi
+
+# ---- graphiti server start (start_graphiti_server) ----
+# docker is stubbed via STUB_BIN; the key file is $HOME/.config/graphiti/.env
+# under this suite's temp HOME. Each case gets a fresh CLAUDE_CONFIG_DIR.
+GRAPHITI_ENV="$HOME/.config/graphiti/.env"
+GRAPHITI_COMPOSE_CALL="compose -f $REPO/services/graphiti/docker-compose.yml up -d"
+run_graphiti_deploy() { # $1 = log path, $2 = DOCKER_STUB_EXIT
+  : > "$DOCKER_STUB_LOG"
+  CLAUDE_STUB_LOG="$T/claude-stub-graphiti.log"
+  : > "$CLAUDE_STUB_LOG"
+  # Shadow guard (gating): claude and docker must resolve to the stubs.
+  # shellcheck disable=SC2031  # reading the outer PATH is intended
+  if [ "$(PATH="$STUB_BIN:$PATH" command -v docker 2>/dev/null || true)" != "$STUB_BIN/docker" ] \
+    || [ "$(PATH="$STUB_BIN:$PATH" command -v claude 2>/dev/null || true)" != "$STUB_BIN/claude" ]; then
+    bad graphiti-deploy-shadow-guard
+    : > "$1"
+    return 0
+  fi
+  # shellcheck disable=SC2030,SC2031  # PATH is deliberately modified only inside this subshell
+  ( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=0 DOCKER_STUB_EXIT="$2"; "$REPO/install.sh" --claude --no-external > "$1" 2>&1 ) || printf 'install.sh exited non-zero\n' >> "$1"
+}
+
+# No .env -> docker compose is not called; a how-to hint is printed.
+export CLAUDE_CONFIG_DIR="$T/claude-graphiti-noenv"
+rm -f "$GRAPHITI_ENV"
+run_graphiti_deploy "$T/log_graphiti_noenv" 0
+if grep -q '^compose' "$DOCKER_STUB_LOG"; then bad graphiti-no-env-skips-compose; else pass graphiti-no-env-skips-compose; fi
+if grep -qF 'NOTE     graphiti server not started' "$T/log_graphiti_noenv" && grep -qF '.env.example' "$T/log_graphiti_noenv"; then pass graphiti-no-env-prints-hint; else bad graphiti-no-env-prints-hint; fi
+
+# .env present -> exactly the compose up call.
+export CLAUDE_CONFIG_DIR="$T/claude-graphiti-env"
+mkdir -p "${GRAPHITI_ENV%/*}"
+printf 'ANTHROPIC_API_KEY=x\nOPENAI_API_KEY=y\n' > "$GRAPHITI_ENV"
+run_graphiti_deploy "$T/log_graphiti_env" 0
+if grep -qxF "$GRAPHITI_COMPOSE_CALL" "$DOCKER_STUB_LOG"; then pass graphiti-env-runs-compose-up; else bad graphiti-env-runs-compose-up; fi
+if grep -qF 'OK       graphiti server started' "$T/log_graphiti_env"; then pass graphiti-compose-ok-reported; else bad graphiti-compose-ok-reported; fi
+
+# compose fails -> WARNING, install.sh still finishes (Summary printed, exit 0).
+export CLAUDE_CONFIG_DIR="$T/claude-graphiti-fail"
+run_graphiti_deploy "$T/log_graphiti_fail" 1
+if grep -qF 'WARNING  docker compose up -d failed for the graphiti server' "$T/log_graphiti_fail" \
+  && grep -qF '=== Summary ===' "$T/log_graphiti_fail" \
+  && ! grep -qF 'install.sh exited non-zero' "$T/log_graphiti_fail"; then pass graphiti-compose-failure-warns-and-continues; else bad graphiti-compose-failure-warns-and-continues; fi
+rm -f "$GRAPHITI_ENV"
 
 # ---- settings.json is no longer symlinked: migration cases ----
 # install.sh stops symlinking ~/.claude/settings.json (clauth owns it; the
@@ -483,6 +539,31 @@ ext_guard() {
   if [ ! -s "$NPX_GUARD_LOG" ]; then pass "$1-npx-guard-not-called"; else bad "$1-npx-guard-not-called"; fi
   if grep -q 'not found' "$2"; then bad "$1-closed-path-complete"; else pass "$1-closed-path-complete"; fi
 }
+
+# graphiti server, docker missing but its key file present: the hint is
+# printed instead of a compose call. The PATH is closed like EXT_PATH but
+# without STUB_BIN's docker stub: EXT_BIN, PASS_BIN and a directory that
+# holds only the claude stub.
+mkdir -p "$T/claude-only-bin"
+ln -s "$STUB_BIN/claude" "$T/claude-only-bin/claude"
+NODOCKER_PATH="$EXT_BIN:$PASS_BIN:$T/claude-only-bin"
+export CLAUDE_CONFIG_DIR="$EXT/claude-nodocker"
+mkdir -p "$EXT/home/.config/graphiti"
+printf 'ANTHROPIC_API_KEY=x\nOPENAI_API_KEY=y\n' > "$EXT/home/.config/graphiti/.env"
+# Shadow guard (gating): no docker may resolve under this PATH, and claude
+# must resolve to the stub; otherwise the run is skipped and the case fails.
+if ext_prep graphiti-no-docker "$EXT/log_nodocker" \
+  && { [ -z "$(PATH="$NODOCKER_PATH" command -v docker 2>/dev/null || true)" ] \
+    && [ "$(PATH="$NODOCKER_PATH" command -v claude 2>/dev/null || true)" = "$T/claude-only-bin/claude" ]; }; then
+  HOME="$EXT/home" PATH="$NODOCKER_PATH" CLAUDE_STUB_LOG="$EXT/claude-stub.log" \
+    "$REPO/install.sh" --claude --no-external > "$EXT/log_nodocker" 2>&1 < /dev/null || printf 'install.sh exited non-zero\n' >> "$EXT/log_nodocker"
+  if grep -qF 'NOTE     graphiti server not started' "$EXT/log_nodocker" && ! grep -qF 'install.sh exited non-zero' "$EXT/log_nodocker"; then pass graphiti-no-docker-prints-hint; else bad graphiti-no-docker-prints-hint; fi
+  ext_guard graphiti-no-docker "$EXT/log_nodocker"
+else
+  bad graphiti-no-docker-guard
+fi
+rm -f "$EXT/home/.config/graphiti/.env"
+export CLAUDE_CONFIG_DIR="$EXT/claude"
 
 # Platform flags are passed to sync unchanged; success leads on to Summary.
 run_ext flags "$EXT/log_flags" --claude --codex
