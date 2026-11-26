@@ -129,6 +129,8 @@ cat > "$STUB_BIN/claude" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${CLAUDE_STUB_LOG:?}"
+# One line per call, aligned with CLAUDE_STUB_LOG: was CLAUDE_CONFIG_DIR set?
+if [ -n "${CLAUDE_CONFIG_DIR+x}" ]; then printf 'set\n'; else printf 'unset\n'; fi >> "${CLAUDE_STUB_LOG}.cfgdir"
 if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "get" ]; then
   exit "${CLAUDE_MCP_GET_EXIT:-0}"
 fi
@@ -154,7 +156,13 @@ CLAUDE_STUB_LOG="$T/claude-stub-notreg.log"
 # shellcheck disable=SC2030  # PATH/CLAUDE_MCP_GET_EXIT are deliberately modified only inside this subshell (same idiom as run_settings_deploy below)
 ( export PATH="$STUB_BIN:$PATH" CLAUDE_STUB_LOG CLAUDE_MCP_GET_EXIT=1; "$REPO/install.sh" --claude --no-external > "$T/log_claude_notreg" 2>&1 )
 if grep -qxF 'mcp add codegraph --scope user -- codegraph serve --mcp' "$CLAUDE_STUB_LOG"; then pass codegraph-mcp-registers-when-absent; else bad codegraph-mcp-registers-when-absent; fi
-if grep -qxF 'mcp add --transport http --scope user graphiti http://127.0.0.1:8000/mcp/' "$CLAUDE_STUB_LOG"; then pass graphiti-mcp-registers-when-absent; else bad graphiti-mcp-registers-when-absent; fi
+if grep -qxF 'mcp add --transport http --scope user graphiti http://127.0.0.1:8000/mcp' "$CLAUDE_STUB_LOG"; then pass graphiti-mcp-registers-when-absent; else bad graphiti-mcp-registers-when-absent; fi
+# CLAUDE_CONFIG_DIR is exported above; every `claude mcp get/add` call must
+# still see it unset, so the registration lands in $HOME/.claude.json instead
+# of a clauth runtime copy. Scenario A makes 4 calls (get + add, twice).
+if [ "$(wc -l < "$CLAUDE_STUB_LOG")" -eq 4 ] \
+  && [ "$(wc -l < "$CLAUDE_STUB_LOG.cfgdir")" -eq 4 ] \
+  && ! grep -qx 'set' "$CLAUDE_STUB_LOG.cfgdir"; then pass mcp-registration-runs-without-claude-config-dir; else bad mcp-registration-runs-without-claude-config-dir; fi
 
 # Scenario B: codegraph already registered (mcp get exits 0) -> install.sh
 # must NOT call `claude mcp add` at all.

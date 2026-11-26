@@ -356,6 +356,10 @@ deploy_claude() {
 # registered, exit 1 = not registered (both behaviours confirmed by hand).
 # `--scope user` must be passed explicitly; `claude mcp add` defaults to
 # `local` scope.
+# Every claude call runs under `env -u CLAUDE_CONFIG_DIR`: with it set (under
+# clauth it points at a throwaway runtime-<pid> copy of ~/.claude.json),
+# `--scope user` writes to that copy and the registration is lost with the
+# session. Unset, the CLI targets $HOME/.claude.json.
 # ---------------------------------------------------------------------------
 register_codegraph_mcp() {
   if ! command -v claude > /dev/null 2>&1; then
@@ -363,10 +367,10 @@ register_codegraph_mcp() {
     return
   fi
 
-  if claude mcp get codegraph > /dev/null 2>&1; then
+  if env -u CLAUDE_CONFIG_DIR claude mcp get codegraph > /dev/null 2>&1; then
     printf '  OK       codegraph MCP server already registered (user scope)\n'
     count_ok=$(( count_ok + 1 ))
-  elif claude mcp add codegraph --scope user -- codegraph serve --mcp; then
+  elif env -u CLAUDE_CONFIG_DIR claude mcp add codegraph --scope user -- codegraph serve --mcp; then
     printf '  CREATED  codegraph MCP server registered (user scope)\n'
     count_created=$(( count_created + 1 ))
   else
@@ -380,7 +384,9 @@ register_codegraph_mcp() {
 # from services/graphiti/. Same registration shape as register_codegraph_mcp,
 # but over streamable HTTP, because the server runs in docker
 # (start_graphiti_server) rather than as a child process of Claude Code.
-# The server requires the trailing slash in the URL.
+# The URL has no trailing slash: the server answers /mcp/ with a 307 redirect
+# to /mcp. Like register_codegraph_mcp, the claude calls run under
+# `env -u CLAUDE_CONFIG_DIR` so the registration lands in $HOME/.claude.json.
 # ---------------------------------------------------------------------------
 register_graphiti_mcp() {
   if ! command -v claude > /dev/null 2>&1; then
@@ -388,10 +394,10 @@ register_graphiti_mcp() {
     return
   fi
 
-  if claude mcp get graphiti > /dev/null 2>&1; then
+  if env -u CLAUDE_CONFIG_DIR claude mcp get graphiti > /dev/null 2>&1; then
     printf '  OK       graphiti MCP server already registered (user scope)\n'
     count_ok=$(( count_ok + 1 ))
-  elif claude mcp add --transport http --scope user graphiti http://127.0.0.1:8000/mcp/; then
+  elif env -u CLAUDE_CONFIG_DIR claude mcp add --transport http --scope user graphiti http://127.0.0.1:8000/mcp; then
     printf '  CREATED  graphiti MCP server registered (user scope)\n'
     count_created=$(( count_created + 1 ))
   else
